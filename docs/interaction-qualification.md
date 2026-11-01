@@ -3,6 +3,29 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Retained native speech/Sol page qualification follow-up —1November2026
+
+The deployed PR504 backend and its native-provider paged-return check are recorded
+in the maintained receiving operation. A further actual mounted Gemini/CPU/Sol
+journey split one synthetic clip into three sentence originals. Inspection of the
+already-completed Sol turn verifies that all three exact source texts, hashes,
+order and prepared-transcript/audio-hash correlations reached Sol in one
+attributed foreground formulation. It is not proof of a returned long report.
+
+The fixture called `answer_worker` after a durable queued instruction appeared,
+before the simulated worker registered its native turn. The resulting
+`KeyError: native-topic-7` stopped the fixture before it emitted the worker result.
+Queued instruction retention is not native worker acceptance. The shared fixture
+helper now waits for that started-peer observation before answering. Existing
+canonical-routing journeys pass with the unchanged qualified native binary.
+
+The real synthetic Sol turn was read terminal/completed and archived. Its
+queued/submitting worker instruction remains uncertain and retained; it was not
+replayed, requeued or marked returned. No new model work was used to repair the
+verifier or inspect the retained source context. Whole actual-Sol paged return,
+physical device/hearing and useful-latency acceptance remain open. Do not rerun
+that terminal journey; use its retained state for any further observation.
+
 ## Product outcome
 
 One habitual text/voice conversation lets a person discuss ideas and advance
