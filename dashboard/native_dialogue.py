@@ -30,6 +30,7 @@ class NativeDialogue:
     max_tools = 32
     max_tool_responses = 160
     max_pending = 4
+    max_attention_notices = 32
 
     def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic):
         if activity_mode not in ('manual', 'automatic'):
@@ -38,6 +39,8 @@ class NativeDialogue:
             raise ValueError('Select bounded server-owned conversation context')
         self.activity_mode = activity_mode
         self.input_active = False
+        self.response_pending = False
+        self.attention_notices = 0
         token = private_bytes(credential_file, 16384).decode().strip()
         if not token or any(c.isspace() for c in token):
             raise ValueError('Native dialogue credential unavailable')
@@ -92,6 +95,8 @@ class NativeDialogue:
                     'The admitted delegation call itself stays pending and streams integrating returns while you continue conversing. '
                     'Do not open another return subscription after admission or after receiving an update. '
                     'Use await_integrator_update only when work is pending without a continued delegation or watch, including after cancellation; never poll for work. '
+                    'An internal_integrator_update_available notice is server control context, not human speech or a new work request. '
+                    'When it arrives, use await_integrator_update to read the actual canonical return; do not acknowledge the notice aloud, invent its contents, query human originals or delegate it as work. '
                     'Only refer to exact retained original IDs supplied by the owning bridge. '
                     'A formulation is your attributed derivative, never a replacement human quote. '
                     'Keep the requested work product and your spoken presentation as separate scopes. '
@@ -187,6 +192,7 @@ class NativeDialogue:
             if self.activity_mode != 'manual' or not self.input_active:
                 raise ValueError('Manual acoustic activity is not active')
             self.input_active = False
+            self.response_pending = True
             self._send({'realtimeInput': {'activityEnd': {}}})
 
     def end_input(self):
@@ -203,6 +209,30 @@ class NativeDialogue:
                     self.activity_end()
             else:
                 self._send({'realtimeInput': {'audioStreamEnd': True}})
+
+    def notify_integrator_update(self):
+        """One attributed control nudge, never a human original/native input.
+
+        Client content triggers generation and would interrupt it. The live
+        owner additionally checks acoustic/capture and actual playback state;
+        this lock prevents overlap with a just-started activity or model turn.
+        Mark before send: an unknown provider write is never retried.
+        """
+        with self._lock:
+            self._active()
+            if self.activity_mode!='manual':raise ValueError('Select owned manual activity')
+            if (self.input_active or self.response_pending or any(
+                    c['state']=='pending' and c['name'] in ('await_integrator_update','delegate_to_integrator')
+                    for c in self.tools.values())):return False
+            if self.attention_notices>=self.max_attention_notices:
+                self._fail('native-dialogue-attention-bound')
+            self.attention_notices+=1;self.response_pending=True
+            notice={'kind':'internal_integrator_update_available','source_data':True,
+                    'speaker':'foreground_control','human_speech':False,
+                    'meaning':'A canonical integrating return is queued. Read it using await_integrator_update; this notice is neither its contents nor a request for new work.'}
+            self._send({'clientContent':{'turns':[{'role':'user','parts':[{'text':json.dumps(notice)}]}],
+                                         'turnComplete':True}})
+            return True
 
     def tool_result(self, call_id, result, *, will_continue=False):
         """Return one bridge-owned outcome; this method never invokes the bridge.
@@ -222,6 +252,7 @@ class NativeDialogue:
             if self.tool_responses >= self.max_tool_responses:
                 self._fail('native-dialogue-tool-response-bound')
             self.tool_responses += 1
+            self.response_pending = True
             call['state'] = 'response_unconfirmed'
             self._send({'toolResponse': {'functionResponses': [{
                 'id': call_id, 'name': call['name'],
@@ -291,6 +322,7 @@ class NativeDialogue:
                            'audio_offset': activity['audioOffset'],
                            'source': 'provider_manual_activity_ack' if self.activity_mode == 'manual' else 'provider_automatic_activity'})
         if content.get('interrupted'):
+            self.response_pending=False
             events.append({'type': 'interrupted'})
         for field, kind in (('interimInputTranscription', 'input_caption'),
                             ('inputTranscription', 'input_transcript'),
@@ -314,6 +346,7 @@ class NativeDialogue:
                 pcm = base64.b64decode(audio['data'], validate=True)
                 if not pcm or len(pcm) % 2:
                     raise ValueError('Invalid generated PCM')
+                self.response_pending=True
                 self.output_bytes += len(pcm)
                 if self.output_bytes > self.max_output_bytes:
                     self._fail('native-dialogue-output-bound')
@@ -365,6 +398,7 @@ class NativeDialogue:
         if content.get('generationComplete'):
             events.append({'type': 'generation_complete'})
         if content.get('turnComplete'):
+            self.response_pending=False
             events.append({'type': 'turn_complete'})
         if 'goAway' in value:
             # Surface the impending close; never create a replacement session

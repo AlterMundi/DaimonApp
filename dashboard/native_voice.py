@@ -66,6 +66,21 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         def launch(operation):
             task=asyncio.create_task(operation);tool_tasks.add(task)
             return task
+        async def notice_if_idle():
+            # Existing pending tools already stream returns. A new session or
+            # cancelled watch needs one event-driven, attributed control notice.
+            def available():
+                return (bridge is not None and bridge.notice_needed and acoustic is not None
+                        and acoustic.local is None and acoustic.provider is None and not acoustic.spans
+                        and not stream.input_active and not stream.response_pending)
+            if not available():return
+            await actor()
+            if await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return
+            if not available():return
+            generation=bridge.offer_generation
+            if await asyncio.to_thread(stream.notify_integrator_update):
+                bridge.noticed_generation=generation
+
         async def outputs():
             nonlocal utterance,output_text,output_bytes,output_hash
             pending=deque()
@@ -114,6 +129,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         elif kind=='closing':
                             await send(event);return
                         elif kind!='ready':await send(event)
+                    await notice_if_idle()
             finally:await queued.close()
         async def analysis():
             queued=VoiceInbox(worker.receive,batch_size=50)
@@ -179,6 +195,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     cursor=value['cursor']
                     if not value['more']:break
                 else:raise ForegroundUnavailable('Integrating returns exceed the live catch-up bound')
+                await notice_if_idle()
         try:
             async with asyncio.timeout(305):
                 raw=await asyncio.wait_for(socket.receive_text(),5)
@@ -291,6 +308,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             if (not isinstance(value,dict) or set(value)!={'type','id','played_bytes'}
                                     or value['type']!='playback'):raise ValueError('Unsupported native voice control')
                             await asyncio.to_thread(app.state.native_history.played,owner,meta['id'],value['id'],value['played_bytes'])
+                            await notice_if_idle()
         except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect):
             with suppress(Exception):await send({'type':'review','message':'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.'})
         finally:

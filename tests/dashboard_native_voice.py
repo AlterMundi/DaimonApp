@@ -29,7 +29,7 @@ class Stream:
     def __init__(self,*args,**kwargs):
         self.context=kwargs.get('context')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
-        self.tool_results=queue.Queue();self.opened.append(self)
+        self.tool_results=queue.Queue();self.notices=[];self.notice_seen=threading.Event();self.input_active=False;self.response_pending=False;self.opened.append(self)
     def receive(self):
         try:return self.queue.get(timeout=.05)
         except queue.Empty:return []
@@ -44,6 +44,9 @@ class Stream:
             {'type':'turn_complete'}])
     def close(self):self.closed=True;self.closed_event.set();self.queue.put([{'type':'closing'}])
     def tool_result(self,*args,**kwargs):self.tool_results.put(args)
+    def notify_integrator_update(self):
+        if self.input_active or self.response_pending:return False
+        self.notices.append('internal_integrator_update_available');self.notice_seen.set();return True
 
 
 class Detector:
@@ -267,6 +270,7 @@ class Mounted(unittest.TestCase):
             (self.root/'native.sqlite3').write_bytes(b'synthetic source notification')
             call,result=stream.tool_results.get(timeout=3)
             self.assertEqual(call,'work');self.assertEqual(result['text'],'Canonical integrating return.')
+            self.assertEqual(stream.notices,[],'A continued delegation needs no additional control turn')
             self.assertEqual(len(self.owner.delegations),1)
             ws.send_json({'type':'close'})
     def test_canonical_pending_questions_offer_complete_choices_without_waiting_for_sol_summary(self):
@@ -404,6 +408,37 @@ class Mounted(unittest.TestCase):
             self.assertEqual(call,'watch');self.assertEqual(result['text'],'Canonical integrating return.')
             ws.send_json({'type':'close'})
 
+    def test_new_return_without_speech_or_model_watch_gets_one_internal_notice(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'new result before human speech')
+            self.assertTrue(self.owner.return_seen.wait(2))
+            self.assertTrue(stream.notice_seen.wait(2),'A queued return must not depend on another human phrase')
+            self.assertEqual(len(stream.notices),1)
+            self.assertEqual(self.owner.inputs,{});self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
+    def test_idle_return_notice_waits_for_existing_audio_playback(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                              {'type':'output_transcript','text':'Existing speech.'},{'type':'turn_complete'}])
+            while True:
+                value=ws.receive_json()
+                if value['type']=='assistant_utterance' and value['utterance']['closed']:
+                    utterance=value['utterance'];break
+            self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'new result while output is queued')
+            self.assertTrue(self.owner.return_seen.wait(2))
+            self.assertFalse(stream.notice_seen.wait(.05),'Queued or paused speech must keep the floor')
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertTrue(stream.notice_seen.wait(2))
+            self.assertEqual(len(stream.notices),1);self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
     def test_revoked_actor_cannot_receive_generated_audio(self):
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
@@ -436,6 +471,37 @@ class Mounted(unittest.TestCase):
         app=create_app(disabled,self.owner,lambda raw,bot:int(raw))
         self.assertNotIn('/api/interaction/voice/native',[r.path for r in app.routes])
         self.assertFalse(getattr(app.state,'native_voice_enabled',False))
+
+    def test_idle_notice_does_not_interrupt_active_human_capture(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0];ws.send_bytes(b'\1\0'*1600)
+            while ws.receive_json()['type']!='capture_started':pass
+            self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'new result while human is speaking')
+            self.assertTrue(self.owner.return_seen.wait(2));self.assertFalse(stream.notice_seen.wait(.05))
+            ws.send_bytes(b'\0\0'*1600)
+            while True:
+                value=ws.receive_json()
+                if value['type']=='assistant_utterance' and value['utterance']['closed']:
+                    utterance=value['utterance'];break
+            self.assertFalse(stream.notice_seen.is_set())
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertTrue(stream.notice_seen.wait(2));self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
+    def test_notice_floor_uses_latest_serialized_audio_without_rewriting_old_gaps(self):
+        history=self.app.state.native_history;old=str(uuid.uuid4());fresh=str(uuid.uuid4())
+        history.retain(100,self.ident,self.owner.binding,old,'Interrupted earlier speech','b'*64,8)
+        history.played(100,self.ident,old,2)
+        self.assertTrue(history.pending_audio(100,self.ident))
+        history.retain(100,self.ident,self.owner.binding,fresh,'Fresh speech','c'*64,4)
+        self.assertTrue(history.pending_audio(100,self.ident))
+        history.played(100,self.ident,fresh,4)
+        self.assertFalse(history.pending_audio(100,self.ident))
+        previous=next(v for v in history.page(100)['items'] if v['id']==old)
+        self.assertEqual(previous['played_bytes'],2,'Later playback is not a contiguous hearing receipt')
+        self.assertFalse(history.pending_audio(101,self.ident))
 
     def test_only_text_or_turn_changes_notify_history_readers(self):
         history=self.app.state.native_history;ident=str(uuid.uuid4());calls=[]

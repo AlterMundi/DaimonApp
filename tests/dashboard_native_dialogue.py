@@ -43,6 +43,35 @@ class Dialogue(unittest.TestCase):
     def audio(self, **extra):
         return {'serverContent':{'modelTurn':{'parts':[{'inlineData':{
             'mimeType':'audio/pcm;rate=24000','data':base64.b64encode(b'\1\0'*160).decode()}}]},**extra}}
+    def test_internal_attention_is_bounded_control_not_a_human_audio_turn(self):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='manual',connect=lambda *a,**k:self.socket,clock=lambda:self.now)
+        self.ready()
+        self.event({'toolCall':{'functionCalls':[{'id':'watch-existing','name':'await_integrator_update','args':{}}]}})
+        self.assertFalse(self.stream.notify_integrator_update(),'An actual pending watch already owns the return')
+        self.event({'toolCallCancellation':{'ids':['watch-existing']}})
+        self.assertTrue(self.stream.notify_integrator_update())
+        control=self.socket.sent[-1]['clientContent'];notice=json.loads(control['turns'][0]['parts'][0]['text'])
+        self.assertTrue(control['turnComplete']);self.assertFalse(notice['human_speech'])
+        self.assertEqual(notice['speaker'],'foreground_control');self.assertEqual(self.stream.input_bytes,0)
+        self.assertFalse(self.stream.notify_integrator_update(),'Do not interrupt the pending provider response')
+        self.event({'serverContent':{'turnComplete':True}})
+        self.stream.activity_start();self.assertFalse(self.stream.notify_integrator_update())
+        self.stream.activity_end();self.assertFalse(self.stream.notify_integrator_update())
+        self.event({'serverContent':{'turnComplete':True}})
+        self.stream.attention_notices=self.stream.max_attention_notices
+        with self.assertRaises(DialogueUnavailable):self.stream.notify_integrator_update()
+        self.assertTrue(self.socket.closed)
+
+    def test_lost_attention_write_closes_without_retry(self):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='manual',connect=lambda *a,**k:self.socket,clock=lambda:self.now)
+        self.ready();self.socket.fail_send=True
+        with self.assertRaises(DialogueUnavailable):self.stream.notify_integrator_update()
+        self.assertEqual(self.stream.attention_notices,1);self.assertTrue(self.socket.closed)
+        with self.assertRaises(ValueError):self.stream.notify_integrator_update()
+        self.assertEqual(len(self.socket.sent),1,'Only setup was confirmed; no replayed write')
+
     def test_native_loop_continues_while_tool_pending_then_returns_once(self):
         setup=self.socket.sent[0]['setup']
         self.assertEqual(setup['generationConfig']['responseModalities'],['AUDIO'])
