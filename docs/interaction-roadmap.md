@@ -5,6 +5,28 @@ implemented. Human selection, 2026-10-26: move from the accepted single-chat bas
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
 
+## Native voice foreground — human correction,1November2026
+
+The next implementation is a native speech-to-speech conversational layer
+**above** the existing integrating Conversation. It talks with the person,
+helps formulate a useful prompt, delegates only content needing resolution to
+the existing Sol integrator, remains conversational while that work continues,
+and speaks the integrating returns. It does not directly replace or reroute the
+integrator's persistent workers. The modular ASR→Sol→Qwen TTS route remains
+available for ordinary chat and recovery; it is no longer the architecture to
+polish into the primary fluid avatar conversation.
+
+Reuse the retained15/18/26October research and existing ingress, source,
+question/result, correction and recovery boundaries. The scoped foreground
+model/voice change is now selected; this does not change the models of ordinary
+chat or existing native jobs. First engineering candidate: Gemini3.8Live with
+the existing server credential. Both ordinary and extended-thinking Live model
+metadata were read successfully; catalog availability is not a qualified session,
+Spanish/device experience or latency measurement. The
+[native foreground implementation contract](interaction-voice-foreground.md)
+records the separation, known seams, bounds and next delivery path. Historical
+modular decisions and their useful evidence remain below with their dates.
+
 ## Navigation and current selection
 
 Human priority restored, 31 October 2026: close stage2 continuous avatar voice
