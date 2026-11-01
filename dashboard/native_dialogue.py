@@ -98,6 +98,8 @@ class NativeDialogue:
                     'Do not tell a worker to omit material merely because the human asked you to speak only a selected detail. '
                     'You do not select workers or execute actions. A tool acceptance is not completion. '
                     'Do not invent work results; explain only attributed returns. '
+                    'An offered canonical question is already part of this integrating conversation: ask its actual question and relevant choices clearly, rather than merely saying a worker is waiting. '
+                    'Do not repeat a question already asked when a later summary adds no new decision. Answers still go to Sol through retained human originals; never decide or approve for the human. '
                     'An integrating return with next_offset contains only its first page. If later details are needed, '
                     'use read_integrating_source with the exact offered source ID, revision and next_offset, following further pages as needed. '
                     'Do not invent missing details, assume a partial page is complete, or read unrelated sources. '

@@ -138,6 +138,20 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # a new row ID. Re-read this session's bounded window instead
                 # of advancing permanently past an as-yet-unoffered source.
                 # The bridge deduplicates exact offered/queued revisions.
+                # The canonical For you reader already excludes unrelated
+                # direct-session questions. Offer its full current question,
+                # not just a later integrating summary saying a choice is due.
+                question_cursor=0
+                for _ in range(8):
+                    page=await bridge._owner(provider.conversation_requests,question_cursor)
+                    if page['binding']!=meta['binding']:raise ForegroundUnavailable('Integrating conversation changed')
+                    for item in page['items']:
+                        if item.get('kind')=='question' and item.get('state')=='pending' and item.get('actionable') is True:
+                            bridge.integrating_source({'id':'request:'+item['id'],'revision':item['revision'],
+                                'kind':'question','label':str(item.get('label') or 'Conversation')[:200]})
+                    if not page['more']:break
+                    question_cursor=page['cursor']
+                else:raise ForegroundUnavailable('Canonical questions exceed the live catch-up bound')
                 cursor=dict(start)
                 for _ in range(8):
                     value=await bridge._owner(provider.presentation_list,cursor['delivery'],cursor['native'],'after')
