@@ -358,6 +358,7 @@ jobs:
         env:
           ALERTS_CORE_SOURCE: .alerts-core
       - run: python -B tests/dashboard_io.py
+      - run: python -B tests/dashboard_coordination_io.py
       - run: python -B tests/dashboard_companion_io.py
       - run: python -B tests/dashboard_media_retention.py
       - run: python -B tests/dashboard_live.py

@@ -19,7 +19,9 @@ def authority(config, provider):
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False):
+    if path == '/api/interaction/coordination':
+        return method == 'GET' and scope == 'interaction_only' and coordination_access is True
     if path == '/api/interaction/foreground':
         return method=='GET' and scope in ('interaction_only','monitor_readonly')
     if path == '/api/interaction/alerts':
@@ -77,6 +79,7 @@ class Grants:
                     or not now < grant['expires'] <= now + 30 * 86400
                     or not isinstance(grant.get('csrf'), str)
                     or not re.fullmatch(r'[A-Za-z0-9_-]{43}', grant['csrf'])
+                    or type(grant.get('coordination_access', False)) is not bool
                     or not self.provider.authorized(grant['human'])):
                 return None
             grant.setdefault('presentation_profile', self.default_profile)
@@ -84,7 +87,7 @@ class Grants:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def enroll(self, label, output, seconds, *, scope='interaction_only', profile=None, artifact_access=False):
+    def enroll(self, label, output, seconds, *, scope='interaction_only', profile=None, artifact_access=False, coordination_access=False):
         profile = self.default_profile if profile is None else profile
         if profile not in ('simple','explorer'):
             raise ValueError('Unknown companion presentation profile')
@@ -94,6 +97,8 @@ class Grants:
             raise ValueError('Enabled companion route, bounded label and lifetime required')
         if type(artifact_access) is not bool or artifact_access and scope != 'interaction_only':
             raise ValueError('File access requires an interaction device')
+        if type(coordination_access) is not bool or coordination_access and scope != 'interaction_only':
+            raise ValueError('Budget access requires an interaction device')
         output = Path(output)
         if not output.is_absolute() or output.exists() or output.is_symlink():
             raise ValueError('Select a new absolute private device credential file')
@@ -112,6 +117,8 @@ class Grants:
             'expires':int(time.time()) + seconds, 'csrf':csrf}
         if artifact_access:
             grant['artifact_access'] = True
+        if coordination_access:
+            grant['coordination_access'] = True
         credential = {'schema':'telecodex.companion-device/v1',
             'origin':self.config['origin'], 'prefix':self.config.get('prefix', '/sessions'),
             'authorization':'Companion ' + token, 'csrf':csrf,
@@ -246,6 +253,22 @@ class Grants:
             write_json(path,{**grant,'artifact_access':allow})
             return {'grant_id':ident,'artifact_access':allow,'scope':grant['scope']}
 
+    def coordination(self, ident, allow):
+        """Explicit owner change to this one device's retained-budget read permission."""
+        if (self.root is None or not isinstance(ident,str) or
+                not re.fullmatch('[a-f0-9]{64}',ident) or type(allow) is not bool):
+            raise ValueError('Select one device and an explicit budget read permission')
+        with lock(self.root / 'owner-mutation.lock'):
+            self.provider.assert_binding()
+            path=self.root/(ident+'.json');grant=read_json(path)
+            if (not isinstance(grant,dict) or grant.get('schema')!='telecodex.companion-grant/v1' or grant.get('scope')!='interaction_only'
+                    or grant.get('authority')!=authority(self.config,self.provider)
+                    or grant.get('human')!=self.provider.human or type(grant.get('expires')) is not int or grant['expires']<=time.time()
+                    or not self.provider.authorized(self.provider.human)):
+                raise ValueError('Current same-human interaction grant required')
+            write_json(path,{**grant,'coordination_access':allow})
+            return {'grant_id':ident,'coordination_access':allow,'scope':grant['scope']}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -258,6 +281,7 @@ def main():
     enroll.add_argument('--scope', choices=['interaction_only','monitor_readonly'], default='interaction_only')
     enroll.add_argument('--profile', choices=['simple','explorer'])
     enroll.add_argument('--artifact-access', action='store_true')
+    enroll.add_argument('--coordination-access', action='store_true')
     revoke = commands.add_parser('revoke')
     revoke.add_argument('grant_id')
     renew = commands.add_parser('renew')
@@ -271,6 +295,11 @@ def main():
     decision=files.add_mutually_exclusive_group(required=True)
     decision.add_argument('--allow',dest='allow',action='store_true')
     decision.add_argument('--deny',dest='allow',action='store_false')
+    budgets=commands.add_parser('coordination')
+    budgets.add_argument('grant_id')
+    budget_decision=budgets.add_mutually_exclusive_group(required=True)
+    budget_decision.add_argument('--allow',dest='allow',action='store_true')
+    budget_decision.add_argument('--deny',dest='allow',action='store_false')
     args = parser.parse_args()
     from .provider import Provider
     provider = None
@@ -279,7 +308,9 @@ def main():
         provider = Provider(config)
         grants = Grants(config, provider)
         if args.command == 'enroll':
-            result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access)
+            result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access,coordination_access=args.coordination_access)
+        elif args.command == 'coordination':
+            result = grants.coordination(args.grant_id, args.allow)
         elif args.command == 'renew':
             result = grants.renew(args.grant_id, args.seconds)
         elif args.command == 'reauthorize':

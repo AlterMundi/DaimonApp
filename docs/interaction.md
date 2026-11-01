@@ -80,6 +80,70 @@ proves admission; a worker's coverage declaration identifies what it reports
 addressing; behavior checks establish whether the requested change actually
 occurred. Finishing a physical turn does not complete all application requests.
 
+## Explicit coordination budget observation
+
+Matrix #312 owns finite coordination roots and their conserved call/charge
+allowances. The continuing Interaction integrator remains the conversation owner;
+I/O is an ingress/egress adapter, never a second reasoning session. This view
+adds no peer attention, executor, inference route or default spending allowance.
+
+When configured and granted, **Under the hood → Coordination budgets** reads the
+existing authoritative Matrix journal on opening or explicit Refresh. There is
+no polling, browser balance cache or second accounting database. Each card shows
+the exact approved objective, participants, expiry, queued/admitted work, and
+Tribe/being/episode available calls, spending, reservations and uncertainty.
+Per-route constraints remain diagnostic: one exhausted instruction does not imply
+that every route is exhausted. A retained allowance notice is historical; current
+balances may change when uncertain usage is reconciled. Refresh replaces the card
+rather than accumulating another notification.
+
+The owner selects at most eight existing roots in optional receiving configuration:
+
+```toml
+[coordination]
+enabled = true
+# Existing isolated Matrix operator prefix, with the owner's journal/trust options.
+command = ["/absolute/path/to/matrix-operator", "--existing-owner-options"]
+store_id = "00000000-0000-0000-0000-000000000001"
+principal = "selected-existing-principal"
+
+[[coordination.episodes]]
+account_id = "selected-existing-episode"
+instruction_file = "/absolute/private/existing-approved-instruction.json"
+task = "Exact task text whose SHA256 is in that approved instruction"
+```
+
+These are placeholders, not activation defaults. The command must support Matrix
+`episode-report -- ACCOUNT_ID` (PR431); it must address the single authoritative
+accounting domain, not an independent per-host balance. The app pins the exact
+instruction, checks its store/principal/task hash and report membership, and
+rechecks the binding before returning. Journal schema3 stays readable without a
+notice; the owning operator may explicitly enable reporting schema4, which adds
+one stable notice slot per existing episode and preserves signed originals.
+The app never migrates a journal, sets limits, reconciles usage or starts work.
+
+The authenticated GET `/api/interaction/coordination` accepts no account, command,
+path or trust selection from the browser. Existing full-owner access can read;
+shared-login and Companion conversation grants require explicit
+`coordination_access = true`, default false. The existing shared-auth identity
+checks remain in force. An owner can change an existing device grant with
+`python -m dashboard.companion --config CONFIG coordination GRANT_ID --allow`
+(or `--deny`), without re-enrollment or changing its credential. Read-only routing
+monitors cannot access this endpoint. Authorization is checked again after the
+read. No provider credentials belong in this configuration or browser response.
+
+Reads are single-flight, with at most two child processes, five seconds and2MiB
+per selected root; cancellation/timeout closes the owned process group. No shell
+or background task is installed. Unavailable/mismatched reports return a bounded
+503 without partial private data. Ship the whole dashboard Python package,
+including `coordination.py`, with the matching frontend; use the existing scoped
+receiving adoption and preserve concurrently selected voice/native software.
+
+This is budget visibility only. Human pause controls, integrating writer/return
+adoption, actual exclusive inference-route enforcement and real participant use
+remain distinct #312 delivery requirements. A UI fixture, merge or installed
+reader alone does not prove those effects or authorize autonomous activation.
+
 ## Configuration and explicit selection
 
 ```toml
