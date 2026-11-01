@@ -17,7 +17,7 @@ if a.op=='dispatch' and marker.exists():
 db=sqlite3.connect(pathlib.Path(a.state)/'operator.sqlite',timeout=5);db.row_factory=sqlite3.Row;db.execute('BEGIN IMMEDIATE')
 root_binding=json.loads(db.execute("SELECT doc FROM binding").fetchone()[0])
 selected=v.get('table_id')
-if a.op in ('inspect','dispatch'):
+if a.op in ('inspect','dispatch','review-admission'):
  selected=json.loads(db.execute('SELECT doc FROM requests WHERE id=?',(v['request_id'],)).fetchone()[0])['request']['table_id']
 b=root_binding.get('extra',{}).get(selected,root_binding)
 def read(id):
@@ -45,6 +45,15 @@ elif a.op in ('inspect','dispatch'):
    out['dispatch']=True;out['dispatch_id']='dispatch-'+v['request_id'];db.execute("UPDATE requests SET status='handed_off',dispatch=? WHERE id=?",(out['dispatch_id'],v['request_id']))
   else:out={'dispatch':False,'request_id':v['request_id'],'status':out['request']['status']}
  else:out['dispatch']=False
+elif a.op=='review-admission':
+ out=read(v['request_id']);assert out['target']['listener_id']==v['listener_id'] and out['dispatch_id']==v['dispatch_id']
+ c=out['request']['contribution']
+ assert c['review_context']['adapter']=='interactive_3d'
+ if out['dispatch_id'] and (pathlib.Path(a.state)/'deny-at-submission').exists():
+  count=pathlib.Path(a.state)/'admission-count';n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
+  if n>=2:raise ValueError('model revoked after dispatch, before submission')
+ out={'schema':'nexus.review-admission/v1','allowed':True,'request_id':v['request_id'],'dispatch_id':v['dispatch_id'],
+      'artifact_anchor':c['artifact_anchor'],'review_context':c['review_context'],'review_actor_ref':c['review_actor_ref']}
 elif a.op=='receipt':
  out=read(v['request_id']);assert out['dispatch_id']==v['dispatch_id'] and out['target']['native_thread_id']==v['native_thread_id']
  old=out['request'];status=v['status'];native=v.get('native_turn_id');reply=v.get('reply')
@@ -215,6 +224,41 @@ def visual_context(binary):
         return result
     finally:
         j.close()
+
+
+
+def static_context(binary):
+    j=Nexus(binary)
+    try:
+        j.prepare();j.start();j.connect();j.idle()
+        source=dict(resource='a'*32,publicationVersion='b'*64,id='model',version='c'*64)
+        anchor=dict(kind='artifact_review',review_id='review',review_revision='v1',session_id='room',clock_source_id=None,source_time_ms=None)
+        context=dict(schema_version=1,adapter='interactive_3d',adapter_version=1,capture_version=1,
+            capture_status='acknowledged',review_id='review',review_revision='v1',session_id='room',clock_source_id=None,source_time_ms=None,
+            source=source,snapshot=dict(schema='dm.review-3d-state/v1',model=source,camera=dict(azimuth=1,elevation=.4,zoom=2),
+                visiblePartIds=['part'],selectedPartIds=['part']),
+            acknowledgment=dict(schema='dm.review-capture-ack/v1',model=source,renderStateConfirmed=True,decodedFrameTimeMs=None))
+        def enqueue(id):
+            with sqlite3.connect(j.state/'operator.sqlite') as db:
+                binding=json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
+                request=dict(request_id=id,table_id='table',author_ref='human:test',binding_id=binding['binding_id'],
+                    binding_revision=binding['revision'],responder_ref=binding['responder_ref'],response_mode='artifact_reflection',
+                    contribution=dict(text='Observe this selected part',anchors=[],artifact_anchor=anchor,review_context=context,review_actor_ref='human:verified'),
+                    artifact_context=dict(adapter='interactive_3d',review_id='review',revision='v1',source=source),return_context=None)
+                db.execute("INSERT INTO requests VALUES(?,?,'queued',NULL,NULL,NULL)",(id,json.dumps(dict(target=binding['target'],request=request))))
+        starts=j.native_turns
+        enqueue('static');j.wait(lambda:j.state_of('static')[0]=='completed');j.idle()
+        assert j.native_turns==starts+1
+        submitted=[x for x in j.rpc if x.get('method')=='turn/start'][-1]['params']['input'][0]['text']
+        assert 'not proof you have visually inspected' in submitted and '"source_time_ms":null' in submitted
+        assert 'Observe this selected part' in submitted and 'separate explicit human approval' in submitted
+        (j.state/'deny-at-submission').write_text('controlled revocation')
+        enqueue('revoked');j.wait(lambda:j.state_of('revoked')[0]=='rejected');j.idle()
+        assert j.native_turns==starts+1
+        assert int((j.state/'admission-count').read_text())>=2
+        return dict(profile='synthetic identity/model/operator; actual native process pipes',
+            static_context_delivered=True,source_clock=None,revoked_after_dispatch_rejected=True,new_native_turns=1)
+    finally:j.close()
 
 
 def table_launches(binary):
@@ -477,6 +521,6 @@ def writer_hold_other_target(binary):
 
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
-    scenarios=(delivered,visual_context,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
+    scenarios=(delivered,visual_context,static_context,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
     for run in scenarios:
         if len(sys.argv)==2 or run.__name__ in sys.argv[2:]:run(binary)

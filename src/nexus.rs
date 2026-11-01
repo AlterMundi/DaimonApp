@@ -106,6 +106,7 @@ impl NexusConfig {
         if !matches!(
             operation,
             "capabilities"
+                | "review-admission"
                 | "binding"
                 | "configure"
                 | "pending"
