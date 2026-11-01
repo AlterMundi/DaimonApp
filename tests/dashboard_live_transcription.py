@@ -338,7 +338,7 @@ class LiveTranscription(unittest.TestCase):
             calls.append(time.monotonic());time.sleep(.03)
             return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
                     'actor':{'ref':'human:telegram:100','kind':'human','name':'Synthetic'}}
-        with patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.live_transcription.Detector',warm):
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.live_transcription.Detector',warm):
             self.csrf=self.client.get('/api/interaction/access').json()['csrf']
             with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/activity',headers={'origin':home}) as ws:
                 ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
@@ -358,6 +358,12 @@ class LiveTranscription(unittest.TestCase):
                 self.assertLess(len(calls)-before,30)
                 self.assertGreaterEqual(len(calls)-before,4)
                 ws.send_json({'type':'close'})
+        lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
+        value=json.loads(lines[0].split('voice_activity_closed ',1)[1])
+        self.assertEqual(value['received_pcm_bytes'],64000);self.assertEqual(value['analyzed_pcm_bytes'],64000)
+        self.assertEqual(value['delivered_pcm_bytes'],64000)
+        for stage in ('input_authorization','output_authorization'):
+            self.assertGreaterEqual(value['timing'][stage]['max_ms'],20,stage)
         self.assertTrue(warm.opened[0].closed)
         self.assertEqual(Stream.opened,[]);self.assertEqual(self.provider.calls,[])
 
@@ -380,6 +386,49 @@ class LiveTranscription(unittest.TestCase):
                     self.assertEqual(ws.receive_json()['type'],'unavailable')
             finally:release.set()
         self.assertEqual(warm.opened[0].pcm,b'');self.assertTrue(warm.opened[0].closed)
+        self.assertEqual(self.provider.calls,[])
+
+    def test_foreground_summary_separates_received_fed_analyzed_and_sent_without_payloads(self):
+        warm=self.analysis();receive=warm.receive
+        async def annotated(worker):
+            value=await receive(worker)
+            return {**value,'text':'PRIVATE_PROVIDER_TRANSCRIPT','authorization':'PRIVATE_PROVIDER_CREDENTIAL'}
+        warm.receive=annotated
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.live_transcription.Detector',warm):
+            with self.open_activity() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                for _ in range(3):
+                    ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'turn_activity')
+                ws.send_json({'type':'close'})
+        lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
+        self.assertLess(len(lines[0]),2048)
+        value=json.loads(lines[0].split('voice_activity_closed ',1)[1])
+        self.assertEqual(value['session_id'],self.ident);self.assertEqual(value['outcome'],'client_close')
+        for key in ('received_pcm_bytes','fed_pcm_bytes','analyzed_pcm_bytes','delivered_pcm_bytes'):
+            self.assertEqual(value[key],9600,key)
+        self.assertEqual(value['input_messages'],4);self.assertEqual(value['worker_events'],3)
+        self.assertGreaterEqual(value['input_peak_bytes'],3200);self.assertGreaterEqual(value['output_peak_messages'],1)
+        self.assertEqual(value['onsets_observed'],3);self.assertEqual(value['endpoints_observed'],0)
+        self.assertEqual(value['timing']['worker_feed']['count'],3)
+        self.assertEqual(value['timing']['output_send']['count'],3)
+        self.assertEqual(value['timing']['input_authorization']['count'],4)
+        self.assertEqual(value['timing']['output_authorization']['count'],3)
+        self.assertNotIn('PRIVATE_',lines[0]);self.assertNotIn(self.csrf,lines[0])
+        self.assertEqual(self.provider.calls,[])
+
+    def test_foreground_summary_records_revoked_authorization_without_exception_details(self):
+        warm=self.analysis()
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.live_transcription.Detector',warm):
+            with self.open_activity() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                self.provider.allowed=False
+                ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'unavailable')
+        lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
+        value=json.loads(lines[0].split('voice_activity_closed ',1)[1])
+        self.assertEqual(value['outcome'],'unavailable');self.assertEqual(value['error_type'],'HTTPException')
+        self.assertEqual(value['failure_stage'],'input_authorization')
+        self.assertEqual(value['received_pcm_bytes'],3200);self.assertEqual(value['fed_pcm_bytes'],0)
+        self.assertEqual(value['analyzed_pcm_bytes'],0);self.assertEqual(value['delivered_pcm_bytes'],0)
         self.assertEqual(self.provider.calls,[])
 
     def test_foreground_analysis_stays_warm_between_utterance_boundaries(self):

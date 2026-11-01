@@ -681,3 +681,26 @@ upload still requires the existing review/status path. Restoring a recording
 never invents the endpoint's automatic Send intent. The next utterance remains
 ordered behind the original's existing durable confirmation. A saved/preparing
 receipt proves server retention, not completed ASR, native delivery or hearing.
+
+
+### Server activity-stage diagnostic
+
+At the end of each admitted foreground analysis session, the existing web-unit
+journal receives one `voice_activity_closed` INFO summary. It keeps only session
+UUID, outcome/error class, elapsed time, scalar byte/event counts, queue high-water
+marks and count/total/max milliseconds for worker startup, input/output batch
+authorization, periodic binding checks, worker writes and output sends. No
+transcript, PCM, provider payload, headers, identity responses, credential or
+exception detail is logged. No new file, timer, request, inference or admission
+behavior is introduced; existing bounded service-journal retention applies.
+
+`received_pcm_bytes` counts valid frames accepted into the bounded intake, not
+all network bytes or rejected overflow. `fed_pcm_bytes` counts completed worker
+writes. `analyzed_pcm_bytes` is the latest bounded worker offset collected before
+output authorization; `delivered_pcm_bytes` is the latest offset sent onto the
+WebSocket, not a client acknowledgment or hearing receipt. Independent queue
+high-water marks and authorization durations distinguish intake pressure, slow
+worker consumption and delayed output checks without inferring absent speech
+from a missing onset. A normal close/disconnect, timeout or authorization refusal
+is retained separately. These observations locate a delayed stage; they do not
+by themselves establish the cause of a particular phone failure.
