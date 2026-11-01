@@ -3,6 +3,46 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Actual worker and conversational concurrency —1November2026
+
+One distinct mounted journey on qualified source70857ee7 uses real CPU
+endpointing, Gemini3.8 speech, the selected Sol6.1/openai/medium integrator and
+one **actual Sol worker**, with synthetic actor/audio/task data. It starts one
+worker request to enumerate the first100primes and calculate their sum, then
+asks seven-times-eight conversationally while that worker runs. No simulated
+worker answer, production input, hardware capture or previous request replay.
+
+Four automatically retained originals preserve prepared text/audio/hash
+correlations. The first two reach the actual worker in one attributed
+formulation; the two casual originals stay foreground-only. Actual native reads
+show two completed integrator physical turns with one human input, and one
+completed worker turn. Both test threads are archived/notLoaded. The actual
+worker's100prime list and24133sum match an independent arithmetic check; its
+complete report is preserved in the sole canonical worker result. Sol returns
+only the requested spoken sum, through the same continued foreground watch.
+
+The closed generated casual utterance, “Cincuenta y seis,” precedes actual worker
+completion by7848.68ms. Worker execution lasts17101.17ms. Its completion precedes
+the canonical result offer by7013.21ms; the foreground generates the correct
+Spanish24133response. Those are one journey's event intervals, not first
+intelligible/physically heard sound latency or provider-cause attribution.
+Generated PCM totals92162bytes for the casual answer and263042for the sum;
+there is no browser/player acknowledgment or hearing observation in this trial.
+
+There are **two dispatch attempts, one admitted instruction and one worker
+result**. Sol first selects an earlier foreground-only source ID, which is
+ineligible as the routing root. The existing controller rejects it; Sol reads
+retained inputs/target inputs and selects the accepted formulation root. No
+worker task is replayed or duplicated. Keep that observation separate from
+successful actual worker incorporation and conversational concurrency.
+
+Retained exact native/worker reads and bounded verification distinguish this
+from the earlier synthetic-worker evidence. One provider connection, two
+preselected native test threads and bounded isolated fixture data; no receiving
+change or new APK. Full phone/avatar hearing, useful latency, echo/noise/music
+recovery, interruption/correction in one real journey and complete roadmap
+acceptance remain open. Do not rerun completed models to repair observations.
+
 ## Native timing observation —1November2026
 
 Read-only derivation from the retained canonical-question journey measures
