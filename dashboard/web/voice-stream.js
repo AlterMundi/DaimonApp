@@ -131,7 +131,7 @@ window.StreamingVoice=(()=>{
       socket=new WebSocket(target);
     }catch(error){if(!shared)capture.close();throw error;}
     let origin=0,collecting=!shared;
-    let ready=false,parts=[],sent=0,bytes=0,ending=false,discarded=false,done=false,timer,finishSent=false,disposed=false,flushed=false;
+    let ready=false,parts=[],flushedBlob,sent=0,bytes=0,ending=false,discarded=false,done=false,timer,finishSent=false,disposed=false,flushed=false;
     let lastEnergy=0,totalSamplesBytes=0,lastEndpoint=0,detectorFailed=false,recognized=false,verdict;
     const events=new EventTarget(),recorder={state:'inactive',mimeType:canonicalRecorder?.mimeType||'audio/wav',addEventListener:(...args)=>events.addEventListener(...args)};
     function event(type,data){const e=new Event(type);if(data!==undefined)Object.defineProperty(e,'data',{value:data});events.dispatchEvent(e);}
@@ -139,7 +139,7 @@ window.StreamingVoice=(()=>{
     function complete(){
       if(done)return;done=true;
       if(!discarded && !canonicalRecorder && !flushed)recorder.captureStop ||= 'audio_flush_unconfirmed';
-      const blob=discarded||canonicalRecorder||!parts.length?undefined:wav(parts);parts=[];dispose();recorder.state='inactive';
+      const blob=discarded||canonicalRecorder||!parts.length?undefined:flushedBlob||wav(parts);parts=[];dispose();recorder.state='inactive';
       if(blob)event('dataavailable',blob);event('stop');
     }
     if(canonicalRecorder){
@@ -231,13 +231,16 @@ window.StreamingVoice=(()=>{
       }
       if(message.data.finished){
         if(canonicalRecorder)return;
-        flushed=true;clearTimeout(timer);ending=true;pump();
+        flushed=true;clearTimeout(timer);ending=true;
+        // The exact immutable WAV is already complete. Its local durability
+        // must not wait for provider confirmation or the final stop event.
+        if(shared){flushedBlob=parts.length?wav(parts):undefined;onFlushed(data.totalBytes,flushedBlob);}
+        pump();
         // Keep the complete local WAV as ordinary file-ASR fallback. Never
         // create an original instruction on this preparation socket.
         // Actual Gemini confirmation can approach five seconds. Keep the exact
         // flushed original for a bounded ten-second wait before review.
         timer=setTimeout(complete,10000);
-        if(shared)onFlushed(data.totalBytes);
         if(socket.readyState===WebSocket.CLOSED)complete();
       }
     });}catch(error){dispose();throw error;}

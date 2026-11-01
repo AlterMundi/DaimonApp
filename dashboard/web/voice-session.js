@@ -65,20 +65,45 @@ window.ContinuousConversation=(()=>{
       }
       consider();
     }
+    function originalFor(slot){
+      const r=slot.recorder;
+      return {id:slot.id,binding,capture_started:slot.started,blob:slot.blob,mime:'audio/wav',preparedText:r?.preparedText,
+        captureStop:r?.captureStop,captureQuestions:slot.questions,playback:slot.playback};
+    }
+    async function retainOriginal(slot,original){
+      slot.retaining=true;
+      try{
+        const value=await retain(original);
+        if(value?.id!==original.id||value?.binding!==original.binding||!value?.blob||!/^([a-f0-9]{64})$/.test(value.audio_sha256))throw Error('Original retention changed identity');
+        slot.original=value;return value;
+      }finally{slot.retaining=false;}
+    }
+    function retainFlushed(slot,blob){
+      if(!blob?.size||slot.retention)return;
+      slot.blob=blob;const original=originalFor(slot);
+      slot.retention=retainOriginal(slot,original).then(()=>{if(stopping)review();}).catch(()=>{
+        slot.retentionFailed=true;slot.original=original;slot.review=true;blockedAt=Math.min(blockedAt,slot.order);
+        hold('Local recovery unavailable. Keep this page open and save your recordings.');review();
+      });
+    }
     async function finalized(slot){
       if(stopping&&current===slot){current=undefined;closeGraph();}
       if(!slot.blob){slots.delete(slot.id);if(!stopping)hold('No recording was confirmed. Nothing was sent.');return;}
       const r=slot.recorder;onTiming(slot.id,'ready');
       if(r.preparationTiming)onTiming(slot.id,'prepared',r.preparationTiming);
-      const original={id:slot.id,binding,capture_started:slot.started,blob:slot.blob,mime:'audio/wav',preparedText:r.preparedText,
-        captureStop:r.captureStop,captureQuestions:slot.questions,playback:slot.playback};
-      slot.original=original;
+      const original=originalFor(slot);
       // A failed stream or a view exit does not grant automatic file-ASR/input.
       const automatic=slot.send&&!slot.review&&!original.captureStop&&!!original.preparedText;
-      slot.retaining=true;
-      try{slot.original=await retain(original);if(slot.original?.id!==original.id||slot.original?.binding!==original.binding||!slot.original?.blob||!/^([a-f0-9]{64})$/.test(slot.original.audio_sha256))throw Error('Original retention changed identity');}
-      catch{slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Local recovery unavailable. Keep this page open and save your recordings.');review();return;}
-      finally{slot.retaining=false;}
+      try{
+        if(slot.retention){
+          await slot.retention;
+          if(slot.retentionFailed || slot.original?.blob!==original.blob)throw Error('Flushed original changed');
+          // The durable WAV and frozen context are unchanged. Prepared text is
+          // advisory; its exact server receipt remains the admission authority.
+          if(slot.original.captureStop!==original.captureStop)await retainOriginal(slot,original);
+          else slot.original={...slot.original,preparedText:original.preparedText};
+        }else{slot.original=original;await retainOriginal(slot,original);}
+      }catch{slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Local recovery unavailable. Keep this page open and save your recordings.');review();return;}
       if(!automatic){slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Your recording needs review. Nothing was resent.');review();return;}
       slot.retained=true;slot.automatic=true;void drain();
     }
@@ -109,8 +134,8 @@ window.ContinuousConversation=(()=>{
         const recorder=await window.StreamingVoice.create(undefined,{headers,binding,id:slot.id,captureSource:source,
           initialPCM:end=>prefix(start,end),
           onPartial:text=>{if(current===slot&&active){slot.words=!!text.trim();if(slot.words)onTiming(slot.id,'partial');onCaption(text);consider();}},
-          onFlushed:end=>{
-            slot.end=end;if(current===slot)current=undefined;
+          onFlushed:(end,blob)=>{
+            slot.end=end;retainFlushed(slot,blob);if(current===slot)current=undefined;
             if(stopping)closeGraph();else void arm(end,owned);
           }});
         slot.recorder=recorder;
