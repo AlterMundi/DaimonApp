@@ -93,8 +93,13 @@ function boot(){
  renewed.session.hold();renewed.recorders[0].complete();await tick();assert.equal(renewed.commits.length,0);
  const expired=boot();await expired.session.start();expired.sources[0].emit(3200);expired.activity(1,true,false);expired.activity(1,false,true);
  for(let n=0;n<9;n++)expired.sources[0].emit(32000,0);expired.recorders[0].partial('La confirmación llegó demasiado tarde');
- assert.equal(expired.session.active,false,'An endpoint outside the retained PCM window visibly stops for review');
- expired.recorders[0].complete('Frase conservada');await tick();assert.equal(expired.commits.length,0);assert(expired.reviews.length);
+ assert.equal(expired.session.active,true,'An old endpoint is safe when the original still owns all later quiet PCM');
+ expired.sources[0].emit(32,2);
+ await until(()=>expired.recorders.length===2&&expired.recorders[1].state==='recording');
+ assert.equal(expired.recorders[1].parts.reduce((n,p)=>n+p.byteLength,0),32,'The next original begins at the actual flush boundary, not the stale acoustic endpoint');
+ expired.recorders[0].complete('Frase conservada');await until(()=>expired.commits.length===1);
+ assert.equal(expired.retained[0].blob.size,291200,'All PCM through the delayed caption remains in its one exact original');
+ assert.equal(expired.reviews.length,0);expired.session.hold();expired.recorders[1].complete();await tick();
  const f=boot();assert(await f.session.start());assert(f.session.active);assert.equal(f.medias.length,1);assert.equal(f.analyses.length,1);
  f.sources[0].emit(3200);f.recorders[0].partial('Una frase');assert.equal(f.interrupts(),0,'Captions cannot interrupt or admit work');
  f.activity(1,true,false);assert(f.session.floor);assert.equal(f.interrupts(),1);assert.equal(f.commits.length,0);
