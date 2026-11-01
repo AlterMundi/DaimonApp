@@ -122,11 +122,39 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         result=await self.bridge.tool({'type':'delegation_proposed','call_id':'old',
                                       'original_ids':[first],'formulation':'Derivative'})
         self.assertEqual(result['kind'],'not_ready');self.assertEqual(self.owner.delegations,[])
-        result=await self.bridge.tool({'type':'delegation_proposed','call_id':'new',
-                                      'original_ids':[first,last],'formulation':'Derivative'})
-        self.assertEqual(result['kind'],'integrator_admission')
+        task=asyncio.create_task(self.bridge.tool({'type':'delegation_proposed','call_id':'new',
+                                      'original_ids':[first,last],'formulation':'Derivative'}))
+        await self.results(3)
+        self.assertEqual(self.stream.results[-1][1]['kind'],'integrator_admission')
         self.assertEqual(self.owner.delegations[0]['id'],last)
         self.assertEqual(self.owner.inputs[last]['text'],'Correction')
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+    async def test_admission_itself_streams_question_and_answer_return_without_a_model_watch(self):
+        ident,_,_=await self.captured()
+        task=asyncio.create_task(self.bridge.tool({'type':'delegation_proposed','call_id':'work',
+            'original_ids':[ident],'formulation':'Please prepare the proposal.'}))
+        await self.results(1)
+        self.assertTrue(self.stream.continuations[0]);self.assertFalse(task.done())
+        source=self.source();source['kind']='question'
+        self.owner.parts[source['id']]={'id':source['id'],'revision':source['revision'],
+            'entry_binding':[1,2],'kind':'native_question','text':'Which ordering?','current':True}
+        self.assertTrue(self.bridge.integrating_source(source));await self.results(2)
+        self.assertEqual(self.stream.results[-1][0],'work')
+        self.assertEqual(self.stream.results[-1][1]['text'],'Which ordering?')
+        answer,_,_=await self.captured('Preparation time')
+        admitted=await self.bridge.tool({'type':'delegation_proposed','call_id':'answer',
+            'original_ids':[answer],'formulation':'The human selected preparation time.'})
+        self.assertEqual(admitted['kind'],'integrator_admission')
+        self.assertEqual(len(self.owner.delegations),2)
+        final={'id':'native:124','revision':'c'*64,'kind':'result'}
+        self.owner.parts[final['id']]={'id':final['id'],'revision':final['revision'],
+            'entry_binding':[1,2],'kind':'integrator_answer','text':'Preference incorporated.','current':True}
+        self.bridge.integrating_source(final);await self.results(4)
+        self.assertEqual(self.stream.results[-1][0],'work')
+        self.assertEqual(self.stream.continuations,[True,True,False,True])
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
     async def test_lost_admission_is_not_retried(self):
         ident,_,_=await self.captured();self.owner.fail=True
         result=await self.bridge.tool({'type':'delegation_proposed','call_id':'work',

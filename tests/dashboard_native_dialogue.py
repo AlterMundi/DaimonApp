@@ -96,6 +96,14 @@ class Dialogue(unittest.TestCase):
             self.stream.tool_result(name,{'kind':'source_data'})
             response=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
             self.assertEqual(response['name'],name)
+    def test_admitted_delegation_can_stream_its_return_on_the_same_tool_call(self):
+        self.ready();self.event(self.proposal())
+        for result in ({'kind':'integrator_admission'},{'kind':'integrating_source','text':'A real returned question'}):
+            self.stream.tool_result('call-1',result,will_continue=True)
+            reply=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
+            self.assertEqual(reply['name'],'delegate_to_integrator');self.assertTrue(reply['willContinue'])
+            self.assertEqual(self.stream.tools['call-1']['state'],'pending')
+        self.assertEqual(self.event(self.audio())[0]['type'],'audio')
     def test_source_cursor_rejects_boolean_and_out_of_range(self):
         self.ready()
         with self.assertRaises(DialogueUnavailable):

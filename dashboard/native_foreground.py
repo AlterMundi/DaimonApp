@@ -228,50 +228,14 @@ class ForegroundBridge:
                 result={'kind':'integrator_admission','id':accepted['id'],'phase':accepted['phase'],
                         'native_acceptance':accepted['native_acceptance'],
                         'completion':'Not established by admission. Use real integrating returns.'}
+                if not self._watching:
+                    # The admitted nonblocking call itself carries returns; no
+                    # extra model-selected subscription is required.
+                    await self._watch(ident,result)
+                    return
             elif event['type']=='integrator_watch':
-                if self._watching:raise ForegroundUnavailable('An integrating watch is already pending')
-                self._watching=True
-                source=None
-                try:
-                    while True:
-                        source=await self._returns.get()
-                        if source is None:
-                            raise ForegroundUnavailable('Foreground conversation ended')
-                        self._queued.discard((source['id'],source['revision']))
-                        # Re-read the exact canonical revision at offer time. The
-                        # queue stores only references, never an authoritative copy.
-                        result=await self._owner(self.provider.presentation_part,
-                                                source['id'],source['revision'],0)
-                        if (result.get('id')!=source['id']
-                                or result.get('revision')!=source['revision']
-                                or result.get('entry_binding') is None
-                                or result.get('current') is False
-                                or result.get('correction_pending') is True
-                                or result.get('native_binding_current') is False
-                                or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
-                                or result.get('kind')=='integrator_progress' and not result.get('native_returns')
-                                or not isinstance(result.get('text'),str) or not result['text'].strip()):
-                            # Currentness can change between invalidation and
-                            # this exact read. Keep the subscription alive; a
-                            # later owner invalidation may offer it afresh.
-                            source=None
-                            continue
-                        result={'kind':'integrating_source','source':source,
-                                'text':result['text'],'text_bounded':result.get('next_offset') is not None,
-                                'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
-                        self._offered.add((source['id'],source['revision']))
-                        await asyncio.to_thread(self.stream.tool_result,ident,result,will_continue=True)
-                        source=None
-                except asyncio.CancelledError:
-                    # Cancelling an unoffered read can return its canonical
-                    # reference to the next watch. An attempted provider response
-                    # stays terminal/uncertain and is never offered twice.
-                    if source is not None and not self.closed:
-                        key=(source['id'],source['revision'])
-                        if key not in self._offered and key not in self._queued and not self._returns.full():
-                            self._returns.put_nowait(source);self._queued.add(key)
-                    raise
-                finally:self._watching=False
+                await self._watch(ident)
+                return
             else:raise ForegroundUnavailable('Unsupported foreground tool')
         except ForegroundUnavailable as error:
             result={'kind':'not_ready','reason':str(error),'meaning':'No new work was confirmed. Resolve the stated source condition before proposing a different intent.'}
@@ -280,6 +244,53 @@ class ForegroundBridge:
         if not self.closed:
             await asyncio.to_thread(self.stream.tool_result,ident,result)
         return result
+
+    async def _watch(self,ident,initial=None):
+        if self._watching:raise ForegroundUnavailable('An integrating watch is already pending')
+        self._watching=True
+        source=None
+        try:
+            if initial is not None:
+                await asyncio.to_thread(self.stream.tool_result,ident,initial,will_continue=True)
+            while True:
+                source=await self._returns.get()
+                if source is None:
+                    raise ForegroundUnavailable('Foreground conversation ended')
+                self._queued.discard((source['id'],source['revision']))
+                # Re-read the exact canonical revision at offer time. The
+                # queue stores only references, never an authoritative copy.
+                result=await self._owner(self.provider.presentation_part,
+                                        source['id'],source['revision'],0)
+                if (result.get('id')!=source['id']
+                        or result.get('revision')!=source['revision']
+                        or result.get('entry_binding') is None
+                        or result.get('current') is False
+                        or result.get('correction_pending') is True
+                        or result.get('native_binding_current') is False
+                        or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
+                        or result.get('kind')=='integrator_progress' and not result.get('native_returns')
+                        or not isinstance(result.get('text'),str) or not result['text'].strip()):
+                    # Currentness can change between invalidation and
+                    # this exact read. Keep the subscription alive; a
+                    # later owner invalidation may offer it afresh.
+                    source=None
+                    continue
+                result={'kind':'integrating_source','source':source,
+                        'text':result['text'],'text_bounded':result.get('next_offset') is not None,
+                        'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
+                self._offered.add((source['id'],source['revision']))
+                await asyncio.to_thread(self.stream.tool_result,ident,result,will_continue=True)
+                source=None
+        except asyncio.CancelledError:
+            # Cancelling an unoffered read can return its canonical
+            # reference to the next watch. An attempted provider response
+            # stays terminal/uncertain and is never offered twice.
+            if source is not None and not self.closed:
+                key=(source['id'],source['revision'])
+                if key not in self._offered and key not in self._queued and not self._returns.full():
+                    self._returns.put_nowait(source);self._queued.add(key)
+            raise
+        finally:self._watching=False
 
     def integrating_source(self,source):
         """Existing authenticated canonical event reader supplies references only."""
