@@ -21,10 +21,14 @@ struct Submit {
 }
 
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
-    json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
+    let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
         "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
-        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.phase=="accepted" {"observed"}else{"unconfirmed"},
-        "incorporation":"Not established by input retention or native acceptance"})
+        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.phase=="foreground" {"not_requested"}else if input.phase=="accepted" {"observed"}else{"unconfirmed"},
+        "incorporation":"Not established by input retention or native acceptance"});
+    if let Some(dialogue) = &input.foreground_dialogue {
+        value["foreground_dialogue"] = json!(dialogue);
+    }
+    value
 }
 
 fn response(app: &App, input: &ConversationInput, fresh: bool) -> Result<Value> {
@@ -123,6 +127,31 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         .context("Missing integrating entry")?;
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
+    }
+    if let Some(body) = args.strip_prefix("foreground retain ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Retain {
+            binding: String,
+            id: String,
+            text: String,
+            dialogue_id: String,
+            #[serde(default)]
+            capture_questions: Option<std::collections::BTreeMap<String, String>>,
+        }
+        let selected: Retain = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let (input, fresh) = app.shared.store.conversation_foreground_capture(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.text,
+            &selected.dialogue_id,
+            selected.capture_questions,
+        )?;
+        // Retention never calls deliver/submit, selects a worker or answers work.
+        return response(app, &input, fresh);
     }
     if args == "voice capabilities" {
         let mut result = app

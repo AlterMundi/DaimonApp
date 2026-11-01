@@ -68,6 +68,43 @@ class Inputs(Goals):
         return True
 
 
+
+def foreground_retention(binary):
+    journey=Inputs(binary)
+    try:
+        journey.start()
+        journey.admit('Seed the existing integrating conversation.',topic=1)
+        journey.wait(lambda:journey.has('Initial goal turn delivered.',1))
+        journey.idle()
+        journey.wait_control_socket(journey.socket)
+        binding=journey.read('presentation','list','0','0')['result']['binding']
+        initial_turns=journey.row('SELECT count(*) FROM turns')
+        initial_packets=list(journey.packets)
+        original={'binding':binding,'id':str(uuid.uuid4()),'text':'  Una idea sin delegar todavía. 🦉\n',
+                  'dialogue_id':str(uuid.uuid4()),'capture_questions':{}}
+        def retain(body=original,ok=True):
+            return journey.read('input','foreground','retain',json.dumps(body),ok=ok)
+        first=retain()['result']
+        assert first['new_input'] and first['phase']=='foreground'
+        assert first['text']==original['text'] and first['foreground_dialogue']==original['dialogue_id']
+        assert first['native_acceptance']=='not_requested' and first['local_turn'] is None
+        assert not retain()['result']['new_input']
+        assert not retain({**original,'text':'Rewritten as work'},ok=False)['ok']
+        assert not retain({**original,'dialogue_id':str(uuid.uuid4())},ok=False)['ok']
+        assert not journey.read('input','submit',json.dumps({k:original[k] for k in ('binding','id','text')}),ok=False)['ok']
+        status=journey.read('input','status',original['id'])['result']
+        assert status['phase']=='foreground' and status['text']==original['text']
+        history=journey.read('input','list','0')['result']['items']
+        listed=next(item for item in history if item['id']==original['id'])
+        assert listed['phase']=='foreground' and listed['foreground_dialogue']==original['dialogue_id']
+        assert journey.row('SELECT count(*) FROM original_ingress_order WHERE event_id=?',(original['id'],))==[(1,)]
+        assert journey.row('SELECT count(*) FROM turns')==initial_turns
+        assert journey.packets==initial_packets,'Foreground retention started native work'
+        print('PASS foreground original retained once, immutable and visible; no native work admission; zero models.')
+    finally:
+        journey.close()
+
+
 def qualify(binary):
     journey=Inputs(binary)
     try:
@@ -301,6 +338,7 @@ def canonical_turn_skips_unused_limits_history(binary):
 
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
+    foreground_retention(binary)
     qualify(binary)
     mixed_origin_returns(binary)
     late_artifact_return(binary)

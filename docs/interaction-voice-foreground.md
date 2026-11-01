@@ -122,6 +122,24 @@ than adding a second reasoning turn for each casual spoken exchange.
    Keep server-side credentials private and current actor/generation checks on
    tool effects. Preserve ongoing captures during receiving adoption.
 
+## Foreground original retention seam
+
+The owner command `input foreground retain JSON` accepts `binding`, `id`, `text`,
+`dialogue_id` and an optional frozen `capture_questions` narrowing map. It stores
+an exact original in the existing conversation journal with phase `foreground`.
+Status and history expose that grouping; `native_acceptance` is `not_requested`.
+It neither routes work, answers questions nor calls the native worker. Repeating
+the exact identity observes the retained original; changing its text or dialogue,
+or submitting it through the ordinary input command, is rejected. The ordinary
+input schema and admission behavior remain unchanged.
+
+This is a native owner primitive under implementation, not an activated browser
+mode or a provider delegation API. The dialogue UUID groups originals and grants
+no authority. Durable audio capture, separately attributed formulations, explicit
+work admission and the native-audio/avatar bridge remain subsequent work. The
+store and owner-socket regressions exercise retention/restart, exact-original
+identity and absence of native work without invoking a model.
+
 ## Bounds and acceptance
 
 Start with one owned synthetic provider session,60seconds, at most1024events,
