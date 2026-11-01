@@ -9,12 +9,30 @@ window.ConversationVoiceMode=(()=>{
     const hint=document.createElement('p');hint.textContent='Only you and your daimon';
     const stage=document.createElement('div');stage.className='voice-mode-portrait';
     const status=document.createElement('p');status.className='voice-mode-state';status.setAttribute('role','status');
+    const detection=document.createElement('p');detection.className='voice-mode-detection';detection.setAttribute('role','status');detection.hidden=true;
     const caption=document.createElement('p');caption.className='voice-mode-caption';
     const speak=document.createElement('button');speak.type='button';speak.textContent='Speak again';
     const back=document.createElement('button');back.type='button';back.textContent='Back to conversation';
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(speak,back);
-    dialog.append(heading,hint,stage,status,caption,controls);document.body.append(dialog);
-    let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage;
+    dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
+    let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
+    const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',review:'Recording needs review'};
+    function showDetection(value){
+      if(!value||typeof value.id!=='string'||value.id.length>128||!Object.hasOwn(detectionLabels,value.gate))return;
+      const {id,gate}=value;
+      if(gate==='speaking'){detectorId=id;recentEnd=undefined;}
+      if(!detectorId||['waiting_speech','speaking','waiting_endpoint','waiting_analysis','waiting_transcript','finishing'].includes(gate))detectorId=id;
+      if(gate==='waiting_transcript'||gate==='finishing')recentEnd={id,label:'Phrase end detected'};
+      if(recentEnd?.id===id&&gate==='confirmed')recentEnd.label='Phrase sent';
+      if(id===detectorId||gate==='review'){
+        detectionText=gate==='review'&&value.review_after==='waiting_speech'?'Recording needs review · voice was not detected':detectionLabels[gate];
+        if(Number.isSafeInteger(value.captured_ms)&&Number.isSafeInteger(value.analyzed_ms)&&value.captured_ms-value.analyzed_ms>2000)detectionText+=' · Voice analysis delayed';
+        detection.dataset.warning=String(gate==='review'||Number.isSafeInteger(value.captured_ms)&&Number.isSafeInteger(value.analyzed_ms)&&value.captured_ms-value.analyzed_ms>2000);
+      }
+      const text=(detectionText||'')+(recentEnd&&recentEnd.id!==detectorId?' · Previous phrase: '+recentEnd.label.toLowerCase():'');
+      if(detection.textContent!==text)detection.textContent=text;
+      detection.hidden=!continuous||!text;
+    }
     function entryState(){
       portrait.dataset.voiceEntry=String(available);
       if(!available){
@@ -34,7 +52,7 @@ window.ConversationVoiceMode=(()=>{
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
-      opened=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
+      opened=true;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();
@@ -50,6 +68,7 @@ window.ConversationVoiceMode=(()=>{
     function update(value){
       if(!opened)return;
       if(value.connected===false){close();return;}
+      if(continuous&&value.handoff)showDetection(value.handoff);
       if(value.continuousState){directMessage=value.continuousState.message;listening=value.continuousState.active;preparing=value.continuousState.starting;directPending=value.continuousState.pending;directWorking=value.continuousState.working;remaining=Number.isInteger(value.continuousState.remaining)&&value.continuousState.remaining>=0&&value.continuousState.remaining<=120?value.continuousState.remaining:undefined;}
       if(Object.hasOwn(value,'capture'))phase=value.capture||'idle';
       if(Object.hasOwn(value,'pending'))pending=value.pending;
