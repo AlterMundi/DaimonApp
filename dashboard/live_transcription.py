@@ -36,6 +36,9 @@ class VoiceInbox:
         self.pcm = pcm
         self.items = deque()
         self.bytes = 0
+        self.received_bytes = self.received_messages = 0
+        self.peak_bytes = self.peak_messages = 0
+        self.analyzed_bytes = self.onsets = self.endpoints = 0
         self.changed = asyncio.Event()
         self.error = None
         self.task = asyncio.create_task(self.collect())
@@ -56,6 +59,16 @@ class VoiceInbox:
                     raise ValueError('Voice processing backlog exceeds bound')
                 self.items.append((value, size))
                 self.bytes += size
+                self.received_bytes += size
+                self.received_messages += 1
+                self.peak_bytes = max(self.peak_bytes, self.bytes)
+                self.peak_messages = max(self.peak_messages, len(self.items))
+                if not self.pcm:
+                    count = value.get('audio_bytes')
+                    if type(count) is int and 0 <= count <= 300 * 32000:
+                        self.analyzed_bytes = max(self.analyzed_bytes, count)
+                    self.onsets += isinstance(value.get('onset'), dict)
+                    self.endpoints += isinstance(value.get('endpoint'), dict)
                 self.changed.set()
                 if self.pcm and value['type'] == 'websocket.disconnect':
                     return
@@ -426,7 +439,23 @@ def install(app, config, provider, authorize, origins):
     @app.websocket('/api/interaction/voice/activity')
     async def foreground_activity(socket: WebSocket):
         """One explicit warm foreground analyzer; no ASR, originals or work."""
-        worker = reader = incoming = inbox = None
+        worker = reader = incoming = inbox = output_inbox = None
+        diagnostic = {'outcome': 'cancelled', 'fed_pcm_bytes': 0, 'delivered_pcm_bytes': 0}
+        started = time.monotonic()
+        intervals = {}
+        async def measured(stage, operation, *args):
+            before = time.monotonic()
+            try:
+                return await operation(*args)
+            except Exception:
+                diagnostic.setdefault('failure_stage', stage)
+                raise
+            finally:
+                elapsed = (time.monotonic() - before) * 1000
+                item = intervals.setdefault(stage, {'count': 0, 'total_ms': 0, 'max_ms': 0})
+                item['count'] += 1
+                item['total_ms'] += elapsed
+                item['max_ms'] = max(item['max_ms'], elapsed)
         owner = None
         sending = asyncio.Lock()
         async def send(value):
@@ -454,20 +483,27 @@ def install(app, config, provider, authorize, origins):
                     owner = None
                     raise ValueError('Foreground analysis capacity occupied')
                 analysis_active.add(owner)
-                worker = await Detector.open(detector_command, continuous=True)
+                diagnostic['session_id'] = meta['id']
+                async def open_worker():
+                    return await Detector.open(detector_command, continuous=True)
+                worker = await measured('worker_open', open_worker)
                 await recheck()
                 await send({'type': 'ready', 'id': meta['id'], 'analysis_only': True})
                 async def receive():
-                    events = VoiceInbox(worker.receive)
+                    nonlocal output_inbox
+                    events = output_inbox = VoiceInbox(worker.receive)
                     try:
                         while True:
                             batch = await events.batch()
                             if any(value.get('type') not in ('activity', 'boundary') for value in batch):
                                 raise DetectionUnavailable('Unexpected foreground analysis response')
-                            await actor()
+                            await measured('output_authorization', actor)
                             for value in batch:
-                                await send({'type': 'turn_activity' if value['type'] == 'activity' else 'boundary',
+                                await measured('output_send', send, {'type': 'turn_activity' if value['type'] == 'activity' else 'boundary',
                                             'id': meta['id'], 'activity': value})
+                                count = value.get('audio_bytes')
+                                if type(count) is int and 0 <= count <= 300 * 32000:
+                                    diagnostic['delivered_pcm_bytes'] = max(diagnostic['delivered_pcm_bytes'], count)
                     finally:
                         await events.close()
                 reader = asyncio.create_task(receive())
@@ -482,10 +518,11 @@ def install(app, config, provider, authorize, origins):
                         await reader
                     batch = await incoming
                     if batch[0]['type'] == 'websocket.disconnect':
+                        diagnostic['outcome'] = 'client_disconnect'
                         break
-                    await actor()
+                    await measured('input_authorization', actor)
                     if time.monotonic() - checked >= 15:
-                        await recheck()
+                        await measured('periodic_binding_recheck', recheck)
                         checked = time.monotonic()
                     closing = False
                     for message in batch:
@@ -494,10 +531,12 @@ def install(app, config, provider, authorize, origins):
                             if total + len(pcm) > 300 * 32000:
                                 raise ValueError('Foreground PCM exceeds session bounds')
                             total += len(pcm)
-                            await worker.feed(pcm)
+                            await measured('worker_feed', worker.feed, pcm)
+                            diagnostic['fed_pcm_bytes'] = total
                         else:
                             value = json.loads(message.get('text', ''))
                             if value == {'type': 'close'}:
+                                diagnostic['outcome'] = 'client_close'
                                 closing = True
                                 break
                             if not isinstance(value, dict) or set(value) != {'boundary'}:
@@ -507,7 +546,8 @@ def install(app, config, provider, authorize, origins):
                         break
 
         except (HTTPException, ValueError, OSError, UnicodeError, DetectionUnavailable,
-                WebSocketDisconnect, TimeoutError):
+                WebSocketDisconnect, TimeoutError) as error:
+            diagnostic.update(outcome='unavailable', error_type=type(error).__name__)
             with suppress(Exception):
                 await send({'type': 'unavailable', 'message': 'Voice activity unavailable. No recording was submitted.'})
         finally:
@@ -530,4 +570,22 @@ def install(app, config, provider, authorize, origins):
             finally:
                 if owner is not None:
                     analysis_active.discard(owner)
+                if 'session_id' in diagnostic:
+                    diagnostic['elapsed_ms'] = round((time.monotonic() - started) * 1000, 2)
+                    diagnostic['timing'] = {name: {key: round(value, 2) for key, value in item.items()}
+                                            for name, item in intervals.items()}
+                    if inbox is not None:
+                        diagnostic.update(received_pcm_bytes=inbox.received_bytes,
+                            input_messages=inbox.received_messages, input_peak_bytes=inbox.peak_bytes,
+                            input_peak_messages=inbox.peak_messages)
+                    if output_inbox is not None:
+                        diagnostic.update(analyzed_pcm_bytes=output_inbox.analyzed_bytes,
+                            worker_events=output_inbox.received_messages,
+                            output_peak_messages=output_inbox.peak_messages,
+                            onsets_observed=output_inbox.onsets, endpoints_observed=output_inbox.endpoints)
+                    # One bounded metadata-only line under the existing web-unit
+                    # journal. Never include PCM, text, request/identity headers,
+                    # provider payloads, exception details or new persistence.
+                    logging.getLogger('uvicorn.error').info('voice_activity_closed %s',
+                        json.dumps(diagnostic, sort_keys=True))
     return True
