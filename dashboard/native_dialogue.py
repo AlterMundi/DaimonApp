@@ -6,6 +6,7 @@ bridge must bind proposals to durable originals before any integrator effect.
 """
 import base64
 import json
+import re
 import threading
 import time
 import uuid
@@ -92,6 +93,9 @@ class NativeDialogue:
                     'A formulation is your attributed derivative, never a replacement human quote. '
                     'You do not select workers or execute actions. A tool acceptance is not completion. '
                     'Do not invent work results; explain only attributed returns. '
+                    'An integrating return with next_offset contains only its first page. If later details are needed, '
+                    'use read_integrating_source with the exact offered source ID, revision and next_offset, following further pages as needed. '
+                    'Do not invent missing details, assume a partial page is complete, or read unrelated sources. '
                     'Interrupting your speech does not cancel independent work. '
                     'Generated speech may have been interrupted or unheard; never assume all generated words were heard. '
                     'When what was heard matters to a correction or resumption, recent_originals also supplies current assistant playback observations. '
@@ -107,6 +111,9 @@ class NativeDialogue:
                     {'name':'recent_originals','behavior':'NON_BLOCKING',
                      'description':'Read one bounded page of retained original references and recent assistant playback observations for this current foreground dialogue. Never starts work; playback does not prove hearing.',
                      'parameters':{'type':'OBJECT','properties':{'before':{'type':'INTEGER'}},'required':[]}},
+                    {'name':'read_integrating_source','behavior':'NON_BLOCKING',
+                     'description':'Read one additional page of a canonical integrating result/question already offered in this dialogue. Use its exact source ID, revision and next_offset. Read-only; never starts work or answers a native question.',
+                     'parameters':{'type':'OBJECT','properties':{'source':{'type':'STRING'},'revision':{'type':'STRING'},'offset':{'type':'INTEGER'}},'required':['source','revision','offset']}},
                     {'name':'await_integrator_update','behavior':'NON_BLOCKING',
                      'description':'Subscribe to real integrating results/questions for this speech session. The owning bridge streams multiple responses on this nonblocking call; do not rearm after each update or infer completion from acceptance.',
                      'parameters':{'type':'OBJECT','properties':{}}}]}]}})
@@ -323,6 +330,13 @@ class NativeDialogue:
                 if set(args)-{'before'} or type(before) is not int or not 0<=before<=2**63-1:
                     raise ValueError('Invalid source query')
                 proposal={'type':'source_query','call_id':ident,'before':before}
+            elif name=='read_integrating_source':
+                if (set(args)!={'source','revision','offset'}
+                        or not isinstance(args['source'],str) or not 1<=len(args['source'])<=256
+                        or not isinstance(args['revision'],str) or not re.fullmatch('[a-f0-9]{64}',args['revision'])
+                        or type(args['offset']) is not int or not 0<=args['offset']<=10**9):
+                    raise ValueError('Invalid integrating source query')
+                proposal={'type':'integrating_source_query','call_id':ident,**args}
             elif name=='await_integrator_update' and not args:
                 proposal={'type':'integrator_watch','call_id':ident}
             else:

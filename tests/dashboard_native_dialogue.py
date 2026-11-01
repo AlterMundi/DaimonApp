@@ -90,6 +90,7 @@ class Dialogue(unittest.TestCase):
     def test_source_read_and_event_watch_keep_their_real_tool_names(self):
         self.ready()
         for name,args,kind in (('recent_originals',{},'source_query'),
+                               ('read_integrating_source',{'source':'native:123','revision':'b'*64,'offset':1600},'integrating_source_query'),
                                ('await_integrator_update',{},'integrator_watch')):
             event={'toolCall':{'functionCalls':[{'id':name,'name':name,'args':args}]}}
             self.assertEqual(self.event(event)[0]['type'],kind)
@@ -212,6 +213,13 @@ class Dialogue(unittest.TestCase):
         self.now=300
         with self.assertRaisesRegex(DialogueUnavailable,'session-bound'):self.stream.receive()
         self.assertTrue(self.socket.closed);self.assertEqual(len(self.openings),1)
+    def test_integrating_source_offset_cannot_be_a_boolean(self):
+        self.ready()
+        with self.assertRaises(DialogueUnavailable):
+            self.event({'toolCall':{'functionCalls':[{'id':'read','name':'read_integrating_source',
+                'args':{'source':'native:123','revision':'b'*64,'offset':True}}]}})
+        self.assertNotIn('read',self.stream.tools)
+
     def test_pending_tool_cap_does_not_block_conversation_before_limit(self):
         self.ready()
         for n in range(4):self.event(self.proposal(str(n)))
