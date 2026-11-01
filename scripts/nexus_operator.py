@@ -60,9 +60,24 @@ def main():
         request = result.get('request')
         if request and request.get('contribution') and args.operation == 'dispatch' and result.get('dispatch'):
             excerpts, remaining = [], 24000
-            for anchor in request['contribution']['anchors']:
+            selections = [(request['table_id'], anchor) for anchor in request['contribution']['anchors']]
+            video = request['contribution'].get('review_context', {}).get('adapter') == 'video'
+            if video:
+                import math
+                edition = request['artifact_context']
+                snapshot = request['contribution']['review_context']['snapshot']
+                # The retained clip time is distinct from the original-program
+                # offset. Never query a short excerpt using a full-video clock.
+                duration = edition['duration_ms']
+                position = min(duration-1, math.floor(snapshot['media_time_ms']))
+                selections.append((edition['source_table_id'], {
+                    'source_id': edition['source']['source_id'], 'transcript_version': edition['source']['revision'],
+                    'start_ms': max(0, position-5000), 'end_ms': min(duration, position+5001)}))
+            for source_table, anchor in selections:
                 try:
-                    selected = store.evidence_sources(request['table_id'], anchor['source_id'], anchor['transcript_version'])
+                    if video:
+                        bridge.artifacts.require_native_access(request['table_id'], request['contribution'])
+                    selected = store.evidence_sources(source_table, anchor['source_id'], anchor['transcript_version'])
                     end = min(anchor['end_ms'], anchor['start_ms'] + 300000)
                     passage = context(selected[0], anchor['start_ms'], end, 0) if selected else None
                 except Exception:

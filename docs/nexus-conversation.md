@@ -266,7 +266,7 @@ separate from source tests and service readiness. Exact receiving identifiers,
 configuration and receipts stay in the private owning runbook.
 
 
-## Pinned static artifact reflection (source candidate)
+## Pinned static artifact reflection
 
 The paired backend advertises interactive_3d:v1 only when it implements immutable
 model review editions and the current model permission check. A compatible native
@@ -296,3 +296,37 @@ support is not a production deployment or participant acceptance claim. Preserve
 existing bindings/uncertain work during adoption; do not reconnect as an upgrade
 shortcut. The receiving operator must observe the exact executable before
 advertising its schemas.
+
+### Video reflection — source candidate, not deployed
+
+PR494 extends this same artifact-reflection and admission path to video:v1.
+Each supported schema is negotiated independently against backend discovery;
+unknown schemas are never advertised and video support is not inferred from3D.
+The8KiB closed video context retains an immutable source checksum/revision,
+clip-relative playhead and compositor timestamp, explicit original-program clock/
+offset and matching acknowledgement. A missing frame remains explicitly missing.
+Prompts distinguish that metadata from actual image/audio inspection and preserve
+ASR uncertainty, reflection-only scope and separate source-audio deletion consent.
+
+The owner helper reads bounded retained transcript evidence from the independently
+granted source table. It queries clip-relative time, never the original-program
+offset against a short excerpt. Optional evidence failure after dispatch retains
+the committed dispatch identity; it cannot authorize replay. Fresh source access
+still gates actual native submission and the async steering write boundary.
+
+The helper process needs the same NEXUS_HOME_ORIGIN and NEXUS_HOME_GRANTS_FILE
+selection as the paired Nexus web service for video source decisions. Configure
+those existing non-credential selectors in its owning service environment; web
+service environment does not automatically propagate to a separate native unit.
+Reuse the actual existing grant file and permissions, never copy grants or add a
+second identity/authorization store. Missing selection fails closed.
+
+Controlled native process checks exercise narrated, static and video delivery,
+with post-dispatch and steering-boundary revocation. The actual backend/operator
+check separately verifies original clip clock/version, bounded excerpts and
+independent source-grant loss while preserving the uncertain dispatch. These use
+synthetic identity/operator/native peers or ASR as stated; they do not establish
+actual publisher playback, a model response or participant acceptance. Full exact
+CI and receiving qualification remain separate before any scoped adoption. Keep
+current native associations/goals and uncertain requests intact; no reconnect,
+provider input, capture or global Stop is implied by this source checkpoint.
