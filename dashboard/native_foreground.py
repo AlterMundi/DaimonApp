@@ -256,7 +256,13 @@ class ForegroundBridge:
         """Reuse the scoped canonical reader, revalidating every requested page."""
         if type(offset) is not int or not 0<=offset<=10**9:
             raise ForegroundUnavailable('Select a bounded integrating source offset')
-        result=await self._owner(self.provider.presentation_part,source['id'],source['revision'],offset)
+        try:
+            result=await self._owner(self.provider.presentation_part,source['id'],source['revision'],offset)
+        except (ProviderUnavailable,ValueError):
+            # Answered/changed canonical questions reject their old revision in
+            # the existing reader. Retire that offer without ending the watch.
+            if source['kind']=='question' and source['id'].startswith('request:'):return None
+            raise
         next_offset=result.get('next_offset')
         if (result.get('id')!=source['id'] or result.get('revision')!=source['revision']
                 or result.get('offset')!=offset or result.get('entry_binding') is None

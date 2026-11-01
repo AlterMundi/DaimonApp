@@ -55,5 +55,18 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   assert.equal(value.handoffs.at(-1).gate,'review','The detector badge must not keep claiming Voice detected after recovery begins');
   assert.ok(value.timers.every(t=>t.cleared),'Readiness/session timers are cleared');
   const refused=boot(),pending=refused.engine.start();await until(()=>refused.sockets.length===1);refused.sockets[0].push({type:'review',message:'Listener unsupported'});assert.equal(await pending,false);assert.equal(refused.permissionCalls,0);
+  const scoped=boot();scoped.questions({['a'.repeat(32)]:'b'.repeat(64)});const scopedSocket=await ready(scoped);
+  scopedSocket.push({type:'question_scope',binding:'a'.repeat(64),capture_questions:{['c'.repeat(32)]:'d'.repeat(64)}});await tick();
+  scoped.sources[0].emit({activityBytes:3200,pcm:frame()});
+  const frozen=scopedSocket.sent.find(v=>v.type==='capture_scope');
+  assert.equal(frozen.capture_questions['c'.repeat(32)],'d'.repeat(64),'A voiced canonical question is available before ordinary UI refresh');
+  assert.equal(frozen.capture_questions['a'.repeat(32)],undefined,'The current canonical snapshot replaces a stale UI scope');
+  scopedSocket.push({type:'question_scope',binding:'a'.repeat(64),capture_questions:{['c'.repeat(32)]:'e'.repeat(64)}});await tick();
+  const scopedId=crypto.randomUUID();scopedSocket.push({type:'capture_started',id:scopedId,start:0});scopedSocket.push({type:'phrase_end',id:scopedId,start:0,end:3200});
+  await until(()=>scoped.retained.length===1);assert.equal(scoped.retained[0].captureQuestions['c'.repeat(32)],'d'.repeat(64),'Later question versions cannot widen an already marked phrase');scoped.engine.hold();
+  const fallback=boot();fallback.questions({['a'.repeat(32)]:'b'.repeat(64)});const fallbackSocket=await ready(fallback);
+  fallbackSocket.push({type:'question_scope',binding:'a'.repeat(64),capture_questions:{['c'.repeat(32)]:'d'.repeat(64)}});await tick();fallback.sources[0].emit({pcm:frame()});
+  const fallbackId=crypto.randomUUID();fallbackSocket.push({type:'capture_started',id:fallbackId,start:0});fallbackSocket.push({type:'phrase_end',id:fallbackId,start:0,end:3200});
+  await until(()=>fallback.retained.length===1);assert.equal(fallback.retained[0].captureQuestions['a'.repeat(32)],'b'.repeat(64));assert.equal(fallback.retained[0].captureQuestions['c'.repeat(32)],undefined,'Without a local marker, the earlier arm-time fallback remains frozen');fallback.engine.hold();
   console.log('Native avatar: owner preflight before mic, exact recovery/ACK, frozen scope, native PCM controls, interruption generation fences and cleanup passed; no real devices/models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

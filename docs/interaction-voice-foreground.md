@@ -573,3 +573,42 @@ invented completion, a confirmed span retiring its deadline, close waking the
 watch, and mounted-route review preserving exact original hash without delegation.
 The fixed15second bound is preparation/recovery behavior, not useful-speech latency
 or proof of device/provider acceptance.
+
+## Complete canonical question offers
+
+The live return reader also reuses the existing canonical For you request list,
+under the same current integrating binding. It offers only pending actionable
+questions, through the existing `request:ID`/revision presentation reader. Full
+question text and choices are read at offer time; it does not depend on a later
+Sol summary saying merely that a worker awaits a decision. This is the same
+canonical routed/entry question lane as the UI, not the separate internal-session
+question reader. Approvals and nonpending requests are excluded.
+
+The foreground asks that actual question and relevant choices clearly, without
+repeating it when a later summary adds no decision. Original capture versions,
+answer interpretation and native decisions remain with the existing original/Sol/
+question controls. No question reading answers, approves, dispatches or cancels.
+Each invalidation rescans at most8canonical pages and selects at most32pending
+questions, matching the existing capture-scope limit; existing8queued-reference/
+128offered-reference and session/tool bounds remain unchanged. Exact revisions
+are deduplicated; an answered or changed request retires its old offer without
+ending the watch. Further pages use the same already-offered read-only source.
+
+A mounted regression reproduces the missing full-question offer before the fix.
+It covers full choices across two pages, exclusion of approvals/answered requests,
+no delegation and a stale question followed by its next revision on one watch.
+Actual provider/native/device acceptance remains distinct from these fixtures.
+
+Before offering a question to the model, the same authenticated voice socket
+sends its current canonical question-availability snapshot (`question_scope`,
+binding and capture-version map) to the browser. The first local acoustic marker
+freezes that observed snapshot for the phrase, independently of a delayed ordinary
+For you refresh. A later snapshot cannot widen it; without a local marker the
+earlier arm-time fallback stays frozen. Availability is not proof of hearing or
+answer/approval authority, and the owner still intersects exact current versions.
+The existing original/answer path and native controls are unchanged. Snapshot
+changes are bounded/deduplicated; no separate registry or attention service exists.
+Old clients ignore the additional event; a new client without it retains the
+existing UI snapshot fallback. Receiver tests cover scope before immediate audio,
+fresh canonical availability replacing a stale UI map, no late widening and the
+no-marker fallback.
