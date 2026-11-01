@@ -31,7 +31,17 @@ Keyboard exit and the prior avatar/draft are preserved.
 Silero establishes speech before Smart Turn scores a pause. A current endpoint
 and nonempty recognition can finalize only the explicitly selected trial.
 Client sample offsets fence verdicts if newer acoustic activity arrives. This
-energy hint rejects stale decisions; it is not the speech classifier. Detection
+energy hint rejects stale decisions; it is not the speech classifier. With continuous ambient energy and analysis arriving one network chunk behind,
+a moving local-energy fence could indefinitely starve an already confirmed
+endpoint. The foreground owner now freezes the acoustic watermark observed with
+the endpoint and, separately, with its first usable captions. Same-generation
+analysis must cover both watermarks. Renewed classified speech still invalidates
+the endpoint; words alone never establish a speech turn. This admits the same
+complete flushed original through existing confirmation and recovery, without a
+silence timeout or a second ASR request. A retained actual CPU synthetic-speech/
+noise trace with100ms simulated network lag reproduces the old stall and reaches
+one commit with the correction. This is a proven starvation case, not a diagnosis
+of the individual phone failure or physical echo/noise acceptance. Detection
 or stream failure returns the original to review rather than automatic admission.
 
 With `continuous` absent or false, the initial trial alternates capture, durable
