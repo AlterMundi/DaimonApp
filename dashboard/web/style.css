@@ -39,7 +39,7 @@
 .voice-mode-caption { font-size:16px;line-height:1.4;min-height:2.8em;max-width:42em;max-height:4.2em;overflow:auto;overflow-wrap:anywhere; }
 .voice-mode-controls { display:flex;flex-wrap:wrap;justify-content:center;gap:12px; }
 .voice-mode-controls button { min-height:48px;font:inherit;font-size:16px; }
-@media (max-height:480px) { .voice-mode[open] { gap:8px; } }
+@media (max-height:480px) { .voice-mode { padding:max(12px,env(safe-area-inset-top)) 16px max(12px,env(safe-area-inset-bottom)); } .voice-mode[open] { gap:8px; } }
 #conversation-companion pre[role=button] { cursor:pointer; }
 #conversation-companion pre[role=button]:focus-visible { outline:2px solid var(--accent);outline-offset:4px; }
 .direct-voice-open { overflow:hidden; }
