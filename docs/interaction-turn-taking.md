@@ -592,8 +592,12 @@ are retained without replaying input or providers.
 The player now keeps a bounded128-entry automatic-speech fence for interrupted
 integrating native turns, scoped to the current conversation binding. It removes
 queued sibling messages and rejects later canonical/live siblings automatically.
-Native jobs and all text stay intact. Explicit Listen/Resume releases that
-spoken-turn fence; already prepared media for the interrupted item remains
+Native jobs and all text stay intact. A newly retained human original with the
+exact interrupted playback source/revision releases the turn fence so native
+steering can answer within the same physical turn; already observed old items
+remain skipped. A newly sourced internal return also remains eligible when the
+runtime steers it into that physical turn; the fence does not silence unrelated
+meaningful results/questions. Explicit Listen/Resume releases the spoken-turn fence; already prepared media for the interrupted item remains
 available for Resume, preserving the existing no-resynthesis behavior. Mounted
 regressions cover queued, late canonical and late live siblings, the corrective
 turn, explicit Listen and existing prepared-media Resume. This is a playback
