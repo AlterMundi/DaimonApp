@@ -59,8 +59,8 @@ window.LiveSpeech=(()=>{
       if(!draft || draft.record.canonical || draft.record.pending || draft.record.interrupted)return;
       const {value,record}=draft,chars=Array.from(value.text),start=record.attempted;
       const bound=start?640:240,window=chars.slice(start,start+bound).join("");
-      // Prefer complete sentences/paragraphs. A full window can start useful
-      // speech at a whole-word boundary while the longer sentence is written.
+      // Prefer complete sentences/paragraphs, then substantial clauses. A full
+      // window can start speech at a whole-word boundary while more is written.
       // Short unfinished thoughts, incomplete links and code still wait.
       // Markdown ordered-list punctuation is not a spoken sentence. Keep it
       // with its content instead of admitting an empty renderer request and
@@ -72,11 +72,19 @@ window.LiveSpeech=(()=>{
       let prefixWindow;
       if(matches.length){const match=matches.at(-1);prefixWindow=window.slice(0,match.index+match[0].length);}
       else {
-        if(chars.length<=start+bound)return;
-        const space=[...window.matchAll(/\s+/gu)].at(-1);
-        if(!space)return;
-        prefixWindow=window.slice(0,space.index+space[0].length);
-        if(Array.from(prefixWindow).length<60 || !prefixWindow.trim())return;
+        // A colon/semicolon with following whitespace can finish a useful
+        // clause before a long sentence ends. Keep short lead-ins waiting;
+        // URL schemes/timestamps have no following whitespace at the colon.
+        const clause=[...window.matchAll(/[:;]\s+/gu)].filter(match=>
+          Array.from(window.slice(0,match.index+match[0].length)).length>=60).at(-1);
+        if(clause)prefixWindow=window.slice(0,clause.index+clause[0].length);
+        else {
+          if(chars.length<=start+bound)return;
+          const space=[...window.matchAll(/\s+/gu)].at(-1);
+          if(!space)return;
+          prefixWindow=window.slice(0,space.index+space[0].length);
+          if(Array.from(prefixWindow).length<60 || !prefixWindow.trim())return;
+        }
       }
       const prefix=chars.slice(0,start).join("")+prefixWindow;
       if((prefix.match(/```/g)||[]).length%2 || (prefix.replace(/```[^]*?```/g,"").match(/`/g)||[]).length%2

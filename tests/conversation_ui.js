@@ -587,8 +587,10 @@ function boot(readOnly=false,standalone=false,options={}) {
       await until(()=>stale.audioCalls.length===3);assert.equal(stale.audioCalls[2].source,'request:native-request');assert.equal(stale.audioCalls[2].revision,'native-revision-2','Fresh registry metadata restores an available question without reviving an absent source');
     }finally{stale.ui.stop();}
   }
-  {
-    const text='Puedo conservar el texto exacto y comenzar a explicar cada paso mientras seguimos trabajando juntos sin esperar a que termine toda la respuesta porque las palabras ya disponibles describen una acción concreta y útil para nuestra conversación y después continuamos con más detalles';
+  for(const text of [
+    'Puedo conservar el texto exacto y comenzar a explicar cada paso mientras seguimos trabajando juntos sin esperar a que termine toda la respuesta porque las palabras ya disponibles describen una acción concreta y útil para nuestra conversación y después continuamos con más detalles',
+    'Corregirme cambia cómo sigo trabajando, pero no cancela las tareas que ya autorizaste: incorporo tu corrección y continúo'
+  ]){
     const options={liveSpeech:true,clock:true,playback:true,capture:true,responseDraft:{provisional:true,native_turn:'long-physical',native_item:'long-item',text,observed_at:'2100-01-01T00:00:00Z'}};
     const longVoice=boot(false,true,options);longVoice.audio();await longVoice.ui.refresh();
     longVoice.nodes.get('#conversation-voice-replies').handlers.click();await longVoice.ui.refresh();
