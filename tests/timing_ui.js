@@ -42,5 +42,25 @@ timing.mark('bounded-11','prepared',{finish_to_prepared_ms:-1,provider_final_ms:
 assert(!text().includes('Server finish → prepared:'),'Invalid durations and evicted recordings add no timing');
 timing.mark('bounded-11','prepared',{provider_final_ms:12});assert(text().includes('Server finish → prepared: not observed'),'An incomplete measurement never invents a total');
 assert.equal(list.children.length,8,'Only eight recording histories retained');timing.bind('two');assert(text().includes('No recordings measured'),'Conversation change clears earlier identities/marks');
+// Native original stages and generated outputs share the bounded page-local
+// reader, but asynchronous speech must never become an inferred phrase response.
+clock=5000;timing.native('native-clip','capture_started');clock=6000;timing.native('native-clip','phrase_end');
+clock=6100;timing.native('native-clip','local_retained');clock=6400;timing.native('native-clip','input_interpreted');clock=6500;timing.native('native-clip','original_confirmed');
+clock=7000;timing.native('voice-one','output_handled');clock=7010;timing.native('voice-one','output_scheduled');clock=7100;timing.native('voice-one','output_retired');
+assert(text().includes('Native voice · Capture start: +1.00 s · Detected end: +2.00 s'));
+assert(text().includes('Detected end → local WAV saved: 0.10 s'));assert(text().includes('Detected end → interpretation received: 0.40 s'));assert(text().includes('Detected end → original confirmed: 0.50 s'));
+assert(text().includes('First PCM handled: +3.00 s · First buffer scheduled: +3.01 s'));
+assert(text().includes('First buffer ended: not observed · Output retired: +3.10 s'));
+assert(text().includes('an asynchronous return is not assigned to this phrase'));
+assert(!text().includes('Send → playback:'),'Native outputs do not acquire legacy turn correlation');
+clock=7200;timing.native('voice-one','output_handled');timing.native('voice-one','output_scheduled');
+assert(text().includes('First PCM handled: +3.00 s · First buffer scheduled: +3.01 s'),'Later chunks cannot reset first marks');
+clock=7250;timing.native('voice-two','output_handled');clock=7260;timing.native('voice-two','output_scheduled');clock=7300;timing.native('voice-two','output_buffer_ended');
+assert(text().includes('First buffer ended: +3.30 s'),'A buffer end is not described as whole speech completion or hearing');
+timing.native('unknown-clip','original_confirmed');timing.native('private transcript','__proto__');assert(!text().includes('private transcript'));
+for(let n=0;n<20;n++){timing.native('capture-'+n,'capture_started');timing.native('voice-'+n,'output_handled');}
+assert.equal(list.children.length,24,'Native paths retain at most eight inputs and sixteen outputs using existing bounded maps');
+clock=8000;nodes.get('#conversation-timing-clear').handlers.click();assert(text().includes('No recordings measured'));clock=9000;timing.native('fresh','output_handled');assert(text().includes('First PCM handled: +1.00 s'),'Clear resets the page-relative observation origin');
+timing.bind('third');assert(text().includes('No recordings measured'),'Binding changes clear native observations too');
 assert(!fs.readFileSync('dashboard/web/timing.js','utf8').match(/localStorage|fetch\(|setInterval|setTimeout/),'The timing reader installs no persistence, requests or poller');
 console.log('Browser timing: exact local-turn correlation, ambiguity/history exclusion, first marks, bounded retention and reset passed.');

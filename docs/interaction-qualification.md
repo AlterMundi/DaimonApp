@@ -3,6 +3,36 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Native timing observation —1November2026
+
+Read-only derivation from the retained canonical-question journey measures
+523/489ms from detected phrase-end event to original confirmation and
+2027/1797ms to the next generated audio event. The question offer reaches its
+first audio event in451ms; the canonical result offer does so in432ms. The
+synthetic worker return emission precedes its canonical integrator offer by
+8986ms, with integrator commentary at6020ms. These are one journey's observation
+intervals, not isolated provider causes or a distribution. Its first audio event
+contains just two PCM bytes and raw output was not retained: nonzero/intelligible
+or physically heard audio timing cannot be recovered. The admission-wording
+overstatement is separately retained and corrected below. No native source or
+unmarked commentary is promoted to a canonical return merely to improve timing.
+
+The native client was absent from the existing Browser voice timing hooks.
+It now supplies original lifecycle and separate output-event marks to that same
+bounded page-local inspector. Tests cover first marks, missing values, eight
+original/sixteen source-output limits, Clear/binding reset and no implicit
+phrase-response pairing. The shipped native engine's hook tests retain exact
+scope, recovery, interruption and cleanup; legacy Conversation/timing tests pass.
+
+A real390×720 Chromium/full-shell/native/modal/IndexedDB check observes those
+marks through the actual Conversation hookup and inspector, with a retired
+queued question and a fresh completed result. Clear removes them. The exact
+original and frozen scope/release remain intact; zero POSTs or page errors,
+track/context/browser closed. A missing interpretation event stays not observed.
+Capture/socket/owner metadata and muted output are synthetic, with no CPU,
+provider/Sol/worker or physical hearing/latency claim. Bounded evidence is retained
+under4MiB. The pending phone trial and full roadmap remain open.
+
 ## Admission acknowledgment evidence limit —1November2026
 
 Read-only inspection of the successful canonical-question journey found a

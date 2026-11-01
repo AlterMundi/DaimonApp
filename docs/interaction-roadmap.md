@@ -27,8 +27,11 @@ Spanish/device experience or latency measurement. The
 records the separation, known seams, bounds and next delivery path. Historical
 modular decisions and their useful evidence remain below with their dates.
 
-The1November browser pilot is receiving-selected at backend2f7bbdf4b482
-(PR512), UIf26ddac2f03e. It keeps complete work products separate from concise
+The1November canonical-question pilot was receiving-qualified at
+backend2f7bbdf4b482 (PR512), UIf26ddac2f03e. Subsequent exact receiving
+selection belongs to the maintained
+[receiving operation](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md),
+not the older qualification snapshots in this roadmap. It keeps complete work products separate from concise
 spoken presentation and makes admission acknowledgment no stronger than the
 observed request-sent outcome. Exact offered canonical returns support bounded
 revision-checked pagination; partial input transcripts and empty output metadata
