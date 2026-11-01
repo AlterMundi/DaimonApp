@@ -21,6 +21,10 @@ with tempfile.TemporaryDirectory(prefix='telecodex-nexus-operator-') as director
         result=subprocess.run([sys.executable,'-B',str(operator),'--workspace',str(workspace),'--state',str(state),operation],input=json.dumps(body),capture_output=True,text=True)
         assert (result.returncode==0)==ok,(operation,result.stderr)
         return json.loads(result.stdout) if ok else result
+    capabilities=call('capabilities',{})
+    assert capabilities['schema']=='nexus.native-capabilities/v1'
+    call('capabilities',{'unexpected':'scope'},False)
+    current_revision=1
     target={'listener_id':'listener','bot_id':123,'human_user_id':100,'chat_id':100,'topic_id':7,'native_thread_id':'existing-native'}
     config={'table_id':'table','author_ref':'human:nico','expected_revision':0,'supported_requests':['contribution','iteration','peer'],'label':'Nexus','responder_ref':'daimon:test','target':target}
     call('configure',config,False)  # No approved Telegram membership.
@@ -100,7 +104,30 @@ with tempfile.TemporaryDirectory(prefix='telecodex-nexus-operator-') as director
     call('receipt',{**receipt,'status':'completed','reply':'Private fixture response; no peer effect.'})
     assert app.state.peers.all('table')[0]['responses']==[]
     assert app.state.peers.all('table')[0]['status']=='queued'
-    call('configure',{**config,'expected_revision':1,'active':False})
+    if 'narrated_visual:v1' in capabilities['review_context_schemas']:
+        from backend.tests.test_reports import document,note
+        app.state.reports.install(document())
+        reaction=note()
+        reaction['review_context']=dict(schema_version=1,adapter='narrated_visual',adapter_version=1,
+            capture_version=1,capture_status='acknowledged',review_id='report',review_revision='v1',
+            chapter_id='opening',session_id='listening-session',source_time_ms=2456,clock_source_id='source',
+            source=dict(source_id='source',revision='asr-v1',sha256=bundle['sources'][0]['sha256']),
+            snapshot=dict(scene_id='opening',visual='comparison',media_assets=[],art_expanded=False,
+                art_scroll_left=0,art_scroll_top=0,synthesis_open=False,viewport_width=1280,viewport_height=720))
+        assert post(client,'/api/tables/table/contributions',reaction).status_code==200
+        current=call('configure',{**config,'expected_revision':1,
+            'supported_response_modes':['report_reflection'],'supported_review_contexts':['narrated_visual:v1']})
+        current_revision=current['revision']
+        command=dict(request_id='visual-review',binding_id=binding['binding_id'],binding_revision=current_revision,
+            contribution_id=reaction['contribution_id'],response_mode='report_reflection')
+        assert post(client,'/api/tables/table/conversation-requests',command).status_code==200
+        visual=call('dispatch',dict(listener_id='listener',request_id='visual-review'))
+        assert visual['request']['contribution']['review_context']==reaction['review_context']
+        assert not call('dispatch',dict(listener_id='listener',request_id='visual-review'))['dispatch']
+        receipt=dict(request_id='visual-review',dispatch_id=visual['dispatch_id'],native_thread_id='existing-native',native_turn_id='fixture-review-turn',status='accepted')
+        call('receipt',receipt)
+        assert call('receipt',{**receipt,'status':'completed','reply':'Fixture scene-grounded reply'})['status']=='completed'
+    call('configure',{**config,'expected_revision':current_revision,'active':False})
     assert call('pending',{'listener_id':'listener'})==[]
     # The API may return selected old versions; permission/symlink checks happen
     # before backend import or a constructor that could create fresh state.

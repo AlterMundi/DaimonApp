@@ -285,8 +285,74 @@ async fn validate(shared: &AppShared, doc: &Value) -> Result<()> {
     }
     Ok(())
 }
+fn backend_supports_visual_context(capabilities: &Value) -> bool {
+    capabilities["schema"] == "nexus.native-capabilities/v1"
+        && capabilities["review_context_schemas"]
+            .as_array()
+            .is_some_and(|schemas| schemas.iter().any(|s| s == "narrated_visual:v1"))
+}
+
+/// Validate the bounded, pinned context before native admission. The owning
+/// Nexus service validates report/resource grants and the complete write schema.
+/// This observation is evidence, never authority to execute room instructions.
+fn validate_visual_review(contribution: &Value) -> Result<()> {
+    let review = &contribution["review_context"];
+    if review.is_null() {
+        return Ok(());
+    }
+    if serde_json::to_vec(review)?.len() > 65536
+        || review["schema_version"] != 1
+        || review["adapter"] != "narrated_visual"
+        || review["adapter_version"] != 1
+        || review["capture_version"] != 1
+        || review["capture_status"] != "acknowledged"
+        || !review["snapshot"].is_object()
+    {
+        bail!("Unsupported or unacknowledged Nexus review context");
+    }
+    let anchor = &contribution["report_anchor"];
+    for (context_key, anchor_key) in [
+        ("review_id", "report_id"),
+        ("review_revision", "report_revision"),
+        ("chapter_id", "chapter_id"),
+        ("session_id", "session_id"),
+    ] {
+        if review[context_key].as_str().is_none_or(str::is_empty)
+            || review[context_key] != anchor[anchor_key]
+        {
+            bail!("Nexus visual context differs from its original report anchor");
+        }
+    }
+    let source = &review["source"];
+    let valid_hash = source["sha256"].as_str().is_some_and(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    });
+    if !valid_hash
+        || source["source_id"].as_str().is_none_or(str::is_empty)
+        || source["revision"].as_str().is_none_or(str::is_empty)
+        || review["clock_source_id"] != source["source_id"]
+        || review["source_time_ms"].as_u64().is_none()
+        || review["source_time_ms"] != anchor["source_time_ms"]
+        || review["snapshot"]["scene_id"] != anchor["chapter_id"]
+    {
+        bail!("Nexus visual source, scene or clock is inconsistent");
+    }
+    let narration = &contribution["report_context"];
+    if !narration.is_null()
+        && (narration["source_id"] != source["source_id"]
+            || narration["transcript_version"] != source["revision"])
+    {
+        bail!("Nexus visual context and retained narration differ");
+    }
+    Ok(())
+}
+
 fn prompt(doc: &Value) -> Result<String> {
     let request = &doc["request"];
+    validate_visual_review(&request["contribution"])?;
     if request["request_kind"] == "peer" {
         let peer = &request["peer_request"];
         if peer["request_id"].as_str().is_none()
@@ -740,7 +806,16 @@ pub(super) async fn command(app: &App, message: &Message, human: i64, args: &str
                 &json!({"table_id":r.table_id,"author_ref":r.author_ref}),
             )
             .await?;
-        let input = json!({"table_id":r.table_id,"author_ref":r.author_ref,"expected_revision":old["revision"].as_u64().unwrap_or(0),"label":r.label,"responder_ref":cfg.responder_ref,"target":t,"active":operation=="connect","supported_requests":["contribution","iteration","peer"],"supported_response_modes":["report_reflection"]});
+        let mut input = json!({"table_id":r.table_id,"author_ref":r.author_ref,"expected_revision":old["revision"].as_u64().unwrap_or(0),"label":r.label,"responder_ref":cfg.responder_ref,"target":t,"active":operation=="connect","supported_requests":["contribution","iteration","peer"],"supported_response_modes":["report_reflection"]});
+        // A new receiver must still connect to an older Nexus/helper. Do not
+        // submit an unknown field or claim context support from report mode alone.
+        let capabilities = cfg
+            .call("capabilities", &json!({}))
+            .await
+            .unwrap_or(Value::Null);
+        if backend_supports_visual_context(&capabilities) {
+            input["supported_review_contexts"] = json!(["narrated_visual:v1"]);
+        }
         let result = cfg.call("configure", &input).await?;
         let mut saved = input;
         saved["binding_id"] = result["binding_id"].clone();
@@ -876,5 +951,63 @@ mod report_reflection_tests {
                 .unwrap();
         assert!(text.starts_with("The human sent this retained contribution"));
         assert!(!text.contains("reflection only"));
+    }
+
+    #[test]
+    fn exact_visual_context_reaches_prompt_and_drift_is_rejected() {
+        let mut doc = report_request();
+        let contribution = &mut doc["request"]["contribution"];
+        contribution["report_anchor"]["session_id"] = json!("room");
+        contribution["report_anchor"]["source_time_ms"] = json!(2456);
+        contribution["report_context"]["source_id"] = json!("source");
+        contribution["report_context"]["transcript_version"] = json!("asr-v1");
+        contribution["review_context"] = json!({
+            "schema_version":1,"adapter":"narrated_visual","adapter_version":1,
+            "capture_version":1,"capture_status":"acknowledged","review_id":"report",
+            "review_revision":"v1","chapter_id":"chapter","session_id":"room",
+            "source_time_ms":2456,"clock_source_id":"source",
+            "source":{"source_id":"source","revision":"asr-v1","sha256":"a".repeat(64)},
+            "snapshot":{"scene_id":"chapter","visual":"comparison","media_assets":[],
+                "art_expanded":true,"art_scroll_left":32,"art_scroll_top":0,
+                "synthesis_open":false,"viewport_width":1280,"viewport_height":720}
+        });
+        let text = prompt(&doc).unwrap();
+        assert!(text.contains("\"art_expanded\":true"));
+        assert!(text.contains("\"source_time_ms\":2456"));
+        assert!(text.contains("reflection only"));
+        for (field, value) in [
+            ("review_revision", json!("different")),
+            ("session_id", json!("different")),
+            ("source_time_ms", json!(2457)),
+            ("source_time_ms", json!(-1)),
+            ("capture_status", json!("pending")),
+            ("adapter", json!("video")),
+        ] {
+            let mut stale = doc.clone();
+            stale["request"]["contribution"]["review_context"][field] = value;
+            assert!(prompt(&stale).is_err(), "accepted {field}");
+        }
+        let mut oversized = doc.clone();
+        oversized["request"]["contribution"]["review_context"]["snapshot"]["extra"] =
+            json!("x".repeat(65536));
+        assert!(prompt(&oversized).is_err());
+        let mut wrong_source = doc;
+        wrong_source["request"]["contribution"]["review_context"]["source"]["revision"] =
+            json!("different");
+        assert!(prompt(&wrong_source).is_err());
+    }
+
+    #[test]
+    fn visual_support_requires_explicit_backend_discovery() {
+        assert!(!backend_supports_visual_context(&Value::Null));
+        assert!(!backend_supports_visual_context(
+            &json!({"schema":"nexus.native-capabilities/v1","review_context_schemas":[]})
+        ));
+        assert!(!backend_supports_visual_context(
+            &json!({"schema":"unknown","review_context_schemas":["narrated_visual:v1"]})
+        ));
+        assert!(backend_supports_visual_context(
+            &json!({"schema":"nexus.native-capabilities/v1","review_context_schemas":["narrated_visual:v1"]})
+        ));
     }
 }
