@@ -197,7 +197,7 @@ function boot(){
  const reversed=boot();await reversed.session.start();
  reversed.sources[0].emit(3200);reversed.recorders[0].partial('Primera');reversed.activity(1,true,false);reversed.activity(1,false,true);await until(()=>reversed.recorders.length===2);
  reversed.sources[0].emit(3200);reversed.recorders[1].partial('Segunda');reversed.activity(2,true,false);reversed.activity(2,false,true);await tick();
- reversed.recorders[1].complete('Segunda');await until(()=>reversed.retained.length===1);assert.equal(reversed.commits.length,0,'A later ASR final cannot pass the earlier unfinished original');
+ reversed.recorders[1].complete('Segunda');await until(()=>reversed.retained.some(v=>v.id===reversed.recorders[1].options.id));assert.equal(reversed.commits.length,0,'A later ASR final cannot pass the earlier unfinished original');
  reversed.recorders[0].complete('Primera');await until(()=>reversed.sent.length===2);
  assert.deepEqual(reversed.commits.map(v=>v.id),reversed.recorders.map(r=>r.options.id));
 

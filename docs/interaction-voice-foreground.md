@@ -547,3 +547,29 @@ leaving only Voice paused and an old caption. Ordinary composer/playback updates
 do not erase that reason; explicitly starting voice again clears it. This uses
 the existing local recording store/recovery path, not a second sender, retry or
 provider action. It changes no endpointing, native admission or job cancellation.
+
+## Missing native input finalization
+
+After sending a manual activity end, the acoustic owner allows15seconds for the
+matching end acknowledgment and final input interpretation. An event-driven
+watch retires that deadline when the span completes; a later span gets its own
+deadline. Missing final text or acknowledgment stops this voice stream with a
+clear retained-recording review message. It does not synthesize a transcript,
+accept an output/generation completion as human text, start file ASR, resend an
+original or cancel integrating work. Closing the stream wakes/cancels the watch.
+
+A bounded actual Gemini/CPU/Sol question trial retained a native Beta question and
+an answer with that exact capture version. A later900ms acoustic span produced no
+final input interpretation, leaving source reads waiting/retrying on the latest
+capture instead of delegating the confirmed answer. The question was not answered
+and no resumed worker result was emitted; the completed actual Sol root was read
+idle and archived. The source/answer/tail remain retained without replay. The
+observer also matched an admission mentioning both formats as a spoken question;
+that predicate does not prove the actual question was voiced. Keep this incomplete
+journey separate from earlier accepted report/return evidence.
+
+Regression coverage checks missing final text and missing manual-end ACK, no
+invented completion, a confirmed span retiring its deadline, close waking the
+watch, and mounted-route review preserving exact original hash without delegation.
+The fixed15second bound is preparation/recovery behavior, not useful-speech latency
+or proof of device/provider acceptance.

@@ -226,7 +226,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     speech_context=speech_context)
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual'})
-                tasks={asyncio.create_task(outputs()),asyncio.create_task(analysis()),asyncio.create_task(returns(cursor))}
+                tasks={asyncio.create_task(outputs()),asyncio.create_task(analysis()),asyncio.create_task(returns(cursor)),asyncio.create_task(acoustic.watch_transcripts())}
                 inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192)
                 checked=time.monotonic()
                 while True:
