@@ -234,6 +234,9 @@ class ForegroundBridge:
                 accepted=await self._owner(self.provider.conversation_foreground_delegate,body)
                 result={'kind':'integrator_admission','id':accepted['id'],'phase':accepted['phase'],
                         'native_acceptance':accepted['native_acceptance'],
+                        'recipient':'integrating_conversation',
+                        'worker_delivery':'not_established_by_this_receipt',
+                        'acknowledgment':'The request was sent to the integrating conversation. This receipt does not establish delivery to or start by a worker.',
                         'completion':'Not established by admission. Use real integrating returns.'}
                 if not self._watching:
                     # The admitted nonblocking call itself carries returns; no

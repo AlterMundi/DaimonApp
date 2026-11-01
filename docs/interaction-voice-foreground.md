@@ -612,3 +612,21 @@ Old clients ignore the additional event; a new client without it retains the
 existing UI snapshot fallback. Receiver tests cover scope before immediate audio,
 fresh canonical availability replacing a stale UI map, no late widening and the
 no-marker fallback.
+
+## Admission recipient and speech scope
+
+An `integrator_admission` receipt names `recipient=integrating_conversation` and
+`worker_delivery=not_established_by_this_receipt`. Its acknowledgment states
+only that the request was sent to that conversation. This applies to new work,
+question answers and corrections alike. A formulation naming a worker does not
+prove that worker received or started it; those claims require actual canonical
+evidence. Preserve native acceptance separately and never upgrade admission
+into task completion.
+
+A retained real-provider journey generated a named-worker delivery claim3.038s
+before the synthetic worker's actual acceptance. The native instruction already
+required a separate receipt, but the tool result lacked an explicit recipient
+and worker-delivery limit. Both now carry that meaning at the admission boundary.
+A distinct bounded actual Gemini/real-bridge check with a synthetic owner spoke
+only that the request was sent, with zero worker delivery. It is one observed
+wording, not a guarantee for all future model outputs or a physical hearing test.

@@ -3,6 +3,31 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Admission acknowledgment evidence limit —1November2026
+
+Read-only inspection of the successful canonical-question journey found a
+separate wording defect: first generated audio said the request had already
+been transmitted to Beta3.038s before the recorded synthetic worker acceptance.
+The preceding receipt proved integrator admission only. The completed native
+response/result observations remain valid; they do not erase this premature
+speech claim. Generated-event ordering is not physical heard timing or evidence
+of the provider's internal cause. No completed original or model work was replayed.
+
+The existing bridge admission now explicitly names the integrating conversation
+as recipient and says worker delivery is not established by that receipt. This
+metadata and the native speech instruction apply to both initial work and short
+answer/correction admissions. Separate canonical returns remain authoritative
+for stronger claims.15bridge,24dialogue and20mounted voice checks pass, covering
+both admission forms and unchanged continued returns.
+
+One distinct bounded actual Gemini/real-bridge qualification with a synthetic
+owner spoke: “He enviado la solicitud para preparar las opciones de título para
+tu receta.” It recorded one synthetic integrator admission and zero worker
+delivery. This is one observed wording, not universal model compliance. Exact
+source hashes, synthetic original, receipt and output text are retained under
+4MiB. The stream, bridge and feeder close; no Sol, native worker, production
+input, browser, hardware, playback or general latency acceptance is implied.
+
 ## Canonical question, scoped answer and full-avatar follow-up —1November2026
 
 PR512 is merged and receiving-adopted at source2f7bbdf4b482,

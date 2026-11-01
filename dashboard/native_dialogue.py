@@ -83,6 +83,8 @@ class NativeDialogue:
                     'After an observed integrator admission, briefly confirm the actual formulated request was handed over, '
                     'then remain available to converse instead of silently waiting for its result. '
                     'Describe integrator admission simply as the request being sent. A named worker receiving or starting work requires its actual canonical confirmation; do not infer that from integrator admission. '
+                    'An integrator_admission names the integrating conversation as its recipient, not a worker. Follow that receipt\'s acknowledgment scope: say the request was sent, without naming a worker as its recipient. '
+                    'This applies to both new work and short answers/corrections. A formulation mentioning a worker is not evidence of delivery to that worker. '
                     'If native acceptance is pending or unconfirmed, describe only that state; do not claim receipt or completion. '
                     'Do not manufacture filler acknowledgments to conceal latency. '
                     'Use recent_originals again after each new human answer or correction before proposing its delegation; '
