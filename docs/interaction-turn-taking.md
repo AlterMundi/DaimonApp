@@ -579,3 +579,22 @@ marker and retains the same exact-prefix hash/canonical handover contract.
 Numeric content and long whole-word prefixes remain supported. This removes an
 observed empty request; it is not a measured provider speedup or proof that the
 remaining model-to-audio delay meets the latency target.
+
+## Interruption covers the spoken native turn —1 November2026
+
+The next combined provider journey exposed a second stale-output path: the
+initial commentary was interrupted, but its different final message from the
+same native turn later played before the correction. The earlier observer only
+matched the interrupted native item, so it missed that restart. The journey
+remains partial; its completed result/question and exact local-recovery evidence
+are retained without replaying input or providers.
+
+The player now keeps a bounded128-entry automatic-speech fence for interrupted
+integrating native turns, scoped to the current conversation binding. It removes
+queued sibling messages and rejects later canonical/live siblings automatically.
+Native jobs and all text stay intact. Explicit Listen/Resume releases that
+spoken-turn fence; already prepared media for the interrupted item remains
+available for Resume, preserving the existing no-resynthesis behavior. Mounted
+regressions cover queued, late canonical and late live siblings, the corrective
+turn, explicit Listen and existing prepared-media Resume. This is a playback
+boundary, never native cancellation or question completion.

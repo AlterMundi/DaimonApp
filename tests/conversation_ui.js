@@ -695,6 +695,32 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(priorTail.audioCalls[2].source,'native:10','The corrective answer precedes the interrupted older tail');
   priorTail.ui.stop();
 
+  for(const arrival of ['queued','late']){
+    const turnVoice=boot(false,true,{capture:true,clock:true,immediateHash:true});turnVoice.audio();await turnVoice.ui.refresh();
+    turnVoice.nodes.get('#conversation-voice-replies').handlers.click();
+    turnVoice.overrideSource(9,{kind:'integrator_progress',native_turn:'old-physical-turn',native_item:'old-commentary',preview:'First explanation.'});
+    turnVoice.addReplies(1);await turnVoice.ui.refresh();const turnPlayer=turnVoice.nodes.get('#conversation-audio');
+    await until(()=>turnVoice.audioCalls.length===1&&!turnPlayer.paused);
+    const addOld=async()=>{turnVoice.overrideSource(10,{native_turn:'old-physical-turn',native_item:'different-final-item',preview:'Older final explanation.'});turnVoice.addReplies(1);await turnVoice.ui.refresh();};
+    if(arrival==='queued')await addOld();
+    turnVoice.capture();turnVoice.finishCapture();
+    if(arrival==='late')await addOld();
+    turnVoice.overrideSource(11,{native_turn:'corrective-physical-turn',native_item:'corrective-item',preview:'Your correction is understood.'});turnVoice.addReplies(1);await turnVoice.ui.refresh();
+    await until(()=>turnVoice.audioCalls.length>=2&&!turnPlayer.paused);
+    assert.equal(turnVoice.audioCalls.at(-1).source,'native:11','An interrupted turn cannot autoplay its different final item ('+arrival+')');
+    const oldBox=turnVoice.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:10');assert(oldBox);
+    await oldBox.children[3].children[1].handlers.click();
+    await until(()=>turnVoice.audioCalls.length===3&&!turnPlayer.paused);
+    assert.equal(turnVoice.audioCalls.at(-1).source,'native:10','Explicit Listen can still select the older final message');
+    assert.equal(turnVoice.nativePosts.length,0,'Interrupting a spoken turn never cancels or answers native work');turnVoice.ui.stop();
+  }
+  const oldLiveOptions={liveSpeech:true,clock:true,capture:true,immediateHash:true,responseDraft:{provisional:true,native_turn:'old-streamed-turn',native_item:'old-streamed-commentary',text:'First spoken sentence. Unfinished'}};
+  const oldLive=boot(false,true,oldLiveOptions);oldLive.audio();await oldLive.ui.refresh();oldLive.nodes.get('#conversation-voice-replies').handlers.click();await oldLive.ui.refresh();
+  const oldLivePlayer=oldLive.nodes.get('#conversation-audio');await until(()=>oldLive.audioCalls.length===1&&!oldLivePlayer.paused);
+  oldLive.capture();oldLive.finishCapture();oldLiveOptions.responseDraft={provisional:true,native_turn:'old-streamed-turn',native_item:'different-streamed-final',text:'Older streamed final sentence. Unfinished'};await oldLive.ui.refresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(oldLive.audioCalls.length,1,'A different late live item of the interrupted turn cannot start synthesis');
+  oldLiveOptions.responseDraft=null;oldLive.overrideSource(9,{native_turn:'new-streamed-correction',native_item:'new-correction',preview:'Correction received.'});oldLive.addReplies(1);await oldLive.ui.refresh();
+  await until(()=>oldLive.audioCalls.length===2&&!oldLivePlayer.paused);assert.equal(oldLive.audioCalls.at(-1).source,'native:9');assert.equal(oldLive.nativePosts.length,0);oldLive.ui.stop();
   const interruptionOptions={liveSpeech:true,clock:true,capture:true,immediateHash:true,responseDraft:{provisional:true,native_turn:'interruption-physical',native_item:'interruption-item',text:'First sentence. Unfinished',observed_at:'2100-01-01T00:00:00Z'}};
   const interruptedLive=boot(false,true,interruptionOptions);interruptedLive.audio();await interruptedLive.ui.refresh();
   interruptedLive.nodes.get('#conversation-voice-replies').handlers.click();await interruptedLive.ui.refresh();
