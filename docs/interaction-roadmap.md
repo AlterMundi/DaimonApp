@@ -27,13 +27,21 @@ Spanish/device experience or latency measurement. The
 records the separation, known seams, bounds and next delivery path. Historical
 modular decisions and their useful evidence remain below with their dates.
 
-The1November browser pilot is now receiving-selected as UIc99f1b340f67
-(PR496/sourceba9ed22). A real mounted native-speech/Sol journey returned canonical
-work through one continued subscription while conversation remained available.
-Full CI and receiving bytes/capabilities passed; human browser/hearing, useful
-latency, questions/corrections, long utterances and echo/noise remain open. Keep
-this selected pilot stable during the requested human trial. This advances the
-selected architecture and does not complete stages2/3/necessary4 or the retained
+The1November browser pilot is receiving-selected with backend250736e
+(PR500/501) and UI f76add405687 (PR502). A real mounted native-speech/Sol
+journey returned canonical work through a continued subscription while dialogue
+remained available. A later actual-app/provider journey with a synthetic owner
+and detector retained two exact originals and spoke an integrating question and
+answer/result without a separate model-selected watch. Explicit fragmented input
+transcripts and optional empty output metadata are handled. Local interruptions
+retire old output even between chunks; real Chromium offline rendering verifies
+that old chunks remain silent and fresh output can play afterward.
+
+Full applicable CI and exact receiving bytes/capabilities passed. These are
+separate synthetic/provider/receiving observations, not human browser/hearing,
+useful latency, actual native-question approval, long-utterance or echo/noise
+acceptance. The requested phone trial remains pending. This advances the selected
+architecture and does not complete stages2/3/necessary4 or the retained
 Android/Beacon/iOS/base obligations.
 
 ## Navigation and current selection

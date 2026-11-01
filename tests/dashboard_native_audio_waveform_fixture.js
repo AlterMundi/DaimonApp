@@ -24,7 +24,8 @@
  try{
   if(!await engine.start())throw Error('Synthetic capture did not start');
   const socket=sockets[0],device=contexts[0],id='11111111-1111-4111-8111-111111111111';
-  socket.push({type:'audio',id,sample_rate:24000,pcm:pcm(gap?.08:.8),end:gap?3840:38400});
+  socket.push({type:'audio',id,sample_rate:24000,pcm:pcm(gap?.08:.4),end:gap?3840:19200});
+  if(!gap)socket.push({type:'audio',id,sample_rate:24000,pcm:pcm(.4),end:38400});
   await new Promise(resolve=>setTimeout(resolve,0));
   let marker;
   device.audio.suspend(.15).then(async()=>{
@@ -46,9 +47,11 @@
    if(at>.65&&at<.75)freshVoicePeak=Math.max(freshVoicePeak,amplitude);
    if(at<.58&&amplitude>1e-6)lastNonzero=at;
   }
+  const playedBytes=Math.max(0,...socket.sent.filter(value=>value.type==='playback'&&value.id===id).map(value=>value.played_bytes));
   const result={nativeOfflineAudio:true,physicalPlayback:false,microphoneOpened:false,sampleRate:rate,
-   gap,markerSeconds:marker,beforePeak,afterPeak,freshVoicePeak,lastNonzeroSeconds:lastNonzero,markerToLastNonzeroMillis:Math.max(0,(lastNonzero-marker)*1000),interruptions};
+   gap,playedBytes,markerSeconds:marker,beforePeak,afterPeak,freshVoicePeak,lastNonzeroSeconds:lastNonzero,markerToLastNonzeroMillis:Math.max(0,(lastNonzero-marker)*1000),interruptions};
   if(beforePeak<.1||interruptions!==(gap?0:1))throw Error('Missing rendered interruption baseline '+JSON.stringify(result));
+  if(playedBytes>Math.ceil(marker*48000))throw Error('Queued unheard PCM reported as played '+JSON.stringify(result));
   if(afterPeak>1e-6)throw Error('Interrupted native audio restarted before server onset '+JSON.stringify(result));
   if(freshVoicePeak<.1)throw Error('Interrupted audio blocked a fresh utterance '+JSON.stringify(result));
   return result;
