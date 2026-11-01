@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 // WebCrypto completes on a worker thread; event-loop turns are not a deadline.
 const until=async f=>{const deadline=performance.now()+2000;while(!f()){if(performance.now()>=deadline)throw Error('Expected native voice transition');await new Promise(resolve=>setTimeout(resolve,1));}};
-function boot(){
+function boot(android=false,pcmReady=true){
   const sockets=[],contexts=[],sources=[],retained=[],released=[],reviews=[],states=[],handoffs=[],timers=[],timings=[];let permissionCalls=0,questions={old:'v1'},listener;
   class Socket{
     static OPEN=1;
@@ -18,11 +18,14 @@ function boot(){
     createBuffer(_channels,length,rate){return {duration:length/rate,copyToChannel(){}};}
     createBufferSource(){const value={connect(){},disconnect(){},start(at){this.at=at;},stop(){this.stopped=true;},finish(){this.onended?.();}};this.nodes.push(value);return value;}
   }
-  const media={stopped:false,getTracks(){return [{stop:()=>media.stopped=true}];}};
-  const window={crypto,AudioContext:Context,navigator:{mediaDevices:{getUserMedia:async()=>{permissionCalls++;return media;}}},StreamingVoice:{supported:()=>true,
+  const track={readyState:'live',addEventListener(){},stop(){media.stopped=true;this.readyState='ended';}},media={stopped:false,getTracks(){return [track];}};
+  const window={dispatchEvent(){return true;},crypto,AudioContext:Context,navigator:{mediaDevices:{getUserMedia:async()=>{permissionCalls++;return media;}}},StreamingVoice:{supported:()=>true,
     wav:parts=>new Blob(parts,{type:'audio/wav'}),openCapture:async()=>{const source={subscribe(fn){listener=fn;return ()=>listener=undefined;},observe(){},start(){},close(){this.closed=true;},emit(value){listener?.(value);}};sources.push(source);return source;}}};
-  const context=vm.createContext({window,navigator:window.navigator,document:{hidden:false},crypto,WebSocket:Socket,URL,Blob,ArrayBuffer,Float32Array,atob,
+  const nativeCommands=[];
+  if(android)window.DaimonAudio={postMessage(raw){const value=JSON.parse(raw);nativeCommands.push(value);if(value.command==='pcm_begin'&&pcmReady)queueMicrotask(()=>window.DaimonAudio.onmessage({data:JSON.stringify({id:value.id,type:'pcm_ready'})}));}};
+  const context=vm.createContext({window,navigator:window.navigator,document:{hidden:false},crypto,WebSocket:Socket,URL,Blob,ArrayBuffer,Float32Array,Uint8Array,atob,btoa,Event,EventTarget,DOMException,
     setTimeout(fn,ms){const timer={fn,ms};timers.push(timer);return timer;},clearTimeout(timer){if(timer)timer.cleared=true;}});
+  if(android)vm.runInContext(fs.readFileSync('clients/android/app/src/main/assets/native-audio.js','utf8'),context);
   vm.runInContext(fs.readFileSync('dashboard/web/native-conversation.js','utf8'),context);
   const hooks={headers:()=>({'X-Dashboard-CSRF':'fixture'}),getBinding:()=> 'a'.repeat(64),getQuestions:()=>questions,
     retain:async original=>{const hash=Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex');const value={...original,audio_sha256:hash};retained.push(value);return value;},
@@ -30,7 +33,7 @@ function boot(){
   // URL is intentionally the real application route shape, with a fake socket.
   window.location={href:'https://example.test/interaction/?view=conversation'};
   const engine=window.NativeConversation.create(hooks);
-  return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,timings,media,get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
+  return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,timings,media,nativeCommands,native:window.NativeSpeechAudio,nativeEvent(value){window.DaimonAudio.onmessage({data:JSON.stringify({id:nativeCommands.find(v=>v.command==='pcm_begin').id,...value})});},get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
 }
 async function ready(value){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual'});assert.equal(await pending,true);return socket;}
 (async()=>{
@@ -71,5 +74,33 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   fallbackSocket.push({type:'question_scope',binding:'a'.repeat(64),capture_questions:{['c'.repeat(32)]:'d'.repeat(64)}});await tick();fallback.sources[0].emit({pcm:frame()});
   const fallbackId=crypto.randomUUID();fallbackSocket.push({type:'capture_started',id:fallbackId,start:0});fallbackSocket.push({type:'phrase_end',id:fallbackId,start:0,end:3200});
   await until(()=>fallback.retained.length===1);assert.equal(fallback.retained[0].captureQuestions['a'.repeat(32)],'b'.repeat(64));assert.equal(fallback.retained[0].captureQuestions['c'.repeat(32)],undefined,'Without a local marker, the earlier arm-time fallback remains frozen');fallback.engine.hold();
+  const android=boot(true),androidSocket=await ready(android);
+  assert.equal(android.contexts.length,0,'APK PCM uses the existing native owner rather than a second Web Audio output');
+  const androidOutput=crypto.randomUUID();androidSocket.push({type:'audio',id:androidOutput,end:640,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});
+  await until(()=>android.nativeCommands.some(v=>v.command==='pcm_chunk'));
+  assert.equal(android.engine.hasAudio,true);android.engine.pause();assert.equal(android.engine.paused,true);android.engine.resume();
+  android.nativeEvent({type:'pcm_progress',positions:[{utterance:androidOutput,played_bytes:320}]});
+  assert.ok(androidSocket.sent.some(v=>v.type==='playback'&&v.id===androidOutput&&v.played_bytes===320));
+  android.sources[0].emit({activityBytes:3200,pcm:frame()});
+  assert.equal(android.engine.hasAudio,false);assert.ok(android.nativeCommands.some(v=>v.command==='pcm_flush'));
+  const chunksBefore=android.nativeCommands.filter(v=>v.command==='pcm_chunk').length;
+  androidSocket.push({type:'audio',id:androidOutput,end:1280,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});await tick();
+  assert.equal(android.nativeCommands.filter(v=>v.command==='pcm_chunk').length,chunksBefore,'An interrupted utterance tail cannot reacquire native focus');
+  const androidInput=crypto.randomUUID();androidSocket.push({type:'capture_started',id:androidInput,start:0});androidSocket.push({type:'phrase_end',id:androidInput,start:0,end:3200});
+  await until(()=>android.retained.length===1);androidSocket.push({type:'voice_activity',id:androidInput,activity:'ACTIVITY_END'});
+  const fresh=crypto.randomUUID();androidSocket.push({type:'audio',id:fresh,end:40000,pcm:Buffer.alloc(40000,3).toString('base64'),sample_rate:24000});
+  await until(()=>android.nativeCommands.filter(v=>v.command==='pcm_chunk').length===chunksBefore+2);
+  const sent=android.nativeCommands.filter(v=>v.command==='pcm_chunk');
+  assert.deepEqual(sent.map(v=>v.sequence),[0,1,2]);assert.deepEqual(sent.slice(1).map(v=>v.end),[32768,40000]);
+  for(const chunk of sent){const raw=Buffer.from(chunk.data,'base64');assert(raw.length<=32768);assert.equal(chunk.sha256,require('node:crypto').createHash('sha256').update(raw).digest('hex'));}
+  android.nativeEvent({type:'pcm_progress',positions:[{utterance:fresh,played_bytes:40000}]});assert.equal(android.engine.hasAudio,false);
+  assert.ok(android.timings.some(v=>v.id===fresh&&v.stage==='output_buffer_ended'));
+  android.native.background(true);await tick();assert.equal(android.engine.active,false);assert.equal(android.media.stopped,true);
+  assert.equal(android.engine.originals[0].id,androidInput,'Background closes native voice and preserves the exact unconfirmed original');
+  const interruptedReady=boot(true,false),opening=interruptedReady.engine.start();
+  await until(()=>interruptedReady.nativeCommands.some(v=>v.command==='pcm_begin'));interruptedReady.native.background(true);
+  assert.equal(await opening,false);assert.equal(interruptedReady.permissionCalls,0);assert.equal(interruptedReady.sockets.length,0,'Background during native readiness never opens a model socket or microphone');
+  const focusLoss=boot(true),focusSocket=await ready(focusLoss);focusLoss.nativeEvent({type:'focuslost'});await tick();
+  assert.equal(focusLoss.engine.active,false);assert.equal(focusLoss.media.stopped,true);assert.equal(focusSocket.readyState,3,'Focus loss closes voice rather than fighting another app');
   console.log('Native avatar: owner preflight before mic, exact recovery/ACK, frozen scope, native PCM controls, interruption generation fences and cleanup passed; no real devices/models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

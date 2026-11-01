@@ -2,7 +2,7 @@
 /* Loaded only by the Android host, on its exact selected HTTPS main origin. */
 window.NativeSpeechAudio=(()=>{
   const bridge=window.DaimonAudio,outputs=new Map(),streams=new Set(),encodedStreams=new Map();
-  let serial=0,captureEpoch=0,controls,sessionEnabled=false;
+  let serial=0,captureEpoch=0,controls,sessionEnabled=false,pcmOwner;
   if(!bridge?.postMessage)return;
   const send=value=>bridge.postMessage(JSON.stringify(value));
   bridge.onmessage=event=>{try{const value=JSON.parse(event.data);if(value.type==="file"){window.NativeFiles?.receive(value);return;}if(value.type==="control"){controls?.[value.action]?.();return;}outputs.get(value.id)?.receive(value);}catch{}};
@@ -52,6 +52,61 @@ window.NativeSpeechAudio=(()=>{
       }
     };
     encodedStreams.set(url,stream);return stream;
+  }
+  function openPcm({onProgress=()=>{},onBufferEnded=()=>{},onState=()=>{},onUnavailable=()=>{}}={}){
+    if(pcmOwner)throw Error("Native conversation output already active");
+    // Reuse the single native speech owner, never mix it with an encoded reply.
+    for(const output of [...outputs.values()])output.reset();
+    const id="pcm_"+(++serial),received=new Map(),active=new Map(),retired=new Set();
+    let sequence=0,total=0,epoch=0,closed=false,paused=false,resolve,reject;
+    const ready=new Promise((yes,no)=>{resolve=yes;reject=no;});
+    const command=(command,extra={})=>send({command,id,...extra});
+    const waiting=()=>[...active].some(([key,end])=>(received.get(key)?.played||0)<end);
+    const timer=setTimeout(()=>fail(Error("Native PCM readiness timed out")),5000);
+    function fail(error){if(closed)return;reject(error);close();onUnavailable(error.message);}
+    function close(){if(closed)return;closed=true;epoch++;clearTimeout(timer);reject(Error("Native PCM output closed"));command("stop");outputs.delete(id);active.clear();received.clear();retired.clear();if(pcmOwner===value)pcmOwner=undefined;}
+    function receive(event){
+      if(closed||event.id!==id)return;
+      try{
+        if(event.type==="pcm_ready"){clearTimeout(timer);resolve();return;}
+        if(event.type==="error"||event.type==="focuslost"){fail(Error(event.type==="focuslost"?"Android audio focus changed. Your recording is kept.":"Android PCM output unavailable."));return;}
+        if(event.type==="pcm_progress"){
+          if(!Array.isArray(event.positions)||event.positions.length>128)throw Error("Invalid native playback observation");
+          for(const item of event.positions){
+            const source=received.get(item.utterance),count=item.played_bytes;
+            if(!source||!Number.isSafeInteger(count)||count%2||count<source.played||count>source.end)throw Error("Native playback position changed");
+            source.played=count;onProgress(item.utterance,count);
+            if(!source.ended&&count>=source.firstEnd){source.ended=true;onBufferEnded(item.utterance);}
+          }
+          if(!waiting())onState("idle");
+        }else if(event.type==="playing")onState(paused?"paused":"playing");
+        else if(event.type==="pause")onState("paused");
+        else if(event.type==="ended"&&!waiting())onState("idle");
+      }catch(error){fail(error);}
+    }
+    const value={ready,
+      async append(utterance,end,raw){
+        if(closed||retired.has(utterance))return false;
+        const previous=received.get(utterance)?.end||0;
+        if(!(raw instanceof Uint8Array)||!raw.length||raw.length%2||end!==previous+raw.length||total+raw.length>300*48000||(!received.has(utterance)&&received.size>=128))throw Error("Invalid bounded native PCM");
+        const owned=epoch;total+=raw.length;
+        const source=received.get(utterance)||{played:0,firstEnd:end,ended:false};source.end=end;received.set(utterance,source);active.set(utterance,end);
+        for(let offset=0;offset<raw.length;offset+=32768){
+          const part=raw.subarray(offset,offset+32768),digest=[...new Uint8Array(await crypto.subtle.digest("SHA-256",part))].map(n=>n.toString(16).padStart(2,"0")).join("");
+          if(closed||owned!==epoch||retired.has(utterance))return false;
+          command("pcm_chunk",{sequence:sequence++,utterance,end:previous+offset+part.length,data:btoa(String.fromCharCode(...part)),sha256:digest});
+        }
+        return true;
+      },
+      flush(){
+        if(closed)return [];epoch++;const ids=[...received.keys()];for(const key of ids)retired.add(key);active.clear();command("pcm_flush");return ids;
+      },
+      pause(){if(!closed&&!paused){paused=true;command("pause");onState("paused");}},
+      resume(){if(!closed){paused=false;onState(waiting()?"preparing":"idle");command("play");}},
+      close,suspend:()=>fail(Error("Voice paused while the app is in the background. Your recordings are kept.")),
+      get hasAudio(){return !closed&&waiting();},get paused(){return paused;}
+    };
+    outputs.set(id,{receive,reset:()=>fail(Error("Native PCM owner changed"))});pcmOwner=value;command("pcm_begin");return value;
   }
   function mount(element){
     if(element.dataset.nativeAudio)return element;
@@ -147,11 +202,12 @@ window.NativeSpeechAudio=(()=>{
   function background(keepPlayback=false){
     captureEpoch++;
     window.dispatchEvent(new Event(keepPlayback?"nativecapturebackground":"pagehide"));
+    pcmOwner?.suspend(); // Native conversation remains explicitly foreground-only.
     if(!keepPlayback){
       for(const output of [...outputs.values()])output.reset();
       for(const stream of [...encodedStreams.values()])stream.cancel();
     }
     for(const stream of streams)for(const track of stream.getTracks())track.stop();streams.clear();
   }
-  return {mount,background,openStream,progressive:true,backgroundPlayback:true,setSession,serviceLost,setControls:value=>{controls=value;}};
+  return {mount,background,openStream,openPcm,pcm:true,progressive:true,backgroundPlayback:true,setSession,serviceLost,setControls:value=>{controls=value;}};
 })();

@@ -125,6 +125,7 @@ public final class MainActivity extends ComponentActivity {
             String data = message.getData(); if (data == null || data.length() > 45000) return;
             try {
                 JSONObject value = new JSONObject(data); reply = proxy;
+                if (value.optString("command").startsWith("pcm_") && !foreground) return;
                 if (value.optString("command").startsWith("file_")) {
                     if (foreground) exports.command(value); return;
                 }
@@ -197,6 +198,7 @@ public final class MainActivity extends ComponentActivity {
         foreground = false;
         if (microphone != null) { microphone.deny(); microphone = null; }
         if (!exports.choosing()) exports.cancel("Save interrupted; the original remains available");
+        if (speech != null) speech.leaveForeground();
         boolean keepPlayback = speech != null && speech.enabled();
         if (speech != null && !keepPlayback) speech.shutdown();
         if (web != null) web.evaluateJavascript("window.NativeSpeechAudio?.background(" + keepPlayback + ")", null);

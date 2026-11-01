@@ -82,17 +82,17 @@ public final class SpeechService extends Service {
     void command(JSONObject value) {
         String command = value.optString("command");
         if (command.equals("session")) { session(value.optBoolean("enabled")); return; }
-        if (command.equals("begin") || command.equals("stream_begin")) {
+        if (command.equals("begin") || command.equals("stream_begin") || command.equals("pcm_begin")) {
             source = value.optString("id"); position = 0; playing = paused = false;
         }
-        if (!command.equals("begin") && !command.equals("stream_begin") && !value.optString("id").equals(source)) return;
+        if (!command.equals("begin") && !command.equals("stream_begin") && !command.equals("pcm_begin") && !value.optString("id").equals(source)) return;
         output.command(value);
         if (command.equals("stop")) { source = null; position = 0; playing = paused = false; updateState(); }
     }
     private void receive(JSONObject value) {
         String type = value.optString("type");
         if (value.has("position")) position = (long)(value.optDouble("position") * 1000);
-        boolean changed = !type.equals("timeupdate");
+        boolean changed = !type.equals("timeupdate") && !type.equals("pcm_progress") && !type.equals("pcm_flushed");
         if (type.equals("playing")) { playing = true; paused = false; }
         if (type.equals("pause") || type.equals("focuslost")) { playing = false; paused = true; }
         if (type.equals("ended") || type.equals("error")) { playing = paused = false; }
@@ -136,6 +136,9 @@ public final class SpeechService extends Service {
             .addAction(new Notification.Action.Builder(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play, playing ? "Pause" : "Play", toggle).build())
             .addAction(new Notification.Action.Builder(android.R.drawable.ic_lock_silent_mode, "Audio off", stop).build())
             .setStyle(new Notification.MediaStyle().setMediaSession(media.getSessionToken()).setShowActionsInCompactView(0, 1)).build();
+    }
+    void leaveForeground() {
+        if (output != null && output.leaveForeground()) { source = null; position = 0; playing = paused = false; updateState(); }
     }
     void shutdown() {
         enabled = playing = paused = false; source = null; position = 0;
