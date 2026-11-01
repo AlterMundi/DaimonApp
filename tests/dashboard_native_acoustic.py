@@ -74,6 +74,19 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.transcripts,[])
         self.assertEqual(self.bridge.captures[0][1],b'\1\0'*1600)
 
+    async def test_owned_acoustic_silence_ends_native_activity_without_a_semantic_claim(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.feed(b'\0\0'*1600)
+        value=self.activity(6400)
+        value.update(speaking=False,endpoint={'generation':1,'audio_bytes':6400,
+                                            'authority':'acoustic_silence','silence_millis':1600})
+        await self.session.activity(value)
+        self.assertEqual(self.bridge.stream.events[-1],('end',))
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.transcripts,[],'A silence boundary is not a transcript or admission')
+
     async def test_end_ack_before_transcript_has_the_same_source(self):
         await self.first();await self.ack('ACTIVITY_END','0.2s')
         self.assertEqual(self.bridge.transcripts,[])

@@ -201,6 +201,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 context={'display_name':config.get('daimon_name','Daimon'),'sources':sources,'source_data':True}
                 while len(json.dumps(context,ensure_ascii=False).encode())>32768:sources.pop()
                 await recheck()
+                worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600)
+                await recheck()
                 opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode='manual',context=context))
                 stream=await asyncio.shield(opening)
                 # Provider readiness is actual setupComplete, not successful connect().
@@ -208,7 +210,6 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     events=await asyncio.to_thread(stream.receive)
                     if any(e['type']=='ready' for e in events):break
                     if time.monotonic()-started>15:raise ForegroundUnavailable('Native speech readiness timed out')
-                worker=await Detector.open(detector_command,continuous=True)
                 await recheck()
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck)
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)

@@ -66,6 +66,17 @@ successive returns, stale-source races, continued native audio and an explicit
 end. Real-provider behavior for this generator remains to be verified before
 receiving activation.
 
+The first generator trial stopped earlier: its second phrase remained open
+after three seconds of silence, so no worker result was offered in that case.
+Offline replay of the exact synthetic PCM hashes through warm VAD and the same
+history boundaries reproduced only the first endpoint under the legacy policy.
+The native1600ms acoustic fallback produced the second endpoint at1632ms of
+measured quiet. Replaying that second clip alone did not reproduce the failure;
+preserve continuous detector state in this regression. No provider, recognition
+or admission was repeated by the CPU comparison. The next whole-path trial must
+verify both endpoints and the continued return subscription. The unfinished
+original and synthetic worker state remain retained, without invented completion.
+
 The follow-up observer also incorrectly waited for raw `output_transcript`
 socket events; this mounted route emits the assistant text through
 `assistant_utterance`. Observe that existing event/history contract, including

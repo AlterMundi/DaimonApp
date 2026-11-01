@@ -214,6 +214,12 @@ class Mounted(unittest.TestCase):
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
         self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.inputs,{})
+    def test_unavailable_acoustics_are_refused_before_provider_opening(self):
+        from dashboard.turn_detection import DetectionUnavailable
+        with patch.object(Detector,'open',side_effect=DetectionUnavailable('synthetic unavailable')):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[])
     def test_fresh_action_token_is_required_before_native_open(self):
         with self.open() as ws:
             ws.send_json(self.meta(csrf='invalid'));self.assertEqual(ws.receive_json()['type'],'review')

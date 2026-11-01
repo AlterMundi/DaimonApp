@@ -95,10 +95,15 @@ class NativeAcousticSession:
             if self.local:self.local.analyzed=end
             endpoint=value.get('endpoint')
             if endpoint:
+                semantic=(endpoint.get('authority')=='analysis_only'
+                          and type(endpoint.get('probability')) in (int,float)
+                          and .5<=endpoint['probability']<=1)
+                acoustic=(endpoint.get('authority')=='acoustic_silence'
+                          and type(endpoint.get('silence_millis')) is int
+                          and endpoint['silence_millis']>=1600)
                 if (self.local is None or endpoint.get('generation')!=self.local.generation
-                        or endpoint.get('audio_bytes')!=end or endpoint.get('authority')!='analysis_only'
-                        or type(endpoint.get('probability')) not in (int,float)
-                        or not .5<=endpoint['probability']<=1 or value.get('speaking') is not False):
+                        or endpoint.get('audio_bytes')!=end or not (semantic or acoustic)
+                        or value.get('speaking') is not False):
                     raise ForegroundUnavailable('Acoustic endpoint changed')
                 span=self.local
                 if end-span.start>120*32000:

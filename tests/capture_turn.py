@@ -16,6 +16,7 @@ class CaptureTurn(unittest.TestCase):
         value.bytes = value.frames = value.generation = value.positive = value.quiet = value.analyses = 0
         value.speaking = value.speech_seen = False; value.scored_generation = value.confirmed_generation = 0
         value.max_bytes=120*32000;value.max_analyses=30;value.endpoints=[]
+        value.silence_end_millis=0;value.endpoint_generation=0
         self.probability = 0
         value._probability = lambda _: self.probability
         self.scored = []
@@ -45,6 +46,22 @@ class CaptureTurn(unittest.TestCase):
         self.assertNotIn('endpoint',value.feed(b'\0'*8192));self.assertEqual(len(self.scored),1)
         self.probability=.8;value.feed(b'\0'*3072);self.probability=0
         self.assertEqual(value.feed(b'\0'*7168)['endpoint']['generation'],2)
+
+    def test_native_silence_closes_a_phrase_rejected_by_the_semantic_score(self):
+        value=self.analyzer();value.silence_end_millis=1600
+        value.turn.predict=lambda *a,**k:{'candidate_complete':False,'probability':.1}
+        self.probability=.8;value.feed(b'\0'*3072);self.probability=0
+        self.assertNotIn('endpoint',value.feed(b'\0'*32000))
+        self.assertNotIn('endpoint',value.feed(b'\0'*16000))
+        result=value.feed(b'\0'*4096)
+        self.assertEqual(result['endpoint']['authority'],'acoustic_silence')
+        self.assertEqual(result['endpoint']['silence_millis'],1600)
+        self.assertNotIn('probability',result['endpoint'],'Acoustic silence is not a semantic probability')
+        self.assertNotIn('endpoint',value.feed(b'\0'*32000))
+        self.assertEqual(value.boundary(1,result['audio_bytes'])['type'],'boundary')
+        legacy=self.analyzer();legacy.turn=value.turn;self.probability=.8
+        legacy.feed(b'\0'*3072);self.probability=0
+        for _ in range(4):self.assertNotIn('endpoint',legacy.feed(b'\0'*32000))
 
     def test_short_noise_never_establishes_speech_and_bounds_are_enforced(self):
         value=self.analyzer();self.probability=.9;value.feed(b'\0'*2048)

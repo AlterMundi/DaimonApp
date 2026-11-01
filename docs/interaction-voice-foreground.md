@@ -232,6 +232,18 @@ not automatic replay. Synthetic socket regressions cover concurrent speech while
 a tool is pending, interruption, once-only uncertain returns and resource bounds;
 they establish no real audio-input, native admission, avatar or phone acceptance.
 
+Native manual activity uses the existing owned acoustic worker with an explicit
+1600ms silence endpoint as a fallback when the semantic score does not close a
+phrase. The event is labelled `acoustic_silence`, with measured silence duration,
+not a semantic completion probability or proof of final intended words. Only
+confirmed speech can establish that boundary. A resumed utterance can interrupt
+the response and supply a correction; a pause does not cancel native work.
+Ordinary prepared/file-ASR modes retain their previous semantic-only policy.
+The worker advertises the selected silence policy at readiness, before opening
+the paid provider or requesting the browser microphone; an old worker cannot
+silently impersonate support. Receiving adoption must select the matching
+`capture_turn.py` command and completed-transcript reader with the backend.
+
 ## Actual audio-input qualification —1November2026
 
 The synthetic audio-input journey did not establish automatic end-of-phrase:
