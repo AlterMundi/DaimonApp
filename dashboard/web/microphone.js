@@ -159,12 +159,15 @@ window.VoiceInput = (() => {
       if(!!frozen.visual!==!!value.visual||Array.isArray(frozen.visual)!==Array.isArray(value.visual)||Array.isArray(frozen.visual)&&frozen.visual.length!==value.visual.length||frozen.visual&&Object.keys(frozen.visual).some(k=>JSON.stringify(frozen.visual[k])!==JSON.stringify(value.visual[k])))throw Error('Visual capture does not match this recording.');
       const fileValues=refs=>(refs||[]).map(file=>['file_id','sha256','name','mime','size'].map(key=>file[key]));
       if(JSON.stringify(fileValues(frozen.files))!==JSON.stringify(fileValues(value.files)))throw Error('Original files do not match this recording.');
+      if(frozen.foreground_dialogue&&['foreground_captured','preparing','preparation_unconfirmed'].includes(value.phase)){
+        notice('Voice original saved, but its interpretation is not confirmed. Your local copy is kept; save audio or check again.',true);controls();return;
+      }
       clearStatusTimer();onTiming(frozen.id,'retained');
       latestSaved={id:frozen.id,binding:frozen.binding,audio_sha256:frozen.audio_sha256,phase:value.phase,preparedText:frozen.preparedText};
       lastConfirmed=value;
       onInput(value,frozen.focusVersion);onVisualSent(frozen.visual);onFilesSent(frozen.files);pending=undefined;phase='idle';
       try{await recovery?.remove(frozen);if(recovery)recoveryFree=(await recovery.list()).length===0;}catch{recoveryFree=false;}
-      notice(value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
+      notice(value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
         value.phase==='retained_unsent'?'Recording saved; no work was submitted. You can keep writing.':
         value.phase==='preparation_unconfirmed'?'Recording saved; transcription unconfirmed. Nothing was resubmitted.':
         value.phase==='preparing'?'Confirming transcript…':
@@ -313,6 +316,10 @@ window.VoiceInput = (() => {
       const frozen={...original,audio_sha256:Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join(''),localRecovery:true};
       await recovery.put(frozen,true);recoveryFree=false;return frozen;
     }
+    async function releaseContinuous(original,hash){
+      if(original.binding!==getBinding()||original.audio_sha256!==hash)throw Error('Original confirmation changed');
+      await recovery?.remove(original);if(recovery)recoveryFree=(await recovery.list()).length===0;
+    }
     async function commitContinuous(frozen){
       if(frozen.binding!==getBinding()||uploading||pending&&pending.id!==frozen.id||['permission','recording','finalizing'].includes(phase))return {confirmed:false};
       pending=frozen;phase='idle';lastConfirmed=undefined;
@@ -381,7 +388,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
   return {mount};
 })();

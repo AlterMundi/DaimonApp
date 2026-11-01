@@ -1,8 +1,11 @@
 # Interaction development boundaries
 
 Interaction is an independent application: web now, native/badge clients later.
-Human selection, 2026-10-29: Android APK with native audio is now the next client
-delivery focus, retaining unfinished v0.3 work. Source is `clients/android`;
+Human priority, 2026-11-01: implement native speech above the existing Sol
+integrator, with sourced asynchronous delegation and integrating returns. See
+`docs/interaction-voice-foreground.md`; the mounted browser pilot is opt-in,
+not receiving/device acceptance. Retain the unfinished independent Android
+native-audio client selected on2026-10-29. Source is `clients/android`;
 read `docs/interaction-native-clients.md` for the current foreground pilot,
 same shared login, native bridge/byte/focus boundaries, signing/build retention
 and remaining progressive/background/Beacon/iOS work. Telegram is optional.

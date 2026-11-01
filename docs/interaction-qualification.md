@@ -15,6 +15,92 @@ surface. Fluency means useful coordination, not imitation of a serial human chat
 The immutable `daimon-interaction-v0.1.0` tags mark the first functional baseline,
 not daily-use acceptance. Keep that milestone while improving the experience.
 
+## Native foreground qualification
+
+The1November native speech path is specified in
+[interaction-voice-foreground.md](interaction-voice-foreground.md). The mounted
+opt-in socket/avatar tests are synthetic source evidence. Actual provider/native
+speech, receiving adoption and human hearing remain separate acceptance items.
+The next paid session must exercise this whole path, not another isolated
+arithmetic/transport probe. Reuse the retained15/18/26October research.
+
+The first mounted real-provider journey reached acoustic endpoints and retained
+two WAV/transcript originals, but stopped before native work admission: Gemini
+prefixed the second interpretation with whitespace while the existing native
+owner normalized it. Completion verification now compares that owner's trimmed
+text contract; the prepared interpretation and exact audio bytes remain intact.
+The regression covers both values. This failed journey is retained, not a pass
+for asynchronous delegation/returns, and its originals must not be replayed.
+
+A distinct follow-up retained two completed voice originals, actual Sol
+admission and dispatch, native foreground audio while Alpha was pending,
+interruption, and a canonical worker return incorporated by Sol. The return was
+published as `integrator_progress` with `native_returns` and an empty final
+answer. The foreground had selected only `integrator_answer`, so it did not
+speak that return. Select current, source-linked integrating progress as well;
+ordinary commentary without return references remains excluded. The mounted
+regression exercises that exact descriptor shape. Full real-provider spoken
+return acceptance remains open; do not rerun the completed worker/model work
+to repair an observation. Both actual native turns were read as completed and
+their task-owned root was archived.
+
+The next real-provider case also retained the canonical return without spoken
+output. A focused mounted reproduction then showed a cursor gap: an existing
+source can become current/source-linked without acquiring a new row ID. Advancing
+past its initially ineligible descriptor loses the later invalidation. Re-read
+the bounded session-new window from its opening cursor on database changes;
+deduplicate exact queued/offered revisions in the existing bridge. The regression
+times out before the correction and passes afterward. Keep this demonstrated
+gap distinct from a claim that every unspoken return had the same cause. The
+window remains bounded to eight existing presentation pages; overflow ends the
+live mode visibly instead of silently dropping sources. Real spoken-return
+acceptance after this correction is still required.
+
+An instrumented real-provider follow-up showed one return-watch call receiving
+the integrating acknowledgment, followed by no new watch call: the later result
+remained queued. Keep this observed failure separate from the cursor reproduction.
+The watch now remains one nonblocking generator with documented `willContinue`
+responses, bounded to160total tool responses per native session. Distinct current
+sources stream on that same call; admission is never repeated. Regressions cover
+successive returns, stale-source races, continued native audio and an explicit
+end. Real-provider behavior for this generator remains to be verified before
+receiving activation.
+
+The first generator trial stopped earlier: its second phrase remained open
+after three seconds of silence, so no worker result was offered in that case.
+Offline replay of the exact synthetic PCM hashes through warm VAD and the same
+history boundaries reproduced only the first endpoint under the legacy policy.
+The native1600ms acoustic fallback produced the second endpoint at1632ms of
+measured quiet. Replaying that second clip alone did not reproduce the failure;
+preserve continuous detector state in this regression. No provider, recognition
+or admission was repeated by the CPU comparison. The next whole-path trial must
+verify both endpoints and the continued return subscription. The unfinished
+original and synthetic worker state remain retained, without invented completion.
+
+The follow-up observer also incorrectly waited for raw `output_transcript`
+socket events; this mounted route emits the assistant text through
+`assistant_utterance`. Observe that existing event/history contract, including
+closed/interrupted status. Retain the timeout separately from the missing
+spoken-return defect. Reuse the bound `Native.read` method for metadata-only
+native reads rather than executing its source with incomplete module globals.
+
+A WebSocket client context ending does not prove provider cleanup. The mounted
+fixture now waits on actual provider/detector closure. Its forced ASGI
+cancellation exposed cleanup being skipped at an awaited cancellation point;
+provider closure is now synchronous before separately shielded cleanup. A
+provider tool cancellation retires only that proposal/watch, never native work
+or the conversation. Keep unoffered canonical references for a later watch and
+do not repeat an uncertain provider response or integrating admission.
+
+The Android background-decoder fixture requires an observed `STOPPED` lifecycle
+receipt after backgrounding its actual task, and rechecks `CREATED` before each
+later reply. Run41297782951 failed while requesting that state through
+`ActivityScenario.moveToState`; the retained log establishes the timeout, not
+its underlying cause. The updated qualification keeps native decoding, delayed
+reply, notification and focus assertions. Emulator run41299771924 passed the
+updated decoder and Android checks. This does not establish physical
+device/hearing acceptance.
+
 ## Browser observation discipline
 
 Use synchronous `waitForFunction` predicates for local browser readiness. For

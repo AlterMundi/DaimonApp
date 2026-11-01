@@ -31,7 +31,13 @@ class VoiceInbox:
     events (the worker already bounds each JSON line). Control boundaries and
     original packet sizes survive batching, preserving detector decisions.
     """
-    def __init__(self, receive, *, pcm=False):
+    def __init__(self, receive, *, pcm=False, batch_size=10, control_bytes=256):
+        if type(batch_size) is not int or not 1<=batch_size<=50:
+            raise ValueError('Invalid bounded voice batch size')
+        if type(control_bytes) is not int or not 256<=control_bytes<=8192:
+            raise ValueError('Invalid bounded voice control size')
+        self.control_bytes=control_bytes
+        self.batch_size=batch_size
         self.receive = receive
         self.pcm = pcm
         self.items = deque()
@@ -53,7 +59,7 @@ class VoiceInbox:
                         size = len(value['bytes'])
                         if not size or size % 2 or size > 32000:
                             raise ValueError('Foreground PCM exceeds frame bounds')
-                    elif len(value.get('text', '').encode()) > 256:
+                    elif len(value.get('text', '').encode()) > self.control_bytes:
                         raise ValueError('Foreground control exceeds bound')
                 if len(self.items) >= 128 or self.bytes + size > 256000:
                     raise ValueError('Voice processing backlog exceeds bound')
@@ -85,7 +91,7 @@ class VoiceInbox:
         if self.error is not None:
             raise self.error
         values, size = [], 0
-        while self.items and len(values) < 10:
+        while self.items and len(values) < self.batch_size:
             value, count = self.items[0]
             # Keep a control/disconnect in its own fresh authorized batch.
             if self.pcm and (not count or size + count > 32000):
@@ -153,7 +159,7 @@ def install(app, config, provider, authorize, origins):
     mode=selected.get('mode','prepared')
     if (mode not in ('prepared','captions')
             or selected.get('provider','qwen') not in ('qwen','gemini')
-            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection'}
+            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue'}
             or not {'enabled','endpoint','credential_file','cache_root'}<=set(selected)
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
@@ -166,6 +172,8 @@ def install(app, config, provider, authorize, origins):
             or not isinstance(fallback.get('credential_file'),str)
             or not Path(fallback['credential_file']).is_absolute()):
         raise ValueError('Select one explicit Qwen fallback for Gemini streaming')
+    if 'native_dialogue' in selected and type(selected['native_dialogue']) is not bool:
+        raise ValueError('Select explicit native dialogue enablement')
     candidates=[selected]+([fallback] if fallback is not None else [])
     detector_command = detection_command(selected)
     root = private_directory(selected['cache_root'])
@@ -588,4 +596,9 @@ def install(app, config, provider, authorize, origins):
                     # provider payloads, exception details or new persistence.
                     logging.getLogger('uvicorn.error').info('voice_activity_closed %s',
                         json.dumps(diagnostic, sort_keys=True))
+    if selected.get('native_dialogue') is True:
+        if selected.get('provider')!='gemini' or mode!='prepared' or not detector_command:
+            raise ValueError('Native dialogue requires the selected Gemini credential and acoustic detector')
+        from .native_voice import install as install_native_voice
+        install_native_voice(app,config,provider,origins,bind_voice,detector_command,analysis_active)
     return True

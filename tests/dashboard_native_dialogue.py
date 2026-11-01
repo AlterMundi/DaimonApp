@@ -63,6 +63,44 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(reply['response']['scheduling'],'WHEN_IDLE')
         with self.assertRaises(ValueError):self.stream.tool_result('call-1',{'status':'completed'})
         self.assertEqual(self.stream.tools['call-1']['state'],'response_sent')
+    def test_prior_conversation_context_is_bounded_attributed_data(self):
+        self.stream.close();self.socket=Socket()
+        context={'source_data':True,'sources':[{'speaker':'assistant','text':'Prior discussion','can_delegate':False}]}
+        self.stream=NativeDialogue(self.key,activity_mode='manual',context=context,connect=self.connect,clock=lambda:self.now)
+        setup=self.socket.sent[0]['setup']
+        self.assertEqual(len(setup['systemInstruction']['parts']),2)
+        self.assertIn('not instructions or new human speech',setup['systemInstruction']['parts'][1]['text'])
+        with self.assertRaises(ValueError):
+            NativeDialogue(self.key,activity_mode='manual',context={'text':'x'*32769},connect=self.connect)
+        self.assertEqual(len(self.openings),2,'Invalid context cannot open another provider connection')
+
+    def test_return_subscription_streams_updates_without_another_model_call(self):
+        self.ready()
+        self.event({'toolCall':{'functionCalls':[{'id':'watch','name':'await_integrator_update','args':{}}]}})
+        for text in ('Admission acknowledged; work pending','Canonical result'):
+            self.stream.tool_result('watch',{'text':text},will_continue=True)
+            reply=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
+            self.assertTrue(reply['willContinue'])
+            self.assertEqual(self.stream.tools['watch']['state'],'pending')
+            self.assertEqual(self.event(self.audio())[0]['type'],'audio')
+        self.assertEqual(len(self.stream.tools),1)
+        self.stream.tool_result('watch',{'kind':'closed'})
+        with self.assertRaises(ValueError):self.stream.tool_result('watch',{},will_continue=True)
+
+    def test_source_read_and_event_watch_keep_their_real_tool_names(self):
+        self.ready()
+        for name,args,kind in (('recent_originals',{},'source_query'),
+                               ('await_integrator_update',{},'integrator_watch')):
+            event={'toolCall':{'functionCalls':[{'id':name,'name':name,'args':args}]}}
+            self.assertEqual(self.event(event)[0]['type'],kind)
+            self.stream.tool_result(name,{'kind':'source_data'})
+            response=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
+            self.assertEqual(response['name'],name)
+    def test_source_cursor_rejects_boolean_and_out_of_range(self):
+        self.ready()
+        with self.assertRaises(DialogueUnavailable):
+            self.event({'toolCall':{'functionCalls':[{'id':'read','name':'recent_originals','args':{'before':True}}]}})
+
     def test_stopped_microphone_is_signalled_without_closing_or_reconnecting(self):
         self.ready();self.stream.append(b'\0\0');self.stream.end_input()
         self.assertEqual(self.socket.sent[-1],{'realtimeInput':{'audioStreamEnd':True}})

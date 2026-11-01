@@ -16,7 +16,7 @@ window.ConversationVoiceMode=(()=>{
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(speak,back);
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
     let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
-    const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',review:'Recording needs review'};
+    const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',foreground_saved:'Phrase saved · voice conversation',review:'Recording needs review'};
     function showDetection(value){
       if(!value||typeof value.id!=='string'||value.id.length>128||!Object.hasOwn(detectionLabels,value.gate))return;
       const {id,gate}=value;
@@ -24,6 +24,7 @@ window.ConversationVoiceMode=(()=>{
       if(!detectorId||['waiting_speech','speaking','waiting_endpoint','waiting_analysis','waiting_transcript','finishing'].includes(gate))detectorId=id;
       if(gate==='waiting_transcript'||gate==='finishing')recentEnd={id,label:'Phrase end detected'};
       if(recentEnd?.id===id&&gate==='confirmed')recentEnd.label='Phrase sent';
+      if(recentEnd?.id===id&&gate==='foreground_saved')recentEnd.label='Phrase saved';
       if(id===detectorId||gate==='review'){
         detectionText=gate==='review'&&value.review_after==='waiting_speech'?'Recording needs review · voice was not detected':detectionLabels[gate];
         if(Number.isSafeInteger(value.captured_ms)&&Number.isSafeInteger(value.analyzed_ms)&&value.captured_ms-value.analyzed_ms>2000)detectionText+=' · Voice analysis delayed';

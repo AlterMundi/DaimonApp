@@ -540,6 +540,23 @@ class Provider:
         for source in body['source_ids']:self.input_id(source)
         return self.decorate_input(self.presentation('input foreground delegate '+json.dumps(body,ensure_ascii=False)))
 
+    def conversation_foreground_originals(self, dialogue, binding, before=0):
+        """One bounded page of this live dialogue's exact owned source references."""
+        self.input_id(dialogue)
+        if (not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding)
+                or type(before) is not int or not 0<=before<=2**63-1):
+            raise ValueError('Select the bounded foreground source scope')
+        page=self.presentation(f'input list {before} before')
+        if page['binding']!=binding:
+            raise ProviderUnavailable('Foreground original binding changed')
+        sources=[{'id':row['id'],'phase':row['phase'],'capture_order':row.get('capture_order'),
+                  'text_excerpt':row.get('preview','')[:200],'excerpt_bounded':True,
+                  'voice':bool(row.get('voice'))}
+                 for row in page['items'] if row.get('foreground_dialogue')==dialogue]
+        return {'kind':'foreground_originals','sources':sources,'before':page.get('cursor'),
+                'more':page.get('more',False),'source_data':True,
+                'meaning':'References to retained human originals; excerpts are bounded. Captured/preparing originals are not ready for delegation. Retention or native acceptance does not establish work completion.'}
+
     def conversation_foreground_complete(self, ident, binding, dialogue):
         """Read a now-completed receipt for the same retained acoustic original."""
         self.input_id(ident);self.input_id(dialogue)

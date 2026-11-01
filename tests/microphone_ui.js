@@ -181,6 +181,18 @@ function boot(live=false,recovery,status404=false){
  assert.equal(lostPairStore.values.get('pending').audio_sha256,unsentPair.audio_sha256);
  assert.equal(pairReload.received[0].id,acceptedPair.id);
 
+ const nativeRecovery=memoryRecovery(),nativeCopy=boot(true,nativeRecovery);
+ await until(()=>!nativeCopy.button().disabled);
+ const nativeOriginal=await nativeCopy.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),blob:new Blob(['synthetic native WAV original']),mime:'audio/wav'});
+ await nativeCopy.ui.reviewContinuous([nativeOriginal]);
+ nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,phase:'foreground_captured',voice:{audio_sha256:nativeOriginal.audio_sha256}});
+ await nativeCopy.check();
+ assert.equal(nativeRecovery.values.size,1,'A retained native WAV without a completed interpretation keeps its local recovery copy');
+ assert.equal(nativeCopy.received.length,0);assert.equal(nativeCopy.uploads.length,0);
+ nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,phase:'foreground',text:'Completed native interpretation',voice:{audio_sha256:nativeOriginal.audio_sha256}});
+ await nativeCopy.check();await until(()=>nativeCopy.received.length===1);
+ assert.equal(nativeRecovery.values.size,0);assert.equal(nativeCopy.uploads.length,0,'Checking the completed original never resends it');
+
  const discardStore=memoryRecovery();discardStore.values.set('pending',{schema:'telecodex.voice-recovery/v2',items:[first,second]});
  const queueReview=boot(false,discardStore);await until(()=>queueReview.state().startsWith('An unfinished recording was recovered'));
  queueReview.cancel();await until(()=>queueReview.state().startsWith('An unfinished recording was recovered'));

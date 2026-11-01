@@ -22,7 +22,11 @@ SCHEMA = 'telecodex.turn-activity/v1'
 
 class Activity:
     """One capture's recurrent state; at most120s PCM and thirty turn scores."""
-    def __init__(self, vad_path, turn_path, *, continuous=False):
+    def __init__(self, vad_path, turn_path, *, continuous=False, silence_end_millis=0):
+        if type(silence_end_millis) is not int or silence_end_millis not in (0,1600):
+            raise ValueError('Select disabled or native1600ms acoustic silence')
+        self.silence_end_millis=silence_end_millis
+        self.endpoint_generation=0
         with Path(vad_path).open('rb') as source:
             model = source.read(VAD_BYTES + 1)
         if len(model) != VAD_BYTES or hashlib.sha256(model).hexdigest() != VAD_SHA256:
@@ -103,6 +107,15 @@ class Activity:
                                       'probability': score['probability'], 'authority': 'analysis_only'}
                 self.endpoints.append((self.generation, self.bytes))
                 del self.endpoints[:-2]
+                self.endpoint_generation=self.generation
+        if (analyze and self.silence_end_millis and self.speech_seen and not self.speaking
+                and self.confirmed_generation==self.generation
+                and self.endpoint_generation!=self.generation
+                and self.quiet*32>=self.silence_end_millis):
+            result['endpoint']={'generation':self.generation,'audio_bytes':self.bytes,
+                                'authority':'acoustic_silence','silence_millis':self.quiet*32}
+            self.endpoint_generation=self.generation
+            self.endpoints.append((self.generation,self.bytes));del self.endpoints[:-2]
         return result
 
 
@@ -123,13 +136,15 @@ def main():
     parser.add_argument('--vad-model', type=Path, required=True)
     parser.add_argument('--turn-model', type=Path, required=True)
     parser.add_argument('--continuous', action='store_true', help='One explicit foreground session, at most five minutes')
+    parser.add_argument('--silence-end-millis', type=int, choices=(0,1600), default=0,
+                        help='Native speech only: close after confirmed speech and this acoustic silence')
     args = parser.parse_args()
     # This owns only the optional analysis child, never native conversations.
     resource.setrlimit(resource.RLIMIT_CPU, (150, 155) if args.continuous else (60, 65))
     signal.alarm(305 if args.continuous else 145)
     try:
-        analyzer = Activity(args.vad_model, args.turn_model, continuous=args.continuous)
-        print(json.dumps({'schema': SCHEMA, 'type': 'ready', 'vad_sha256': VAD_SHA256, 'turn_sha256': MODEL_SHA256, **({'continuous': True} if args.continuous else {})}), flush=True)
+        analyzer = Activity(args.vad_model, args.turn_model, continuous=args.continuous,silence_end_millis=args.silence_end_millis)
+        print(json.dumps({'schema': SCHEMA, 'type': 'ready', 'vad_sha256': VAD_SHA256, 'turn_sha256': MODEL_SHA256, **({'continuous': True} if args.continuous else {}),**({'silence_end_millis':args.silence_end_millis} if args.silence_end_millis else {})}), flush=True)
         while True:
             raw = sys.stdin.buffer.readline(45001)
             if not raw:
