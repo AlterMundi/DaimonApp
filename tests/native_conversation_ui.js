@@ -38,7 +38,8 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   const frame=()=>new Uint8Array(3200).buffer;value.sources[0].emit({pcm:frame()});value.sources[0].emit({pcm:frame()});
   const first=crypto.randomUUID();socket.push({type:'capture_started',id:first,start:0});socket.push({type:'phrase_end',id:first,start:0,end:6400});
   await until(()=>value.retained.length===1);assert.equal(value.retained[0].blob.size,6400);assert.equal(value.retained[0].captureQuestions.old,'v1');assert.equal(value.retained[0].captureQuestions.later,undefined,'Scope cannot widen after arming');
-  socket.push({type:'original_retained',id:first,sha256:value.retained[0].audio_sha256});await until(()=>value.released.length===1);
+  socket.push({type:'original_retained',id:first,sha256:value.retained[0].audio_sha256});await tick();assert.equal(value.released.length,0,'Raw WAV retention does not retire the local original before its text is confirmed');
+  socket.push({type:'original_completed',id:first,sha256:value.retained[0].audio_sha256,phase:'foreground'});await until(()=>value.released.length===1);
   socket.push({type:'voice_activity',id:first,activity:'ACTIVITY_END'});
   const output=crypto.randomUUID(),audio=end=>({type:'audio',id:output,end,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});
   socket.push(audio(640));await until(()=>value.contexts[0].nodes.length===1);assert.equal(value.engine.hasAudio,true);

@@ -32,7 +32,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             await socket.close(code=1008);return
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
-        tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();sending=asyncio.Lock();stopping=False
+        tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic()
         async def send(value):
@@ -54,7 +54,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await asyncio.shield(capture.reservation)
                     await actor()
                     await send({'type':'original_retained','id':capture.ident,'sha256':capture.digest})
-                launch(retained())
+                raw_notifications[capture.ident]=launch(retained())
+            elif value['type']=='input_interpreted':
+                capture=bridge.captures[value['id']]
+                async def completed():
+                    await asyncio.shield(capture.completion)
+                    await asyncio.shield(raw_notifications[capture.ident])
+                    await actor()
+                    await send({'type':'original_completed','id':capture.ident,'sha256':capture.digest,'phase':'foreground'})
+                launch(completed())
         def launch(operation):
             task=asyncio.create_task(operation);tool_tasks.add(task)
             return task

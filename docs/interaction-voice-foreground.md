@@ -344,7 +344,8 @@ that native audio continues while this watch is pending and that one later
 canonical return can resolve it without repeating admission.
 
 The browser retains exact PCM ranges through the existing IndexedDB/WAV recovery
-path until the authenticated server confirms matching original hashes. A first
+path until the authenticated server confirms matching original hashes **and durable
+interpretations**. A raw-WAV retention ACK alone never retires the local copy. A first
 local acoustic marker freezes that phrase's observed question versions before
 its PCM is sent; the server intersects this narrowing scope with native-owned
 questions. Missing markers retain the earlier arm-time fallback. No late Send,

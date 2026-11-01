@@ -127,6 +127,15 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             self.bridge.integrating_source(source)
             result=await self.bridge.tool({'type':'integrator_watch','call_id':field})
             self.assertEqual(result['kind'],'not_ready')
+    async def test_close_wakes_pending_source_read_without_another_provider_effect(self):
+        capture=self.bridge.capture(str(uuid.uuid4()),b'\1\0'*160,{})
+        await capture.reservation
+        task=asyncio.create_task(self.bridge.tool({'type':'source_query','call_id':'read','before':0}))
+        await asyncio.sleep(0);self.assertFalse(task.done())
+        await self.bridge.close()
+        result=await asyncio.wait_for(task,1)
+        self.assertEqual(result['kind'],'not_ready');self.assertEqual(self.stream.results,[])
+
     async def test_close_wakes_watch_without_cancelling_native_jobs(self):
         task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
         await asyncio.sleep(0);await self.bridge.close()

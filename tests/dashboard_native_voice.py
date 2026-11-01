@@ -124,7 +124,7 @@ class Mounted(unittest.TestCase):
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
             ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
             events=[]
-            while not any(v['type']=='original_retained' for v in events) or not any(v['type']=='assistant_utterance' and v['utterance']['closed'] for v in events):
+            while not any(v['type']=='original_completed' for v in events) or not any(v['type']=='assistant_utterance' and v['utterance']['closed'] for v in events):
                 events.append(ws.receive_json())
             self.assertTrue(self.owner.completed.wait(2))
             audio=next(v for v in events if v['type']=='audio')

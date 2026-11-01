@@ -6,7 +6,7 @@ it has no worker registry, general controller, model poller or job cancellation.
 """
 import asyncio
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
 import re
@@ -31,6 +31,7 @@ class Capture:
     completion: asyncio.Task | None = None
     phase: str = 'retaining'
     transcript: str | None = None
+    interpretation_ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class ForegroundBridge:
@@ -164,6 +165,7 @@ class ForegroundBridge:
                 capture.phase='unconfirmed'
                 raise
         capture.completion=asyncio.create_task(complete())
+        capture.interpretation_ready.set()
         capture.completion.add_done_callback(self._observe)
         return capture.completion
 
@@ -183,9 +185,14 @@ class ForegroundBridge:
             if event['type']=='source_query':
                 # Recognition/storage may finish while the native voice speaks.
                 capture=self.captures.get(self.latest)
-                if capture and capture.completion:
-                    with suppress(Exception):
-                        await asyncio.wait_for(asyncio.shield(capture.completion),3)
+                if capture:
+                    try:
+                        await asyncio.wait_for(capture.interpretation_ready.wait(),10)
+                    except TimeoutError:
+                        raise ForegroundUnavailable('Original interpretation is still pending') from None
+                    if self.closed or capture.completion is None:
+                        raise ForegroundUnavailable('Foreground conversation ended')
+                    await asyncio.shield(capture.completion)
                 result=await self._owner(self.provider.conversation_foreground_originals,
                                          self.dialogue,self.binding,event['before'])
             elif event['type']=='delegation_proposed':
@@ -247,7 +254,8 @@ class ForegroundBridge:
             result={'kind':'not_ready','reason':str(error),'meaning':'No new work was confirmed. Resolve the stated source condition before proposing a different intent.'}
         except (ProviderUnavailable,ValueError,TimeoutError,OSError):
             result={'kind':'unconfirmed','meaning':'The operation was not confirmed. Do not repeat work or claim completion; originals and existing jobs remain retained.'}
-        await asyncio.to_thread(self.stream.tool_result,ident,result)
+        if not self.closed:
+            await asyncio.to_thread(self.stream.tool_result,ident,result)
         return result
 
     def integrating_source(self,source):
@@ -278,4 +286,5 @@ class ForegroundBridge:
             with suppress(Exception):
                 await asyncio.wait_for(asyncio.gather(*(asyncio.shield(t) for t in pending),return_exceptions=True),5)
         for capture in self.captures.values():
+            capture.interpretation_ready.set()
             capture.pcm=b''

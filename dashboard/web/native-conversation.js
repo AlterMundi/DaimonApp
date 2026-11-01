@@ -68,7 +68,11 @@ window.NativeConversation=(()=>{
         }
         case 'original_retained':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256)throw Error('Retained original differs');
-          await release(original,value.sha256);originals.delete(value.id);onHandoff({id:value.id,gate:'foreground_saved'});break;
+          onHandoff({id:value.id,gate:'foreground_saved'});break;
+        }
+        case 'original_completed':{
+          const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256||value.phase!=='foreground')throw Error('Completed original differs');
+          await release(original,value.sha256);originals.delete(value.id);break;
         }
         case 'input_caption':case 'input_transcript':onCaption(value.text);break;
         case 'assistant_utterance':onUtterance(value.utterance);onCaption(value.utterance.text);break;

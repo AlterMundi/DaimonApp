@@ -159,6 +159,9 @@ window.VoiceInput = (() => {
       if(!!frozen.visual!==!!value.visual||Array.isArray(frozen.visual)!==Array.isArray(value.visual)||Array.isArray(frozen.visual)&&frozen.visual.length!==value.visual.length||frozen.visual&&Object.keys(frozen.visual).some(k=>JSON.stringify(frozen.visual[k])!==JSON.stringify(value.visual[k])))throw Error('Visual capture does not match this recording.');
       const fileValues=refs=>(refs||[]).map(file=>['file_id','sha256','name','mime','size'].map(key=>file[key]));
       if(JSON.stringify(fileValues(frozen.files))!==JSON.stringify(fileValues(value.files)))throw Error('Original files do not match this recording.');
+      if(frozen.foreground_dialogue&&['foreground_captured','preparing','preparation_unconfirmed'].includes(value.phase)){
+        notice('Voice original saved, but its interpretation is not confirmed. Your local copy is kept; save audio or check again.',true);controls();return;
+      }
       clearStatusTimer();onTiming(frozen.id,'retained');
       latestSaved={id:frozen.id,binding:frozen.binding,audio_sha256:frozen.audio_sha256,phase:value.phase,preparedText:frozen.preparedText};
       lastConfirmed=value;
