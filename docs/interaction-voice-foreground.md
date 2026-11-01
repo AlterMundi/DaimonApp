@@ -14,6 +14,27 @@ The Sol integrator retains routing, work progression and final-return ownership;
 its persistent workers keep their own sessions. Integrating results/questions
 return to the voice layer, which remains the interlocutor throughout.
 
+The foreground distinguishes exploring an idea from requesting its execution.
+It handles explanations and prompt refinement conversationally, uses available
+context, and asks a brief clarification only when a missing detail materially
+changes the requested outcome. A clear request goes to Sol without a redundant
+confirmation step. Its formulation preserves constraints, uncertainty and
+corrections. New speech remains conversational while work is pending; filler
+acknowledgments do not count as useful-response latency.
+
+On opening, assistant voice context is selected from the current integrating
+binding. Earlier bindings remain in readable history, but are not silently
+injected into the new voice conversation. Playback positions remain client
+observations, not proof that the person heard the generated words.
+The existing `recent_originals` read also includes up to four assistant speech
+observations from the current dialogue and binding, within its16KiB tool-result
+bound. It carries bounded generated-text excerpts, interruption/closed flags and
+generated/client-playback byte positions. A later read reflects later playback;
+this starts no native work and creates no second speech registry. The model must
+not map those positions to exact heard words: they are neither word alignment
+nor a contiguous hearing receipt. Phone interruption/correction acceptance
+remains separate from this context plumbing.
+
 ```mermaid
 flowchart LR
   H[Human] <-->|Native audio and captions| V[Conversational foreground]

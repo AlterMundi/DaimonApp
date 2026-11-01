@@ -27,6 +27,7 @@ from dashboard_io import Receiver
 class Stream:
     activity_mode='manual';model='gemini-3.8-live';max_tools=32;opened=[]
     def __init__(self,*args,**kwargs):
+        self.context=kwargs.get('context')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
         self.tool_results=queue.Queue();self.opened.append(self)
     def receive(self):
@@ -143,6 +144,19 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.owner.calls,[])
         self.assertTrue(Stream.opened[0].closed_event.wait(2),'Wait for actual provider cleanup, not client context exit')
         self.assertTrue(Detector.opened[0].closed_event.wait(2))
+    def test_reopened_voice_context_uses_current_binding_without_removing_history(self):
+        history=self.app.state.native_history
+        current=str(uuid.uuid4());earlier=str(uuid.uuid4())
+        history.retain(100,self.ident,self.owner.binding,current,'Current conversation','b'*64,4)
+        history.retain(100,self.ident,'c'*64,earlier,'Earlier binding','d'*64,4)
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            sources=Stream.opened[0].context['sources']
+            selected=[item['id'] for item in sources if item['speaker']=='assistant_foreground']
+            self.assertEqual(selected,[current])
+            ws.send_json({'type':'close'})
+        self.assertEqual({item['id'] for item in history.page(100)['items']},{current,earlier})
+        with self.assertRaises(ValueError):history.page(100,binding='invalid')
     def test_native_voice_continues_while_an_integrating_return_watch_is_pending(self):
         self.owner.return_kind='integrator_progress'
         self.owner.native_returns=['result:retained-worker-return']
@@ -169,6 +183,29 @@ class Mounted(unittest.TestCase):
             call,result=stream.tool_results.get(timeout=3)
             self.assertEqual(call,'watch');self.assertEqual(result['text'],'Canonical integrating return.')
             self.assertEqual(len(self.owner.delegations),1)
+            ws.send_json({'type':'close'})
+    def test_source_tool_reads_current_playback_without_claiming_hearing(self):
+        history=self.app.state.native_history
+        ident=str(uuid.uuid4());other=str(uuid.uuid4())
+        history.retain(100,self.ident,self.owner.binding,ident,'Interrupted generated words','b'*64,640,interrupted=True)
+        history.played(100,self.ident,ident,160)
+        history.retain(100,str(uuid.uuid4()),self.owner.binding,other,'Another voice session','c'*64,640)
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'source_query','call_id':'playback-before','before':0}])
+            _,result=stream.tool_results.get(timeout=2)
+            observed=result['assistant_speech']
+            self.assertEqual([item['id'] for item in observed],[ident])
+            self.assertEqual(observed[0]['played_bytes'],160)
+            self.assertEqual(observed[0]['generated_bytes'],640)
+            self.assertTrue(observed[0]['interrupted'])
+            self.assertIn('not a contiguous heard range',observed[0]['meaning'])
+            history.played(100,self.ident,ident,320)
+            stream.queue.put([{'type':'source_query','call_id':'playback-after','before':0}])
+            _,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(result['assistant_speech'][0]['played_bytes'],320,'Read current observations rather than opening-time context')
+            self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'})
     def test_provider_cancellation_does_not_end_voice_or_cancel_work(self):
         with self.open() as ws:
