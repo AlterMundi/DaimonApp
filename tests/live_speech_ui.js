@@ -16,6 +16,24 @@ const deadline=setTimeout(()=>{throw Error("Live speech test did not settle");},
  const numberedAnswer=context.window.LiveSpeech.mount();numberedAnswer.observe({...key,text:'11 es el resultado. Siguiente'},'numeric');
  assert.equal((await numberedAnswer.next()).preview,'11 es el resultado. ','Numeric content remains useful speech');
 
+ const clause=context.window.LiveSpeech.mount();
+ const opening='Corregirme cambia cómo sigo trabajando, pero no cancela las tareas que ya autorizaste: ';
+ clause.observe({...key,text:opening+'incorporo tu corrección y continúo'},'clause');
+ const usefulClause=await clause.next();assert(usefulClause,'A substantial clause need not wait for the rest of a long sentence');
+ assert.equal(usefulClause.preview,opening);assert(clause.admit(usefulClause));
+ clause.observe({...key,text:opening+'incorporo tu corrección y continúo con lo que sigue vigente. Más'},'clause');
+ const clauseEnd=await clause.next();assert.equal(clauseEnd.speech_start,usefulClause.speech_end);
+ assert.equal(clauseEnd.preview,'incorporo tu corrección y continúo con lo que sigue vigente. ');
+ const semicolon=context.window.LiveSpeech.mount(),separate=opening.replace(':',';');
+ semicolon.observe({...key,text:separate+'la tarea continúa'},'semicolon');
+ assert.equal((await semicolon.next()).preview,separate);
+ for(const text of ['The answer is: still unfinished','Details; still unfinished',
+   'A long link https://example.test/'+ 'a'.repeat(80),
+   'An open `code block '+opening+'more', 'An open [link '+opening+'more']){
+   const guarded=context.window.LiveSpeech.mount();guarded.observe({...key,text},'guarded-clause');
+   assert.equal(await guarded.next(),undefined,'Short lead-ins, URLs and unclosed markup cannot become early clauses');
+ }
+
  state.observe({...key,text:'Hola Nicolás. Incomplete',provisional:true},'binding');
  const first=await state.next();assert(state.admit(first));assert.equal(first.speech_start,0);assert.equal(first.preview,'Hola Nicolás. ');
  assert.equal(await state.next(),undefined,'Incomplete text cannot become audible');

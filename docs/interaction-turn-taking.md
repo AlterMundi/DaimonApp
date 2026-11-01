@@ -704,3 +704,21 @@ worker consumption and delayed output checks without inferring absent speech
 from a missing onset. A normal close/disconnect, timeout or authorization refusal
 is retained separately. These observations locate a delayed stage; they do not
 by themselves establish the cause of a particular phone failure.
+
+### Useful speech before a long sentence finishes
+
+The live-prefix reader prefers complete sentences and paragraphs. When neither
+is available, it may select a clause ending with a colon or semicolon followed
+by whitespace, provided the selected clause contains at least60Unicode
+characters. Short lead-ins still wait. URL schemes and timestamps do not create
+these boundaries; existing unclosed code, link and parenthesis guards apply.
+If no such clause is available, the existing240-character first window and
+640-character later windows can still select a whole-word prefix.
+
+This reuses the exact frozen prefix, hash, source validation, question priority,
+interruption and canonical continuation. It adds no rewritten text, model call,
+timer or input admission. A deterministic Spanish example can begin its useful
+87-character clause while the rest of the sentence is still being written;
+the ordinary player continues from that exact offset after confirmation.
+This proves an earlier selection opportunity, not provider latency, physical
+hearing or resolution of the phone's automatic utterance-handoff failure.
