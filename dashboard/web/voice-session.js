@@ -119,8 +119,12 @@ window.ContinuousConversation=(()=>{
       const r=slot.recorder;onTiming(slot.id,'ready');
       if(r.preparationTiming)onTiming(slot.id,'prepared',r.preparationTiming);
       const original=originalFor(slot);
-      // A failed stream or a view exit does not grant automatic file-ASR/input.
-      const automatic=slot.send&&!slot.review&&!original.captureStop&&!!original.preparedText;
+      // A fresh, explicit continuous session already authorized this exact
+      // complete utterance at its validated endpoint. If recognition finalization
+      // failed, the existing once-only voice upload can use file-ASR; partial
+      // captions never become the transcript. Exit/failed flush/held originals
+      // have no endpoint Send intent and remain review-only, including reload.
+      const automatic=slot.send&&!slot.review&&!original.captureStop;
       try{
         if(slot.retention){
           await slot.retention;
