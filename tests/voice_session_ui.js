@@ -87,6 +87,23 @@ function boot(){
  await until(()=>noisy.recorders.length===2);noisy.recorders[0].complete('Una frase completa');await until(()=>noisy.commits.length===1);
  noisy.session.hold('Analysis could not continue.');noisy.recorders[1].complete();await tick();
  assert.equal(noisy.states.at(-1).message,'Analysis could not continue.','Finalizing a retained original must preserve the first stop reason');
+ // The analyzer has network latency while local ambient energy keeps moving.
+ // A same-generation acknowledgment must be able to cover the watermark
+ // observed with the endpoint, without chasing every newer noise frame.
+ const ambient=boot();await ambient.session.start();ambient.sources[0].emit(3200);ambient.activity(1,true,false);
+ ambient.recorders[0].partial('Una frase completa');ambient.sources[0].acoustic(6400,6400);
+ ambient.activity(1,false,true);assert.equal(ambient.recorders[0].state,'recording');
+ ambient.sources[0].emit(3200,0);ambient.sources[0].acoustic(9600,9600);
+ ambient.analyses[0].emit({generation:1,audio_bytes:6400,speaking:false,speech_seen:true});
+ assert.equal(ambient.recorders[0].state,'inactive','Continuous ambient energy must not starve a confirmed same-generation endpoint');
+ await until(()=>ambient.recorders.length===2);ambient.recorders[0].complete('Una frase completa');await until(()=>ambient.commits.length===1);
+ ambient.session.hold();ambient.recorders[1].complete();await tick();
+ const ambientRenewed=boot();await ambientRenewed.session.start();ambientRenewed.sources[0].emit(3200);ambientRenewed.activity(1,true,false);
+ ambientRenewed.recorders[0].partial('Primera frase');ambientRenewed.sources[0].acoustic(6400,6400);ambientRenewed.activity(1,false,true);
+ ambientRenewed.sources[0].emit(3200);ambientRenewed.activity(2,true,false);
+ assert.equal(ambientRenewed.recorders[0].state,'recording','Renewed classified speech invalidates a pending older noise-watermark decision');
+ assert.equal(ambientRenewed.commits.length,0);assert.equal(ambientRenewed.analyses[0].boundaries.length,0);
+ ambientRenewed.session.hold();ambientRenewed.recorders[0].complete();await tick();
  const silent=boot();await silent.session.start();silent.sources[0].emit(3200);silent.activity(1,true,false);silent.activity(1,false,true);
  assert.equal(silent.session.floor,false,'A brief detected sound without words cannot hold playback for the entire capture budget');
  silent.activity(1,true,false);assert.equal(silent.session.floor,false,'A repeated old onset cannot reacquire a released floor');

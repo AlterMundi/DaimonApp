@@ -32,8 +32,12 @@ window.ContinuousConversation=(()=>{
       const slot=current,a=verdict;
       if(!active||stopping||!slot?.recorder||slot.recorder.state!=='recording'||!slot.speech||!a?.endpoint)return;
       const end=a.endpoint;
+      // Late first captions must also wait for the local activity they observed.
+      // Freeze that one decision watermark; the server classifier decides
+      // whether subsequent energy is renewed speech or continuing background.
+      if(slot.words&&a.wordFence===undefined)a.wordFence=lastEnergy;
       if(end.generation!==slot.generation||a.speaking!==false||end.audio_bytes<=slot.start
-         ||end.audio_bytes>bytes||lastEnergy>a.audio_bytes)return;
+         ||end.audio_bytes>bytes||Math.max(a.captureFence,a.wordFence||0)>a.audio_bytes)return;
       // Acoustic turn ownership is independent of ASR readiness. Keep the
       // exact recording pending, but do not hold playback behind late captions.
       if(floor){floor=false;state('Listening');}
@@ -55,13 +59,19 @@ window.ContinuousConversation=(()=>{
         if(!slot.speech){slot.scopeFrozen=true;slot.speech=true;}
         if(!floor){slot.playback=getPlayback();floor=true;onInterrupt();state('Listening');}
       }
-      if(a.endpoint)verdict=a;
+      if(a.endpoint){
+        // Freeze the local acoustic watermark observed with this verdict.
+        // Later same-generation analysis must cover it before committing.
+        // Continually moving this fence with ambient energy can starve a
+        // valid endpoint forever when analysis is one network chunk behind.
+        verdict={...a,captureFence:lastEnergy};
+      }
       else if(verdict&&a.generation!==verdict.generation)verdict=undefined;
       else if(verdict&&a.audio_bytes>=verdict.audio_bytes){
         // Local energy is only a freshness fence, not a speech classifier.
         // Keep the exact endpoint while newer same-generation analysis catches
         // up with ambient sound. Renewed speech still replaces its generation.
-        verdict={...a,endpoint:verdict.endpoint};
+        verdict={...a,endpoint:verdict.endpoint,captureFence:verdict.captureFence,wordFence:verdict.wordFence};
       }
       consider();
     }
