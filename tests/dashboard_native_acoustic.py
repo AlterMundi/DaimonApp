@@ -45,6 +45,14 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         await self.ack('ACTIVITY_START','0s')
         await self.session.feed(b'\0\0'*1600)
         await self.session.activity(self.activity(6400,endpoint=True))
+    async def test_first_local_marker_freezes_each_phrase_question_scope(self):
+        selected={'c'*32:'d'*64}
+        await self.session.marker(640,selected)
+        selected['c'*32]='e'*64
+        await self.first()
+        self.assertEqual(self.bridge.captures[0][2],{'c'*32:'d'*64})
+        with self.assertRaises(ForegroundUnavailable):await self.session.marker(640,{})
+
     async def test_endpoint_ends_native_audio_before_transcript_or_integrator(self):
         await self.first()
         self.assertEqual([v[0] for v in self.bridge.stream.events],['start','pcm','pcm','end'])
@@ -56,6 +64,16 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.transcripts,[])
         await self.ack('ACTIVITY_END','0.2s')
         self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'Hello')])
+    async def test_early_noninterim_text_is_not_committed_as_a_whole_original(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.ack('ACTIVITY_START','0s')
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'Unexpected early segment'})
+        await self.session.close()
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.bridge.captures[0][1],b'\1\0'*1600)
+
     async def test_end_ack_before_transcript_has_the_same_source(self):
         await self.first();await self.ack('ACTIVITY_END','0.2s')
         self.assertEqual(self.bridge.transcripts,[])

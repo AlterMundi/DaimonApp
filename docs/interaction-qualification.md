@@ -15,6 +15,23 @@ surface. Fluency means useful coordination, not imitation of a serial human chat
 The immutable `daimon-interaction-v0.1.0` tags mark the first functional baseline,
 not daily-use acceptance. Keep that milestone while improving the experience.
 
+## Native foreground qualification
+
+The1November native speech path is specified in
+[interaction-voice-foreground.md](interaction-voice-foreground.md). The mounted
+opt-in socket/avatar tests are synthetic source evidence. Actual provider/native
+speech, receiving adoption and human hearing remain separate acceptance items.
+The next paid session must exercise this whole path, not another isolated
+arithmetic/transport probe. Reuse the retained15/18/26October research.
+
+A WebSocket client context ending does not prove provider cleanup. The mounted
+fixture now waits on actual provider/detector closure. Its forced ASGI
+cancellation exposed cleanup being skipped at an awaited cancellation point;
+provider closure is now synchronous before separately shielded cleanup. A
+provider tool cancellation retires only that proposal/watch, never native work
+or the conversation. Keep unoffered canonical references for a later watch and
+do not repeat an uncertain provider response or integrating admission.
+
 ## Browser observation discipline
 
 Use synchronous `waitForFunction` predicates for local browser readiness. For

@@ -20,6 +20,7 @@ class Span:
     start: int
     generation: int
     analyzed: int
+    questions: dict | None = None
     end: int | None = None
     sent: int = 0
     stream_start: int | None = None
@@ -42,7 +43,20 @@ class NativeAcousticSession:
         self.notify=notify
         self.pcm=bytearray();self.analyzed=0;self.boundary=0;self.sent=0
         self.spans=[];self.local=None;self.provider=None;self.created=0
+        self.markers=[]
         self.closed=False;self.lock=asyncio.Lock()
+
+    async def marker(self,audio_bytes,questions):
+        # The client emits this narrowing snapshot before the PCM containing its
+        # first conservative local energy marker. It adds no question authority.
+        from .provider import Provider
+        Provider.check_capture_questions(questions)
+        async with self.lock:
+            if (self.closed or type(audio_bytes) is not int or audio_bytes%2
+                    or not len(self.pcm)<audio_bytes<=len(self.pcm)+32000
+                    or len(self.markers)>=4 or self.markers and audio_bytes<=self.markers[-1][0]):
+                raise ForegroundUnavailable('Capture scope marker does not precede its PCM')
+            self.markers.append((audio_bytes,dict(questions or {})))
 
     async def feed(self,pcm):
         async with self.lock:
@@ -72,7 +86,9 @@ class NativeAcousticSession:
                     if len(self.spans)>=4 or self.created>=self.max_spans:
                         raise ForegroundUnavailable('Captured phrases need review before more voice')
                     start=max(self.boundary,onset['audio_bytes']-16000)
-                    self.local=Span(str(uuid.uuid4()),start,generation,end,sent=start)
+                    scope=next((q for n,q in self.markers if self.boundary<n<=onset['audio_bytes']),self.questions)
+                    self.markers=[(n,q) for n,q in self.markers if n>onset['audio_bytes']]
+                    self.local=Span(str(uuid.uuid4()),start,generation,end,questions=dict(scope),sent=start)
                     self.spans.append(self.local);self.created+=1
                     await self.notify({'type':'capture_started','id':self.local.ident,'start':start})
                 else:self.local.generation=generation
@@ -88,7 +104,8 @@ class NativeAcousticSession:
                 if end-span.start>120*32000:
                     raise ForegroundUnavailable('Captured phrase exceeds its live bound')
                 span.end=end;self.local=None;self.boundary=end
-                self.bridge.capture(span.ident,bytes(self.pcm[span.start:end]),self.questions)
+                self.markers=[(n,q) for n,q in self.markers if n>end]
+                self.bridge.capture(span.ident,bytes(self.pcm[span.start:end]),span.questions)
                 await self.detector.boundary({'generation':endpoint['generation'],'audio_bytes':end})
                 await self.notify({'type':'phrase_end','id':span.ident,'start':span.start,'end':end})
             await self._pump()
@@ -146,7 +163,8 @@ class NativeAcousticSession:
                     span.end_ack=True
             else:
                 text=event.get('text')
-                if (not span.start_ack or span.text is not None or not isinstance(text,str)
+                if (not span.start_ack or span.end is None or span.stream_end is None
+                        or span.text is not None or not isinstance(text,str)
                         or not text.strip() or len(text.encode())>16000):
                     raise ForegroundUnavailable('Input transcript needs source review')
                 span.text=text
@@ -160,5 +178,5 @@ class NativeAcousticSession:
             # It remains foreground_captured, never automatically delegated.
             if self.local and len(self.pcm)>self.local.start:
                 span=self.local
-                self.bridge.capture(span.ident,bytes(self.pcm[span.start:]),self.questions)
+                self.bridge.capture(span.ident,bytes(self.pcm[span.start:]),span.questions)
             self.pcm.clear();self.local=None;self.spans.clear();self.provider=None

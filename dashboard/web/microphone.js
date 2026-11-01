@@ -164,7 +164,7 @@ window.VoiceInput = (() => {
       lastConfirmed=value;
       onInput(value,frozen.focusVersion);onVisualSent(frozen.visual);onFilesSent(frozen.files);pending=undefined;phase='idle';
       try{await recovery?.remove(frozen);if(recovery)recoveryFree=(await recovery.list()).length===0;}catch{recoveryFree=false;}
-      notice(value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
+      notice(value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
         value.phase==='retained_unsent'?'Recording saved; no work was submitted. You can keep writing.':
         value.phase==='preparation_unconfirmed'?'Recording saved; transcription unconfirmed. Nothing was resubmitted.':
         value.phase==='preparing'?'Confirming transcript…':
@@ -313,6 +313,10 @@ window.VoiceInput = (() => {
       const frozen={...original,audio_sha256:Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join(''),localRecovery:true};
       await recovery.put(frozen,true);recoveryFree=false;return frozen;
     }
+    async function releaseContinuous(original,hash){
+      if(original.binding!==getBinding()||original.audio_sha256!==hash)throw Error('Original confirmation changed');
+      await recovery?.remove(original);if(recovery)recoveryFree=(await recovery.list()).length===0;
+    }
     async function commitContinuous(frozen){
       if(frozen.binding!==getBinding()||uploading||pending&&pending.id!==frozen.id||['permission','recording','finalizing'].includes(phase))return {confirmed:false};
       pending=frozen;phase='idle';lastConfirmed=undefined;
@@ -381,7 +385,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
   return {mount};
 })();

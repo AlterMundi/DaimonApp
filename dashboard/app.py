@@ -1,4 +1,5 @@
 """Private Telegram Mini App shell and explicit receiving-owner controls."""
+import asyncio
 from contextlib import aclosing, asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -258,6 +259,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             return await run_in_threadpool(authorize, request)
         return authorize(request)
 
+    from .native_history import NativeHistory
+    app.state.native_history=NativeHistory(database,binding)
     from .live_transcription import install as install_live_transcription
     can_stream_transcribe = install_live_transcription(app,config,provider,authorize_async,[origin,*additional_origins])
 
@@ -287,7 +290,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         client_build = hashlib.sha256((public / 'index.html').read_bytes())
-        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             client_build.update(name.encode() + b'\0' + asset)
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -322,6 +325,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                        'sizes':str(size)+'x'+str(size), 'type':'image/png', 'purpose':'any'}
                       for size in (192,512)]}, media_type='application/manifest+json')
 
+    @app.get('/api/interaction/foreground')
+    async def foreground_history(request:Request,before:int=0):
+        session=await authorize_async(request)
+        if not 0<=before<=2**63-1:raise HTTPException(400,'Invalid foreground history cursor')
+        value=await asyncio.to_thread(app.state.native_history.page,session['human'],before)
+        await authorize_async(request)
+        return value
+
     @app.get('/api/interaction/events')
     async def interaction_events(request: Request):
         session = await authorize_async(request)
@@ -330,7 +341,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         if config.get('activity_state_dir'):
             paths.append(Path(config['activity_state_dir']) / 'topics.json')
         alert_reads = dict(session).get('scope') is None or dict(session).get('alerts_access') is True
-        subscribe = getattr(alerts, 'subscribe', None) if alert_reads else None
+        alert_subscribe=getattr(alerts,'subscribe',None) if alert_reads else None
+        def subscribe(notify):
+            closers=[app.state.native_history.subscribe(notify)]
+            try:
+                if alert_subscribe:closers.append(alert_subscribe(notify))
+            except BaseException:
+                for close in closers:close()
+                raise
+            def close():
+                for closer in closers:closer()
+            return close
         async def stream():
             checked = time.monotonic()
             async for changed in changes(paths, subscribe=subscribe):
@@ -364,7 +385,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]
@@ -453,6 +474,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_speak_live_response':bool(speech and speech.live_response),
                 'can_download_files':can_files,'artifacts':files,
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
+                'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('continuous') is True

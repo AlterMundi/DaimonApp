@@ -10,6 +10,7 @@
     <script src="assets/requests.js" defer></script>
     <script src="assets/voice-stream.js" defer></script>
     <script src="assets/voice-session.js" defer></script>
+    <script src="assets/native-conversation.js" defer></script>
     <script src="assets/microphone.js" defer></script>
     <script src="assets/visual.js" defer></script>
     <script src="assets/files.js" defer></script>
@@ -152,7 +153,7 @@
         </details>
         <details id="conversation-sent"><summary>Routing monitor · your inputs and destinations</summary><p class="note">Open a message to inspect its original text, destination and forwarded input. Refreshing this monitor never resends work.</p><p id="conversation-telegram-state" class="note" role="status"></p><div id="conversation-inputs"></div><button id="conversation-inputs-older" type="button" hidden>Earlier app/device inputs</button><button id="conversation-telegram-older" type="button" hidden>Earlier Telegram inputs</button></details>
         <div id="conversation-replies" tabindex="-1">
-          <section aria-labelledby="conversation-answers-title"><h2 id="conversation-answers-title">Conversation replies</h2><div id="conversation-answers"></div></section>
+          <section aria-labelledby="conversation-answers-title"><h2 id="conversation-answers-title">Conversation replies</h2><div id="conversation-answers"></div><button id="conversation-foreground-older" type="button" hidden>Older voice conversation</button></section>
           <details id="conversation-session-originals"><summary>Session activity · original messages</summary><div id="conversation-results"></div></details>
           <button id="conversation-older" type="button" hidden>Earlier replies</button>
         </div>

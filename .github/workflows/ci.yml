@@ -365,6 +365,8 @@ jobs:
       - run: python -B tests/dashboard_native_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py
       - run: python -B tests/dashboard_native_acoustic.py
+      - run: python -B tests/dashboard_native_voice.py
+      - run: node tests/native_conversation_ui.js
       - run: python -B tests/dashboard_live_transcription.py
       - run: node tests/dashboard_live_ui.js
       - run: python -B tests/dashboard_sonic.py

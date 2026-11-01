@@ -287,14 +287,14 @@ then uses the existing prepared-transcript receipt and completed reader. Closing
 the voice session releases live buffers and wakes a pending return watch. A file
 write already in progress owns immutable bytes until it finishes; closing speech
 does not cancel an integrating task. Bounds remain300seconds/128captures,
-4pending captures,2owner calls,1file writer and8queued source references. This is
-server plumbing, not a mounted WebSocket/avatar or receiving deployment.
+4pending captures,2owner calls,1file writer and8queued source references. The opt-in WebSocket/avatar mounting is described below; no receiving deployment
+is established by these source tests.
 
 The native `voice capabilities` response advertises `foreground_retention: v1`
-and `foreground_completed_reader`. A future mounted mode must check both before
-offering its microphone; the current selected listener predates these fields.
-Actual acoustic boundaries, authenticated WebSocket mounting, assistant speech
-history, playback and the complete provider/native/device journey remain open.
+and `foreground_completed_reader`. The mounted mode checks both before offering its microphone; the current selected
+receiving listener predates these fields.
+Source mounting, assistant speech history and playback are implemented behind
+the opt-in flag below. The actual provider/native/device journey remains open.
 
 `dashboard/native_acoustic.py` maps the existing server detector's exact onset
 and endpoint observations to the observed manual native-audio protocol. An
@@ -307,9 +307,67 @@ can wait in acoustic order while that correlation finishes; native reservations
 also serialize so a slower earlier write cannot reverse ingress chronology.
 Closing retains an unfinished phrase's captured tail without delegating it.
 
-The acoustic adapter is not yet mounted. Its synthetic tests establish offset
+The acoustic adapter is mounted behind the opt-in native route. Its synthetic
+tests establish offset
 and source correlation, endpoint signaling before transcript arrival, bounded
 backlog and preservation on close. They do not qualify the actual detector,
 provider session, responsive speech or device behavior. The next paid provider
 session must use the complete mounted source/audio/integrator journey rather
 than another isolated arithmetic or transport probe.
+
+
+## Opt-in mounted browser path
+
+`streaming_transcription.native_dialogue = true` mounts the authenticated
+`/api/interaction/voice/native` WebSocket when the existing prepared Gemini
+credential and acoustic detector are configured. Default is false. The avatar
+selects it only when the server advertises it and the browser supports the PCM
+path. The Android native audio client retains the existing mode in this pilot.
+Normal chat, selected Sol workers, ASR and Qwen playback remain available.
+
+The route reuses shared login, exact Origin, CSRF and current entry checks. It
+checks the loaded native capabilities, completed reader and history capacity
+before opening the provider or offering microphone acquisition. Input, detector
+and provider events use bounded batches while fresh authorization is in flight;
+there is no authorization cache. Each live route has a305second outer deadline,
+one session per actor and the existing shared foreground-analysis capacity of
+at most2sessions. A disconnected ASGI request cannot
+skip provider closure or the separate bounded cleanup of already captured data.
+
+Before microphone acquisition, a bounded source-labelled context includes recent
+owned integrating text, original excerpts and assistant voice history. Those
+prior source IDs are contextual only; a delegation still requires genuine
+current-dialogue originals. One pending event-driven watch consumes current
+integrating result/question references, not arbitrary worker history. Source
+revision/currentness is checked again at offer time. Synthetic socket tests prove
+that native audio continues while this watch is pending and that one later
+canonical return can resolve it without repeating admission.
+
+The browser retains exact PCM ranges through the existing IndexedDB/WAV recovery
+path until the authenticated server confirms matching original hashes. A first
+local acoustic marker freezes that phrase's observed question versions before
+its PCM is sent; the server intersects this narrowing scope with native-owned
+questions. Missing markers retain the earlier arm-time fallback. No late Send,
+retry or transcript completion widens that scope. Unconfirmed copies remain for
+review on exit. Native PCM playback has a30second/512node queue bound, ordinary
+speaker and pause/resume controls, and matching phrase-ACK fences against an
+interrupted output restarting. Browser playback counters are observations, not
+proof of physical hearing or exact word uptake.
+
+Assistant utterances live as explicitly assistant-authored records in the
+existing app state database. They are not human inputs or invented native work
+results. Full text and Copy remain available in the normal timeline, including
+interrupted text marked as possibly unheard, with bounded16item history paging.
+History retains at most16384utterances/64MiB of text; capacity exhaustion stops
+new native voice rather than deleting history. No automatic expiry or archive is
+introduced. Existing original media retention remains its own owner. Only text
+and turn changes notify the existing event stream; PCM/playback bookkeeping does
+not cause whole-conversation refresh loops.
+
+Current evidence is source and synthetic mounted journeys, including revoked
+actor/old-listener refusal, exact WAV/source identity, independently retained
+assistant history, asynchronous delegation/returns, ordered originals and browser
+recovery/interruption controls. The real integrated provider/native journey,
+useful-speech latency, precise heard/unsaid uptake, actual receiving adoption and
+human device/hearing remain
+unqualified. No new phone test is implied until those receiving steps finish.

@@ -209,6 +209,7 @@ class ForegroundBridge:
             elif event['type']=='integrator_watch':
                 if self._watching:raise ForegroundUnavailable('An integrating watch is already pending')
                 self._watching=True
+                source=None
                 try:
                     source=await self._returns.get()
                     if source is None:
@@ -231,6 +232,15 @@ class ForegroundBridge:
                             'text':result['text'],'text_bounded':result.get('next_offset') is not None,
                             'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
                     self._offered.add((source['id'],source['revision']))
+                except asyncio.CancelledError:
+                    # Cancelling an unoffered read can return its canonical
+                    # reference to the next watch. An attempted provider response
+                    # stays terminal/uncertain and is never offered twice.
+                    if source is not None and not self.closed:
+                        key=(source['id'],source['revision'])
+                        if key not in self._offered and key not in self._queued and not self._returns.full():
+                            self._returns.put_nowait(source);self._queued.add(key)
+                    raise
                 finally:self._watching=False
             else:raise ForegroundUnavailable('Unsupported foreground tool')
         except ForegroundUnavailable as error:

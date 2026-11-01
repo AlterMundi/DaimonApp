@@ -19,7 +19,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     return setTimeout(fn,ms);
   };
   const cancelTimeout=id=>{if(gaps.has(id))gaps.delete(id);else clearTimeout(id);};
-  let capture,intersection,pageFailure,continuousHooks,continuousMode,continuousSession;const continuousCalls=[];const replyTexts=new Map(),partReads=[],replyHolds=new Map();
+  let capture,intersection,pageFailure,continuousHooks,continuousMode,continuousSession,nativeHooks,nativeSession;const continuousCalls=[];const replyTexts=new Map(),partReads=[],replyHolds=new Map();
   function element() {
     return {
       children: [], dataset: {}, handlers: {}, classList: {toggle() {}},
@@ -114,6 +114,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       if(heldRoute){const held=heldRoute;heldRoute=undefined;held.started();await held.promise;}
       originals.set(id,value);return value;
     }
+    if(url.pathname==="/interaction/foreground")return {items:options.foreground||[],before:0,more:false};
     if (url.pathname.startsWith("/interaction/inputs/")) {
       statusReads.push(url.pathname);
       if (heldStatus) {const held=heldStatus;heldStatus=undefined;held.started();await held.promise;if(held.fail)throw new TypeError("Delayed status failure");}
@@ -150,7 +151,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -206,6 +207,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   }};
   if(options.liveSpeech)vm.runInContext(fs.readFileSync("dashboard/web/live-speech.js", "utf8"), context);
   if(options.timingEvents)context.window.ConversationTiming={mount:()=>Object.fromEntries(["bind","mark","input","source","pauseApplied"].map(name=>[name,(...args)=>options.timingEvents.push([name,...args])]))};
+  if(options.nativeVoice)context.window.NativeConversation={supported:()=>true,create(hooks){nativeHooks=hooks;
+    return nativeSession={active:false,floor:false,hasAudio:false,paused:false,originals:[],enabled:true,
+      start(){this.active=true;continuousCalls.push(['native-start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},
+      hold(){this.active=false;continuousCalls.push(['native-hold']);},setEnabled(value){this.enabled=value;},
+      pause(){this.paused=true;hooks.onState({active:true,floor:false,pending:false,playback:'paused'});},
+      resume(){this.paused=false;hooks.onState({active:true,floor:false,pending:false,playback:'playing'});},release(){}};
+  }};
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
   if(options.autoText)context.window.IntersectionObserver=class{
     constructor(callback){intersection=callback;}observe(){}unobserve(){}disconnect(){}
@@ -221,7 +229,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   ui.authenticated();
   return {ui, copied,statusReads, nodes, requests, originals,replyTexts,partReads,humanTasks,streamedTransports,
-    continuous:()=>({hooks:continuousHooks,mode:continuousMode,session:continuousSession,calls:continuousCalls}),microphoneState:(value,detail)=>capture.onActivity(value,detail),
+    continuous:()=>({hooks:continuousHooks,mode:continuousMode,session:continuousSession,calls:continuousCalls}),native:()=>({hooks:nativeHooks,session:nativeSession}),microphoneState:(value,detail)=>capture.onActivity(value,detail),
     rangeGeometry(fn){context.document.createRange=fn;},
     reducedMotion(value){context.window.matchMedia=()=>({matches:value});},
     holdReplyText(id){let release,started;const entered=new Promise(yes=>{started=yes;}),promise=new Promise(yes=>{release=yes;});replyHolds.set(id,{promise,started});return {entered,release};},
@@ -1486,6 +1494,22 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(autoQuestion.nativePosts.length,0,'Speaking a question never approves or answers it');
   autoQuestion.advanceNativeRequest();await autoQuestion.ui.refresh();await until(()=>autoQuestion.audioCalls.length===2);assert.equal(autoQuestion.audioCalls[1].revision,'native-revision-2','The next question in one native request must still be spoken');
   autoQuestion.ui.stop();
+  const nativeAvatar=boot(false,true,{capture:true,continuous:true,nativeVoice:true,clock:true});
+  nativeAvatar.audio();await nativeAvatar.ui.refresh();nativeAvatar.continuous().mode.open();
+  assert.equal(nativeAvatar.native().session.active,true,'The avatar selects the mounted native mode');
+  assert(!nativeAvatar.continuous().calls.some(v=>v[0]==='start'),'Native mode does not start the serial ASR/Sol/TTS coordinator');
+  nativeAvatar.addReplies(1);await nativeAvatar.ui.refresh();
+  assert.equal(nativeAvatar.audioCalls.length,0,'Canonical returns do not also launch ordinary TTS during native voice');
+  const nativeRecord={id:'synthetic-voice-output',kind:'voice_foreground',speaker:'assistant',text:'Full generated voice text. '.repeat(200),observed_at:Date.now()/1000,closed:true,interrupted:true,cursor:1};
+  nativeAvatar.native().hooks.onUtterance(nativeRecord);
+  const voiceCard=nativeAvatar.nodes.get('#conversation-timeline').children.find(box=>box.children[0]?.textContent==='Voice conversation');
+  assert.equal(voiceCard.children[2].textContent,nativeRecord.text,'Voice history does not render a truncated preview');
+  await voiceCard.children[3].children[0].handlers.click();assert.equal(nativeAvatar.copied.at(-1),nativeRecord.text);
+  nativeAvatar.native().session.hasAudio=true;nativeAvatar.native().hooks.onState({active:true,floor:false,pending:false,playback:'playing'});
+  nativeAvatar.nodes.get('#conversation-audio').beforeNodes[0].handlers.click();assert.equal(nativeAvatar.native().session.paused,true);
+  nativeAvatar.nodes.get('#conversation-audio').beforeNodes[0].handlers.click();assert.equal(nativeAvatar.native().session.paused,false);
+  nativeAvatar.nodes.get('#conversation-voice-replies').handlers.click();assert.equal(nativeAvatar.native().session.enabled,false,'The existing speaker controls native speech too');
+  nativeAvatar.continuous().mode.close();assert.equal(nativeAvatar.native().session.active,false);nativeAvatar.ui.stop();
   const fixture = boot();
   await fixture.ui.refresh();
   fixture.arrive(); // Fifty new replies, then nine more during metadata refresh.
