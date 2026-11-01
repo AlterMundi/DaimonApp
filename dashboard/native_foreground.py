@@ -8,6 +8,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 import hashlib
+import json
 from pathlib import Path
 import re
 import uuid
@@ -39,7 +40,7 @@ class ForegroundBridge:
     max_pcm_bytes = 300 * 32000
     max_pending = 4
 
-    def __init__(self, provider, stream, cache_root, dialogue, binding, authorize):
+    def __init__(self, provider, stream, cache_root, dialogue, binding, authorize, *, speech_context=None):
         Provider.input_id(dialogue)
         if not re.fullmatch('[a-f0-9]{64}',binding) or not callable(authorize):
             raise ValueError('Select an owned foreground conversation')
@@ -48,6 +49,7 @@ class ForegroundBridge:
         self.provider,self.stream = provider,stream
         self.dialogue,self.binding = dialogue,binding
         self.authorize = authorize
+        self.speech_context = speech_context
         self.cache_root=private_directory(cache_root)
         self.originals=private_directory(Path(str(provider.receiver['db_path'])+'.voice'))
         self.captures={}
@@ -199,6 +201,15 @@ class ForegroundBridge:
                     await asyncio.shield(capture.completion)
                 result=await self._owner(self.provider.conversation_foreground_originals,
                                          self.dialogue,self.binding,event['before'])
+                if self.speech_context is not None:
+                    # A read of existing app history, never a hearing receipt,
+                    # human original or reason to start another native job.
+                    speech=await self._owner(self.speech_context)
+                    result=dict(result)
+                    for item in speech[:4]:
+                        candidate={**result,'assistant_speech':result.get('assistant_speech',[])+[item]}
+                        if len(json.dumps(candidate,allow_nan=False).encode())>16384:break
+                        result=candidate
             elif event['type']=='delegation_proposed':
                 sources=event['original_ids'];root=self.latest
                 if root not in sources:

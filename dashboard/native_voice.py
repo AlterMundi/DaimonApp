@@ -211,7 +211,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     if any(e['type']=='ready' for e in events):break
                     if time.monotonic()-started>15:raise ForegroundUnavailable('Native speech readiness timed out')
                 await recheck()
-                bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck)
+                def speech_context():
+                    history=app.state.native_history.page(owner,binding=meta['binding'],dialogue=meta['id'])
+                    return [{'id':item['id'],'speaker':'assistant_foreground',
+                        'text_excerpt':item['text'][:200],'text_bounded':len(item['text'])>200,
+                        'interrupted':item['interrupted'],'closed':item['closed'],
+                        'played_bytes':item['played_bytes'],'generated_bytes':item['generated_bytes'],
+                        'meaning':item['playback_meaning']} for item in history['items'][:4]]
+                bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
+                    speech_context=speech_context)
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual'})
                 tasks={asyncio.create_task(outputs()),asyncio.create_task(analysis()),asyncio.create_task(returns(cursor))}

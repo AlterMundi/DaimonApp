@@ -102,14 +102,17 @@ class NativeHistory:
         value['revision']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         return value
 
-    def page(self,human,before=0,*,binding=None):
+    def page(self,human,before=0,*,binding=None,dialogue=None):
         if type(before) is not int or not 0<=before<=2**63-1:raise ValueError('Invalid foreground history cursor')
         if binding is not None and (not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding)):
             raise ValueError('Select one foreground history binding')
+        if dialogue is not None:self.ident(dialogue)
         with self.database() as db:
             rows=db.execute('''SELECT rowid,* FROM foreground_utterances WHERE human=? AND scope=? AND rowid<?'''
-                +(' AND binding=?' if binding is not None else '')+' ORDER BY rowid DESC LIMIT 17',
-                (human,self.scope,before or 2**63-1)+((binding,) if binding is not None else ())).fetchall()
+                +(' AND binding=?' if binding is not None else '')+(' AND dialogue=?' if dialogue is not None else '')
+                +' ORDER BY rowid DESC LIMIT 17',
+                (human,self.scope,before or 2**63-1)+((binding,) if binding is not None else ())
+                +((dialogue,) if dialogue is not None else ())).fetchall()
         values=[self.view(row) for row in rows[:16]]
         return {'items':values,'before':values[-1]['cursor'] if values else before,'more':len(rows)>16,
                 'meaning':'Assistant-authored voice conversation. These are not human originals or native work results.'}

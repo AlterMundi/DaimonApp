@@ -1,6 +1,7 @@
 """Source ownership, uncertain admission and close races; no model/network calls."""
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -90,6 +91,15 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt['source_sha256'],hashlib.sha256(wav_bytes(pcm)).hexdigest())
         self.assertIs(self.bridge.transcript(ident,self.owner.text),capture.completion)
         with self.assertRaises(ForegroundUnavailable):self.bridge.transcript(ident,'changed text')
+    async def test_playback_context_cannot_overflow_or_replace_original_references(self):
+        original=str(uuid.uuid4())
+        self.owner.conversation_foreground_originals=lambda *args:{'sources':[{'id':original}],'context':'x'*15700}
+        self.bridge.speech_context=lambda:[{'text_excerpt':'y'*600,'played_bytes':0}]
+        result=await self.bridge.tool({'type':'source_query','call_id':'bounded','before':0})
+        self.assertEqual(result['sources'],[{'id':original}])
+        self.assertNotIn('assistant_speech',result,'Optional playback context yields to the existing tool response bound')
+        self.assertLessEqual(len(json.dumps(result).encode()),16384)
+        self.assertEqual(self.owner.delegations,[])
     async def test_owner_normalizes_outer_whitespace_without_losing_the_original(self):
         complete=self.owner.conversation_foreground_complete
         def normalized(*args):
