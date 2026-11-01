@@ -111,6 +111,42 @@ window.Conversation = (() => {
       const apps=$(".apps-return");if(apps){apps.title="Apps";apps.setAttribute("aria-label","Apps");}
       placeInspector();
     }
+    const budgetView=$("#conversation-coordination"),budgetRefresh=$("#conversation-coordination-refresh"),budgetStatus=$("#conversation-coordination-status"),budgetEpisodes=$("#conversation-coordination-episodes");
+    let canBudgets=false,budgetLoading=false;
+    const budgetLabels={paused:"Paused",expired:"Expired",not_started:"Not started",call_fuel_exhausted:"Call allowance exhausted",charge_exposure_unavailable:"Charge allowance reserved or insufficient",concurrency_full:"Concurrency limit reached",uncertain_exposure:"An earlier operation is unconfirmed",clock_untrusted:"Clock requires operator attention"};
+    async function loadBudgets(){
+      if(!canBudgets||budgetLoading)return;
+      budgetLoading=true;budgetRefresh.disabled=true;budgetStatus.textContent="Reading budgets…";
+      const authority=fileCredential();
+      try{
+        const value=await api("interaction/coordination");
+        if(!canBudgets||fileCredential()!==authority)return;
+        if(value.state!=="available"){budgetStatus.textContent=value.state==="busy"?"Another budget read is finishing. Refresh when ready.":"Budgets are not configured.";return;}
+        budgetEpisodes.replaceChildren();
+        for(const episode of value.episodes){
+          const card=node("li"),title=node("h3",episode.objective);card.append(title);
+          card.append(node("p",`${episode.work.queued||0} queued · ${episode.work.intent||0} admitted`,"note"));
+          const participants=node("details"),participantSummary=node("summary",`Participants (${episode.participants.length})`);participants.append(participantSummary,node("p",episode.participants.join(", "),"note"));card.append(participants);
+          const expiry=new Date(episode.end*1000);if(Number.isFinite(expiry.getTime()))card.append(node("p",`Expires ${expiry.toLocaleString()}`,"note"));
+          if(episode.constraints.length)card.append(node("p",episode.constraints.map(v=>budgetLabels[v]||v).join(" · "),"note"));
+          const accounts=node("ul");accounts.className="coordination-accounts";
+          for(const account of episode.accounts){
+            const row=node("li");row.append(node("strong",`${account.kind[0].toUpperCase()+account.kind.slice(1)} · ${account.account_id}`));
+            row.append(node("p",`${account.available_calls.toLocaleString()} of ${account.max_calls.toLocaleString()} calls left`));
+            row.append(node("p",`${account.available_charge.toLocaleString()} ${account.unit} available · ${account.spent.toLocaleString()} spent · ${account.reserved.toLocaleString()} reserved`,"note"));
+            row.append(node("p",`${account.active} active · ${account.uncertain} unconfirmed`,"note"));
+            if(account.paused)row.append(node("p","Paused","note"));accounts.append(row);
+          }
+          card.append(accounts);
+          if(episode.notice){const notice=node("p","Earlier allowance notice. Check the current balances above; reservations may have changed.","note");notice.dataset.noticeId=episode.notice.id;card.append(notice);}
+          card.append(node("p","Read only. These observations do not start work or change its limits.","note"));budgetEpisodes.append(card);
+        }
+        budgetStatus.textContent="Current budget observation. Refresh to read again.";
+      }catch(error){budgetEpisodes.replaceChildren();budgetStatus.textContent="Budgets are unavailable. The conversation can continue.";}
+      finally{budgetLoading=false;budgetRefresh.disabled=false;}
+    }
+    budgetRefresh?.addEventListener("click",loadBudgets);
+    budgetView?.addEventListener("toggle",()=>{if(budgetView.open)loadBudgets();});
     const speechGaps={chunk:180,reply:450,question:1200};
     let speechWait;
     const voiceQueue=[],voiceSeen=new Set(),voiceFinalTimes=new Map();
@@ -1607,6 +1643,9 @@ window.Conversation = (() => {
       companion?.configure?.(value.expression_pack,value.expression_pack_sha256);
       companion?.observe(value.activity);
       binding = value.binding;timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
+      canBudgets=!readOnly && value.can_view_coordination===true;
+      if(budgetView)budgetView.hidden=!canBudgets;
+      if(!canBudgets)budgetEpisodes?.replaceChildren();
       canFiles=!readOnly && value.can_download_files===true;
       if(!canFiles)clearFiles();
       else if(value.artifacts?.state==="unavailable")filesConnected=false;

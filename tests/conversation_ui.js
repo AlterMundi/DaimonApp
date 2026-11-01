@@ -56,6 +56,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   let losePost = false, offlinePost = false, heldPost, heldInputs, heldRequests, heldStatus, heldRoute, routePhase="accepted", submitPhase = "accepted";
   const api = async (route, body) => {
     const url = new URL(route, "https://fixture.invalid/");
+    if(url.pathname==="/interaction/coordination"){requests.push({budget:true,body});return options.budgetReport;}
     if(pageFailure && url.pathname==="/interaction"){const name=pageFailure;pageFailure=false;throw Object.assign(Error("Synthetic network suspension"),{name});}
     if(url.pathname==='/interaction/telegram-inputs'){
       if(options.telegramDenied)throw Object.assign(Error('Telegram observation denied'),{status:403});
@@ -151,7 +152,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -294,6 +295,21 @@ function boot(readOnly=false,standalone=false,options={}) {
 }
 
 (async () => {
+  const budgetOptions={budgetsGranted:true,budgetReport:{state:"available",episodes:[{id:"episode",objective:"Selected <script>literal</script>",participants:["CompAII","Eko"],work:{queued:1,intent:0},end:2000000000,constraints:["call_fuel_exhausted"],accounts:[{kind:"tribe",account_id:"tribe",available_calls:0,max_calls:3,available_charge:70,spent:10,reserved:20,unit:"test-units",active:0,uncertain:0,paused:false}],notice:{id:"a".repeat(64)}}]}};
+  const budgets=boot(false,true,budgetOptions);await budgets.ui.refresh();
+  assert.equal(budgets.requests.filter(r=>r.budget).length,0,"Regular refresh never polls budgets");
+  assert.equal(budgets.nodes.get("#conversation-coordination").hidden,false);
+  await budgets.nodes.get("#conversation-coordination-refresh").handlers.click();
+  assert.equal(budgets.requests.filter(r=>r.budget).length,1);
+  const budgetCards=budgets.nodes.get("#conversation-coordination-episodes");
+  assert.equal(budgetCards.children[0].children[0].textContent,"Selected <script>literal</script>");
+  await budgets.nodes.get("#conversation-coordination-refresh").handlers.click();
+  assert.equal(budgetCards.children.length,1,"Manual refresh replaces the same card; no repeated notice queue");
+  assert(budgets.requests.filter(r=>r.budget).every(r=>r.body===undefined),"Budget view has no write/native control request");
+  budgetOptions.budgetsGranted=false;await budgets.ui.refresh();
+  assert.equal(budgets.nodes.get("#conversation-coordination").hidden,true);assert.equal(budgetCards.children.length,0);
+  await budgets.nodes.get("#conversation-coordination-refresh").handlers.click();
+  assert.equal(budgets.requests.filter(r=>r.budget).length,2,"Revoked read permission cannot submit another read");
   const liveOptions={responseDraft:{provisional:true,text:"Useful early answer.",observed_at:"2100-01-01T00:00:00Z"}};
   const earlyDraft=boot(false,true,liveOptions);await earlyDraft.ui.refresh();
   const draftCard=earlyDraft.nodes.get('#conversation-timeline').children.find(c=>c.id==='conversation-response-draft');

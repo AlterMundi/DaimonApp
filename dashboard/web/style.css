@@ -1063,3 +1063,5 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 
 .standalone-conversation #conversation-audio-tools #conversation-player:not([hidden]) {background:transparent;}
 .standalone-conversation #conversation-player #conversation-voice-replies[data-voice-state="on"] {color:var(--accent);}
+
+.coordination-accounts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));gap:1rem;padding:0;list-style:none}.coordination-accounts li{min-width:0;overflow-wrap:anywhere}.coordination-accounts p{margin:.4rem 0}

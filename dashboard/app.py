@@ -22,6 +22,7 @@ from init_data_py import errors, validate_by_signature
 
 from .provider import Provider, ProviderUnavailable
 from .computer_health import ComputerHealth, HealthUnavailable
+from .coordination import Coordination, CoordinationUnavailable
 from .visual import VisualSelectionInvalid
 from .alerts import Receiver as AlertsReceiver, AlertsUnavailable
 from .traffic import Traffic
@@ -108,6 +109,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     if not state.is_dir() or state.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('Dashboard state must be owner-only')
     computer_health = ComputerHealth(config)
+    coordination = Coordination(config, provider)
     db_path = state / 'dashboard.sqlite3'
     if db_path.exists() or db_path.is_symlink():
         info = db_path.lstat()
@@ -211,7 +213,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 grant = companions.authenticate(device.group(1))
                 if grant is None:
                     raise HTTPException(401, 'Companion access is unavailable; operator enrollment required')
-                if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False)):
+                if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False)):
                     raise HTTPException(403, 'Companion access is limited to the integrating conversation')
                 return grant
             # A restricted WebView may omit cookies. Never downgrade an invalid
@@ -433,6 +435,20 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         authorize(request)
         return result
 
+    @app.get('/api/interaction/coordination')
+    async def coordination_snapshot(request: Request):
+        session = await authorize_async(request)
+        if dict(session).get('scope') is not None and dict(session).get('coordination_access') is not True:
+            raise HTTPException(403, 'This conversation has no budget read grant')
+        try:
+            result = await coordination.snapshot()
+        except (CoordinationUnavailable, OSError, ValueError, KeyError, TypeError, asyncio.TimeoutError):
+            raise HTTPException(503, 'Coordination budgets unavailable; no work was started') from None
+        session = await authorize_async(request)
+        if dict(session).get('scope') is not None and dict(session).get('coordination_access') is not True:
+            raise HTTPException(403, 'Budget read grant changed')
+        return result
+
     @app.get('/api/state')
     def snapshot(request: Request):
         session = authorize(request)
@@ -469,6 +485,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         await authorize_async(request)
         return {**result, 'csrf':session['csrf'],
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),
+                'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
                 'can_listen':speech is not None,
                 'can_stream_speech':bool(speech and speech.streaming),
                 'can_speak_live_response':bool(speech and speech.live_response),
