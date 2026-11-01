@@ -221,6 +221,25 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
                                           'current':True,'text':text}
         await self.bridge.close();await task
 
+    async def test_setup_context_can_be_read_without_reannouncing_and_still_revalidates(self):
+        source=self.source()
+        self.owner.parts[source['id']]={**source,'kind':'integrator_answer','entry_binding':[1],
+                                      'current':True,'text':'Retained result, not new work.'}
+        self.bridge.integrating_source(source,in_context=True)
+        self.assertFalse(self.bridge.integrating_source(source),'Do not speak old setup context again as a new return')
+        task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
+        await asyncio.sleep(0)
+        page=await self.bridge.tool({'type':'integrating_source_query','call_id':'read-context',
+            'source':source['id'],'revision':source['revision'],'offset':0})
+        self.assertEqual(page['text'],'Retained result, not new work.')
+        self.assertEqual([call for call,_ in self.stream.results],['read-context'])
+        self.owner.parts[source['id']]['current']=False
+        rejected=await self.bridge.tool({'type':'integrating_source_query','call_id':'stale-context',
+            'source':source['id'],'revision':source['revision'],'offset':0})
+        self.assertEqual(rejected['kind'],'not_ready');self.assertNotIn('text',rejected)
+        self.assertEqual(self.owner.delegations,[])
+        await self.bridge.close();await task
+
     async def test_integrating_read_cannot_select_an_unoffered_source(self):
         with patch.object(self.owner,'presentation_part',side_effect=AssertionError('Unscoped read')):
             result=await self.bridge.tool({'type':'integrating_source_query','call_id':'outside',
