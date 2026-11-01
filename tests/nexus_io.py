@@ -231,7 +231,7 @@ def visual_context(binary):
 def static_context(binary):
     j=Nexus(binary)
     try:
-        j.prepare();j.start();j.connect();j.idle()
+        j.prepare();j.idle()
         source=dict(resource='a'*32,publicationVersion='b'*64,id='model',version='c'*64)
         anchor=dict(kind='artifact_review',review_id='review',review_revision='v1',session_id='room',clock_source_id=None,source_time_ms=None)
         context=dict(schema_version=1,adapter='interactive_3d',adapter_version=1,capture_version=1,
@@ -264,6 +264,7 @@ def static_context(binary):
         enqueue('steer-revoked');j.wait(lambda:j.state_of('steer-revoked')[0]=='rejected')
         assert int((j.state/'admission-count').read_text())==3
         assert not any(x.get('method')=='turn/steer' and 'Observe this selected part' in json.dumps(x) for x in j.rpc)
+        print('PASS static native context delivery and revocation at submission/steering write boundary')
         return dict(profile='synthetic identity/model/operator; actual native process pipes',
             static_context_delivered=True,source_clock=None,revoked_after_dispatch_rejected=True,
             native_steering_boundary_revocation_rejected=True,new_review_native_turns=1)
