@@ -4,8 +4,23 @@ window.ContinuousConversation=(()=>{
   function create({headers,getBinding,getQuestions=()=>undefined,getPlayback=()=>undefined,
     retain,commit,onState=()=>{},onCaption=()=>{},onInterrupt=()=>{},onSent=()=>{},onReview=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,stopping=false,epoch=0,binding,source,analysis,media,abort,timer,unsubscribe;
-    let current,ring=[],bytes=0,lastEnergy=0,verdict,floor=false,blockedAt=Infinity,order=0,dispatching=false,holdReason;
+    let current,ring=[],bytes=0,lastEnergy=0,verdict,latestActivity,floor=false,blockedAt=Infinity,order=0,dispatching=false,holdReason;
     const slots=new Map();
+    function handoff(slot,gate,a=latestActivity){
+      if(!slot)return;
+      const ms=value=>Math.max(0,Math.min(120000,Math.floor((value-slot.start)/32)));
+      const detail={gate,captured_ms:ms(slot.end??bytes),words:!!slot.words};
+      if(current===slot){
+        if(Number.isSafeInteger(a?.audio_bytes))detail.analyzed_ms=ms(a.audio_bytes);
+        if(Number.isSafeInteger(verdict?.captureFence))detail.fence_ms=ms(Math.max(verdict.captureFence,verdict.wordFence||0));
+      }else for(const key of ['analyzed_ms','fence_ms'])if(slot.handoff?.[key]!==undefined)detail[key]=slot.handoff[key];
+      if(gate==='review')detail.review_after=slot.handoff?.review_after||slot.handoff?.gate;
+      // One latest metadata snapshot per original. Progress updates at most
+      // once per captured second; actual gate transitions remain immediate.
+      const old=slot.handoff;
+      if(old?.gate===gate&&Math.floor(old.captured_ms/1000)===Math.floor(detail.captured_ms/1000)&&old.words===detail.words)return;
+      slot.handoff=detail;onTiming(slot.id,'handoff',detail);
+    }
     function remaining(){return current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined;}
     function state(message){const pending=[...slots.values()].some(s=>s.review);onState({active,starting,floor,pending,working:!active&&slots.size>0&&!pending,message:holdReason||message,remaining:remaining()});}
     function stopTracks(){for(const track of media?.getTracks()||[])track.stop();media=undefined;}
@@ -14,7 +29,7 @@ window.ContinuousConversation=(()=>{
     function hold(message='Voice mode ended. Review your recordings before sending.'){
       if(stopping){state(message);review();return;}holdReason=message;stopping=true;active=false;starting=false;floor=false;clearTimeout(timer);abort?.abort();analysis?.close();analysis=undefined;
       const slot=current;
-      if(slot?.recorder?.state==='recording'){slot.review=true;onTiming(slot.id,'ended');slot.recorder.stop();}
+      if(slot?.recorder?.state==='recording'){slot.review=true;handoff(slot,'review');onTiming(slot.id,'ended');slot.recorder.stop();}
       else if(!slot)closeGraph();
       stopTracks();state(message);review();
     }
@@ -30,29 +45,31 @@ window.ContinuousConversation=(()=>{
     }
     function consider(){
       const slot=current,a=verdict;
-      if(!active||stopping||!slot?.recorder||slot.recorder.state!=='recording'||!slot.speech||!a?.endpoint)return;
+      if(!active||stopping||!slot?.recorder||slot.recorder.state!=='recording')return;
+      if(!slot.speech){handoff(slot,'waiting_speech');return;}
+      if(!a?.endpoint){handoff(slot,latestActivity?.speaking?'speaking':'waiting_endpoint');return;}
       const end=a.endpoint;
       // Late first captions must also wait for the local activity they observed.
       // Freeze that one decision watermark; the server classifier decides
       // whether subsequent energy is renewed speech or continuing background.
       if(slot.words&&a.wordFence===undefined)a.wordFence=lastEnergy;
       if(end.generation!==slot.generation||a.speaking!==false||end.audio_bytes<=slot.start
-         ||end.audio_bytes>bytes||Math.max(a.captureFence,a.wordFence||0)>a.audio_bytes)return;
+         ||end.audio_bytes>bytes||Math.max(a.captureFence,a.wordFence||0)>a.audio_bytes){handoff(slot,'waiting_analysis');return;}
       // Acoustic turn ownership is independent of ASR readiness. Keep the
       // exact recording pending, but do not hold playback behind late captions.
       if(floor){floor=false;state('Listening');}
-      if(!slot.words)return;
+      if(!slot.words){handoff(slot,'waiting_transcript');return;}
       // Captions can arrive after the analyzer's exact endpoint. Advancing
       // silence is not renewed speech; the acoustic fence above still owns it.
       // The current original owns PCM through its actual worklet flush. The
       // next recorder starts at that flush, not at this acoustic endpoint, so
       // late captions do not need the endpoint in the eight-second handoff ring.
       if(!analysis?.boundary(end)){hold('Voice analysis lost its turn boundary. Your recordings are kept.');return;}
-      slot.send=true;floor=false;verdict=undefined;onTiming(slot.id,'ended');slot.recorder.stop();if(!stopping)state('Finishing your phrase');
+      handoff(slot,'finishing');slot.send=true;floor=false;verdict=undefined;onTiming(slot.id,'ended');slot.recorder.stop();if(!stopping)state('Finishing your phrase');
     }
     function activity(a){
       if(!active||stopping||binding!==getBinding()){if(active)hold('Conversation changed. Your recordings are kept.');return;}
-      const slot=current;
+      latestActivity=a;const slot=current;
       if(slot&&a.onset?.audio_bytes>slot.start
          &&(slot.generation===undefined||a.onset.generation>slot.generation)){
         slot.generation=a.onset.generation;
@@ -92,7 +109,7 @@ window.ContinuousConversation=(()=>{
       if(!blob?.size||slot.retention)return;
       slot.blob=blob;const original=originalFor(slot);
       slot.retention=retainOriginal(slot,original).then(()=>{if(stopping)review();}).catch(()=>{
-        slot.retentionFailed=true;slot.original=original;slot.review=true;blockedAt=Math.min(blockedAt,slot.order);
+        slot.retentionFailed=true;slot.original=original;handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);
         hold('Local recovery unavailable. Keep this page open and save your recordings.');review();
       });
     }
@@ -113,9 +130,9 @@ window.ContinuousConversation=(()=>{
           if(slot.original.captureStop!==original.captureStop)await retainOriginal(slot,original);
           else slot.original={...slot.original,preparedText:original.preparedText};
         }else{slot.original=original;await retainOriginal(slot,original);}
-      }catch{slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Local recovery unavailable. Keep this page open and save your recordings.');review();return;}
-      if(!automatic){slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Your recording needs review. Nothing was resent.');review();return;}
-      slot.retained=true;slot.automatic=true;void drain();
+      }catch{handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Local recovery unavailable. Keep this page open and save your recordings.');review();return;}
+      if(!automatic){handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Your recording needs review. Nothing was resent.');review();return;}
+      handoff(slot,'confirming');slot.retained=true;slot.automatic=true;void drain();
     }
     async function drain(){
       if(dispatching)return;dispatching=true;
@@ -123,13 +140,13 @@ window.ContinuousConversation=(()=>{
         while(slots.size){
           const slot=[...slots.values()].sort((a,b)=>a.order-b.order)[0];
           if(!slot.retained||!slot.automatic||slot.submitted)return;
-          if(slot.order>=blockedAt||binding!==getBinding()){slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Earlier recordings need review. Your originals are kept.');review();return;}
+          if(slot.order>=blockedAt||binding!==getBinding()){handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Earlier recordings need review. Your originals are kept.');review();return;}
           slot.submitted=true;
           try{
             const result=await commit(slot.original);
-            if(!result?.confirmed||result.value?.id!==slot.id||result.value?.voice?.audio_sha256!==slot.original.audio_sha256){slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording confirmation is missing. Check its status before retrying.');review();return;}
-            slots.delete(slot.id);onSent(result.value);state(active?'Listening':slots.size?'Recordings need review':'Voice session ended');
-          }catch{slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording unconfirmed. Your originals are kept.');review();return;}
+            if(!result?.confirmed||result.value?.id!==slot.id||result.value?.voice?.audio_sha256!==slot.original.audio_sha256){handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording confirmation is missing. Check its status before retrying.');review();return;}
+            handoff(slot,'confirmed');slots.delete(slot.id);onSent(result.value);state(active?'Listening':slots.size?'Recordings need review':'Voice session ended');
+          }catch{handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording unconfirmed. Your originals are kept.');review();return;}
         }
       }finally{dispatching=false;}
     }
@@ -158,7 +175,7 @@ window.ContinuousConversation=(()=>{
     }
     async function start(){
       if(active||starting||slots.size||document.hidden||!getBinding())return false;
-      const owned=++epoch;binding=getBinding();starting=true;stopping=false;holdReason=undefined;bytes=lastEnergy=0;ring=[];floor=false;blockedAt=Infinity;order=0;dispatching=false;
+      const owned=++epoch;binding=getBinding();starting=true;stopping=false;holdReason=undefined;bytes=lastEnergy=0;latestActivity=undefined;ring=[];floor=false;blockedAt=Infinity;order=0;dispatching=false;
       abort=new AbortController();const ownAbort=abort;timer=setTimeout(()=>{if(owned===epoch)hold('Voice session reached five minutes. Your recordings are kept.');},300000);state('Preparing voice');
       try{
         const warmed=await window.StreamingVoice.openActivity({headers,binding,id:window.crypto.randomUUID(),signal:ownAbort.signal,
@@ -186,7 +203,7 @@ window.ContinuousConversation=(()=>{
           while(ring.length&&ring[0].end<=bytes-256000)ring.shift();
           if(!analysis.feed(value.pcm))hold('Voice analysis stopped. Your recordings are kept.');
           const left=remaining();
-          if(current&&left!==current.remaining){current.remaining=left;state();}
+          if(current&&left!==current.remaining){current.remaining=left;handoff(current,current.handoff?.gate||'waiting_speech');state();}
         });
         source.observe();active=true;starting=false;await arm(0,owned);return active;
       }catch{if(owned!==epoch)return false;hold('Voice could not start. You can keep using the ordinary conversation.');closeGraph();stopTracks();return false;}

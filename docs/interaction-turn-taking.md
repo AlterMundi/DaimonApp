@@ -104,6 +104,20 @@ verified that boundary across reload without a provider final event or any
 native submission. Physical phone acceptance and unfinished active PCM before
 a complete flush remain separate limitations.
 
+The existing Under the hood recording timings also expose the latest foreground
+handoff gate: detected speech, semantic endpoint, analysis watermark coverage,
+transcript, finalization, original confirmation or review. Captured/analyzed/fence
+positions are relative milliseconds for that original, with a caption-present
+boolean; no transcript, PCM, credentials or provider event is retained here.
+Only one latest snapshot per each of the existing eight page-local recording
+records is kept. Captured progress updates at most once per second, while gate
+transitions are immediate. Review retains the preceding gate and later analysis
+cannot erase that terminal observation. Clear/conversation replacement/page exit
+retain the existing timing-reader lifecycle; no new persistence, request, timer
+or polling path is installed. This exposes a stalled stage; it does not classify
+its cause or authorize sending/replaying an original. Older clients simply ignore
+the new optional timing event.
+
 The fullscreen status line shows the current original's remaining120-second
 recording budget, including silence already captured for that original. It
 updates only when the remaining whole second changes and uses the existing
