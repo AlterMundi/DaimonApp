@@ -15,6 +15,23 @@ surface. Fluency means useful coordination, not imitation of a serial human chat
 The immutable `daimon-interaction-v0.1.0` tags mark the first functional baseline,
 not daily-use acceptance. Keep that milestone while improving the experience.
 
+## Browser observation discipline
+
+Use synchronous `waitForFunction` predicates for local browser readiness. For
+asynchronous IndexedDB/hash/network snapshots, perform bounded `page.evaluate`
+polling and validate the exact returned snapshot. An installed Playwright polling
+implementation can treat a Promise as truthy before its eventual false result;
+an async predicate then returns early instead of waiting. Read the installed
+implementation and reproduce that boundary on an empty local page before blaming
+the app. Preserve the original failed observation; complete missing reads from
+retained state without repeating provider/native work.
+
+Inspect the receiving executable's actual hash and owning adoption receipt before
+starting a new real-provider fixture. A stale fixture pin is not a reason to
+replace the live binary. Known-unadmitted preparation can continue once after
+reconciling the qualified artifact; retain its failed preimage and prohibit replay
+when any original/provider/native admission is uncertain.
+
 ## What existing evidence establishes
 
 Evidence types are distinct: synthetic automation, real native/provider execution,

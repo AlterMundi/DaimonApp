@@ -662,3 +662,22 @@ Qualification must exercise the actual shared-home cookie route with delayed
 identity, revocation, ordered boundaries and overflow, beside existing companion
 grants. Synthetic delay proves the mechanism; phone latency/acceptance and the
 reported individual failure remain separate.
+
+
+### Completed-utterance recognition fallback
+
+A fresh explicit continuous session may upload its exact locally retained WAV
+once after a validated same-generation endpoint and complete audio flush, even
+when the streaming provider never confirms its final transcript. This uses the
+existing ordinary voice endpoint, UUID/hash/context, ordered drain, server
+original deduplication and configured final-file ASR. A matching completed stream
+receipt is still preferred by that same server path; partial captions never
+become a transcript. No provider reconnect or new automatic retry is introduced.
+
+Missing provider confirmation alone no longer forces manual Send for that
+already completed utterance. An unfinished/view-exit fragment, failed flush,
+recording limit, stale binding, local-retention failure or previously uncertain
+upload still requires the existing review/status path. Restoring a recording
+never invents the endpoint's automatic Send intent. The next utterance remains
+ordered behind the original's existing durable confirmation. A saved/preparing
+receipt proves server retention, not completed ASR, native delivery or hearing.
