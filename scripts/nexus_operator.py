@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', type=Path, required=True)
     parser.add_argument('--state', type=Path, required=True)
-    parser.add_argument('operation', choices=['capabilities', 'binding', 'configure', 'pending', 'inspect', 'dispatch', 'receipt', 'capture-input', 'current-visits'])
+    parser.add_argument('operation', choices=['capabilities', 'binding', 'configure', 'pending', 'inspect', 'dispatch', 'receipt', 'capture-input', 'current-visits', 'review-admission'])
     args = parser.parse_args()
     os.umask(0o077)
     directory = args.state.lstat()
@@ -48,6 +48,10 @@ def main():
         if set(body) != {'listener_id'}:
             raise ValueError('listener_scope_required')
         result = bridge.pending(body['listener_id'])
+    elif args.operation == 'review-admission':
+        if set(body) != {'listener_id', 'request_id', 'dispatch_id'}:
+            raise ValueError('exact_review_admission_scope_required')
+        result = bridge.review_admission(body['request_id'], body['listener_id'], body['dispatch_id'])
     elif args.operation in {'dispatch', 'inspect'}:
         if set(body) != {'listener_id', 'request_id'}:
             raise ValueError('request_scope_required')

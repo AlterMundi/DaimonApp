@@ -317,6 +317,21 @@ pub type CodexSteerResponse = std::result::Result<Option<String>, CodexSteerErro
 /// Plain-text input waiting to be appended to an active Codex turn.
 pub type SteerAdmissionCheck = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 
+/// The same native write-boundary check may need a bounded authority query.
+/// Keep synchronous goal controls unchanged; only input steering awaits this.
+pub enum SteerInputAdmission {
+    Sync(SteerAdmissionCheck),
+    Async(Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<()>> + Send + Sync>),
+}
+impl SteerInputAdmission {
+    async fn check(&self) -> Result<()> {
+        match self {
+            Self::Sync(check) => check(),
+            Self::Async(check) => check().await,
+        }
+    }
+}
+
 pub struct NativeTerminalObservation {
     pub turn_id: String,
     pub status: String,
@@ -338,7 +353,7 @@ pub struct CodexSteerRequest {
     pub images: Vec<std::path::PathBuf>,
     /// Revalidate captured admission at the native write boundary, after any
     /// preparation or metadata wait. This callback is local, never wire input.
-    pub admission_check: Option<SteerAdmissionCheck>,
+    pub admission_check: Option<SteerInputAdmission>,
     /// User text to append to the in-flight turn.
     pub text: String,
     pub client_message_id: Option<String>,
@@ -1544,7 +1559,7 @@ where
             }
 
             if let Some(check) = &steer.admission_check
-                && let Err(error) = check()
+                && let Err(error) = check.check().await
             {
                 let _ = steer
                     .response
@@ -2025,7 +2040,7 @@ async fn send_steer_request(
     pending_steers: &mut HashMap<u64, PendingSteer>,
 ) -> Result<()> {
     if let Some(check) = &steer.admission_check
-        && let Err(error) = check()
+        && let Err(error) = check.check().await
     {
         let _ = steer
             .response

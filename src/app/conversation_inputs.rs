@@ -491,9 +491,9 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
             .into_iter()
             .map(|a| a.path)
             .collect(),
-        admission_check: Some(Arc::new(move || {
-            shared.store.conversation_input_validate(human, &id)
-        })),
+        admission_check: Some(crate::codex::SteerInputAdmission::Sync(Arc::new(
+            move || shared.store.conversation_input_validate(human, &id),
+        ))),
         client_message_id: Some(format!("conversation:{}", input.id)),
         text: match &active.controller_hint {
             Some(hint) => {

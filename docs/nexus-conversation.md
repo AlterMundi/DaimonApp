@@ -264,3 +264,35 @@ a private conversation binding, and another human's access does not enroll their
 daimon. Real response/continued-listening and physical hearing acceptance remain
 separate from source tests and service readiness. Exact receiving identifiers,
 configuration and receipts stay in the private owning runbook.
+
+
+## Pinned static artifact reflection (source candidate)
+
+The paired backend advertises interactive_3d:v1 only when it implements immutable
+model review editions and the current model permission check. A compatible native
+receiver negotiates artifact_reflection alongside that schema. Static reactions
+carry an artifact anchor, null clock/time, original verified actor and the exact
+acknowledged camera/selection/model pin. Reflection prompts retain the original
+contribution and edition; they explicitly distinguish renderer metadata from
+actually inspected geometry and never authorize execution or audio deletion.
+
+The existing validation path calls the owner-local review-admission operation
+after a static input is dispatched and again at native submission/steering.
+The existing dispatch operation checks access for still-queued input itself. This
+rechecks the exact retained actor, table membership, binding, dispatch identity,
+full context and live model permission, including after a queue delay. The existing input admission hook now also accepts
+a bounded asynchronous check at the native write boundary; synchronous voice,
+workflow and conversation checks retain their previous behavior. Goal admission
+controls keep their existing synchronous contract. Missing
+or unavailable authority fails closed. This operation is read-only: it cannot
+create a dispatch, receipt, grant or native turn, cancel admitted work or replay
+an uncertain request. Admitted/uncertain requests keep their original identities.
+
+The controlled static_context process fixture checks exact native prompt delivery
+and permission loss after dispatch but before submission, with no additional
+native turn for the rejected reaction. Its identity, model/operator and native
+endpoint are synthetic; actual backend policy is qualified separately. Source
+support is not a production deployment or participant acceptance claim. Preserve
+existing bindings/uncertain work during adoption; do not reconnect as an upgrade
+shortcut. The receiving operator must observe the exact executable before
+advertising its schemas.
