@@ -136,6 +136,15 @@ class Dialogue(unittest.TestCase):
         self.assertEqual([i['type'] for i in items],['input_caption','input_transcript','output_transcript','turn_complete'])
         self.assertEqual(items[1]['end_offset'],'2s');self.assertNotIn('final',items[1])
         self.assertEqual(len(self.socket.sent),1)
+    def test_explicit_transcription_fragments_and_textless_end_marker_survive_transport(self):
+        self.ready()
+        partial=self.event({'serverContent':{'inputTranscription':{'text':'First part ','finished':False}}})[0]
+        self.assertEqual(partial['text'],'First part ');self.assertIs(partial['finished'],False)
+        final=self.event({'serverContent':{'inputTranscription':{'finished':True}}})[0]
+        self.assertEqual(final['type'],'input_transcript');self.assertEqual(final['text'],'');self.assertIs(final['finished'],True)
+        self.assertEqual(self.event({'serverContent':{'outputTranscription':{'finished':True}}}),[])
+        self.assertEqual(self.stream.tools,{})
+        self.assertEqual(len(self.socket.sent),1)
     def test_interruption_drops_same_event_audio_and_does_not_cancel_work(self):
         self.ready();self.event(self.proposal())
         items=self.event(self.audio(interrupted=True))

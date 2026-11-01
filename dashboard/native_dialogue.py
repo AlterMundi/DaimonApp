@@ -272,8 +272,13 @@ class NativeDialogue:
                             ('outputTranscription', 'output_transcript')):
             if field in content:
                 item = content[field]
-                events.append({'type': kind, 'text': self._text(item['text']),
-                               'start_offset': item.get('startOffset'), 'end_offset': item.get('endOffset')})
+                if not isinstance(item,dict) or 'finished' in item and type(item['finished']) is not bool:
+                    raise ValueError('Invalid transcription completion marker')
+                text=self._text(item.get('text','') if item.get('finished') is True else item['text'])
+                if not text and kind!='input_transcript':continue
+                events.append({'type': kind, 'text': text,
+                               'start_offset': item.get('startOffset'), 'end_offset': item.get('endOffset'),
+                               **({'finished':item['finished']} if 'finished' in item else {})})
         for part in content.get('modelTurn', {}).get('parts', []):
             audio = part.get('inlineData')
             if audio is not None:

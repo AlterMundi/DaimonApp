@@ -92,6 +92,34 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.transcripts,[])
         await self.session.provider_event({'type':'input_transcript','text':'Original'})
         self.assertEqual(self.bridge.transcripts[0][0],self.bridge.captures[0][0])
+    async def test_fragmented_transcript_waits_for_explicit_end_and_matching_audio_ack(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'First part ','finished':False})
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts,[],'Audio end alone cannot commit a partial transcript')
+        await self.session.provider_event({'type':'input_transcript','text':'and the rest.','finished':False})
+        self.assertEqual(self.events[-1]['text'],'First part and the rest.')
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'input_transcript','text':'','finished':True})
+        self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'First part and the rest.')])
+    async def test_explicit_fragments_can_arrive_while_captured_speech_is_still_open(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072));await self.ack('ACTIVITY_START','0s')
+        await self.session.provider_event({'type':'input_transcript','text':'Early ','finished':False})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.feed(b'\0\0'*1600);await self.session.activity(self.activity(6400,endpoint=True))
+        await self.session.provider_event({'type':'input_transcript','text':'ending.','finished':True})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts[0][1],'Early ending.')
+    async def test_fragmented_transcript_cannot_finish_on_an_unmarked_fragment_or_exceed_bound(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'Partial','finished':False})
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'not a final signal'})
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'x'*16000,'finished':False})
+        self.assertEqual(self.bridge.transcripts,[])
     async def test_next_phrase_is_retained_in_order_while_prior_transcript_is_pending(self):
         await self.first()
         await self.session.feed(b'\2\0'*1600)
