@@ -1,7 +1,8 @@
 // Mounted avatar engine with synthetic PCM/devices: no browser microphone/model.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto').webcrypto;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-const until=async f=>{for(let i=0;i<100;i++){if(f())return;await tick();}throw Error('Expected native voice transition');};
+// WebCrypto completes on a worker thread; event-loop turns are not a deadline.
+const until=async f=>{const deadline=performance.now()+2000;while(!f()){if(performance.now()>=deadline)throw Error('Expected native voice transition');await new Promise(resolve=>setTimeout(resolve,1));}};
 function boot(){
   const sockets=[],contexts=[],sources=[],retained=[],released=[],reviews=[],states=[],handoffs=[],timers=[];let permissionCalls=0,questions={old:'v1'},listener;
   class Socket{

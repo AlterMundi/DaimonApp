@@ -21,6 +21,24 @@ changes the requested outcome. A clear request goes to Sol without a redundant
 confirmation step. Its formulation preserves constraints, uncertainty and
 corrections. New speech remains conversational while work is pending; filler
 acknowledgments do not count as useful-response latency.
+After observed admission, the foreground should briefly confirm the actual
+formulated request was handed over and stay conversational rather than wait
+silently for its result. Pending/unconfirmed native acceptance is described as
+such. This confirmation is an admission-status acknowledgment, not a useful work
+result or evidence that the worker completed anything.
+
+Two bounded synthetic native-audio policy trials on1November observed the
+exploration/execution distinction and this admission response separately. With
+the earlier instruction, exploration stayed conversational and the later
+explicit request used its supplied original reference, but no assistant output
+preceded the deliberately delayed fake result. With the explicit admission
+instruction, a separate one-request trial generated confirmation text536ms
+after fake admission, before the delayed result, then presented that result.
+Both used one provider connection and fake tools only, with no Sol/worker job,
+human original, app change or hardware capture. This is an observed policy
+response, not a controlled latency comparison or receiving acceptance. The
+first PCM event contained only two bytes; it cannot establish intelligible
+sound. Useful-result and physical-playback latency remain separate open measures.
 
 On opening, assistant voice context is selected from the current integrating
 binding. Earlier bindings remain in readable history, but are not silently
