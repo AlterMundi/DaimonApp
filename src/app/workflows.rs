@@ -435,7 +435,9 @@ async fn deliver(app: &App, selected: crate::store::ReturnDispatch) -> Result<()
             text: String::new(),
             client_message_id: Some(format!("workflow-return:{id}@{}", selected.attempts)),
             goal: None,
-            admission_check: Some(Arc::new(move || shared.store.workflow_native_validate(&id))),
+            admission_check: Some(crate::codex::SteerInputAdmission::Sync(Arc::new(
+                move || shared.store.workflow_native_validate(&id),
+            ))),
             response: send,
         };
         if active.sender.send(packet).is_err() {

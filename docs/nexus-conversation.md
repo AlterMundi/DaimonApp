@@ -280,7 +280,10 @@ The existing validation path calls the owner-local review-admission operation
 after a static input is dispatched and again at native submission/steering.
 The existing dispatch operation checks access for still-queued input itself. This
 rechecks the exact retained actor, table membership, binding, dispatch identity,
-full context and live model permission, including after a queue delay. Missing
+full context and live model permission, including after a queue delay. The existing input admission hook now also accepts
+a bounded asynchronous check at the native write boundary; synchronous voice,
+workflow and conversation checks retain their previous behavior. Goal admission
+controls keep their existing synchronous contract. Missing
 or unavailable authority fails closed. This operation is read-only: it cannot
 create a dispatch, receipt, grant or native turn, cancel admitted work or replay
 an uncertain request. Admitted/uncertain requests keep their original identities.

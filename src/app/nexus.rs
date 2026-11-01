@@ -825,7 +825,15 @@ async fn steer(app: &App, id: &str, active: ActiveTurnSteerHandle) -> Result<()>
             tool_output: None,
             observation: None,
             images: vec![],
-            admission_check: None,
+            admission_check: Some({
+                let shared = app.shared.clone();
+                let doc = doc.clone();
+                crate::codex::SteerInputAdmission::Async(std::sync::Arc::new(move || {
+                    let shared = shared.clone();
+                    let doc = doc.clone();
+                    Box::pin(async move { validate(&shared, &doc).await })
+                }))
+            }),
             client_message_id: None,
             text: prompt(&doc)?,
             goal: None,

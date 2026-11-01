@@ -1202,7 +1202,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 let human = i.human_id;
                 let update = source.update_id;
                 let input_id = i.id.clone();
-                Arc::new(move || {
+                crate::codex::SteerInputAdmission::Sync(Arc::new(move || {
                     if epoch.as_deref() != Some(shared.store.stop_admission_epoch(target)?.as_str())
                         || !shared
                             .store
@@ -1217,7 +1217,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                     }
                     super::nexus::validate_input_target(&shared, update, target, human)?;
                     Ok(())
-                })
+                }))
             }),
             text,
             client_message_id: Some(i.id.clone()),

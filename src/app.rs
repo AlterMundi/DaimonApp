@@ -2851,11 +2851,11 @@ impl App {
                     .collect(),
                 admission_check: Some({
                     let shared = self.shared.clone();
-                    Arc::new(move || {
+                    crate::codex::SteerInputAdmission::Sync(Arc::new(move || {
                         shared
                             .store
                             .voice_validate(update_id, session_key, from_user_id)
-                    })
+                    }))
                 }),
                 client_message_id: update_id
                     .map(|id| format!("telegram:{}:{from_user_id}:{id}", session_key.chat_id)),

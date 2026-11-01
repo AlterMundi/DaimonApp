@@ -51,7 +51,8 @@ elif a.op=='review-admission':
  assert c['review_context']['adapter']=='interactive_3d'
  if out['dispatch_id'] and (pathlib.Path(a.state)/'deny-at-submission').exists():
   count=pathlib.Path(a.state)/'admission-count';n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
-  if n>=2:raise ValueError('model revoked after dispatch, before submission')
+  limit=(pathlib.Path(a.state)/'deny-at-submission').read_text();limit=int(limit) if limit.isdigit() else 2
+  if n>=limit:raise ValueError('model revoked after dispatch, before submission')
  out={'schema':'nexus.review-admission/v1','allowed':True,'request_id':v['request_id'],'dispatch_id':v['dispatch_id'],
       'artifact_anchor':c['artifact_anchor'],'review_context':c['review_context'],'review_actor_ref':c['review_actor_ref']}
 elif a.op=='receipt':
@@ -256,8 +257,16 @@ def static_context(binary):
         enqueue('revoked');j.wait(lambda:j.state_of('revoked')[0]=='rejected');j.idle()
         assert j.native_turns==starts+1
         assert int((j.state/'admission-count').read_text())>=2
+        # The third post-dispatch check runs inside the actual native steering
+        # write boundary, after both claim and channel preparation succeeded.
+        (j.state/'deny-at-submission').write_text('3');(j.state/'admission-count').unlink()
+        j.mode='hold';j.admit('Hold the existing native turn for static review');j.wait(lambda:bool(j.holding))
+        enqueue('steer-revoked');j.wait(lambda:j.state_of('steer-revoked')[0]=='rejected')
+        assert int((j.state/'admission-count').read_text())==3
+        assert not any(x.get('method')=='turn/steer' and 'Observe this selected part' in json.dumps(x) for x in j.rpc)
         return dict(profile='synthetic identity/model/operator; actual native process pipes',
-            static_context_delivered=True,source_clock=None,revoked_after_dispatch_rejected=True,new_native_turns=1)
+            static_context_delivered=True,source_clock=None,revoked_after_dispatch_rejected=True,
+            native_steering_boundary_revocation_rejected=True,new_review_native_turns=1)
     finally:j.close()
 
 
