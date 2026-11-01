@@ -118,6 +118,16 @@ or polling path is installed. This exposes a stalled stage; it does not classify
 its cause or authorize sending/replaying an original. Older clients simply ignore
 the new optional timing event.
 
+The fullscreen avatar also displays these local detector gates as a visible
+status badge, distinct from Gemini captions: waiting for voice detection, voice
+detected, waiting for phrase end, checking captured sound, phrase end detected,
+sending and sent. The latest end marker survives immediate recorder rearming
+until the next confirmed speech onset, so a fast transition cannot hide it.
+Late confirmation of an older original cannot replace the current detector state.
+A capture/analysis gap exceeding2seconds shows Voice analysis delayed. Caption
+text alone never asserts voice/endpoint detection. The badge is informational,
+uses the existing metadata callback and neither admits nor retries a recording.
+
 The fullscreen status line shows the current original's remaining120-second
 recording budget, including silence already captured for that original. It
 updates only when the remaining whole second changes and uses the existing

@@ -34,9 +34,12 @@
 .voice-mode-portrait pre { font:clamp(14px,3.6vw,32px)/1.15 ui-monospace,monospace;max-width:100%;margin:0;color:var(--accent);transform:none!important;white-space:pre; }
 .voice-mode-state { font-size:20px;color:var(--accent); }
 .voice-mode-state[data-near-limit="true"] { color:var(--warn); }
+.voice-mode-detection { font-size:16px;line-height:1.35;max-width:42em;padding:8px 12px;border:1px solid var(--accent);border-radius:var(--radius,12px);color:var(--accent);overflow-wrap:anywhere; }
+.voice-mode-detection[data-warning="true"] { color:var(--warn);border-color:var(--warn); }
 .voice-mode-caption { font-size:16px;line-height:1.4;min-height:2.8em;max-width:42em;max-height:4.2em;overflow:auto;overflow-wrap:anywhere; }
 .voice-mode-controls { display:flex;flex-wrap:wrap;justify-content:center;gap:12px; }
 .voice-mode-controls button { min-height:48px;font:inherit;font-size:16px; }
+@media (max-height:480px) { .voice-mode[open] { gap:8px; } }
 #conversation-companion pre[role=button] { cursor:pointer; }
 #conversation-companion pre[role=button]:focus-visible { outline:2px solid var(--accent);outline-offset:4px; }
 .direct-voice-open { overflow:hidden; }
