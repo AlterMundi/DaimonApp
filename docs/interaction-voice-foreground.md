@@ -248,6 +248,12 @@ carry an assistant formulation and bounded original IDs; only the owning bridge
 can validate their actual retained source/actor/binding and admit work.
 
 The adapter exposes provider input transcripts separately from interim captions.
+Transcription text is optional in the provider schema. Empty transcription
+metadata without an explicit input-end marker is ignored, while audio carried
+in that same message is still delivered. A mounted real-provider trial observed
+`outputTranscription:{}` alongside generated PCM; requiring its missing text
+closed the session. The regression reproduces that rejection and verifies that
+the corrected parser keeps the audio without inventing a human transcript.
 It deliberately does not interpret model output or `turnComplete` as a final human
 original: the [Live protocol](https://ai.google.dev/api/live) gives no guaranteed
 ordering between input transcription and other events. The capture/source bridge

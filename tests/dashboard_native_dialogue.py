@@ -153,6 +153,12 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event({'serverContent':{'outputTranscription':{'finished':True}}}),[])
         self.assertEqual(self.stream.tools,{})
         self.assertEqual(len(self.socket.sent),1)
+    def test_empty_optional_transcriptions_do_not_drop_coincident_audio(self):
+        self.ready()
+        events=self.event(self.audio(inputTranscription={},outputTranscription={}))
+        self.assertEqual([item['type'] for item in events],['audio'])
+        self.assertEqual(events[0]['pcm'],b'\1\0'*160)
+        self.assertEqual(self.event({'serverContent':{'inputTranscription':{'text':''}}}),[])
     def test_interruption_drops_same_event_audio_and_does_not_cancel_work(self):
         self.ready();self.event(self.proposal())
         items=self.event(self.audio(interrupted=True))

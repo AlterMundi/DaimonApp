@@ -279,8 +279,10 @@ class NativeDialogue:
                 item = content[field]
                 if not isinstance(item,dict) or 'finished' in item and type(item['finished']) is not bool:
                     raise ValueError('Invalid transcription completion marker')
-                text=self._text(item.get('text','') if item.get('finished') is True else item['text'])
-                if not text and kind!='input_transcript':continue
+                # Text is optional. Empty transcription metadata can accompany
+                # real audio; it is neither an error nor a final human original.
+                text=self._text(item.get('text',''))
+                if not text and (kind!='input_transcript' or 'finished' not in item):continue
                 events.append({'type': kind, 'text': text,
                                'start_offset': item.get('startOffset'), 'end_offset': item.get('endOffset'),
                                **({'finished':item['finished']} if 'finished' in item else {})})
