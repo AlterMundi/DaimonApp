@@ -24,6 +24,14 @@ speech, receiving adoption and human hearing remain separate acceptance items.
 The next paid session must exercise this whole path, not another isolated
 arithmetic/transport probe. Reuse the retained15/18/26October research.
 
+The first mounted real-provider journey reached acoustic endpoints and retained
+two WAV/transcript originals, but stopped before native work admission: Gemini
+prefixed the second interpretation with whitespace while the existing native
+owner normalized it. Completion verification now compares that owner's trimmed
+text contract; the prepared interpretation and exact audio bytes remain intact.
+The regression covers both values. This failed journey is retained, not a pass
+for asynchronous delegation/returns, and its originals must not be replayed.
+
 A WebSocket client context ending does not prove provider cleanup. The mounted
 fixture now waits on actual provider/detector closure. Its forced ASGI
 cancellation exposed cleanup being skipped at an awaited cancellation point;
@@ -37,8 +45,9 @@ receipt after backgrounding its actual task, and rechecks `CREATED` before each
 later reply. Run41297782951 failed while requesting that state through
 `ActivityScenario.moveToState`; the retained log establishes the timeout, not
 its underlying cause. The updated qualification keeps native decoding, delayed
-reply, notification and focus assertions; current-head emulator CI must verify
-it. This does not establish physical device/hearing acceptance.
+reply, notification and focus assertions. Emulator run41299771924 passed the
+updated decoder and Android checks. This does not establish physical
+device/hearing acceptance.
 
 ## Browser observation discipline
 

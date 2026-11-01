@@ -89,6 +89,21 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt['source_sha256'],hashlib.sha256(wav_bytes(pcm)).hexdigest())
         self.assertIs(self.bridge.transcript(ident,self.owner.text),capture.completion)
         with self.assertRaises(ForegroundUnavailable):self.bridge.transcript(ident,'changed text')
+    async def test_owner_normalizes_outer_whitespace_without_losing_the_original(self):
+        complete=self.owner.conversation_foreground_complete
+        def normalized(*args):
+            result=complete(*args)
+            result['text']=result['text'].strip()
+            return result
+        self.owner.conversation_foreground_complete=normalized
+        ident,pcm,capture=await self.captured(' Mientras Alfa trabaja ')
+        retained=await capture.completion
+        self.assertEqual(retained['text'],'Mientras Alfa trabaja')
+        receipt=__import__('json').loads((self.root/'prepared'/f'{ident}.json').read_text())
+        self.assertEqual(receipt['text'],' Mientras Alfa trabaja ')
+        self.assertEqual(receipt['source_sha256'],hashlib.sha256(wav_bytes(pcm)).hexdigest())
+        self.assertEqual(capture.phase,'foreground')
+
     async def test_read_does_not_admit_work_and_latest_correction_is_required(self):
         first,_,_=await self.captured();last,_,_=await self.captured('Correction')
         result=await self.bridge.tool({'type':'source_query','call_id':'read','before':0})

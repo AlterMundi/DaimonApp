@@ -156,7 +156,11 @@ class ForegroundBridge:
                     await asyncio.sleep(delay)
                     result=await self._owner(self.provider.conversation_input_status,ident)
                 if (result.get('id')!=ident or result.get('phase')!='foreground'
-                        or result.get('text')!=text or result.get('foreground_dialogue')!=self.dialogue
+                        # Native voice originals use the owner's existing outer
+                        # whitespace normalization. Keep the provider's exact
+                        # interpretation in the prepared receipt, but compare
+                        # the retained source using that established contract.
+                        or result.get('text')!=text.strip() or result.get('foreground_dialogue')!=self.dialogue
                         or result.get('voice',{}).get('audio_sha256')!=capture.digest):
                     raise ForegroundUnavailable('Completed original was not confirmed')
                 capture.phase='foreground';capture.pcm=b''
