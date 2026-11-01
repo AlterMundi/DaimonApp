@@ -3,6 +3,63 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Rendered Conversation, real worker and interruption —1November2026
+
+A further distinct qualification joins the shipped Conversation/avatar modal,
+IndexedDB original retention, capture worklet and browser output in real
+Chromium390x720 with actual CPU endpointing, Gemini3.8 speech, selected
+Sol6.1/openai/medium integration and one actual Sol worker. Input is a task-owned
+synthetic48000Hz MediaStream, resampled by the shipped worklet to16000Hz. The
+actor is synthetic; normal app.js/shared-login bootstrap and optional integrations
+are excluded. This is a rendered Conversation integration, not phone acceptance.
+
+The new work request enumerates the first60primes and returns only their sum
+in speech. While the actual worker runs, a casual eclipse explanation stays in
+the foreground. A third injected phrase interrupts that explanation and changes
+the question to six-times-eight. The foreground produces48, then presents the
+canonical7699work result after Sol incorporates the complete independently
+verified60-prime report. One continued return subscription, one actual worker
+instruction/result. Two native integrator physical turns/one user message and
+one actual worker turn are terminal/archived/notLoaded. Four automatic originals
+retain independent browser/native/prepared hash and text correlations; only the
+firsttwo are delegated. The casual/correction originals stay foreground-only.
+Browser originals release after matching confirmation; completed transient native
+capture files retire under the existing durable-transcript contract. No new
+media archive or changed retention is required for verification.
+
+The test-input injection request precedes the browser AudioBufferSource.stop
+call by96.8ms. This is one stop-call observation, **not rendered acoustic silence,
+physical hearing or word alignment**. The interrupted eclipse utterance retains
+93728browser-reported bytes out of448320generated. The correction and final sum
+respectively retain107522and276482generated/browser-reported bytes, closed and
+uninterrupted. All output buffers end or stop, capture track and audio contexts
+close, the owned browser/server stop, and the page reports zero errors. Visual
+inspection confirms the final result fits the390x720avatar modal.
+
+The existing controller again rejects an earlier foreground-only source selected
+for routing before Sol inspects/selects the accepted formulation root: two
+attempts, one admitted task, no task replay or cancellation from the interruption.
+Retained inspection confirms the correct input_ref and explicit routing guidance
+already existed in the actual native packet; do not diagnose a missing field or
+weaken admission based on that model selection error.
+
+The first browser preparation used the engine active getter, which also includes
+starting, and tried to inject PCM before capture existed. Its socket closed
+before initial metadata/provider opening: zero originals, both empty native
+threads archived/notLoaded. The corrected verifier waits for the actual state
+active=true/starting=false. This continues a known-unadmitted preparation; no
+model work was replayed. A later retained verifier initially looked for a WAV
+that the existing completed-transcript cleanup had correctly retired. Its
+correction compares the independently recorded hashes/text and expected cleanup,
+without reconstructing media or repeating the completed journey.
+
+This advances the joined digital experience. Physical microphone/hearing,
+echo/noise/music, phone interruption, actual shared-login/bootstrap in this
+journey, useful intelligible-sound latency distributions and the complete
+stages2/3/necessary4 with retained Android/Beacon/iOS/base remain open. Existing
+accepted login/client qualifications remain separate; production519/UI/APK did
+not change for this trial.
+
 ## Actual worker and conversational concurrency —1November2026
 
 One distinct mounted journey on qualified source70857ee7 uses real CPU

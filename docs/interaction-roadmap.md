@@ -59,6 +59,15 @@ complementary bounded digital observations, not one full physical-device trial.
 See the [qualification record](interaction-qualification.md) for limits and
 retained failed attempts, which were not replayed.
 
+A later rendered390pxConversation/avatar qualification joins the shipped capture
+worklet/output/IndexedDB with actual CPU/Gemini/Sol integration and an actual
+worker in one journey. A casual eclipse answer is interrupted and corrected to48;
+the independent worker's complete60-prime report returns as the requested7699sum.
+Only work originals delegate. The96.8ms input-request→source-stop-call interval
+is not acoustic silence/hearing. Synthetic injected media/actor, muted output
+and excluded ordinary app.js/shared-login bootstrap keep phone/physical and
+full-product acceptance distinct; see the qualification record.
+
 Full applicable CI and exact receiving bytes/capabilities passed for the selected
 runtime. Physical microphone/hearing, the full avatar journey on the person's
 phone, echo/noise, interruption/correction and useful real-world latency remain
