@@ -314,6 +314,13 @@ offset against a short excerpt. Optional evidence failure after dispatch retains
 the committed dispatch identity; it cannot authorize replay. Fresh source access
 still gates actual native submission and the async steering write boundary.
 
+The helper process needs the same NEXUS_HOME_ORIGIN and NEXUS_HOME_GRANTS_FILE
+selection as the paired Nexus web service for video source decisions. Configure
+those existing non-credential selectors in its owning service environment; web
+service environment does not automatically propagate to a separate native unit.
+Reuse the actual existing grant file and permissions, never copy grants or add a
+second identity/authorization store. Missing selection fails closed.
+
 Controlled native process checks exercise narrated, static and video delivery,
 with post-dispatch and steering-boundary revocation. The actual backend/operator
 check separately verifies original clip clock/version, bounded excerpts and
