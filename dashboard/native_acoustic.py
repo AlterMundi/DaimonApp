@@ -28,6 +28,8 @@ class Span:
     start_ack: bool = False
     end_ack: bool = False
     text: str | None = None
+    transcript_parts: str = ''
+    fragmented: bool = False
 
 
 class NativeAcousticSession:
@@ -168,11 +170,27 @@ class NativeAcousticSession:
                     span.end_ack=True
             else:
                 text=event.get('text')
-                if (not span.start_ack or span.end is None or span.stream_end is None
-                        or span.text is not None or not isinstance(text,str)
-                        or not text.strip() or len(text.encode())>16000):
+                if not span.start_ack or span.text is not None or not isinstance(text,str):
                     raise ForegroundUnavailable('Input transcript needs source review')
-                span.text=text
+                if 'finished' in event:
+                    if type(event['finished']) is not bool:
+                        raise ForegroundUnavailable('Input transcript completion is invalid')
+                    combined=span.transcript_parts+text
+                    if len(combined.encode())>16000:
+                        raise ForegroundUnavailable('Input transcript exceeds its live bound')
+                    span.transcript_parts=combined;span.fragmented=True
+                    if event['finished']:
+                        if not combined.strip():raise ForegroundUnavailable('Input transcript is empty')
+                        span.text=combined
+                    await self.notify({'type':'input_caption','id':span.ident,'text':combined})
+                else:
+                    # Preserve the observed single-transcript protocol. Once
+                    # fragmentation is explicit, absence of a marker cannot
+                    # silently finish it or substitute model turn completion.
+                    if (span.fragmented or span.end is None or span.stream_end is None
+                            or not text.strip() or len(text.encode())>16000):
+                        raise ForegroundUnavailable('Input transcript needs source review')
+                    span.text=text
             await self._pump()
 
     async def close(self):

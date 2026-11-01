@@ -363,6 +363,19 @@ can wait in acoustic order while that correlation finishes; native reservations
 also serialize so a slower earlier write cannot reverse ingress chronology.
 Closing retains an unfinished phrase's captured tail without delegating it.
 
+Explicit fragmented input transcription preserves the provider's optional
+[`finished` marker](https://googleapis.github.io/js-genai/release_docs/interfaces/types.Transcription.html).
+Marked fragments accumulate within the existing16000byte original bound, even
+when arriving before local phrase end. A textless `finished:true` ends that
+transcription; completion still requires the matching manual audio-end ACK.
+Model output/turn completion does not substitute for it. Cumulative captions
+remain visible; the empty end marker cannot erase them. Once fragmentation is
+explicit, an unmarked later fragment does not silently become the full original.
+The previously observed single unmarked transcript path remains supported.
+Synthetic transport/acoustic/mounted tests establish these conditions, not that
+the selected provider always emits this marker or preserves every long spoken
+word. Real long-utterance and unmarked segmentation qualification remain open.
+
 The acoustic adapter is mounted behind the opt-in native route. Its synthetic
 tests establish offset
 and source correlation, endpoint signaling before transcript arrival, bounded

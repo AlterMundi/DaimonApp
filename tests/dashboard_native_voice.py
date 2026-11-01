@@ -157,6 +157,30 @@ class Mounted(unittest.TestCase):
             ws.send_json({'type':'close'})
         self.assertEqual({item['id'] for item in history.page(100)['items']},{current,earlier})
         with self.assertRaises(ValueError):history.page(100,binding='invalid')
+    def test_explicit_transcript_fragments_commit_one_complete_original_after_end_marker(self):
+        def incomplete_end(stream):
+            stream.queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',
+                'audio_offset':f'{stream.total/32000:g}s','source':'provider_manual_activity_ack'},
+                {'type':'input_transcript','text':'Primera parte ','finished':False}])
+        with patch.object(Stream,'activity_end',incomplete_end),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            seen=[]
+            while not any(e['type']=='input_caption' for e in seen):seen.append(ws.receive_json())
+            self.assertFalse(self.owner.completed.is_set())
+            stream=Stream.opened[0];stream.queue.put([{'type':'turn_complete'}])
+            while ws.receive_json()['type']!='turn_complete':pass
+            self.assertFalse(self.owner.completed.is_set(),'Model completion is not human transcript completion')
+            stream.queue.put([{'type':'input_transcript','text':'y final.','finished':False},
+                              {'type':'input_transcript','text':'','finished':True}])
+            while not any(e['type']=='original_completed' for e in seen):seen.append(ws.receive_json())
+            captions=[e['text'] for e in seen if e['type']=='input_caption']
+            self.assertEqual(captions[-1],'Primera parte y final.')
+            self.assertFalse(any(e['type']=='input_transcript' for e in seen),'Raw fragments and empty end markers must not overwrite accumulated captions')
+            ws.send_json({'type':'close'})
+        self.assertEqual(len(self.owner.inputs),1)
+        self.assertEqual(next(iter(self.owner.inputs.values()))['text'],'Primera parte y final.')
+        self.assertEqual(self.owner.delegations,[])
     def test_native_voice_continues_while_an_integrating_return_watch_is_pending(self):
         self.owner.return_kind='integrator_progress'
         self.owner.native_returns=['result:retained-worker-return']

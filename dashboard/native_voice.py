@@ -91,6 +91,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             original=acoustic.provider.ident if acoustic.provider else None
                             await acoustic.provider_event(event)
                             event={**event,'id':original}
+                            # Explicit transcription fragments are rendered as
+                            # the acoustic owner's accumulated caption; an empty
+                            # final marker must not erase that complete text.
+                            if kind=='input_transcript' and 'finished' in event:continue
                         if kind in ('audio','output_transcript'):
                             if utterance is None:utterance=str(uuid.uuid4())
                             if kind=='audio':
