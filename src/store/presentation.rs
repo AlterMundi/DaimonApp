@@ -1367,6 +1367,7 @@ mod tests {
         let (instruction, _) = store
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
                     event_id: "1".into(),
@@ -1687,6 +1688,7 @@ mod tests {
         store
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
                     event_id: "2".into(),

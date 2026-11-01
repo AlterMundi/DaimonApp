@@ -105,6 +105,7 @@ pub(super) fn original_owned_on(
             };
             Ok((
                 SourceInput {
+                    tribu_source: None,
                     transcription,
                     channel: channel.into(),
                     event_id: update.to_string(),
@@ -134,6 +135,7 @@ pub(super) fn original_owned_on(
             }
             Ok((
                 SourceInput {
+                    tribu_source: input.tribu_source.clone(),
                     transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
                     channel: "conversation".into(),
                     event_id: id.clone(),
@@ -443,7 +445,7 @@ impl Store {
                 ))
             },
         )?;
-        rows.map(|row|{let(doc,phase,source)=row?;let i:crate::interaction::Instruction=serde_json::from_str(&doc)?;let source:crate::interaction::SourceInput=serde_json::from_str(&source)?;let capture=original_order_on(&conn,&source)?;let reference=source_reference(&source);let author=super::session_requests::author_on(&conn,&i.input_id)?;Ok(json!({"author":author,"instruction":i.id,"requests":i.requests,"relation":i.relation,"transport_phase":phase,"input_ref":reference,"capture_order":capture,"source_channel":source.channel,"transcription":source.transcription,"original_ingress_update":source.update_id,"source_message":source.origin,"human_text_excerpt":if author.is_none() && source.transcription.is_none(){Some(i.text.chars().take(4000).collect::<String>())}else{None},"attributed_text_excerpt":i.text.chars().take(4000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<Value>>>()
+        rows.map(|row|{let(doc,phase,source)=row?;let i:crate::interaction::Instruction=serde_json::from_str(&doc)?;let source:crate::interaction::SourceInput=serde_json::from_str(&source)?;let capture=original_order_on(&conn,&source)?;let reference=source_reference(&source);let author=super::session_requests::author_on(&conn,&i.input_id)?;Ok(json!({"author":author,"instruction":i.id,"requests":i.requests,"relation":i.relation,"transport_phase":phase,"input_ref":reference,"capture_order":capture,"source_channel":source.channel,"transcription":source.transcription,"tribu_source":source.tribu_source,"original_ingress_update":source.update_id,"source_message":source.origin,"human_text_excerpt":if author.is_none() && source.transcription.is_none(){Some(i.text.chars().take(4000).collect::<String>())}else{None},"attributed_text_excerpt":i.text.chars().take(4000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<Value>>>()
     }
 }
 
@@ -515,6 +517,7 @@ mod tests {
         );
         let closed = tokio_util::sync::CancellationToken::new();
         let mut source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "telegram:fixture".into(),
             event_id: "20".into(),

@@ -1,5 +1,52 @@
 # Visible and recoverable human requests
 
+## Tribu ingress into the existing Interaction integrator
+
+The explicitly selected `[tribu] mode = "interaction"` profile admits genuine
+paired-human public mentions into the **existing** native integrating conversation
+used by Daimon Interaction. I/O is ingress/egress, not a separate reasoning agent
+or a new context owner. The configured human and chat/topic must match
+`[interaction]` exactly; a work destination cannot serve as this entrance.
+Unspecified mode remains the historical `bounded` profile, whose dedicated-topic
+limits and retained journal are unchanged.
+
+The existing owner-private Unix socket accepts only the source ID. The adapter
+reads the canonical original through the maintained authenticated Tribu API,
+checks the current human/body selector and activation boundary, then captures it
+through Interaction's original-input transaction. The browser cannot supply
+Tribu provenance. The original retains its public source ID/revision, author,
+platform context and attestation; quoted/peer context is data. Routed work and
+new work-session creation retain the same provenance. No whole transcript or
+private memory is pooled.
+
+Admission uses a stable original-derived UUID independent of source revisions
+and native-session renewal. Exact repeats inspect retained state without another
+native submission, including after a lost acknowledgement or restart. Existing
+legacy admissions are observed without migration or replay. A source edit or
+withdrawal before native submission withdraws the retained original; it never
+mints another activation. Validation uses the existing native submission/steer
+boundary, including routed work, rather than a second launcher or polling loop.
+A new deployment must select a fresh activation boundary; old backlog stays inert.
+
+`/tribu pause` in the integrating topic pauses **incoming Tribu admission only**:
+queued Tribu originals become known-unsent, and arrivals during pause remain
+unsent under their exact identities. Resume does not replay them. Ordinary
+Interaction input, goals and work continue. Integrated mode does not install the
+legacy dedicated-topic deadline, disable goals/subagents or interrupt the whole
+integrator. `/tribu status` and the existing local `status` operation expose the
+bounded retained ingress state. `max_pending` bounds outstanding Tribu originals
+separately from ordinary input; native originals use the existing history store,
+not a new accumulating capture cache. Uncertain submission is never automatic
+retry fuel; integrated `retry` is rejected.
+
+Public replies remain explicitly selected `tribu-human` operations with their
+actual parent, audience and delivery evidence. Never mirror the private final
+answer automatically. Passive peer receipt does not start inference; peer-driven
+coordination remains a separately selected and enforced Matrix #312 policy.
+This profile's source implementation and fixture qualification are distinct from
+receiving activation and a genuine human public-mention acceptance journey.
+
+
 This change implements [#43](https://github.com/AlterMundi/telecodex/issues/43)
 using the existing native question broker and activity observer. It does not
 add a native RPC queue, model attention, memory ingestion or a Mini App.

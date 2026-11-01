@@ -1,10 +1,17 @@
 //! Human-per-message admission into the existing private topic writer.
 use super::*;
-use crate::{config::TribuConfig, store::TribuAdmission};
+use crate::{
+    config::{TribuConfig, TribuMode},
+    store::TribuAdmission,
+};
 use serde_json::{Value, json};
 
 fn policy(shared: &AppShared, key: SessionKey) -> Option<&TribuConfig> {
-    shared.config.tribu.as_ref().filter(|p| p.key() == key)
+    shared
+        .config
+        .tribu
+        .as_ref()
+        .filter(|p| p.key() == key && p.mode == TribuMode::Bounded)
 }
 
 pub(super) fn private_admission(
@@ -37,13 +44,29 @@ pub(super) async fn handle_topic_control(
     text: &str,
 ) -> Result<bool> {
     let key = SessionKey::new(message.chat.id, message.message_thread_id);
-    let Some(p) = policy(&app.shared, key) else {
+    let Some(p) = app.shared.config.tribu.as_ref().filter(|p| p.key() == key) else {
         return Ok(false);
     };
     if human != p.human_id {
         return Ok(true);
     }
     let (control, argument) = text.split_once(' ').unwrap_or((text, ""));
+    if p.mode == TribuMode::Interaction {
+        if control != "/tribu" {
+            return Ok(false);
+        }
+        match argument.trim() {
+            "pause" => app.shared.store.tribu_pause(key, true)?,
+            "resume" => app.shared.store.tribu_pause(key, false)?,
+            "status" | "" => {}
+            _ => bail!("Use /tribu pause, /tribu resume or /tribu status"),
+        }
+        let state = app.shared.store.tribu_integrated_status(key)?;
+        app.send_status(key.chat_id, Some(key.thread_id), &format!(
+            "Tribu integrated ingress: {}. Existing integrator work is unchanged; withdrawn inputs are not replayed.",
+            if state["paused"] == true { "paused" } else { "accepting authenticated human mentions" })).await?;
+        return Ok(true);
+    }
     if control == "/tribu" {
         match argument.trim() {
             "pause" => {
@@ -215,6 +238,56 @@ fn private_file(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+pub(super) async fn validate_integrated_source(
+    shared: &AppShared,
+    original: &crate::interaction::TribuSource,
+) -> Result<()> {
+    let p = shared
+        .config
+        .tribu
+        .as_ref()
+        .filter(|p| p.mode == TribuMode::Interaction)
+        .context("Integrated Tribu ingress is not selected")?;
+    let integrator = shared
+        .config
+        .interaction
+        .as_ref()
+        .context("Interaction disabled")?;
+    original.validate(p.human_id)?;
+    if integrator.entry() != p.key()
+        || integrator.human_id != p.human_id
+        || original.record["being_ref"] != p.being_ref
+        || shared.store.tribu_status(p.key())?["paused"] == true
+    {
+        bail!("Integrated Tribu ingress binding is retired or paused");
+    }
+    let id = original.record["id"]
+        .as_str()
+        .context("Missing original source")?;
+    let current = source(shared, id)
+        .await?
+        .context("Tribu original withdrawn")?;
+    if current["revision"] != original.record["revision"]
+        || current["text"] != original.record["text"]
+    {
+        bail!("Tribu original changed before native dispatch; retained without replay");
+    }
+    Ok(())
+}
+
+pub(super) async fn validate_conversation(
+    shared: &AppShared,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+) -> Result<()> {
+    let input = shared.store.conversation_input_read(human, entry, id)?;
+    if let Some(source) = &input.tribu_source {
+        validate_integrated_source(shared, source).await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn prepare(shared: &AppShared, queued: &mut QueuedTurn) -> Result<bool> {
     let Some(p) = policy(shared, queued.request.session_key) else {
         return Ok(true);
@@ -354,42 +427,44 @@ pub(super) async fn start(app: App) -> Result<()> {
         .shared
         .store
         .get_session(p.key())?
-        .context("Create the dedicated Tribu topic before enabling admission")?;
+        .context("Select an existing native conversation before enabling Tribu admission")?;
     // The selected chat/topic and owner establish the binding. Its title is
     // presentation and may be I/O or a human-selected name.
     if user.tg_user_id != p.human_id {
         bail!("Tribu topic binding mismatch");
     }
-    app.shared.store.tribu_check_thread(&session)?;
     app.shared.store.tribu_check_owner(p.key(), p.human_id)?;
-    // Re-establish cancellation of previously admitted work after a process
-    // restart. This is a native control action, never a model wake or replay.
-    let paused = app.shared.store.tribu_status(p.key())?["paused"] == true;
-    for item in app.shared.store.tribu_unsettled(p.key())? {
-        let Some(deadline) = item["deadline_at"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        else {
-            continue;
-        };
-        let delay = if paused {
-            Duration::ZERO
-        } else {
-            (deadline.with_timezone(&Utc) - Utc::now())
-                .to_std()
-                .unwrap_or_default()
-        };
-        let shared = app.shared.clone();
-        let id = item["id"]
-            .as_str()
-            .context("retained admission ID missing")?
-            .to_string();
-        tokio::spawn(async move {
-            sleep(delay).await;
-            if settle(&shared, &id, true).await.is_err() {
-                tracing::warn!("Tribu retained deadline interruption unconfirmed");
-            }
-        });
+    if p.mode == TribuMode::Bounded {
+        app.shared.store.tribu_check_thread(&session)?;
+        // Re-establish cancellation of previously admitted work after a process
+        // restart. This is a native control action, never a model wake or replay.
+        let paused = app.shared.store.tribu_status(p.key())?["paused"] == true;
+        for item in app.shared.store.tribu_unsettled(p.key())? {
+            let Some(deadline) = item["deadline_at"]
+                .as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            else {
+                continue;
+            };
+            let delay = if paused {
+                Duration::ZERO
+            } else {
+                (deadline.with_timezone(&Utc) - Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+            };
+            let shared = app.shared.clone();
+            let id = item["id"]
+                .as_str()
+                .context("retained admission ID missing")?
+                .to_string();
+            tokio::spawn(async move {
+                sleep(delay).await;
+                if settle(&shared, &id, true).await.is_err() {
+                    tracing::warn!("Tribu retained deadline interruption unconfirmed");
+                }
+            });
+        }
     }
     let parent = p
         .socket_path
@@ -472,11 +547,21 @@ pub(super) async fn start(app: App) -> Result<()> {
 pub(super) async fn handle_socket(app: &App, request: &Value) -> Result<Value> {
     let p = app.shared.config.tribu.as_ref().context("Tribu disabled")?;
     if request["op"] == "status" && request.as_object().is_some_and(|v| v.len() == 1) {
-        return app.shared.store.tribu_status(p.key());
+        return if p.mode == TribuMode::Interaction {
+            app.shared.store.tribu_integrated_status(p.key())
+        } else {
+            app.shared.store.tribu_status(p.key())
+        };
     }
     if request["op"] == "reconcile" && request.as_object().is_some_and(|v| v.len() == 1) {
-        reconcile_pending(&app.shared, p.key()).await?;
-        return app.shared.store.tribu_status(p.key());
+        if p.mode == TribuMode::Bounded {
+            reconcile_pending(&app.shared, p.key()).await?;
+        }
+        return if p.mode == TribuMode::Interaction {
+            app.shared.store.tribu_integrated_status(p.key())
+        } else {
+            app.shared.store.tribu_status(p.key())
+        };
     }
     let retry = request["op"] == "retry";
     if (!retry && request["op"] != "admit") || request.as_object().is_none_or(|v| v.len() != 2) {
@@ -491,6 +576,23 @@ pub(super) async fn handle_socket(app: &App, request: &Value) -> Result<Value> {
         if let Some(old) = app.shared.store.tribu_admission(&id)? {
             return Ok(json!({"id":old.id,"state":old.state,"duplicate":true}));
         }
+    }
+    if p.mode == TribuMode::Interaction {
+        if retry {
+            bail!("Integrated ingress observes exact originals; it never retries uncertain work");
+        }
+        let input_id = crate::interaction::TribuSource::identity(&p.being_ref, source_id, p.key());
+        if let Ok(old) = app
+            .shared
+            .store
+            .conversation_input_read(p.human_id, p.key(), &input_id)
+        {
+            return Ok(json!({"id":old.id,"state":old.phase,"duplicate":true}));
+        }
+        let record = source(&app.shared, source_id)
+            .await?
+            .context("Tribu source no longer actionable")?;
+        return super::conversation_inputs::admit_tribu(app, record).await;
     }
     if app.shared.store.native_writer_held(p.key())? {
         bail!("Native writer held during controlled maintenance");

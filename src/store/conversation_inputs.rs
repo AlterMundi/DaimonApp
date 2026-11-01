@@ -85,6 +85,8 @@ pub struct ConversationInput {
     pub native: String,
     pub epoch: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tribu_source: Option<crate::interaction::TribuSource>,
     /// Retained voice-layer exchange, separate from an admitted work request.
     /// The identifier groups originals; it is not provider or execution authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,7 +165,11 @@ impl ConversationInput {
 
     pub fn rendered(&self) -> String {
         let text = format!(
-            "{}{}{}",
+            "{}{}{}{}",
+            self.tribu_source
+                .as_ref()
+                .map(|s| s.rendered())
+                .unwrap_or_default(),
             self.foreground_context(),
             self.visual
                 .as_ref()
@@ -371,6 +377,9 @@ fn trace_original_on(
 pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
     if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {
         bail!("Foreground conversation has not been delegated as work");
+    }
+    if input.tribu_source.is_some() && super::tribu::paused_on(conn, input.entry)? {
+        bail!("Tribu ingress is paused");
     }
     eligible_binding_on(conn, input)
 }
@@ -684,6 +693,43 @@ impl Store {
             capture_questions,
             files,
             None,
+            None,
+        )
+    }
+
+    pub fn conversation_tribu_capture(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        source: crate::interaction::TribuSource,
+        max_pending: usize,
+    ) -> Result<(ConversationInput, bool)> {
+        source.validate(human)?;
+        let id = source.input_id(entry);
+        let text = source.record["text"]
+            .as_str()
+            .context("Missing Tribu text")?
+            .to_string();
+        let binding = {
+            let conn = self.conn.lock().expect("store mutex poisoned");
+            let (session, _) = super::presentation::entry_on(&conn, human, entry)?;
+            super::presentation::entry_binding(&conn, human, entry, session)?
+        };
+        self.capture_original_mode(
+            human,
+            entry,
+            &binding,
+            &id,
+            &text,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            Some((source, max_pending)),
         )
     }
 
@@ -720,6 +766,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
         )
     }
 
@@ -761,6 +808,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
         )
     }
 
@@ -897,7 +945,19 @@ impl Store {
         capture_questions: Option<std::collections::BTreeMap<String, String>>,
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
+        tribu: Option<(crate::interaction::TribuSource, usize)>,
     ) -> Result<(ConversationInput, bool)> {
+        if let Some((source, max_pending)) = &tribu {
+            source.validate(human)?;
+            if source.input_id(entry) != id
+                || source.record["text"] != text
+                || !(1..=100).contains(max_pending)
+                || voice.is_some()
+                || foreground_dialogue.is_some()
+            {
+                bail!("Tribu source does not match the exact original");
+            }
+        }
         if Uuid::parse_str(id)
             .ok()
             .is_none_or(|uuid| uuid.to_string() != id)
@@ -939,6 +999,7 @@ impl Store {
         if existing {
             let input = read_on(&tx, id, human)?;
             if input.entry != entry
+                || input.tribu_source.as_ref() != tribu.as_ref().map(|(s, _)| s)
                 || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
@@ -958,6 +1019,14 @@ impl Store {
                 bail!("Original conversation input identity is immutable");
             }
             return Ok((input, false));
+        }
+        if let Some((_, max_pending)) = &tribu {
+            let pending: usize = tx.query_row(
+                "SELECT count(*) FROM conversation_inputs WHERE session_id=?1 AND json_extract(doc,'$.tribu_source') IS NOT NULL AND retired=0 AND (phase IN ('retained','queued','sending','steering','awaiting_target','uncertain') OR (phase='routed' AND EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.id=json_extract(conversation_inputs.doc,'$.routing.instruction') AND i.phase IN ('queued','submitting','steering','uncertain','retained_unsent'))))",
+                [session], |r| r.get(0))?;
+            if pending >= *max_pending {
+                bail!("Tribu ingress pending bound reached");
+            }
         }
         if let Some(reference) = visual.as_ref() {
             reference.validate(true)?;
@@ -995,6 +1064,7 @@ impl Store {
             // A device hint cannot add another scope or authorize an answer.
             question_versions.retain(|id, version| limit.get(id) == Some(&*version));
         }
+        let tribu_paused = tribu.is_some() && super::tribu::paused_on(&tx, entry)?;
         let input = ConversationInput {
             id: id.into(),
             human,
@@ -1003,6 +1073,7 @@ impl Store {
             native,
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
+            tribu_source: tribu.map(|(source, _)| source),
             foreground_dialogue: foreground_dialogue.clone(),
             foreground_delegation: None,
             visual,
@@ -1016,7 +1087,8 @@ impl Store {
             routing: None,
             phase: if foreground_dialogue.is_some() && voice.is_none() {
                 "foreground"
-            } else if !can_prepare
+            } else if tribu_paused
+                || !can_prepare
                 || super::stopping::fenced_on(&tx, entry)?
                 || super::maintenance_writer_held_on(&tx, entry)?
             {
@@ -1587,6 +1659,121 @@ impl Store {
 mod tests {
     use super::*;
     use ConversationInputEvent as E;
+
+    fn tribu_source(id: char, text: &str) -> crate::interaction::TribuSource {
+        crate::interaction::TribuSource {
+            record: serde_json::json!({
+                "schema":"dm.tribu-human-request/v1", "id":id.to_string().repeat(64),
+                "revision":"b".repeat(64), "being_ref":"fixture-being",
+                "human":{"telegram_id":100}, "text":text,
+                "source":{"provider":"telegram","chat_id":-10,"message_id":25,"date":1},
+                "attestation":{"kind":"authenticated-telegram-ingress"},
+                "context":{"quoted":"Untrusted quoted public text"}
+            }),
+        }
+    }
+
+    #[test]
+    fn tribu_original_uses_integrator_history_and_survives_duplicate_edit_and_restart() {
+        let (file, store, key, _) = setup();
+        let source = tribu_source('a', "@fixture can we continue this discussion?");
+        let (input, fresh) = store
+            .conversation_tribu_capture(100, key, source.clone(), 20)
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(input.native, "entry-native");
+        assert_eq!(input.session, store.get_session(key).unwrap().unwrap().id);
+        assert!(
+            input
+                .rendered()
+                .contains("Authenticated human Tribu ingress")
+        );
+        let (duplicate, fresh) = store
+            .conversation_tribu_capture(100, key, source.clone(), 20)
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(input.id, duplicate.id);
+        let mut edit = source.clone();
+        edit.record["revision"] = serde_json::json!("c".repeat(64));
+        edit.record["text"] = serde_json::json!("Changed request");
+        assert_eq!(edit.input_id(key), input.id);
+        assert!(
+            store
+                .conversation_tribu_capture(100, key, edit, 20)
+                .is_err()
+        );
+        let local = turn(&store, key);
+        store
+            .conversation_input_event(100, &input.id, E::Queue)
+            .unwrap();
+        store
+            .conversation_input_event(
+                100,
+                &input.id,
+                E::Begin {
+                    local_turn: local,
+                    steer: false,
+                },
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (retained, fresh) = store
+            .conversation_tribu_capture(100, key, source, 20)
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(retained.id, input.id);
+        assert_eq!(retained.phase, "uncertain");
+        assert!(
+            store
+                .conversation_input_validate(100, &retained.id)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn tribu_pause_and_pending_bound_leave_ordinary_integrator_work_untouched() {
+        let (_file, store, key, binding) = setup();
+        let ordinary = Uuid::now_v7().to_string();
+        store
+            .conversation_input_capture(100, key, &binding, &ordinary, "Private continuing work")
+            .unwrap();
+        store
+            .conversation_input_event(100, &ordinary, E::Queue)
+            .unwrap();
+        let source = tribu_source('a', "@fixture incoming");
+        let (input, _) = store
+            .conversation_tribu_capture(100, key, source.clone(), 1)
+            .unwrap();
+        store
+            .conversation_input_event(100, &input.id, E::Queue)
+            .unwrap();
+        assert!(
+            store
+                .conversation_tribu_capture(100, key, tribu_source('c', "Another mention"), 1)
+                .is_err()
+        );
+        store.tribu_pause(key, true).unwrap();
+        assert!(store.conversation_input_validate(100, &input.id).is_err());
+        store.conversation_input_validate(100, &ordinary).unwrap();
+        let (paused, fresh) = store
+            .conversation_tribu_capture(100, key, tribu_source('d', "New mention"), 20)
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(paused.phase, "retained_unsent");
+        store.tribu_pause(key, false).unwrap();
+        let (retained, fresh) = store
+            .conversation_tribu_capture(100, key, source, 20)
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(retained.phase, "retained_unsent");
+        assert!(store.conversation_input_validate(100, &input.id).is_err());
+        assert!(
+            store
+                .conversation_tribu_capture(101, key, tribu_source('d', "Wrong human"), 20)
+                .is_err()
+        );
+    }
 
     #[test]
     fn native_presentation_selection_follows_capture_order_across_surfaces() {

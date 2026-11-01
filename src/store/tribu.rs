@@ -14,6 +14,17 @@ pub struct TribuAdmission {
     pub fresh: bool,
 }
 
+pub(super) fn paused_on(conn: &Connection, key: SessionKey) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM bot_state WHERE key=?",
+            [tribu_pause_key(key)],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|v| v == "true"))
+}
+
 impl Store {
     pub fn tribu_check_owner(&self, key: SessionKey, human: i64) -> Result<()> {
         let creator: i64 = self.conn.lock().expect("store mutex poisoned").query_row(
@@ -349,10 +360,27 @@ impl Store {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("INSERT INTO bot_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![tribu_pause_key(key),paused.to_string()])?;
         if paused {
+            tx.execute("UPDATE conversation_inputs SET phase='retained_unsent' WHERE session_id IN (SELECT id FROM sessions WHERE chat_id=?1 AND thread_id=?2) AND json_extract(doc,'$.tribu_source') IS NOT NULL AND phase IN ('retained','queued','awaiting_target')",params![key.chat_id,key.thread_id])?;
             tx.execute("UPDATE tribu_admissions SET state='withdrawn-paused',updated_at=? WHERE chat_id=? AND topic_id=? AND state='queued'",params![now_string(),key.chat_id,key.thread_id])?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Current integrated originals, separate from legacy dedicated admission state.
+    pub fn tribu_integrated_status(&self, key: SessionKey) -> Result<Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut query = conn.prepare("SELECT c.id,c.phase,c.native_thread,c.local_turn,json_extract(c.doc,'$.tribu_source.record.id'),json_extract(c.doc,'$.tribu_source.record.revision') FROM conversation_inputs c JOIN sessions s ON s.id=c.session_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND json_extract(c.doc,'$.tribu_source') IS NOT NULL ORDER BY c.rowid DESC LIMIT 20")?;
+        let recent = query
+            .query_map(params![key.chat_id, key.thread_id], |r| {
+                Ok(json!({
+                    "id":r.get::<_,String>(0)?, "state":r.get::<_,String>(1)?,
+                    "native_thread":r.get::<_,String>(2)?, "local_turn":r.get::<_,Option<i64>>(3)?,
+                    "source_id":r.get::<_,String>(4)?, "revision":r.get::<_,String>(5)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(json!({"mode":"interaction","paused":paused_on(&conn,key)?,"recent":recent}))
     }
 
     pub fn tribu_status(&self, key: SessionKey) -> Result<Value> {

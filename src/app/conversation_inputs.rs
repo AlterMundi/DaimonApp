@@ -428,6 +428,32 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     )
 }
 
+/// Owner-local authenticated Tribu admission shares the existing original,
+/// controller, native writer and return surface. It is not a browser endpoint.
+pub(super) async fn admit_tribu(app: &App, record: Value) -> Result<Value> {
+    let p = app.shared.config.tribu.as_ref().context("Tribu disabled")?;
+    let _ingress = app.shared.conversation_ingress.lock().await;
+    let (input, fresh) = app.shared.store.conversation_tribu_capture(
+        p.human_id,
+        p.key(),
+        crate::interaction::TribuSource { record },
+        p.max_pending,
+    )?;
+    if fresh && input.phase == "retained" {
+        if let Err(error) = deliver(app, input.clone(), None).await {
+            app.shared
+                .store
+                .conversation_input_finish(input.human, &input.id)?;
+            return Err(error);
+        }
+    }
+    let current = app
+        .shared
+        .store
+        .conversation_input_read(input.human, input.entry, &input.id)?;
+    Ok(json!({"id":current.id,"state":current.phase,"duplicate":!fresh}))
+}
+
 async fn deliver(app: &App, input: ConversationInput, resolve: Option<&str>) -> Result<()> {
     if input
         .reply
@@ -557,6 +583,7 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     let shared = app.shared.clone();
     let id = input.id.clone();
     let human = input.human;
+    let entry = input.entry;
     let retained_text = format!(
         "{}{}",
         input.rendered(),
@@ -569,8 +596,15 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
             .into_iter()
             .map(|a| a.path)
             .collect(),
-        admission_check: Some(crate::codex::SteerInputAdmission::Sync(Arc::new(
-            move || shared.store.conversation_input_validate(human, &id),
+        admission_check: Some(crate::codex::SteerInputAdmission::Async(Arc::new(
+            move || {
+                let shared = shared.clone();
+                let id = id.clone();
+                Box::pin(async move {
+                    super::tribu::validate_conversation(&shared, human, entry, &id).await?;
+                    shared.store.conversation_input_validate(human, &id)
+                })
+            },
         ))),
         client_message_id: Some(format!("conversation:{}", input.id)),
         text: match &active.controller_hint {

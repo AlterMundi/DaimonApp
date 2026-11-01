@@ -1085,6 +1085,7 @@ mod tests {
         let (source, _) = s
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "telegram:bot".into(),
                     event_id: "10".into(),

@@ -636,6 +636,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
     };
     if targets.len() != 1 {
         let source = SourceInput {
+            tribu_source: None,
             transcription: app
                 .shared
                 .store
@@ -819,6 +820,7 @@ async fn admit_message(
         .get_session(target)?
         .context("Selected interaction session missing")?;
     let source = SourceInput {
+        tribu_source: None,
         transcription: app
             .shared
             .store
@@ -867,6 +869,9 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
         .unwrap_or_default();
     let media_context = format!("{visual_context}{file_context}");
     let mut provenance = serde_json::json!({"files":shared.store.interaction_files(&i.id,i.human_id)?,"visual":visual,"input_ref":original["input_ref"],"capture_order":original["capture_order"],"selection":original["selection"],"via":"interaction-controller","original_human_author":if author.is_none(){Some(i.human_id)}else{None},"authorized_human":i.human_id,"author":author,"source_channel":source.channel,"source_message":source.origin,"target":i.target,"target_label":label(shared,i.target),"original_ingress_update":source.update_id,"transcription":source.transcription});
+    if let Some(source) = &source.tribu_source {
+        provenance["tribu_source"] = serde_json::to_value(source)?;
+    }
     if !original["foreground_delegation"].is_null() {
         provenance["foreground_delegation"] = original["foreground_delegation"].clone();
     }
@@ -1211,21 +1216,31 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 let human = i.human_id;
                 let update = source.update_id;
                 let input_id = i.id.clone();
-                crate::codex::SteerInputAdmission::Sync(Arc::new(move || {
-                    if epoch.as_deref() != Some(shared.store.stop_admission_epoch(target)?.as_str())
-                        || !shared
-                            .store
-                            .interaction_session_input_allowed(&input_id, human)?
-                        || !shared
-                            .store
-                            .interaction_original_allowed(&input_id, human)?
-                        || shared.store.native_writer_held(target)?
-                        || !shared.store.get_user(human)?.is_some_and(|u| u.allowed)
-                    {
-                        bail!("Routed admission retired or held before native submission");
-                    }
-                    super::nexus::validate_input_target(&shared, update, target, human)?;
-                    Ok(())
+                crate::codex::SteerInputAdmission::Async(Arc::new(move || {
+                    let shared = shared.clone();
+                    let epoch = epoch.clone();
+                    let input_id = input_id.clone();
+                    Box::pin(async move {
+                        let original = shared.store.interaction_source(&input_id, human)?;
+                        if let Some(external) = &original.tribu_source {
+                            super::tribu::validate_integrated_source(&shared, external).await?;
+                        }
+                        if epoch.as_deref()
+                            != Some(shared.store.stop_admission_epoch(target)?.as_str())
+                            || !shared
+                                .store
+                                .interaction_session_input_allowed(&input_id, human)?
+                            || !shared
+                                .store
+                                .interaction_original_allowed(&input_id, human)?
+                            || shared.store.native_writer_held(target)?
+                            || !shared.store.get_user(human)?.is_some_and(|u| u.allowed)
+                        {
+                            bail!("Routed admission retired or held before native submission");
+                        }
+                        super::nexus::validate_input_target(&shared, update, target, human)?;
+                        Ok(())
+                    })
                 }))
             }),
             text,
