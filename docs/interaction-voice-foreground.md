@@ -295,3 +295,21 @@ and `foreground_completed_reader`. A future mounted mode must check both before
 offering its microphone; the current selected listener predates these fields.
 Actual acoustic boundaries, authenticated WebSocket mounting, assistant speech
 history, playback and the complete provider/native/device journey remain open.
+
+`dashboard/native_acoustic.py` maps the existing server detector's exact onset
+and endpoint observations to the observed manual native-audio protocol. An
+endpoint sends `activityEnd` before transcript completion, native admission or
+integrator work. Only analyzed PCM reaches that stream, and the retained closed
+WAV contains those exact bytes. A single outstanding provider activity owns its
+finalized input transcript and matching manual start/end audio offsets. Output
+completion and interim captions do not finalize originals. Up to4local phrases
+can wait in acoustic order while that correlation finishes; native reservations
+also serialize so a slower earlier write cannot reverse ingress chronology.
+Closing retains an unfinished phrase's captured tail without delegating it.
+
+The acoustic adapter is not yet mounted. Its synthetic tests establish offset
+and source correlation, endpoint signaling before transcript arrival, bounded
+backlog and preservation on close. They do not qualify the actual detector,
+provider session, responsive speech or device behavior. The next paid provider
+session must use the complete mounted source/audio/integrator journey rather
+than another isolated arithmetic or transport probe.

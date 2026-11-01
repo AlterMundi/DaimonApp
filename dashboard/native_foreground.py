@@ -52,6 +52,7 @@ class ForegroundBridge:
         self.captures={}
         self.input_bytes=0
         self.latest=None
+        self._reservation_tail=None
         self.closed=False
         self._owners=asyncio.Semaphore(2)
         self._files=asyncio.Semaphore(1)
@@ -92,12 +93,17 @@ class ForegroundBridge:
         data=wav_bytes(pcm)
         value=Capture(ident,pcm,hashlib.sha256(data).hexdigest(),dict(questions or {}))
         self.captures[ident]=value;self.latest=ident;self.input_bytes+=len(pcm)
+        previous=self._reservation_tail
         async def retain():
             try:
                 # Preserve already-authorized bytes before a later control or
                 # session check can fail. Same private bounded capture store.
                 await self._run(self._files,Provider.retain_voice_capture,
                                 self.originals,ident,data,value.digest)
+                # File completion cannot reorder the native ingress journal.
+                # An uncertain earlier reservation is retained, not overtaken.
+                if previous is not None:
+                    await asyncio.shield(previous)
                 result=await self._owner(self.provider.conversation_voice_submit,
                     {'id':ident,'binding':self.binding,'audio_sha256':value.digest,
                      'mime':'audio/wav','capture_questions':value.questions},data,
@@ -111,6 +117,7 @@ class ForegroundBridge:
                 value.phase='unconfirmed'
                 raise
         value.reservation=asyncio.create_task(retain())
+        self._reservation_tail=value.reservation
         value.reservation.add_done_callback(self._observe)
         return value
 

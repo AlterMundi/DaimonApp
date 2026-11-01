@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from unittest.mock import patch
@@ -60,6 +61,25 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         await capture.reservation;self.owner.text=text
         await self.bridge.transcript(ident,text)
         return ident,pcm,capture
+    async def test_slow_first_reservation_cannot_be_overtaken(self):
+        entered=threading.Event();release=threading.Event();order=[]
+        real=self.owner.conversation_voice_submit
+        first=str(uuid.uuid4());second=str(uuid.uuid4())
+        def delayed(meta,data,**kwargs):
+            if meta['id']==first:
+                entered.set();release.wait(2)
+            order.append(meta['id'])
+            return real(meta,data,**kwargs)
+        with patch.object(self.owner,'conversation_voice_submit',delayed):
+            a=self.bridge.capture(first,b'\1\0'*160,{})
+            await asyncio.to_thread(entered.wait,1)
+            b=self.bridge.capture(second,b'\2\0'*160,{})
+            await asyncio.sleep(.01)
+            self.assertEqual(order,[])
+            release.set()
+            await asyncio.gather(a.reservation,b.reservation)
+        self.assertEqual(order,[first,second])
+
     async def test_exact_audio_is_retained_and_completed_once(self):
         ident,pcm,capture=await self.captured()
         self.assertEqual(capture.phase,'foreground');self.assertEqual(capture.pcm,b'')
