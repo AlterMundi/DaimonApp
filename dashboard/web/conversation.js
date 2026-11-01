@@ -501,11 +501,14 @@ window.Conversation = (() => {
     // finite readers keep long history from blocking input or flooding the API.
     const textQueue=[];let textJobs=0;
     const textObserver=timeline && window.IntersectionObserver?new window.IntersectionObserver(entries=>{
-      for(const entry of entries){const card=cards.get(entry.target.dataset.sourceId);if(card){card.textVisible=entry.isIntersecting;if(card.textVisible)queueText(card);}}
+      for(const entry of entries){const card=cards.get(entry.target.dataset.sourceId)||inputs.get(entry.target.dataset.inputId);if(card){card.textVisible=entry.isIntersecting;if(card.textVisible)queueText(card);}}
     },{root:timeline,rootMargin:"200px"}):undefined;
-    function autoTextEligible(card){return card && card.textVisible && cards.get(card.source.id)===card
+    const textRevision=card=>card.source?.revision ?? card.value.preview;
+    const inputNeedsText=card=>!card.value.text && Array.from(card.value.preview||"").length>=1000 && card.originalOffset!==null;
+    function autoTextEligible(card){
+      if(card?.value)return card.textVisible && inputs.get(card.value.id)===card && inputNeedsText(card) && card.autoRevision!==textRevision(card);
+      return card && card.textVisible && cards.get(card.source.id)===card
       && ["integrator_answer","integrator_progress","worker_progress","worker_result","matrix_result"].includes(card.source.kind)
-      && card.source.native_binding_current!==false && !card.source.correction_pending
       && Number.isSafeInteger(card.source.text_characters) && card.source.text_characters>Array.from(card.source.preview).length
       && !(card.expanded && card.offset===null) && card.autoRevision!==card.source.revision;}
     function queueText(card){
@@ -517,13 +520,45 @@ window.Conversation = (() => {
     function drainText(){
       while(textJobs<2 && textQueue.length && enabled && ready && !document.hidden){
         const card=textQueue.shift();if(!autoTextEligible(card)||card.textLoading)continue;
-        const revision=card.source.revision;textJobs++;
-        void readCard(card,true).finally(()=>{
-          textJobs--;if(card.autoWanted && card.source.revision!==revision)queueText(card);drainText();
+        const revision=textRevision(card);textJobs++;
+        void (card.value?readInputText(card,true):readCard(card,true)).finally(()=>{
+          textJobs--;if(card.autoWanted && textRevision(card)!==revision)queueText(card);drainText();
         });
       }
     }
     function clearText(){textQueue.length=0;textObserver?.disconnect();}
+    function renderInputText(card){
+      const text=card.value.text || card.originalText || card.value.preview;
+      card.text.textContent=card.value.voice?(text?"Automatic voice transcript:\n"+text:"Original voice recording saved."):text;
+      if(inputNeedsText(card)){
+        card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
+      }else {
+        card.check.textContent="Check status / read message";
+        card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
+      }
+    }
+    async function readInputText(card,automatic=false){
+      if(card.textLoading || inputs.get(card.value.id)!==card)return;
+      const owned=inputGeneration,id=card.value.id,preview=card.value.preview;
+      const valid=()=>owned===inputGeneration && inputs.get(id)===card && card.value.preview===preview;
+      card.textLoading=true;card.check.disabled=true;if(automatic)card.autoRevision=preview;
+      try{
+        let parts=0;
+        do{
+          const offset=card.originalOffset||0;
+          const result=await api(`interaction/inputs/${encodeURIComponent(id)}/trace/original?offset=${offset}`);
+          if(!valid())return;
+          if(result.id!==id || result.source!=="original" || result.offset!==offset || typeof result.text!=="string"
+            || (result.next_offset!==null && (!Number.isSafeInteger(result.next_offset)||result.next_offset!==offset+Array.from(result.text).length||result.next_offset<=offset)))throw Error("Saved message text changed. Refresh before reading.");
+          const text=(card.originalText||"")+result.text;
+          if(!text.startsWith(preview.slice(0,Math.min(preview.length,text.length))))throw Error("Saved message text changed. Refresh before reading.");
+          card.originalText=text;card.originalOffset=result.next_offset;parts++;renderInputText(card);
+        }while(automatic && card.originalOffset!==null && parts<12 && card.originalText.length<16000 && enabled && !document.hidden && card.textVisible);
+        if(automatic && card.originalOffset!==null && parts<12 && card.originalText.length<16000 && (!enabled||document.hidden||!card.textVisible))card.autoRevision=undefined;
+      }catch(error){
+        if(valid()){card.status.textContent="Full message text unavailable. Nothing was resent.";card.check.textContent="Retry reading";card.check.hidden=false;if([401,403].includes(error.status))failed(error);}
+      }finally{card.textLoading=false;card.check.disabled=false;if(automatic && card.autoRevision===undefined)queueText(card);}
+    }
     function appendTextPart(card,result){
       const following=atTimelineEnd();
       setReplyText(card.body,(card.expanded?replyText(card.body):"")+result.text);
@@ -770,7 +805,7 @@ window.Conversation = (() => {
             if (e.status === 401 || e.status === 403) failed(e);
           } finally { card.checking=false;check.disabled = false; }
         };
-        check.addEventListener("click",card.checkStatus);
+        check.addEventListener("click",()=>inputNeedsText(card)?readInputText(card):card.checkStatus());
         retry.addEventListener("click", async () => {
           const recovery=savedRecovery(card);
           if (readOnly || (card.value.phase && !recovery) || retry.disabled) return;
@@ -809,7 +844,7 @@ window.Conversation = (() => {
         if(card.value.phase && card.value.focusVersion===focusVersion)clearFocus();
         // A later-completing status read can carry the first committed transcript,
         // even when a newer-started history request sampled the pending state.
-        card.text.textContent = card.value.voice ? (card.value.text || card.value.preview ? "Automatic voice transcript:\n"+(card.value.text || card.value.preview) : "Original voice recording saved.") : card.value.text ?? card.value.preview;
+        renderInputText(card);
         card.status.textContent = phaseText(card.value);
         microphone?.observe(card.value,phaseText(card.value));
       taskControls?.observeInput?.(card.value);
@@ -832,15 +867,17 @@ window.Conversation = (() => {
       card.retryNeedsCheck=false;
       if (!card.value.phase && value.phase && draft.value === card.value.text) draft.value = "";
       // Preserve full original text after reading it, and an unknown POST's text.
+      if(typeof value.preview==="string" && value.preview!==card.value.preview){
+        card.originalText=undefined;card.originalOffset=undefined;card.autoRevision=undefined;
+      }
       card.value = {...card.value, ...value};
       messageTime(card.time,card.value.received_at);
       if(card.fileList)card.fileList.remove();
       if(card.value.files?.length){card.fileList=node('div');card.fileList.className='input-files';card.value.files.forEach((file,index)=>{const button=node('button',file.name);button.type='button';button.disabled=!attachedFiles;button.addEventListener('click',async()=>{button.disabled=true;try{await attachedFiles.download(file,card.value.id,index);button.textContent=file.name;}catch(error){button.textContent=error.message||'Original file unavailable';}finally{button.disabled=!attachedFiles;}});card.fileList.append(button);});card.imageButton.parentNode.append(card.fileList);}
       card.imageButton.hidden=!card.value.visual;
       if(card.imageView.hidden)card.imageButton.textContent=Array.isArray(card.value.visual)?`Show images (${card.value.visual.length})`:"Show selected image";
-      card.text.textContent = card.value.voice ? (card.value.text || card.value.preview ? "Automatic voice transcript:\n"+(card.value.text || card.value.preview) : "Original voice recording saved.") : card.value.text ?? card.value.preview;
+      renderInputText(card);
       card.status.textContent = phaseText(card.value);
-      card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered"].includes(card.value.phase) && (!!card.value.text || (card.value.preview?.length||0)<1000));
       microphone?.observe(card.value,phaseText(card.value));
       if(card.value.phase && card.value.focusVersion===focusVersion)clearFocus();
       if (card.value.id === latestComposerId) inputNotice(card.value);
@@ -857,6 +894,7 @@ window.Conversation = (() => {
       }
       if(timeline)placeInTimeline(card.box,`input:${card.value.id}`,card.value.received_at || (card.value.origin_kind==="telegram"?"1970-01-01T00:00:00Z":undefined),followingLive);
       else container.insertBefore(card.box, following || null);
+      card.box.dataset.inputId=card.value.id;textObserver?.observe(card.box);queueText(card);
       graph?.input(card.value);
       inputActivity();
       return card;

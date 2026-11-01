@@ -32,6 +32,22 @@ replace the live binary. Known-unadmitted preparation can continue once after
 reconciling the qualified artifact; retain its failed preimage and prohibit replay
 when any original/provider/native admission is uncertain.
 
+## Complete visible message text
+
+Visible canonical answers remain eligible for the bounded text reader when a
+later correction is pending or the source belongs to an earlier native binding.
+Those labels still describe provenance/currentness; reading historical text does
+not authorize automatic speech, replying to a worker, replay or task completion.
+The existing source/revision reader continues to enforce actual read access.
+
+App and observed Telegram originals use the same two-reader visibility queue.
+A1000-character preview is expanded through the existing read-only original-text
+parts, including voice transcripts. Keep the exact input identity/generation,
+Unicode offsets, original prefix and finite12-part/16000-character automatic
+budget; longer text retains an explicit continuation. Metadata refresh preserves
+already-read text. Failures expose a reading retry without resending, answering
+or overwriting the saved original. Copy still reads the full original separately.
+
 ## What existing evidence establishes
 
 Evidence types are distinct: synthetic automation, real native/provider execution,
