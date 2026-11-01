@@ -588,7 +588,8 @@ The foreground asks that actual question and relevant choices clearly, without
 repeating it when a later summary adds no decision. Original capture versions,
 answer interpretation and native decisions remain with the existing original/Sol/
 question controls. No question reading answers, approves, dispatches or cancels.
-Each invalidation rescans at most8canonical pages; existing8queued-reference/
+Each invalidation rescans at most8canonical pages and selects at most32pending
+questions, matching the existing capture-scope limit; existing8queued-reference/
 128offered-reference and session/tool bounds remain unchanged. Exact revisions
 are deduplicated; an answered or changed request retires its old offer without
 ending the watch. Further pages use the same already-offered read-only source.
@@ -597,3 +598,17 @@ A mounted regression reproduces the missing full-question offer before the fix.
 It covers full choices across two pages, exclusion of approvals/answered requests,
 no delegation and a stale question followed by its next revision on one watch.
 Actual provider/native/device acceptance remains distinct from these fixtures.
+
+Before offering a question to the model, the same authenticated voice socket
+sends its current canonical question-availability snapshot (`question_scope`,
+binding and capture-version map) to the browser. The first local acoustic marker
+freezes that observed snapshot for the phrase, independently of a delayed ordinary
+For you refresh. A later snapshot cannot widen it; without a local marker the
+earlier arm-time fallback stays frozen. Availability is not proof of hearing or
+answer/approval authority, and the owner still intersects exact current versions.
+The existing original/answer path and native controls are unchanged. Snapshot
+changes are bounded/deduplicated; no separate registry or attention service exists.
+Old clients ignore the additional event; a new client without it retains the
+existing UI snapshot fallback. Receiver tests cover scope before immediate audio,
+fresh canonical availability replacing a stale UI map, no late widening and the
+no-marker fallback.

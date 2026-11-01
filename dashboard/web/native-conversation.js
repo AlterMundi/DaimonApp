@@ -4,7 +4,7 @@ window.NativeConversation=(()=>{
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&!window.NativeSpeechAudio?.backgroundPlayback);
   function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
-    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput;
+    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope;
     const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function position(node){return context.currentTime<=node.at?0:Math.min(node.end,node.begin+Math.floor((context.currentTime-node.at)*24000)*2);}
@@ -57,6 +57,12 @@ window.NativeConversation=(()=>{
     async function event(value,owned){
       if(stopped||owned!==epoch||binding!==getBinding())return;
       switch(value.type){
+        case 'question_scope':{
+          const scope=value.capture_questions;
+          if(value.binding!==binding||!scope||typeof scope!=='object'||Array.isArray(scope)||Object.keys(scope).length>32||
+              Object.entries(scope).some(([id,revision])=>!(/^[a-f0-9]{32}$/.test(id))||typeof revision!=='string'||!(/^[a-f0-9]{64}$/.test(revision))))throw Error('Canonical question scope changed');
+          questionScope={...scope};break;
+        }
         case 'audio':play(value);break;
         case 'capture_started':
           if(current||typeof value.id!=='string')throw Error('Original capture changed');
@@ -87,7 +93,7 @@ window.NativeConversation=(()=>{
     }
     async function start(){
       if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
-      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
+      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
       context=new (window.AudioContext||window.webkitAudioContext)();void context.resume().catch(()=>{});
       timer=setTimeout(()=>hold('Voice session reached five minutes.'),300000);
@@ -121,7 +127,7 @@ window.NativeConversation=(()=>{
           if(binding!==getBinding()){hold('Conversation changed.');return;}
           if(value.captureError){hold('Microphone ended.');return;}
           if(!current&&!pendingScope&&Number.isSafeInteger(value.activityBytes)&&value.activityBytes>bytes){
-            const snapshot=getQuestions?.();pendingScope=snapshot===undefined?{}:JSON.parse(JSON.stringify(snapshot));
+            const snapshot=questionScope===undefined?getQuestions?.():questionScope;pendingScope=snapshot===undefined?{}:JSON.parse(JSON.stringify(snapshot));
             control({type:'capture_scope',audio_bytes:value.activityBytes,capture_questions:pendingScope});
           }
           if(value.activityBytes>0&&value.activityBytes>=bytes){

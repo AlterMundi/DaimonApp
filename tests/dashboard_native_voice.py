@@ -244,13 +244,16 @@ class Mounted(unittest.TestCase):
             ws.send_json({'type':'close'})
     def test_canonical_pending_questions_offer_complete_choices_without_waiting_for_sol_summary(self):
         self.owner.questions=[{'id':f'{i:032x}','revision':'d'*64,'kind':'question','state':'pending',
-            'actionable':True,'label':'#Beta','body':f'Question {i}: breve or detallada?'} for i in range(1,11)]
+            'actionable':True,'capture_version':'e'*64,'label':'#Beta','body':f'Question {i}: breve or detallada?'} for i in range(1,11)]
         self.owner.questions[0]['kind']='approval'
         self.owner.questions[1]['state']='answered'
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
             stream=Stream.opened[0];stream.queue.put([{'type':'integrator_watch','call_id':'questions'}])
             offered=[stream.tool_results.get(timeout=3)[1] for _ in range(8)]
+            events=[]
+            while not events or events[-1]['type']!='question_scope':events.append(ws.receive_json())
+            self.assertEqual(events[-1]['capture_questions'],{f'{i:032x}':'e'*64 for i in range(3,11)})
             self.assertEqual({r['source']['id'] for r in offered},{'request:'+f'{i:032x}' for i in range(3,11)})
             self.assertTrue(all(r['source']['kind']=='question' and 'breve or detallada?' in r['text'] for r in offered))
             self.assertTrue(all(r['text'].startswith('#Beta. ') for r in offered))
@@ -258,9 +261,30 @@ class Mounted(unittest.TestCase):
             self.assertEqual(self.owner.delegations,[],'Reading a native question is not answering or dispatching')
             ws.send_json({'type':'close'})
 
+    def test_question_capture_scope_precedes_immediate_question_audio(self):
+        self.owner.questions=[{'id':'c'*32,'revision':'d'*64,'capture_version':'e'*64,
+            'kind':'question','state':'pending','actionable':True,'label':'#Beta','body':'Breve or detallada?'}]
+        original=Stream.tool_result
+        def respond(stream,ident,result,**kwargs):
+            original(stream,ident,result,**kwargs)
+            if result.get('kind')=='integrating_source':
+                stream.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                                  {'type':'output_transcript','text':'Breve or detallada?'},{'type':'turn_complete'}])
+        with patch.object(Stream,'tool_result',respond),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            Stream.opened[0].queue.put([{'type':'integrator_watch','call_id':'questions'}])
+            events=[]
+            while not any(e['type']=='audio' for e in events):events.append(ws.receive_json())
+            scope=next(e for e in events if e['type']=='question_scope')
+            self.assertEqual(scope['capture_questions'],{'c'*32:'e'*64})
+            self.assertLess(next(i for i,e in enumerate(events) if e['type']=='question_scope'),next(i for i,e in enumerate(events) if e['type']=='audio'))
+            self.assertEqual(self.owner.inputs,{})
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
     def test_answered_question_is_not_re_read_and_next_revision_keeps_the_same_watch(self):
         question={'id':'c'*32,'revision':'d'*64,'kind':'question','state':'pending',
-                  'actionable':True,'label':'#Beta','body':'Choose breve or detallada.'}
+                  'actionable':True,'capture_version':'e'*64,'label':'#Beta','body':'Choose breve or detallada.'}
         self.owner.questions=[question]
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
@@ -272,7 +296,7 @@ class Mounted(unittest.TestCase):
                 'source':offered['source']['id'],'revision':offered['source']['revision'],'offset':0}])
             call,rejected=stream.tool_results.get(timeout=2)
             self.assertEqual(call,'stale');self.assertEqual(rejected['kind'],'not_ready')
-            question.update(state='pending',revision='e'*64,body='The next actual question.')
+            question.update(state='pending',revision='e'*64,capture_version='f'*64,body='The next actual question.')
             (self.root/'native.sqlite3').write_bytes(b'next canonical question revision')
             call,current=stream.tool_results.get(timeout=3)
             self.assertEqual(call,'questions','A stale page must not end the existing return watch')

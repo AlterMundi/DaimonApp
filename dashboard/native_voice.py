@@ -130,7 +130,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         async def returns(cursor):
             # Watch first, then catch up from the pre-open cursor. Never replay
             # historical speech or submit work to recover an observation.
-            start=dict(cursor)
+            start=dict(cursor);last_question_scope=None
             async for changed in changes([Path(provider.receiver['db_path'])]):
                 await actor()
                 if not changed:continue
@@ -141,17 +141,26 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # The canonical For you reader already excludes unrelated
                 # direct-session questions. Offer its full current question,
                 # not just a later integrating summary saying a choice is due.
-                question_cursor=0
+                question_cursor=0;question_scope={};question_sources=[]
                 for _ in range(8):
                     page=await bridge._owner(provider.conversation_requests,question_cursor)
                     if page['binding']!=meta['binding']:raise ForegroundUnavailable('Integrating conversation changed')
                     for item in page['items']:
-                        if item.get('kind')=='question' and item.get('state')=='pending' and item.get('actionable') is True:
-                            bridge.integrating_source({'id':'request:'+item['id'],'revision':item['revision'],
+                        if (item.get('kind')=='question' and item.get('state')=='pending' and item.get('actionable') is True
+                                and len(question_scope)<32):
+                            question_scope[item['id']]=item['capture_version']
+                            question_sources.append({'id':'request:'+item['id'],'revision':item['revision'],
                                 'kind':'question','label':str(item.get('label') or 'Conversation')[:200]})
                     if not page['more']:break
                     question_cursor=page['cursor']
                 else:raise ForegroundUnavailable('Canonical questions exceed the live catch-up bound')
+                Provider.check_capture_questions(question_scope)
+                if question_scope!=last_question_scope:
+                    # Availability reaches the capture client before model
+                    # speech. It is not a hearing receipt or answer authority.
+                    await send({'type':'question_scope','binding':meta['binding'],'capture_questions':question_scope})
+                    last_question_scope=dict(question_scope)
+                for source in question_sources:bridge.integrating_source(source)
                 cursor=dict(start)
                 for _ in range(8):
                     value=await bridge._owner(provider.presentation_list,cursor['delivery'],cursor['native'],'after')
