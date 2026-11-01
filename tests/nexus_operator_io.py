@@ -136,4 +136,39 @@ with tempfile.TemporaryDirectory(prefix='telecodex-nexus-operator-') as director
     db.unlink();original.rename(db);db.chmod(0o644)
     assert call('binding',{'table_id':'table','author_ref':'human:nico'},False).stdout==''
     db.chmod(0o600)
+# A fresh model-review table exercises the same real operator process without
+# changing an existing report's audience. Policy/identity remain controlled peers.
+if 'interactive_3d:v1' in capabilities['review_context_schemas']:
+    import pytest
+    from backend.tests.test_home_auth import shared
+    from backend.tests.test_artifact_reviews import manifest,reaction
+    with tempfile.TemporaryDirectory(prefix='telecodex-static-review-') as directory, pytest.MonkeyPatch.context() as patch:
+        fixture=service.__wrapped__(Path(directory))
+        app,client,*_=shared.__wrapped__(fixture,Path(directory),patch)
+        state=app.state.store.path.parent
+        policy=state/'policy.py';allowed=state/'allowed';allowed.write_text('yes')
+        policy.write_text("import json,pathlib,sys\ns=json.load(sys.stdin)\nprint(json.dumps({'schema':'dm.review-access/v1',**s,'allowed':pathlib.Path(__file__).with_name('allowed').read_text()=='yes'}))\n")
+        selection=state/'review-access.json'
+        selection.write_text(json.dumps({'schema':'nexus.review-access/v1','command':[sys.executable,str(policy)]}));selection.chmod(0o600)
+        app.state.artifacts.install(manifest())
+        body=reaction()
+        assert post(client,'/api/tables/table/contributions',body).status_code==200
+        selector=app.state.store.register_launch('table')['start_param']
+        _,pending=app.state.store.telegram_access(selector,123,100)
+        app.state.store.approve_access(pending['request_id'],'table','human:nico','Nico')
+        binding=call('configure',{**config,'supported_response_modes':['artifact_reflection'],
+            'supported_review_contexts':['interactive_3d:v1']})
+        command=dict(request_id='static-real-operator',binding_id=binding['binding_id'],binding_revision=binding['revision'],
+            contribution_id=body['contribution_id'],response_mode='artifact_reflection')
+        assert post(client,'/api/tables/table/conversation-requests',command).status_code==200
+        dispatch=call('dispatch',dict(listener_id='listener',request_id='static-real-operator'))
+        scope=dict(listener_id='listener',request_id='static-real-operator',dispatch_id=dispatch['dispatch_id'])
+        observed=call('review-admission',scope)
+        assert observed['allowed'] and observed['review_context']==body['review_context']
+        assert dispatch['request']['artifact_context']==manifest() and dispatch['request']['return_context'] is None
+        call('review-admission',{**scope,'dispatch_id':'wrong'},False)
+        allowed.write_text('no')
+        call('review-admission',scope,False)
+        assert call('inspect',dict(listener_id='listener',request_id='static-real-operator'))['request']['status']=='handed_off'
+        print('PASS actual static operator dispatch, exact-context recheck, policy revocation and non-mutating refusal')
 print('PASS actual Nexus backend HTTP/owner-local contract, selected retained evidence, one dispatch, exact receipt retry, private-state refusal; native receipts synthetic')
