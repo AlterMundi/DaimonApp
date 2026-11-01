@@ -3,6 +3,48 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Canonical question, scoped answer and full-avatar follow-up —1November2026
+
+PR512 is merged and receiving-adopted at source2f7bbdf4b482,
+UIf26ddac2f03e, after CI41340001753 SUCCESS. The existing return watch offers
+full canonical pending questions/choices. The same voice socket supplies exact
+capture-version availability before question audio; the client freezes it at the
+first local acoustic marker. Later revisions cannot widen that phrase, and
+absence of a marker keeps the earlier arm-time fallback. Answers still require
+retained originals and actual Sol/native controls.
+
+An actual mounted Gemini3.8/CPU/Sol6.1 qualification at b8bfa572 asked the full
+brief/detailed question, retained two exact originals, delivered one exact native
+response to the synthetic worker and voiced its returned result through the same
+continued subscription. Four native ACKs share one completed physical turn with
+two native user messages. The synthetic peer did not emit serverRequest/resolved:
+its retained question row became unknown when the fixture stopped. This does
+not prove a resolved-question receipt or independent worker-model uptake.
+Separate existing actual-native roundtrip/multi resolution tests pass. Completed
+provider work was not replayed to qualify the final availability-metadata delta.
+20mounted voice/15foreground/24dialogue checks and client scope regressions pass.
+
+A separate actual Chromium390×720 check uses the **shipped full shell**,
+Conversation, native client, voice modal and IndexedDB owner. Synthetic socket,
+capture and canonical-question metadata reproduce the race against ordinary
+For you refresh. The first acoustic marker captures the offered version; a
+later version does not change the retained3244byte WAV's scope. The complete
+question, interim answer and returned-result captions are visible. Queued old
+question audio is retired at interruption and never acknowledged as played;
+a fresh result schedules/ends9600PCM bytes after the matching phrase ACK.
+The original leaves local recovery only after its exact completion hash, without
+Send or any POST. Returning to Conversation marks interrupted generated text
+and stops the capture track. No page errors were observed; the result caption
+fits the viewport. Screenshot and bounded terminal evidence are retained.
+
+This browser check uses muted output, synthetic capture/socket/owner metadata
+and no CPU/provider/Sol/worker call. It complements the separate actual-provider/
+native journey and existing active-playback waveform checks; it is not one full
+physical journey or hearing/latency proof. Context/browser close at exit;
+retained evidence is bounded to4MiB with no ongoing job. Phone acceptance,
+echo/noise, real worker-model uptake and useful latency remain open, as do the
+same full stages2/3/necessary4 and retained Android/Beacon/iOS/base obligations.
+
 ## Retained native speech/Sol page qualification follow-up —1November2026
 
 The deployed PR504 backend and its native-provider paged-return check are recorded
