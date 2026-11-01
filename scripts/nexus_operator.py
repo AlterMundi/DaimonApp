@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', type=Path, required=True)
     parser.add_argument('--state', type=Path, required=True)
-    parser.add_argument('operation', choices=['binding', 'configure', 'pending', 'inspect', 'dispatch', 'receipt', 'capture-input', 'current-visits'])
+    parser.add_argument('operation', choices=['capabilities', 'binding', 'configure', 'pending', 'inspect', 'dispatch', 'receipt', 'capture-input', 'current-visits'])
     args = parser.parse_args()
     os.umask(0o077)
     directory = args.state.lstat()
@@ -32,7 +32,13 @@ def main():
     from backend.evidence import context
     store = Store(database)
     bridge = ConversationStore(store)
-    if args.operation == 'binding':
+    if args.operation == 'capabilities':
+        if body:
+            raise ValueError('capabilities_accepts_no_scope_or_writes')
+        import backend.conversation as conversation
+        result = {'schema': 'nexus.native-capabilities/v1',
+                  'review_context_schemas': list(getattr(conversation, 'SUPPORTED_REVIEW_CONTEXTS', ()))}
+    elif args.operation == 'binding':
         if set(body) != {'table_id', 'author_ref'}:
             raise ValueError('binding_scope_required')
         result = bridge.binding(body['table_id'], body['author_ref'])

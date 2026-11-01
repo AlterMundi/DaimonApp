@@ -1,5 +1,32 @@
 # Nexus Mini App conversation adapter
 
+## Narrated visual context negotiation — 2026-11-01
+
+The Nexus #95 review extension preserves a contribution's original report
+revision, source checksum/time and acknowledged rendered scene. The native
+adapter validates the versioned bounded envelope and its anchor/source identity
+before preparing native input, then includes the complete original contribution
+in the existing evidence-only prompt. Legacy contributions without context keep
+their prior behavior; unacknowledged, unsupported, oversized or drifting context
+is rejected. Reflection still authorizes neither actions nor audio deletion.
+
+On explicit association, the adapter queries the existing private operator's
+`capabilities` operation with `{}`. The reply uses
+`schema: nexus.native-capabilities/v1` and `review_context_schemas`. It advertises
+`supported_review_contexts: ["narrated_visual:v1"]` in the binding only when the
+installed backend reports that schema. An older helper/backend falls back to
+the previous binding contract, without an unknown field or assumed support.
+The query is owner-local and adds no service, login, capture, ASR or provider.
+
+Adopt compatible Nexus source and operator before enabling new-context bindings.
+Preserve exact existing actors/targets and binding revision checks; do not
+reconnect participants, withdraw pending exchanges or replay earlier reactions
+as an incidental deployment step. Receiver selection, actual native return and
+human continued-listening acceptance remain separate evidence. The actual
+operator contract is qualified against both the current deployed old backend
+and the Nexus source candidate with synthetic contributions/receipts. Rust prompt
+tests and receiving adoption must be recorded before claiming native support.
+
 Owning issue: [Telecodex #30](https://github.com/AlterMundi/telecodex/issues/30).
 This opt-in, owner-local adapter connects selected retained human contributions
 to an **existing** private Telegram topic and its existing native Codex thread.

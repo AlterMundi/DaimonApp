@@ -22,7 +22,10 @@ if a.op in ('inspect','dispatch'):
 b=root_binding.get('extra',{}).get(selected,root_binding)
 def read(id):
  r=db.execute('SELECT doc,status,dispatch,native,reply FROM requests WHERE id=?',(id,)).fetchone();doc=json.loads(r['doc']);doc['request'].update(status=r['status'],native_turn_id=r['native'],reply=r['reply']);doc['dispatch_id']=r['dispatch'];return doc
-if a.op=='binding':
+if a.op=='capabilities':
+ if not (pathlib.Path(a.state)/'review-capabilities').exists():raise ValueError('old helper has no capabilities')
+ out={'schema':'nexus.native-capabilities/v1','review_context_schemas':['narrated_visual:v1']}
+elif a.op=='binding':
  # Simulate the maintenance operator acquiring the hold during this async lookup.
  marker=pathlib.Path(a.state)/'hold-during-binding'
  if marker.exists():
@@ -162,6 +165,56 @@ def delivered(binary):
         assert sum(x.get('method')=='thread/start' for x in j.rpc)==1
         print('PASS existing-thread delivery, actual RPC turn/reply, source anchors, dedup, restart receipt-only reconciliation')
     finally:j.close()
+
+
+def visual_context(binary):
+    j = Nexus(binary)
+    (j.state/'review-capabilities').write_text('enabled')
+    try:
+        j.prepare()
+        starts = j.native_turns
+        anchor = dict(report_id='report', report_revision='v1', chapter_id='scene',
+                      session_id='fixture-review', source_time_ms=2456)
+        review = dict(schema_version=1, adapter='narrated_visual', adapter_version=1,
+            capture_version=1, capture_status='acknowledged', review_id='report',
+            review_revision='v1', chapter_id='scene', session_id='fixture-review',
+            source_time_ms=2456, clock_source_id='source',
+            source=dict(source_id='source', revision='asr-v1', sha256='a'*64),
+            snapshot=dict(scene_id='scene', visual='comparison', media_assets=[],
+                art_expanded=True, art_scroll_left=20, art_scroll_top=0,
+                synthesis_open=False, viewport_width=1280, viewport_height=720))
+        contribution = dict(contribution_id='visual-contribution', text='Fixture reaction about this scene',
+            anchors=[dict(source_id='source', transcript_version='asr-v1', start_ms=2456, end_ms=2457)],
+            report_anchor=anchor, review_context=review,
+            report_context=dict(report_id='report', revision='v1', chapter_id='scene',
+                source_id='source', transcript_version='asr-v1', narration='Fixture authored narration'))
+        with sqlite3.connect(j.state/'operator.sqlite') as db:
+            binding = json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
+            assert binding['supported_review_contexts'] == ['narrated_visual:v1']
+            request = dict(request_id='visual', table_id='table', author_ref='human:test',
+                binding_id=binding['binding_id'], binding_revision=binding['revision'],
+                responder_ref=binding['responder_ref'], contribution=contribution,
+                response_mode='report_reflection', return_context=dict(playback_ms=2456))
+            db.execute("INSERT INTO requests VALUES(?,?,'queued',NULL,NULL,NULL)",
+                       ('visual', json.dumps(dict(target=binding['target'], request=request))))
+        j.wait(lambda: j.state_of('visual')[0] == 'completed')
+        j.idle()
+        assert j.native_turns == starts+1
+        submitted = [x for x in j.rpc if x.get('method') == 'turn/start'][-1]
+        prompt = submitted['params']['input'][0]['text']
+        assert 'reflection only' in prompt and 'separate explicit human approval' in prompt
+        selected = json.loads(prompt.split('\n', 1)[1])
+        assert selected['contribution'] == contribution
+        assert j.row('SELECT id,codex_thread_id,session_title,cwd FROM sessions WHERE thread_id=7') == j.before
+        time.sleep(1.2)
+        assert j.native_turns == starts+1
+        result=dict(status='passed',profile='synthetic operator/native/model peers',
+            capability_negotiated=True,full_scene_context_preserved=True,native_turns_added=1,
+            exact_receipt=j.state_of('visual'),original_audio_touched=False,actual_model_or_human_acceptance=False)
+        print('PASS exact narrated visual context through capability negotiation, existing native thread and one matched final receipt')
+        return result
+    finally:
+        j.close()
 
 
 def table_launches(binary):
@@ -424,6 +477,6 @@ def writer_hold_other_target(binary):
 
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
-    scenarios=(delivered,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
+    scenarios=(delivered,visual_context,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
     for run in scenarios:
         if len(sys.argv)==2 or run.__name__ in sys.argv[2:]:run(binary)
