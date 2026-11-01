@@ -14,6 +14,9 @@ import android.util.Base64;
 import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 import org.json.JSONObject;
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -42,8 +45,27 @@ public class BackgroundSpeechTest {
             assertTrue(context.bindService(new Intent(context, SpeechService.class), connection, Context.BIND_AUTO_CREATE));
             assertTrue(bound.await(5, TimeUnit.SECONDS));
             try {
-                activity.onActivity(value -> service.get().session(true));
-                activity.moveToState(Lifecycle.State.CREATED);
+                AtomicReference<MainActivity> screen = new AtomicReference<>();
+                CountDownLatch stopped = new CountDownLatch(1);
+                ActivityLifecycleCallback lifecycle = (candidate, stage) -> {
+                    if (candidate == screen.get() && stage == Stage.STOPPED) stopped.countDown();
+                };
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                    ActivityLifecycleMonitorRegistry.getInstance().addLifecycleCallback(lifecycle));
+                try {
+                    // Background the actual task. Playback assertions require
+                    // this Activity's observed STOPPED receipt, not a request.
+                    activity.onActivity(value -> {
+                        screen.set(value); service.get().session(true);
+                        assertTrue("Android accepted task backgrounding", value.moveTaskToBack(true));
+                    });
+                    assertTrue("Actual Activity stop before background playback", stopped.await(10, TimeUnit.SECONDS));
+                    InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+                    assertEquals(Lifecycle.State.CREATED, activity.getState());
+                } finally {
+                    InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                        ActivityLifecycleMonitorRegistry.getInstance().removeLifecycleCallback(lifecycle));
+                }
                 assertTrue(service.get().enabled());
                 NotificationManager notifications = context.getSystemService(NotificationManager.class);
                 Notification initial = awaitNotification(notifications, "Play");
@@ -51,6 +73,7 @@ public class BackgroundSpeechTest {
                 // Finish one complete segment, then prepare a distinct later reply
                 // with the actual Activity stopped and focus reacquired natively.
                 for (int reply = 0; reply < 2; reply++) {
+                    assertEquals("Activity remains stopped for each later reply", Lifecycle.State.CREATED, activity.getState());
                     String id = "background_synthetic_" + reply;
                     CountDownLatch ready = new CountDownLatch(1), played = new CountDownLatch(1), ended = new CountDownLatch(1), pause = new CountDownLatch(1);
                     AtomicReference<String> error = new AtomicReference<>(); StringBuffer phases = new StringBuffer();

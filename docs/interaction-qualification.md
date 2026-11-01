@@ -32,6 +32,14 @@ provider tool cancellation retires only that proposal/watch, never native work
 or the conversation. Keep unoffered canonical references for a later watch and
 do not repeat an uncertain provider response or integrating admission.
 
+The Android background-decoder fixture requires an observed `STOPPED` lifecycle
+receipt after backgrounding its actual task, and rechecks `CREATED` before each
+later reply. Run41297782951 failed while requesting that state through
+`ActivityScenario.moveToState`; the retained log establishes the timeout, not
+its underlying cause. The updated qualification keeps native decoding, delayed
+reply, notification and focus assertions; current-head emulator CI must verify
+it. This does not establish physical device/hearing acceptance.
+
 ## Browser observation discipline
 
 Use synchronous `waitForFunction` predicates for local browser readiness. For
