@@ -62,7 +62,13 @@ window.LiveSpeech=(()=>{
       // Prefer complete sentences/paragraphs. A full window can start useful
       // speech at a whole-word boundary while the longer sentence is written.
       // Short unfinished thoughts, incomplete links and code still wait.
-      const matches=[...window.matchAll(/[.!?]["'”’)]*\s+|\n+/gu)];
+      // Markdown ordered-list punctuation is not a spoken sentence. Keep it
+      // with its content instead of admitting an empty renderer request and
+      // advancing the canonical cursor over a useless first fragment.
+      const matches=[...window.matchAll(/[.!?]["'”’)]*\s+|\n+/gu)].filter(match=>{
+        const candidate=window.slice(0,match.index+match[0].length);
+        return candidate.trim() && !/^\s*(?:[-+*]|\d+[.)])\s*$/u.test(candidate);
+      });
       let prefixWindow;
       if(matches.length){const match=matches.at(-1);prefixWindow=window.slice(0,match.index+match[0].length);}
       else {
