@@ -18,8 +18,9 @@ class Stream:
     max_tools=32
     activity_mode='manual'
     model='gemini-3.8-live'
-    def __init__(self):self.results=[]
-    def tool_result(self,ident,result):self.results.append((ident,result))
+    def __init__(self):self.results=[];self.continuations=[]
+    def tool_result(self,ident,result,*,will_continue=False):
+        self.results.append((ident,result));self.continuations.append(will_continue)
 
 
 class Owner:
@@ -126,22 +127,40 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
                                     'original_ids':[ident],'formulation':'Derivative'})
         self.assertEqual(len(self.owner.delegations),1)
     def source(self):return {'id':'native:123','revision':'b'*64,'kind':'result','label':'Integrator'}
+    async def results(self,count):
+        async def wait():
+            while len(self.stream.results)<count:await asyncio.sleep(.001)
+        await asyncio.wait_for(wait(),1)
     async def test_return_watch_is_event_driven_and_revalidates_source(self):
         source=self.source();task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
         await asyncio.sleep(0);self.assertFalse(task.done())
         self.owner.parts[source['id']]={**source,'kind':'integrator_answer','entry_binding':[1],
                                       'current':True,'text':'Real return','next_offset':None}
         self.assertTrue(self.bridge.integrating_source(source));self.assertFalse(self.bridge.integrating_source(source))
-        result=await task;self.assertEqual(result['text'],'Real return')
+        await self.results(1);self.assertEqual(self.stream.results[-1][1]['text'],'Real return')
+        self.assertFalse(task.done(),'The same subscription remains available for later returns')
         self.assertFalse(self.bridge.integrating_source(source))
+        second={**source,'id':'native:124','revision':'c'*64}
+        self.owner.parts[second['id']]={**second,'kind':'integrator_progress','native_returns':['result:actual'],
+                                       'entry_binding':[1],'current':True,'text':'Later canonical result'}
+        self.bridge.integrating_source(second);await self.results(2)
+        self.assertEqual(self.stream.results[-1][1]['text'],'Later canonical result')
+        self.assertEqual(self.stream.continuations,[True,True])
+        self.assertEqual(len(self.bridge._tool_calls),1)
+        await self.bridge.close();await task
     async def test_changed_or_worker_progress_cannot_be_announced_as_return(self):
+        task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
+        await asyncio.sleep(0)
         for field,value in (('current',False),('correction_pending',True),('kind','worker_progress'),('revision','c'*64)):
             source=self.source()
             self.owner.parts[source['id']]={**source,'kind':'integrator_answer','entry_binding':[1],
                                           'text':'Obsolete',field:value}
             self.bridge.integrating_source(source)
-            result=await self.bridge.tool({'type':'integrator_watch','call_id':field})
-            self.assertEqual(result['kind'],'not_ready')
+            while self.bridge._queued:await asyncio.sleep(.001)
+            await asyncio.sleep(.001)
+            self.assertFalse(task.done())
+            self.assertEqual(self.stream.results,[])
+        await self.bridge.close();await task
     async def test_close_wakes_pending_source_read_without_another_provider_effect(self):
         capture=self.bridge.capture(str(uuid.uuid4()),b'\1\0'*160,{})
         await capture.reservation

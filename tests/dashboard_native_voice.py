@@ -42,7 +42,7 @@ class Stream:
             {'type':'output_transcript','text':'A native foreground response.'},
             {'type':'turn_complete'}])
     def close(self):self.closed=True;self.closed_event.set();self.queue.put([{'type':'closing'}])
-    def tool_result(self,*args):self.tool_results.put(args)
+    def tool_result(self,*args,**kwargs):self.tool_results.put(args)
 
 
 class Detector:

@@ -74,6 +74,19 @@ class Dialogue(unittest.TestCase):
             NativeDialogue(self.key,activity_mode='manual',context={'text':'x'*32769},connect=self.connect)
         self.assertEqual(len(self.openings),2,'Invalid context cannot open another provider connection')
 
+    def test_return_subscription_streams_updates_without_another_model_call(self):
+        self.ready()
+        self.event({'toolCall':{'functionCalls':[{'id':'watch','name':'await_integrator_update','args':{}}]}})
+        for text in ('Admission acknowledged; work pending','Canonical result'):
+            self.stream.tool_result('watch',{'text':text},will_continue=True)
+            reply=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
+            self.assertTrue(reply['willContinue'])
+            self.assertEqual(self.stream.tools['watch']['state'],'pending')
+            self.assertEqual(self.event(self.audio())[0]['type'],'audio')
+        self.assertEqual(len(self.stream.tools),1)
+        self.stream.tool_result('watch',{'kind':'closed'})
+        with self.assertRaises(ValueError):self.stream.tool_result('watch',{},will_continue=True)
+
     def test_source_read_and_event_watch_keep_their_real_tool_names(self):
         self.ready()
         for name,args,kind in (('recent_originals',{},'source_query'),

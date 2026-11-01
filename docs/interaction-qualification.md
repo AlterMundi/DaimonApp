@@ -56,6 +56,16 @@ window remains bounded to eight existing presentation pages; overflow ends the
 live mode visibly instead of silently dropping sources. Real spoken-return
 acceptance after this correction is still required.
 
+An instrumented real-provider follow-up showed one return-watch call receiving
+the integrating acknowledgment, followed by no new watch call: the later result
+remained queued. Keep this observed failure separate from the cursor reproduction.
+The watch now remains one nonblocking generator with documented `willContinue`
+responses, bounded to160total tool responses per native session. Distinct current
+sources stream on that same call; admission is never repeated. Regressions cover
+successive returns, stale-source races, continued native audio and an explicit
+end. Real-provider behavior for this generator remains to be verified before
+receiving activation.
+
 The follow-up observer also incorrectly waited for raw `output_transcript`
 socket events; this mounted route emits the assistant text through
 `assistant_utterance`. Observe that existing event/history contract, including

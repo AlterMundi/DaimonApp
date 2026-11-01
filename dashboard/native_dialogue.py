@@ -27,6 +27,7 @@ class NativeDialogue:
     max_events = 16384
     max_text_bytes = 131072
     max_tools = 32
+    max_tool_responses = 160
     max_pending = 4
 
     def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic):
@@ -52,6 +53,7 @@ class NativeDialogue:
         self.phase = 'opening'
         self.input_bytes = self.output_bytes = self.text_bytes = self.events = 0
         self.tools = {}
+        self.tool_responses = 0
         try:
             self._socket = connect(self.endpoint, header=['x-goog-api-key: ' + token],
                                    timeout=10, redirect_limit=0, enable_multithread=True)
@@ -68,8 +70,9 @@ class NativeDialogue:
                     'Casual conversation does not require a tool. Delegate actionable requests to '
                     'the Sol integrator and continue conversing while its work is pending. '
                     'Use recent_originals to obtain genuine source IDs before proposing work; never invent IDs. '
-                    'After admission, keep one await_integrator_update pending for event-driven integrating returns while continuing to converse. '
-                    'Re-arm that watch after an actual return or cancellation while work remains pending; never poll for work. '
+                    'After admission, keep one await_integrator_update subscription pending for event-driven integrating returns while continuing to converse. '
+                    'That nonblocking subscription streams multiple updates; do not start another after receiving an update. '
+                    'Re-arm only after cancellation while work remains pending; never poll for work. '
                     'Only refer to exact retained original IDs supplied by the owning bridge. '
                     'A formulation is your attributed derivative, never a replacement human quote. '
                     'You do not select workers or execute actions. A tool acceptance is not completion. '
@@ -88,7 +91,7 @@ class NativeDialogue:
                      'description':'Read one bounded page of retained original references for this current foreground dialogue. Never starts work.',
                      'parameters':{'type':'OBJECT','properties':{'before':{'type':'INTEGER'}},'required':[]}},
                     {'name':'await_integrator_update','behavior':'NON_BLOCKING',
-                     'description':'Wait for the next real integrating result/question. Event-driven; do not poll or infer completion from acceptance.',
+                     'description':'Subscribe to real integrating results/questions for this speech session. The owning bridge streams multiple responses on this nonblocking call; do not rearm after each update or infer completion from acceptance.',
                      'parameters':{'type':'OBJECT','properties':{}}}]}]}})
         except DialogueUnavailable:
             raise
@@ -164,7 +167,7 @@ class NativeDialogue:
             else:
                 self._send({'realtimeInput': {'audioStreamEnd': True}})
 
-    def tool_result(self, call_id, result):
+    def tool_result(self, call_id, result, *, will_continue=False):
         """Return one bridge-owned outcome; this method never invokes the bridge.
 
         Mark before sending: an uncertain write cannot be automatically retried.
@@ -175,13 +178,19 @@ class NativeDialogue:
             call = self.tools.get(call_id)
             if call is None or call['state'] != 'pending':
                 raise ValueError('Tool proposal is unknown or already settled')
+            if type(will_continue) is not bool or will_continue and call['name']!='await_integrator_update':
+                raise ValueError('Only the event-driven return subscription can continue')
             if not isinstance(result, dict) or len(json.dumps(result, allow_nan=False).encode()) > 16384:
                 raise ValueError('Provide a bounded attributed integrator outcome')
+            if self.tool_responses >= self.max_tool_responses:
+                self._fail('native-dialogue-tool-response-bound')
+            self.tool_responses += 1
             call['state'] = 'response_unconfirmed'
             self._send({'toolResponse': {'functionResponses': [{
                 'id': call_id, 'name': call['name'],
+                **({'willContinue': True} if will_continue else {}),
                 'response': {'result': result, 'scheduling': 'WHEN_IDLE'}}]}})
-            call['state'] = 'response_sent'
+            call['state'] = 'pending' if will_continue else 'response_sent'
 
     def receive(self):
         """Return normalized events. Captions are not durable-original receipts.

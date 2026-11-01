@@ -215,11 +215,16 @@ ordering between input transcription and other events. The capture/source bridge
 still needs to establish durable utterance/audio boundaries before delegation.
 Provider cancellation is a cancelled speech proposal, never a native job cancel.
 An interrupted event clears output, including audio in that same event. A tool
-response is marked uncertain before writing and cannot be sent twice.
+response is marked uncertain before writing and cannot be replayed. The return
+subscription uses the provider's documented
+[`FunctionResponse.willContinue`](https://googleapis.github.io/js-genai/release_docs/classes/types.FunctionResponse.html)
+to stream distinct canonical updates on one nonblocking call. Receiving an
+acknowledgment does not end that subscription or depend on another model call.
 
 Each connection is limited to300seconds,300seconds of16kHz input and24kHz output,
 16384provider events,256KiB per event,128KiB total transcripts,32tool proposals and
-4pending proposals. Each input frame is at most one second; request/source lists
+4pending proposals and160total tool responses, including streamed updates.
+Only the return subscription can continue. Each input frame is at most one second; request/source lists
 and returned outcomes are bounded. The adapter retains no media or transcripts
 after its owner releases it and never opens a replacement connection. Longer
 conversation continuity belongs to the existing durable source/result bridge,
@@ -340,8 +345,11 @@ prior source IDs are contextual only; a delegation still requires genuine
 current-dialogue originals. One pending event-driven watch consumes current
 integrating result/question references, not arbitrary worker history. Source
 revision/currentness is checked again at offer time. Synthetic socket tests prove
-that native audio continues while this watch is pending and that one later
-canonical return can resolve it without repeating admission.
+that native audio continues while this watch is pending and that successive
+canonical returns use the same subscription without repeating admission. Stale
+sources are skipped without ending it; exact revisions are read again at offer
+time. The session-new source window is revalidated on invalidations because
+currentness/publication metadata can change without a new row ID.
 
 The browser retains exact PCM ranges through the existing IndexedDB/WAV recovery
 path until the authenticated server confirms matching original hashes **and durable

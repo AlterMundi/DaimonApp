@@ -222,28 +222,35 @@ class ForegroundBridge:
                 self._watching=True
                 source=None
                 try:
-                    source=await self._returns.get()
-                    if source is None:
-                        raise ForegroundUnavailable('Foreground conversation ended')
-                    self._queued.discard((source['id'],source['revision']))
-                    # Re-read the exact canonical revision at offer time. The
-                    # queue stores only references, never an authoritative copy.
-                    result=await self._owner(self.provider.presentation_part,
-                                            source['id'],source['revision'],0)
-                    if (result.get('id')!=source['id']
-                            or result.get('revision')!=source['revision']
-                            or result.get('entry_binding') is None
-                            or result.get('current') is False
-                            or result.get('correction_pending') is True
-                            or result.get('native_binding_current') is False
-                            or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
-                            or result.get('kind')=='integrator_progress' and not result.get('native_returns')
-                            or not isinstance(result.get('text'),str) or not result['text'].strip()):
-                        raise ForegroundUnavailable('Integrating return changed before this offer')
-                    result={'kind':'integrating_source','source':source,
-                            'text':result['text'],'text_bounded':result.get('next_offset') is not None,
-                            'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
-                    self._offered.add((source['id'],source['revision']))
+                    while True:
+                        source=await self._returns.get()
+                        if source is None:
+                            raise ForegroundUnavailable('Foreground conversation ended')
+                        self._queued.discard((source['id'],source['revision']))
+                        # Re-read the exact canonical revision at offer time. The
+                        # queue stores only references, never an authoritative copy.
+                        result=await self._owner(self.provider.presentation_part,
+                                                source['id'],source['revision'],0)
+                        if (result.get('id')!=source['id']
+                                or result.get('revision')!=source['revision']
+                                or result.get('entry_binding') is None
+                                or result.get('current') is False
+                                or result.get('correction_pending') is True
+                                or result.get('native_binding_current') is False
+                                or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
+                                or result.get('kind')=='integrator_progress' and not result.get('native_returns')
+                                or not isinstance(result.get('text'),str) or not result['text'].strip()):
+                            # Currentness can change between invalidation and
+                            # this exact read. Keep the subscription alive; a
+                            # later owner invalidation may offer it afresh.
+                            source=None
+                            continue
+                        result={'kind':'integrating_source','source':source,
+                                'text':result['text'],'text_bounded':result.get('next_offset') is not None,
+                                'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
+                        self._offered.add((source['id'],source['revision']))
+                        await asyncio.to_thread(self.stream.tool_result,ident,result,will_continue=True)
+                        source=None
                 except asyncio.CancelledError:
                     # Cancelling an unoffered read can return its canonical
                     # reference to the next watch. An attempted provider response
