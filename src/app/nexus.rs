@@ -284,7 +284,9 @@ async fn validate(shared: &AppShared, doc: &Value) -> Result<()> {
         bail!("Nexus binding is stale or revoked; no new native input was admitted");
     }
     let contribution = &doc["request"]["contribution"];
-    if contribution["review_context"]["adapter"] == "interactive_3d" {
+    if contribution["review_context"]["adapter"] == "interactive_3d"
+        && !doc["dispatch_id"].is_null()
+    {
         validate_static_review(contribution)?;
         let observed = cfg
             .call(

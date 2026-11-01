@@ -277,7 +277,8 @@ contribution and edition; they explicitly distinguish renderer metadata from
 actually inspected geometry and never authorize execution or audio deletion.
 
 The existing validation path calls the owner-local review-admission operation
-before a static input is claimed and again at native submission/steering. This
+after a static input is dispatched and again at native submission/steering.
+The existing dispatch operation checks access for still-queued input itself. This
 rechecks the exact retained actor, table membership, binding, dispatch identity,
 full context and live model permission, including after a queue delay. Missing
 or unavailable authority fails closed. This operation is read-only: it cannot
