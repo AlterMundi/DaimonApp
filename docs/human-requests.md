@@ -21,7 +21,10 @@ private memory is pooled.
 
 Admission uses a stable original-derived UUID independent of source revisions
 and native-session renewal. Exact repeats inspect retained state without another
-native submission, including after a lost acknowledgement or restart. Existing
+native submission, including after a lost acknowledgement or restart. The socket
+response preserves `id = "tribu:SOURCE_ID"`, which the existing Matrix attention
+producer requires before acknowledging its outbox. `conversation_input` separately
+identifies the correlated native original UUID; it is not a reminted send. Existing
 legacy admissions are observed without migration or replay. A source edit or
 withdrawal before native submission withdraws the retained original; it never
 mints another activation. Validation uses the existing native submission/steer

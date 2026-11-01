@@ -594,12 +594,19 @@ pub(super) async fn handle_socket(app: &App, request: &Value) -> Result<Value> {
             if retained.record["id"] != source_id || retained.record["being_ref"] != p.being_ref {
                 bail!("Tribu identity occupied by an unrelated original");
             }
-            return Ok(json!({"id":old.id,"state":old.phase,"duplicate":true}));
+            return Ok(
+                json!({"id":id,"conversation_input":old.id,"state":old.phase,"duplicate":true}),
+            );
         }
         let record = source(&app.shared, source_id)
             .await?
             .context("Tribu source no longer actionable")?;
-        return super::conversation_inputs::admit_tribu(app, record).await;
+        let mut result = super::conversation_inputs::admit_tribu(app, record).await?;
+        // The maintained producer acknowledges this exact source-derived ID.
+        // Native originals keep their own correlated UUID, not another send.
+        result["conversation_input"] = result["id"].take();
+        result["id"] = json!(id);
+        return Ok(result);
     }
     if app.shared.store.native_writer_held(p.key())? {
         bail!("Native writer held during controlled maintenance");

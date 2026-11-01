@@ -90,12 +90,14 @@ max_pending=20
                 'context': {'quoted': 'Public quoted text is not authority'}, 'text': text}
             available.add(ident)
             return ident
-        def local(op, ident=None):
+        def local(op, ident=None, drop_ack=False):
             request = {'op': op}
             if ident is not None: request['source_id'] = ident
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.settimeout(20); client.connect(str(listener))
                 client.sendall(json.dumps(request).encode() + b'\n')
+                if drop_ack:
+                    return None
                 return json.loads(client.makefile('rb').readline())
         def start():
             journey.start(); journey.wait_control_socket(listener)
@@ -105,9 +107,14 @@ max_pending=20
         start()
         assert local('status')['result']['mode'] == 'interaction'
         first = source('a', '@fixture continue our existing discussion')
+        local('admit', first, drop_ack=True)
+        journey.wait(lambda: journey.row("SELECT count(*) FROM conversation_inputs WHERE json_extract(doc,'$.tribu_source.record.id')=?", (first,)) == [(1,)])
         result = local('admit', first)
         assert result['ok'], (result, {'authenticated_source_calls': len(source_calls), 'retained_originals': journey.row('SELECT id,phase FROM conversation_inputs')})
-        first_id = result['result']['id']
+        # The unchanged Matrix attention producer ACKs only tribu:SOURCE_ID.
+        assert result['result']['id'] == 'tribu:' + first
+        assert result['result']['duplicate']
+        first_id = result['result']['conversation_input']
         journey.wait(lambda: phase(first_id) == [('accepted',)])
         assert len(journey.packets) == 1
         packet = journey.packets[0][1]
@@ -135,13 +142,13 @@ max_pending=20
         journey.drop_ack = True
         uncertain = source('c', '@fixture retained synthetic lost acknowledgement')
         reply = local('admit', uncertain)['result']
-        journey.wait(lambda: phase(reply['id']) == [('uncertain',)], seconds=18)
+        journey.wait(lambda: phase(reply['conversation_input']) == [('uncertain',)], seconds=18)
         assert local('admit', uncertain)['result']['duplicate']
         assert len(journey.packets) == 4
         journey.finish(journey.web_thread, journey.web_turn); journey.idle()
         journey.stop(); start()
         repeated = local('admit', uncertain)['result']
-        assert repeated['duplicate'] and repeated['id'] == reply['id']
+        assert repeated['duplicate'] and repeated['conversation_input'] == reply['conversation_input']
         assert len(journey.packets) == 4
         # A source edit while native resume is held cannot reach turn/start.
         journey.drop_ack = False
@@ -152,7 +159,7 @@ max_pending=20
         records[edited]['revision'] = 'f' * 64
         records[edited]['text'] = 'Changed after retention'
         journey.resume_release.set()
-        journey.wait(lambda: phase(pending['id']) == [('retained_unsent',)])
+        journey.wait(lambda: phase(pending['conversation_input']) == [('retained_unsent',)])
         assert len(journey.packets) == 4
         assert local('admit', edited)['result']['duplicate']
         assert journey.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1') == [(original_native,)]
@@ -161,7 +168,7 @@ max_pending=20
         assert not local('admit', bad)['ok']
         assert not local('retry', uncertain)['ok']
         assert len(journey.packets) == 4
-        print('PASS integrated Tribu: existing native history, exact-source provenance, duplicate/restart/lost-ACK preservation, scoped pause, ordinary browser steering, pre-dispatch edit withdrawal and wrong-human rejection; zero models.')
+        print('PASS integrated Tribu: existing native history, exact-source provenance, producer ACK identity, lost owner/native ACK/restart preservation, scoped pause, ordinary browser steering, pre-dispatch edit withdrawal and wrong-human rejection; zero models.')
     except Exception:
         print('Synthetic ingress checkpoint:', {'source_calls': len(source_calls),
             'originals': journey.row('SELECT id,phase FROM conversation_inputs'),
