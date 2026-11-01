@@ -313,8 +313,12 @@ class ForegroundBridge:
             raise
         finally:self._watching=False
 
-    def integrating_source(self,source):
-        """Existing authenticated canonical event reader supplies references only."""
+    def integrating_source(self,source,*,in_context=False):
+        """Register an authenticated canonical reference, in setup or for an offer.
+
+        Setup context is already offered to the model, without another spoken
+        return. Reads still revalidate the exact canonical source on each page.
+        """
         if (self.closed or not isinstance(source,dict) or set(source)-{'id','revision','kind','label'}
                 or not isinstance(source.get('id'),str) or len(source['id'])>256
                 or not isinstance(source.get('revision'),str) or not re.fullmatch('[a-f0-9]{64}',source['revision'])
@@ -323,9 +327,11 @@ class ForegroundBridge:
             raise ForegroundUnavailable('Select an owned current integrating source')
         key=(source['id'],source['revision'])
         if key in self._offered or key in self._queued:return False
-        if self._returns.full() or len(self._offered)+len(self._queued)>=128:
+        if (not in_context and self._returns.full()) or len(self._offered)+len(self._queued)>=128:
             raise ForegroundUnavailable('Integrating offers reached the live bound')
-        self._returns.put_nowait(dict(source));self._queued.add(key);return True
+        if in_context:self._offered[key]=dict(source)
+        else:self._returns.put_nowait(dict(source));self._queued.add(key)
+        return True
 
     async def close(self):
         self.closed=True

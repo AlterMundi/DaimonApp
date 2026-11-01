@@ -387,6 +387,19 @@ no parallel source store. Mocked transport, source ownership and mounted app
 regressions cover a multi-page Unicode result and changed/unoffered sources;
 these do not establish real-provider tool selection or phone hearing.
 
+Reopening the avatar also makes its retained canonical setup excerpts readable.
+Each eligible excerpt carries a character cursor after its at-most1200UTF-8-byte
+text, including any remaining first-page text. Only references actually retained
+in the32KiB setup context enter the same128offer registry. They are already
+context, so no new spoken return or delegation is queued. Reads revalidate the
+canonical revision as above; stale/correction-pending/native-obsolete sources
+are omitted at setup, ordinary progress remains context-only. Retained human
+originals and prior assistant speech are not promoted into this canonical read
+scope. A mounted Unicode reconstruction failed with not_ready before the fix
+and passes afterward; an independent bridge check retains no-repeat and stale
+read rejection. This is source/fixture qualification, not deployment or model/
+phone acceptance.
+
 An answer to an integrating question or a correction to pending work must also
 reach Sol through its retained originals, even if terse. The foreground cannot
 replace that action with a spoken acknowledgment or claim forwarding before

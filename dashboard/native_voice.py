@@ -211,9 +211,16 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     try:
                         part=await asyncio.to_thread(provider.presentation_part,item['id'],item['revision'],0)
                     except (ProviderUnavailable,ValueError):continue
+                    if (part.get('current') is False or part.get('correction_pending') is True
+                            or part.get('native_binding_current') is False):continue
+                    text=excerpt(part['text'])
+                    readable=(part.get('kind')=='integrator_answer' or
+                        part.get('kind')=='integrator_progress' and bool(part.get('native_returns')))
                     sources.append({'id':item['id'],'revision':item['revision'],'speaker':'integrator',
-                        'text_excerpt':excerpt(part['text']),'kind':item['kind'],'observed_at':item.get('observed_at'),'current':part.get('current'),
-                        'correction_pending':part.get('correction_pending'),'bounded':True,'can_delegate':False})
+                        'text_excerpt':text,'kind':item['kind'],'observed_at':item.get('observed_at'),'current':part.get('current'),
+                        'correction_pending':part.get('correction_pending'),'bounded':True,'can_delegate':False,
+                        'can_read':readable,'offset':0,
+                        'next_offset':len(text) if readable and (len(text)<len(part['text']) or part.get('next_offset') is not None) else None})
                 originals=await asyncio.to_thread(provider.presentation,'input list 0 before')
                 if originals['binding']!=meta['binding']:raise ForegroundUnavailable('Original context binding changed')
                 for item in originals.get('items',[]):
@@ -247,6 +254,12 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'meaning':item['playback_meaning']} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
+                # Only references actually retained in the bounded setup are
+                # offered. No replay, unsolicited speech or wider source lookup.
+                for item in sources:
+                    if item.get('speaker')=='integrator' and item.get('can_read') is True:
+                        bridge.integrating_source({'id':item['id'],'revision':item['revision'],
+                            'kind':'result','label':'Integrator'},in_context=True)
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual'})
                 tasks={asyncio.create_task(outputs()),asyncio.create_task(analysis()),asyncio.create_task(returns(cursor)),asyncio.create_task(acoustic.watch_transcripts())}

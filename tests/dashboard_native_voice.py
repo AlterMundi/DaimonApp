@@ -199,6 +199,26 @@ class Mounted(unittest.TestCase):
             ws.send_json({'type':'close'})
         self.assertEqual({item['id'] for item in history.page(100)['items']},{current,earlier})
         with self.assertRaises(ValueError):history.page(100,binding='invalid')
+    def test_reopened_voice_can_read_complete_retained_return_without_replaying_it(self):
+        self.owner.return_ready=True
+        self.owner.return_text='Contexto anterior: á. '*100+' Último detalle: azafrán.'
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            source=next(v for v in stream.context['sources'] if v['speaker']=='integrator')
+            self.assertTrue(source['can_read']);self.assertEqual(source['next_offset'],len(source['text_excerpt']))
+            self.assertLessEqual(len(source['text_excerpt'].encode()),1200)
+            # The opening excerpt is already offered context; no new work or
+            # historical spoken offer is needed to ask for its missing detail.
+            stream.queue.put([{'type':'integrating_source_query','call_id':'retained-detail',
+                'source':source['id'],'revision':source['revision'],
+                'offset':source['next_offset']}])
+            call,page=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'retained-detail');self.assertEqual(page['kind'],'integrating_source')
+            self.assertEqual(source['text_excerpt']+page['text'],self.owner.return_text)
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
     def test_explicit_transcript_fragments_commit_one_complete_original_after_end_marker(self):
         def incomplete_end(stream):
             stream.queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',

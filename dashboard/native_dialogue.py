@@ -105,6 +105,8 @@ class NativeDialogue:
                     'An integrating return with next_offset contains only its first page. If later details are needed, '
                     'use read_integrating_source with the exact offered source ID, revision and next_offset, following further pages as needed. '
                     'Do not invent missing details, assume a partial page is complete, or read unrelated sources. '
+                    'Canonical integrating excerpts in retained setup context with can_read true are already offered sources. '
+                    'Use their exact ID, revision and next_offset to recover missing details; do not delegate the previous work again or read the history aloud unasked. '
                     'If the human asks for a conclusion or detail absent from the current page and next_offset is present, read the next page before answering. '
                     'Continue through the offered cursor until that requested information is found or the source ends; saying that the answer is later in the document does not answer the question. '
                     'Interrupting your speech does not cancel independent work. '
