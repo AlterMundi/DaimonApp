@@ -21,6 +21,7 @@ class Inputs(Goals):
     def __init__(self,binary):
         self.packets=[]
         self.drop_ack=False
+        self.native_ack_delay=0
         self.web_thread=None
         self.web_turn=None
         self.late_ack=None
@@ -59,6 +60,7 @@ class Inputs(Goals):
         self.web_thread=params['threadId']
         if method=='turn/start':
             self.web_turn='conversation-turn-'+str(len(self.packets))
+            if self.native_ack_delay:time.sleep(self.native_ack_delay)
             send({'id':message['id'],'result':{'turn':{'id':self.web_turn}}})
             self.broadcast(self.web_thread,'turn/started',{'turn':{'id':self.web_turn,'status':'inProgress'}})
         elif not self.drop_ack:
@@ -281,11 +283,15 @@ def late_artifact_return(binary):
         journey.wait(lambda:journey.has('Initial goal turn delivered.',1));journey.idle()
         binding=journey.read('presentation','list','0','0')['result']['binding']
         journey.hold_telegram=True
+        journey.native_ack_delay=.25
         journey.admit('Produce an artifact on the original return surface.',topic=1)
         journey.wait(lambda:len(journey.packets)==1)
         runtime=''.join(v['value'] for k,v in sorted(journey.packets[0][1]['additionalContext'].items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
         output=Path(re.search(r'\n([^\n]+/out)\n',runtime).group(1))
         artifact=output/'late-deliverable.txt';artifact.write_text('Retained across return-selection race')
+        # A fixture packet can precede the proxy ACK and live collection. Do
+        # not emit synthetic completion into an execution that is not ready.
+        journey.wait(lambda:journey.row("SELECT count(*) FROM native_collections n JOIN turns t ON t.id=n.local_turn WHERE t.native_thread_id=? AND n.first_turn=? AND t.status='running'",(journey.web_thread,journey.web_turn))==[(1,)])
         journey.finish(journey.web_thread,journey.web_turn)
         # The ordinary final text has completed. The artifact is now waiting at
         # the shared outbound limiter, after its retained attempt record.
