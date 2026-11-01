@@ -34,7 +34,7 @@ window.ConversationVoiceMode=(()=>{
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
-      opened=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false,directMessage;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
+      opened=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();
