@@ -655,6 +655,24 @@ function boot(readOnly=false,standalone=false,options={}) {
     pending.clock.fire(180);pending.clock.fire(450);pending.clock.fire(1200);await new Promise(resolve=>setImmediate(resolve));
     assert.equal(pending.audioCalls.length,invalidate==='changed'?4:3,'Invalidated parked preparations cannot restart or retry automatically');pending.ui.stop();
   }
+  // Receiving trace: canonical tail is already queued/prefetched when voice
+  // interrupts its live prefix. Releasing the floor must not resume that tail.
+  const priorTailOptions={liveSpeech:true,clock:true,capture:true,immediateHash:true,incremental:true,responseDraft:{provisional:true,native_turn:'prior-tail-turn',native_item:'prior-tail-item',text:'First sentence. Unfinished',observed_at:'2100-01-01T00:00:00Z'}};
+  const priorTail=boot(false,true,priorTailOptions);priorTail.audio();await priorTail.ui.refresh();
+  priorTail.nodes.get('#conversation-voice-replies').handlers.click();await priorTail.ui.refresh();
+  const priorTailPlayer=priorTail.nodes.get('#conversation-audio');await until(()=>priorTail.audioCalls.length===1&&!priorTailPlayer.paused);
+  const priorTailText='First sentence. This older tail must await explicit resume.';
+  priorTailOptions.liveText=priorTailText;priorTailOptions.responseDraft=null;priorTail.addReplies(1);
+  priorTail.overrideSource(9,{native_turn:'prior-tail-turn',native_item:'prior-tail-item',text_characters:priorTailText.length,preview:priorTailText});priorTail.replyTexts.set('native:9',priorTailText);
+  await priorTail.ui.refresh();await until(()=>priorTail.audioCalls.length===2);
+  assert.equal(priorTail.audioCalls[1].source,'native:9','The canonical continuation was prepared before interruption');
+  priorTail.capture();priorTail.finishCapture();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(priorTailPlayer.paused,true,'Releasing the human floor cannot restart an already queued canonical tail');
+  priorTail.addReplies(1);priorTail.overrideSource(10,{native_turn:'corrective-turn',native_item:'corrective-item',text_characters:2,preview:'11'});priorTail.replyTexts.set('native:10','11');
+  await priorTail.ui.refresh();await until(()=>priorTail.audioCalls.length===3&&!priorTailPlayer.paused);
+  assert.equal(priorTail.audioCalls[2].source,'native:10','The corrective answer precedes the interrupted older tail');
+  priorTail.ui.stop();
+
   const interruptionOptions={liveSpeech:true,clock:true,capture:true,immediateHash:true,responseDraft:{provisional:true,native_turn:'interruption-physical',native_item:'interruption-item',text:'First sentence. Unfinished',observed_at:'2100-01-01T00:00:00Z'}};
   const interruptedLive=boot(false,true,interruptionOptions);interruptedLive.audio();await interruptedLive.ui.refresh();
   interruptedLive.nodes.get('#conversation-voice-replies').handlers.click();await interruptedLive.ui.refresh();

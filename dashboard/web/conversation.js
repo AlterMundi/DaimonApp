@@ -1214,7 +1214,10 @@ window.Conversation = (() => {
       const pauseStarted=active && !audio.paused && !audio.muted?window.performance?.now?.():undefined;
       liveSpeech?.interrupt(active?.source);
       for(const prepared of queuedPreparations.values())liveSpeech?.interrupt(prepared.source);
-      for(let n=voiceQueue.length-1;n>=0;n--)if(queuedPreparations.has(preparationKey(voiceQueue[n])))removeQueued(n);
+      // A canonical tail can already be queued while its live prefix plays.
+      // Interrupt the whole native message, including that queued continuation;
+      // floor release is not permission to resume it ahead of the correction.
+      for(let n=voiceQueue.length-1;n>=0;n--)if(queuedPreparations.has(preparationKey(voiceQueue[n])) || sameMessage(voiceQueue[n],active?.source))removeQueued(n);
       draft.blur?.();enableVoice();voiceBusy=false;cancelSpeechWait();
       if(active && blobUrl && !active.verifying){
         rememberPosition();active.generation=++generation;active.auto=false;active.interrupted=true;

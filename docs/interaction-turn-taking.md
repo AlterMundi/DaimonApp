@@ -489,3 +489,34 @@ establishes successful recognition, not browser receipt adoption or the precise
 reason each attempt entered review. The ambient-energy regression is verified
 in the coordinator fixture; attribution to those physical attempts and successful
 device acceptance remain unresolved. Existing originals were not replayed.
+
+
+### Already queued canonical tail during interruption — 2026-11-01
+
+A fresh, bounded three-original browser case used current Gemini prepared ASR,
+pinned CPU analysis, Sol6.1/openai/medium and Qwen speech with synthetic capture
+and worker peers. The generated correction stopped the player after211ms, three
+unique originals were accepted, and a later explicit inquiry produced complete
+source-matched audio for both a worker result and its still-unanswered question.
+Both returned sources were reported; the other worker stayed active. All three
+native turns completed and the isolated native thread was archived.
+
+That delivery/completion evidence did not prove correct interruption. Retained
+media ranges show that the old answer's canonical continuation restarted after
+the human phrase ended, delaying the corrective answer behind roughly12seconds
+of old narration. The continuation had already been queued and prefetched while
+its live prefix played. Capture removed separately parked preparations but left
+that same-message queue row. Interrupt the whole native message, removing its
+queued canonical continuation as well. Preserve its existing paused media, saved
+cursor and explicit Resume path; a new correction can then precede old narration.
+The mounted player regression reproduces the restart before the correction and
+verifies the correction plays next afterward, with no provider rerun.
+
+The retained journey's first-positive-audio values were6.069/13.812/11.777seconds
+from generated final-energy proxies; the second includes the observed old-tail
+defect and the third includes real source inspection/reporting. These are
+observations, not a speedup or subsecond claim. A fourth passive idle stream was
+unconfirmed at bounded fixture shutdown; the browser profile is retained. This
+case does not qualify idle finalization/recovery, spontaneous idle offers,
+physical echo/hearing, phone acceptance or the full milestone. No existing
+original or paid call was replayed to repair the verifier or player regression.
