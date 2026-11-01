@@ -66,7 +66,7 @@ function boot(){
  fallback.session.hold();fallback.recorders[2].complete();await tick();assert.equal(fallback.commits.length,2,'Exiting never grants file-ASR or Send for the unfinished fragment');
  const limitedFallback=boot();await limitedFallback.session.start();limitedFallback.sources[0].emit(3200);
  limitedFallback.recorders[0].partial('Una frase');limitedFallback.activity(1,true,false);limitedFallback.recorders[0].captureStop='audio_flush_unconfirmed';limitedFallback.activity(1,false,true);
- await until(()=>limitedFallback.recorders.length===2);limitedFallback.recorders[0].complete();await tick();
+ await until(()=>limitedFallback.recorders.length===2);limitedFallback.recorders[0].complete();await until(()=>limitedFallback.reviews.length>0);
  assert.equal(limitedFallback.commits.length,0,'An unconfirmed audio ending still requires explicit review');assert(limitedFallback.reviews.length);
  const retaining=boot(),transaction=retaining.holdRetention();await retaining.session.start();retaining.sources[0].emit(3200);retaining.recorders[0].partial('Una frase completa');retaining.activity(1,true,false);retaining.activity(1,false,true);
  await until(()=>retaining.recorders.length===2);retaining.recorders[0].complete('Una frase completa');await tick();
