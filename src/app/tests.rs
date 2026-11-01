@@ -475,6 +475,29 @@ async fn integrated_tribu_keeps_an_existing_native_binding_without_legacy_featur
         Some("existing-integrator-native")
     );
     assert_eq!(selected.key, key);
+    // Browser IDs are client supplied. An occupied UUID is not evidence that
+    // this authenticated public original was admitted or delivered.
+    let source_id = "a".repeat(64);
+    let id = crate::interaction::TribuSource::identity("fixture-being", &source_id, key);
+    let binding = app
+        .shared
+        .store
+        .interaction_presentation_list(100, key, 0, 0)
+        .unwrap()["binding"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.shared
+        .store
+        .conversation_input_capture(100, key, &binding, &id, "Unrelated private original")
+        .unwrap();
+    let error = super::tribu::handle_socket(
+        &app,
+        &serde_json::json!({"op":"admit","source_id":source_id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("unrelated original"));
 }
 
 #[tokio::test]

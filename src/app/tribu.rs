@@ -587,6 +587,13 @@ pub(super) async fn handle_socket(app: &App, request: &Value) -> Result<Value> {
             .store
             .conversation_input_read(p.human_id, p.key(), &input_id)
         {
+            let retained = old
+                .tribu_source
+                .as_ref()
+                .context("Tribu identity occupied by an unrelated original")?;
+            if retained.record["id"] != source_id || retained.record["being_ref"] != p.being_ref {
+                bail!("Tribu identity occupied by an unrelated original");
+            }
             return Ok(json!({"id":old.id,"state":old.phase,"duplicate":true}));
         }
         let record = source(&app.shared, source_id)
