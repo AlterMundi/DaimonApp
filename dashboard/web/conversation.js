@@ -2053,7 +2053,7 @@ window.Conversation = (() => {
       retain:original=>microphone.retainContinuous(original),release:(original,hash)=>microphone.releaseContinuous(original,hash),
       onReview:originals=>{if(!voiceMode?.active)void microphone.reviewContinuous(originals);},
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onUtterance:foregroundCard,
-      onHandoff:handoff=>voiceMode?.update({handoff}),
+      onHandoff:handoff=>voiceMode?.update({handoff}),onTiming:(id,stage)=>timing?.native?.(id,stage),
       onState:value=>{if(!voiceModePrevious?.continuous)return;captureBusy=value.floor;
         presentState({capture:value.floor?'recording':value.starting?'permission':'idle',...(value.playback?{playback:value.playback}:{})});
         voiceMode?.update({continuousState:value});

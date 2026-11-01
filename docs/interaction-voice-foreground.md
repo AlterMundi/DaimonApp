@@ -630,3 +630,22 @@ and worker-delivery limit. Both now carry that meaning at the admission boundary
 A distinct bounded actual Gemini/real-bridge check with a synthetic owner spoke
 only that the request was sent, with zero worker delivery. It is one observed
 wording, not a guarantee for all future model outputs or a physical hearing test.
+
+## Page-local native timing
+
+The existing closed Browser voice timing inspector also receives native-engine
+marks. Each original records browser-observed capture start, detected phrase end,
+local WAV retention, interpretation arrival and confirmed-original receipt.
+Generated outputs are separate rows with their first valid PCM-event handling,
+first buffer scheduling, first buffer completion and retirement. A pending
+worker return must never be assigned as the response to the nearest human phrase.
+These are page-relative browser marks, not final intended speech, nonzero PCM,
+first intelligible sound, physical hearing or word boundaries. Missing events
+remain not observed; retired queued buffers do not become completed playback.
+
+Reuse the existing maps: at most eight original rows and sixteen source/output
+rows, cleared by Clear, binding change or reload. No transcript, PCM, URL,
+credential, persistence, network request, polling or new server/provider operation
+is collected by timing. The existing engine callbacks are optional; ordinary
+chat and native speech ownership/receipts are unchanged. The inspector stays
+closed by default and does not add diagnostic text to the avatar or audio dock.

@@ -4,7 +4,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 // WebCrypto completes on a worker thread; event-loop turns are not a deadline.
 const until=async f=>{const deadline=performance.now()+2000;while(!f()){if(performance.now()>=deadline)throw Error('Expected native voice transition');await new Promise(resolve=>setTimeout(resolve,1));}};
 function boot(){
-  const sockets=[],contexts=[],sources=[],retained=[],released=[],reviews=[],states=[],handoffs=[],timers=[];let permissionCalls=0,questions={old:'v1'},listener;
+  const sockets=[],contexts=[],sources=[],retained=[],released=[],reviews=[],states=[],handoffs=[],timers=[],timings=[];let permissionCalls=0,questions={old:'v1'},listener;
   class Socket{
     static OPEN=1;
     constructor(){this.readyState=1;this.sent=[];this.bufferedAmount=0;sockets.push(this);queueMicrotask(()=>this.onopen?.());}
@@ -26,11 +26,11 @@ function boot(){
   vm.runInContext(fs.readFileSync('dashboard/web/native-conversation.js','utf8'),context);
   const hooks={headers:()=>({'X-Dashboard-CSRF':'fixture'}),getBinding:()=> 'a'.repeat(64),getQuestions:()=>questions,
     retain:async original=>{const hash=Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex');const value={...original,audio_sha256:hash};retained.push(value);return value;},
-    release:async(original,hash)=>{assert.equal(hash,original.audio_sha256);released.push(original.id);},onReview:value=>reviews.push(value),onState:value=>states.push(value),onHandoff:value=>handoffs.push(value)};
+    release:async(original,hash)=>{assert.equal(hash,original.audio_sha256);released.push(original.id);},onReview:value=>reviews.push(value),onState:value=>states.push(value),onHandoff:value=>handoffs.push(value),onTiming:(id,stage)=>timings.push({id,stage})};
   // URL is intentionally the real application route shape, with a fake socket.
   window.location={href:'https://example.test/interaction/?view=conversation'};
   const engine=window.NativeConversation.create(hooks);
-  return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,media,get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
+  return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,timings,media,get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
 }
 async function ready(value){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual'});assert.equal(await pending,true);return socket;}
 (async()=>{
@@ -54,6 +54,9 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   assert.equal(value.states.at(-1).pending,true,'Stopping with an unconfirmed original must expose review in the avatar');
   assert.equal(value.handoffs.at(-1).gate,'review','The detector badge must not keep claiming Voice detected after recovery begins');
   assert.ok(value.timers.every(t=>t.cleared),'Readiness/session timers are cleared');
+  assert.deepEqual(value.timings.filter(t=>t.id===first).map(t=>t.stage),['capture_started','phrase_end','local_retained','original_confirmed']);
+  assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_handled'));assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_scheduled'));assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_retired'));
+  assert.equal(value.timings.some(t=>t.id===output&&t.stage==='output_buffer_ended'),false,'A retired queued source cannot report a completed buffer');
   const refused=boot(),pending=refused.engine.start();await until(()=>refused.sockets.length===1);refused.sockets[0].push({type:'review',message:'Listener unsupported'});assert.equal(await pending,false);assert.equal(refused.permissionCalls,0);
   const scoped=boot();scoped.questions({['a'.repeat(32)]:'b'.repeat(64)});const scopedSocket=await ready(scoped);
   scopedSocket.push({type:'question_scope',binding:'a'.repeat(64),capture_questions:{['c'.repeat(32)]:'d'.repeat(64)}});await tick();

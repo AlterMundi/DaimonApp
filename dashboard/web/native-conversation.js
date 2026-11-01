@@ -2,23 +2,24 @@
 // Explicit avatar owner: native speech, exact local recovery and bounded PCM.
 window.NativeConversation=(()=>{
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&!window.NativeSpeechAudio?.backgroundPlayback);
-  function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{}}){
+  function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
     let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope;
     const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function position(node){return context.currentTime<=node.at?0:Math.min(node.end,node.begin+Math.floor((context.currentTime-node.at)*24000)*2);}
     function report(id,count){if(count<=(played.get(id)||0))return;played.set(id,count);control({type:'playback',id,played_bytes:count});}
+    function retireOutput(id){if(id&&!retired.has(id)){retired.add(id);onTiming(id,'output_retired');}}
     function silence(retire=false){
-      if(retire&&latestOutput)retired.add(latestOutput);
-      for(const node of nodes){if(retire)retired.add(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
+      if(retire&&latestOutput)retireOutput(latestOutput);
+      for(const node of nodes){if(retire)retireOutput(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
       nodes.clear();next=context?.currentTime||0;onState({active,starting,floor,pending:false,playback:'paused'});
     }
     function play(value){
       if(value.sample_rate!==24000||typeof value.pcm!=='string'||value.pcm.length>350000||!Number.isSafeInteger(value.end))throw Error('Invalid native audio');
       const raw=atob(value.pcm);if(!raw.length||raw.length%2)throw Error('Invalid native PCM');
       const begin=received.get(value.id)||0;if(value.end!==begin+raw.length||value.end>300*48000)throw Error('Native audio continuity changed');
-      received.set(value.id,value.end);latestOutput=value.id;
+      received.set(value.id,value.end);latestOutput=value.id;onTiming(value.id,'output_handled');
       if(!audible||floor||blocked||retired.has(value.id))return;
       if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
       const samples=new Float32Array(raw.length/2);
@@ -27,8 +28,8 @@ window.NativeConversation=(()=>{
       const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
       const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
-      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled)report(node.id,node.end);if(!nodes.size)onState({active,starting,floor,pending:false,playback:'idle'});};
-      source.start(at);onState({active,starting,floor,pending:false,playback:'playing'});
+      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){report(node.id,node.end);onTiming(node.id,'output_buffer_ended');}if(!nodes.size)onState({active,starting,floor,pending:false,playback:'idle'});};
+      source.start(at);onTiming(value.id,'output_scheduled');onState({active,starting,floor,pending:false,playback:'playing'});
     }
     function slice(start,end){
       if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start||end>bytes||end-start>120*32000)throw Error('Original PCM range unavailable');
@@ -66,12 +67,12 @@ window.NativeConversation=(()=>{
         case 'audio':play(value);break;
         case 'capture_started':
           if(current||typeof value.id!=='string')throw Error('Original capture changed');
-          current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence(true);onInterrupt();state('Listening');
+          onTiming(value.id,'capture_started');current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence(true);onInterrupt();state('Listening');
           onHandoff({id:value.id,gate:'speaking'});break;
         case 'phrase_end':{
           if(!current||current.id!==value.id||current.start!==value.start)throw Error('Phrase boundary changed');
-          const span={...current,end:value.end};current=undefined;floor=false;lastEnded=value.id;
-          await keep(span);onHandoff({id:value.id,gate:'waiting_transcript'});state('Phrase end detected');break;
+          onTiming(value.id,'phrase_end');const span={...current,end:value.end};current=undefined;floor=false;lastEnded=value.id;
+          await keep(span);onTiming(value.id,'local_retained');onHandoff({id:value.id,gate:'waiting_transcript'});state('Phrase end detected');break;
         }
         case 'original_retained':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256)throw Error('Retained original differs');
@@ -79,7 +80,7 @@ window.NativeConversation=(()=>{
         }
         case 'original_completed':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256||value.phase!=='foreground')throw Error('Completed original differs');
-          await release(original,value.sha256);originals.delete(value.id);break;
+          onTiming(value.id,'original_confirmed');await release(original,value.sha256);originals.delete(value.id);break;
         }
         case 'input_caption':case 'input_transcript':onCaption(value.text);break;
         case 'assistant_utterance':onUtterance(value.utterance);onCaption(value.utterance.text);break;
@@ -87,7 +88,7 @@ window.NativeConversation=(()=>{
         case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded)blocked=false;break;
         case 'turn_activity':
           if(current)onHandoff({id:current.id,gate:value.activity.speaking?'speaking':'waiting_endpoint'});break;
-        case 'input_interpreted':onCaption(value.text);break;
+        case 'input_interpreted':onTiming(value.id,'input_interpreted');onCaption(value.text);break;
         case 'review':case 'closing':hold(value.message||'Voice session ended.');break;
       }
     }
@@ -131,7 +132,7 @@ window.NativeConversation=(()=>{
             control({type:'capture_scope',audio_bytes:value.activityBytes,capture_questions:pendingScope});
           }
           if(value.activityBytes>0&&value.activityBytes>=bytes){
-            if(latestOutput)retired.add(latestOutput);
+            if(latestOutput)retireOutput(latestOutput);
             if(nodes.size){silence(true);onInterrupt();}
           }
           if(!value.pcm)return;
