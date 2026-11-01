@@ -269,3 +269,29 @@ Measure final intended speech→first intelligible sound and interruption→sile
 on the same journey; count neither filler nor first text as spoken acceptance.
 Phone/echo/noise acceptance stays distinct. Existing selected participants' access,
 bounded media retention and ordinary original recovery remain requirements.
+
+## Live bridge implementation checkpoint
+
+`dashboard/native_foreground.py` connects one bounded native speech session to
+existing original retention, integrator admission and canonical text readers.
+Its `recent_originals` tool returns genuine references; delegation requires the
+latest captured correction and retains its distinct assistant formulation. Each
+provider call ID can produce at most one owner invocation, including lost ACKs.
+`await_integrator_update` waits on actual source notifications while the speech
+stream remains independent. The bridge re-reads the selected revision and rejects
+obsolete content, pending corrections, worker progress and changed native bindings.
+It never starts workers itself or treats admission as task completion.
+
+The bridge retains exact PCM as the existing private WAV before native control,
+then uses the existing prepared-transcript receipt and completed reader. Closing
+the voice session releases live buffers and wakes a pending return watch. A file
+write already in progress owns immutable bytes until it finishes; closing speech
+does not cancel an integrating task. Bounds remain300seconds/128captures,
+4pending captures,2owner calls,1file writer and8queued source references. This is
+server plumbing, not a mounted WebSocket/avatar or receiving deployment.
+
+The native `voice capabilities` response advertises `foreground_retention: v1`
+and `foreground_completed_reader`. A future mounted mode must check both before
+offering its microphone; the current selected listener predates these fields.
+Actual acoustic boundaries, authenticated WebSocket mounting, assistant speech
+history, playback and the complete provider/native/device journey remain open.

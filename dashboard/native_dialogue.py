@@ -64,6 +64,8 @@ class NativeDialogue:
                     'Converse naturally in the human\'s language, clarify and formulate requests. '
                     'Casual conversation does not require a tool. Delegate actionable requests to '
                     'the Sol integrator and continue conversing while its work is pending. '
+                    'Use recent_originals to obtain genuine source IDs before proposing work; never invent IDs. '
+                    'Use await_integrator_update for event-driven integrating returns while continuing to converse. '
                     'Only refer to exact retained original IDs supplied by the owning bridge. '
                     'A formulation is your attributed derivative, never a replacement human quote. '
                     'You do not select workers or execute actions. A tool acceptance is not completion. '
@@ -75,7 +77,13 @@ class NativeDialogue:
                     'parameters': {'type': 'OBJECT', 'properties': {
                         'request': {'type': 'STRING'},
                         'original_ids': {'type': 'ARRAY', 'items': {'type': 'STRING'}}},
-                        'required': ['request', 'original_ids']}}]}]}})
+                        'required': ['request', 'original_ids']}},
+                    {'name':'recent_originals','behavior':'NON_BLOCKING',
+                     'description':'Read one bounded page of retained original references for this current foreground dialogue. Never starts work.',
+                     'parameters':{'type':'OBJECT','properties':{'before':{'type':'INTEGER'}},'required':[]}},
+                    {'name':'await_integrator_update','behavior':'NON_BLOCKING',
+                     'description':'Wait for the next real integrating result/question. Event-driven; do not poll or infer completion from acceptance.',
+                     'parameters':{'type':'OBJECT','properties':{}}}]}]}})
         except DialogueUnavailable:
             raise
         except Exception:
@@ -165,7 +173,7 @@ class NativeDialogue:
                 raise ValueError('Provide a bounded attributed integrator outcome')
             call['state'] = 'response_unconfirmed'
             self._send({'toolResponse': {'functionResponses': [{
-                'id': call_id, 'name': 'delegate_to_integrator',
+                'id': call_id, 'name': call['name'],
                 'response': {'result': result, 'scheduling': 'WHEN_IDLE'}}]}})
             call['state'] = 'response_sent'
 
@@ -255,21 +263,33 @@ class NativeDialogue:
                 if not content.get('interrupted'):
                     events.append({'type': 'audio', 'pcm': pcm, 'sample_rate': 24000})
         for call in calls:
-            ident, args = call['id'], call['args']
-            if (not isinstance(ident, str) or not ident or len(ident) > 256
-                    or ident in self.tools or len(self.tools) >= self.max_tools
-                    or sum(c['state'] == 'pending' for c in self.tools.values()) >= self.max_pending
-                    or call.get('name') != 'delegate_to_integrator' or not isinstance(args, dict)
-                    or set(args) != {'request', 'original_ids'}
-                    or not isinstance(args['request'], str) or not args['request'].strip()
-                    or len(args['request'].encode()) > 8192
-                    or not isinstance(args['original_ids'], list) or not 1 <= len(args['original_ids']) <= 8
-                    or len(set(args['original_ids'])) != len(args['original_ids'])
-                    or any(str(uuid.UUID(i)) != i for i in args['original_ids'])):
-                raise ValueError('Invalid bounded delegation proposal')
-            self.tools[ident] = {'state': 'pending'}
-            events.append({'type': 'delegation_proposed', 'call_id': ident,
-                           'formulation': args['request'], 'original_ids': list(args['original_ids'])})
+            ident, args, name = call['id'], call['args'], call['name']
+            if (not isinstance(ident,str) or not ident or len(ident)>256
+                    or ident in self.tools or len(self.tools)>=self.max_tools
+                    or sum(c['state']=='pending' for c in self.tools.values())>=self.max_pending
+                    or not isinstance(args,dict)):
+                raise ValueError('Invalid bounded foreground tool proposal')
+            if name=='delegate_to_integrator':
+                if (set(args)!={'request','original_ids'}
+                        or not isinstance(args['request'],str) or not args['request'].strip()
+                        or len(args['request'].encode())>8192
+                        or not isinstance(args['original_ids'],list) or not 1<=len(args['original_ids'])<=8
+                        or len(set(args['original_ids']))!=len(args['original_ids'])
+                        or any(str(uuid.UUID(i))!=i for i in args['original_ids'])):
+                    raise ValueError('Invalid bounded delegation proposal')
+                proposal={'type':'delegation_proposed','call_id':ident,
+                          'formulation':args['request'],'original_ids':list(args['original_ids'])}
+            elif name=='recent_originals':
+                before=args.get('before',0)
+                if set(args)-{'before'} or type(before) is not int or not 0<=before<=2**63-1:
+                    raise ValueError('Invalid source query')
+                proposal={'type':'source_query','call_id':ident,'before':before}
+            elif name=='await_integrator_update' and not args:
+                proposal={'type':'integrator_watch','call_id':ident}
+            else:
+                raise ValueError('Unknown foreground tool')
+            self.tools[ident]={'state':'pending','name':name}
+            events.append(proposal)
         for ident in cancelled:
             if ident not in self.tools:
                 raise ValueError('Unknown cancelled proposal')

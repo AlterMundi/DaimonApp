@@ -63,6 +63,20 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(reply['response']['scheduling'],'WHEN_IDLE')
         with self.assertRaises(ValueError):self.stream.tool_result('call-1',{'status':'completed'})
         self.assertEqual(self.stream.tools['call-1']['state'],'response_sent')
+    def test_source_read_and_event_watch_keep_their_real_tool_names(self):
+        self.ready()
+        for name,args,kind in (('recent_originals',{},'source_query'),
+                               ('await_integrator_update',{},'integrator_watch')):
+            event={'toolCall':{'functionCalls':[{'id':name,'name':name,'args':args}]}}
+            self.assertEqual(self.event(event)[0]['type'],kind)
+            self.stream.tool_result(name,{'kind':'source_data'})
+            response=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
+            self.assertEqual(response['name'],name)
+    def test_source_cursor_rejects_boolean_and_out_of_range(self):
+        self.ready()
+        with self.assertRaises(DialogueUnavailable):
+            self.event({'toolCall':{'functionCalls':[{'id':'read','name':'recent_originals','args':{'before':True}}]}})
+
     def test_stopped_microphone_is_signalled_without_closing_or_reconnecting(self):
         self.ready();self.stream.append(b'\0\0');self.stream.end_input()
         self.assertEqual(self.socket.sent[-1],{'realtimeInput':{'audioStreamEnd':True}})

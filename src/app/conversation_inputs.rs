@@ -194,6 +194,14 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .store
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
+        result["foreground_retention"] = json!("v1");
+        result["foreground_completed_reader"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .is_some_and(|v| v.completed_transcription_command.is_some())
+        );
         result["max_bytes"] = json!(crate::voice::MAX_BYTES);
         result["max_seconds"] = json!(120);
         return Ok(result);
