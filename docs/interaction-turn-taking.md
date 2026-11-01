@@ -468,3 +468,24 @@ canonical current answer, its accepted original/native turn and actual source
 read/report receipts together. Do not discard that valid answer merely because
 a return-only presentation annotation is absent. Keep digital playback completion
 separate from generating or requesting its audio.
+
+
+### Ambient energy after a continuous endpoint — 2026-11-01
+
+A local RMS energy hint can continue after a CPU-confirmed endpoint without
+being speech. The coordinator previously compared every later energy hint to
+that fixed endpoint forever, even when newer same-generation CPU analysis had
+already covered the sound and still reported quiet. A regression fixture
+reproduced the resulting stalled recorder before the correction. Keep the exact
+endpoint, but compare acoustic freshness against the newest same-generation
+analysis coverage. Unanalyzed sound still fences submission; renewed speech
+changes generation and invalidates the old endpoint. Caption readiness, original
+identity, ordered confirmation and explicit review on uncertainty remain intact.
+The fullscreen review view also retains and displays its first stop reason,
+rather than replacing that explanation with only generic recovery instructions.
+
+The reported phone attempts had completed source-bound Gemini receipts. That
+establishes successful recognition, not browser receipt adoption or the precise
+reason each attempt entered review. The ambient-energy regression is verified
+in the coordinator fixture; attribution to those physical attempts and successful
+device acceptance remain unresolved. Existing originals were not replayed.

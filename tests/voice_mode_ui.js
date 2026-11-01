@@ -48,8 +48,9 @@ direct.mode.update({playback:'playing'});assert.equal(directStatus.textContent,'
 direct.mode.update({continuousState:{active:true,remaining:120}});
 assert.equal(directStatus.textContent,'Speaking · listening · 2:00');assert.equal(directStatus.dataset.nearLimit,'false');
 direct.mode.update({continuousState:{active:true,remaining:Infinity}});assert.equal(directStatus.textContent,'Speaking · listening');
-direct.mode.update({continuousState:{active:false,starting:false,pending:true,working:false}});direct.mode.update({pending:false,uploading:true,capture:'idle'});
+direct.mode.update({continuousState:{active:false,starting:false,pending:true,working:false,message:'Voice analysis stopped. Your recordings are kept.'}});direct.mode.update({pending:false,uploading:true,capture:'idle'});
 assert.equal(direct.nodes.find(n=>n.className==='voice-mode-state').textContent,'Recording needs review','An old ordinary upload cannot clear continuous recovery state');
+assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textContent,/Voice analysis stopped/,'The actual hold reason survives unrelated ordinary playback updates');
 direct.mode.configure(true,false);assert(!direct.mode.active);assert.equal(direct.portrait.parent,direct.header);
 const background=boot({suspend:true});background.mode.configure(true,true);background.portrait.events.click();
 background.mode.update({continuousState:{active:true,starting:false,pending:false,working:false}});background.mode.update({playback:'playing'});

@@ -4,15 +4,15 @@ window.ContinuousConversation=(()=>{
   function create({headers,getBinding,getQuestions=()=>undefined,getPlayback=()=>undefined,
     retain,commit,onState=()=>{},onCaption=()=>{},onInterrupt=()=>{},onSent=()=>{},onReview=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,stopping=false,epoch=0,binding,source,analysis,media,abort,timer,unsubscribe;
-    let current,ring=[],bytes=0,lastEnergy=0,verdict,floor=false,blockedAt=Infinity,order=0,dispatching=false;
+    let current,ring=[],bytes=0,lastEnergy=0,verdict,floor=false,blockedAt=Infinity,order=0,dispatching=false,holdReason;
     const slots=new Map();
     function remaining(){return current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined;}
-    function state(message){const pending=[...slots.values()].some(s=>s.review);onState({active,starting,floor,pending,working:!active&&slots.size>0&&!pending,message,remaining:remaining()});}
+    function state(message){const pending=[...slots.values()].some(s=>s.review);onState({active,starting,floor,pending,working:!active&&slots.size>0&&!pending,message:holdReason||message,remaining:remaining()});}
     function stopTracks(){for(const track of media?.getTracks()||[])track.stop();media=undefined;}
     function closeGraph(){unsubscribe?.();unsubscribe=undefined;source?.close();source=undefined;}
     function review(){onReview([...slots.values()].filter(s=>s.original).map(s=>s.original));}
     function hold(message='Voice mode ended. Review your recordings before sending.'){
-      if(stopping){state(message);review();return;}stopping=true;active=false;starting=false;floor=false;clearTimeout(timer);abort?.abort();analysis?.close();analysis=undefined;
+      if(stopping){state(message);review();return;}holdReason=message;stopping=true;active=false;starting=false;floor=false;clearTimeout(timer);abort?.abort();analysis?.close();analysis=undefined;
       const slot=current;
       if(slot?.recorder?.state==='recording'){slot.review=true;onTiming(slot.id,'ended');slot.recorder.stop();}
       else if(!slot)closeGraph();
@@ -33,7 +33,7 @@ window.ContinuousConversation=(()=>{
       if(!active||stopping||!slot?.recorder||slot.recorder.state!=='recording'||!slot.speech||!a?.endpoint)return;
       const end=a.endpoint;
       if(end.generation!==slot.generation||a.speaking!==false||end.audio_bytes<=slot.start
-         ||end.audio_bytes>bytes||lastEnergy>end.audio_bytes)return;
+         ||end.audio_bytes>bytes||lastEnergy>a.audio_bytes)return;
       // Acoustic turn ownership is independent of ASR readiness. Keep the
       // exact recording pending, but do not hold playback behind late captions.
       if(floor){floor=false;state('Listening');}
@@ -54,7 +54,14 @@ window.ContinuousConversation=(()=>{
         if(!slot.speech){slot.scopeFrozen=true;slot.speech=true;}
         if(!floor){slot.playback=getPlayback();floor=true;onInterrupt();state('Listening');}
       }
-      if(a.endpoint)verdict=a;else if(verdict&&a.generation!==verdict.generation)verdict=undefined;
+      if(a.endpoint)verdict=a;
+      else if(verdict&&a.generation!==verdict.generation)verdict=undefined;
+      else if(verdict&&a.audio_bytes>=verdict.audio_bytes){
+        // Local energy is only a freshness fence, not a speech classifier.
+        // Keep the exact endpoint while newer same-generation analysis catches
+        // up with ambient sound. Renewed speech still replaces its generation.
+        verdict={...a,endpoint:verdict.endpoint};
+      }
       consider();
     }
     async function finalized(slot){
@@ -115,7 +122,7 @@ window.ContinuousConversation=(()=>{
     }
     async function start(){
       if(active||starting||slots.size||document.hidden||!getBinding())return false;
-      const owned=++epoch;binding=getBinding();starting=true;stopping=false;bytes=lastEnergy=0;ring=[];floor=false;blockedAt=Infinity;order=0;dispatching=false;
+      const owned=++epoch;binding=getBinding();starting=true;stopping=false;holdReason=undefined;bytes=lastEnergy=0;ring=[];floor=false;blockedAt=Infinity;order=0;dispatching=false;
       abort=new AbortController();const ownAbort=abort;timer=setTimeout(()=>{if(owned===epoch)hold('Voice session reached five minutes. Your recordings are kept.');},300000);state('Preparing voice');
       try{
         const warmed=await window.StreamingVoice.openActivity({headers,binding,id:window.crypto.randomUUID(),signal:ownAbort.signal,

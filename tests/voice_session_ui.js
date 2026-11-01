@@ -60,6 +60,17 @@ function boot(){
  await until(()=>delayed.recorders.length===2);delayed.recorders[0].complete('Una frase completa');await until(()=>delayed.commits.length===1);
  assert.equal(delayed.retained[0].blob.size,67200);assert.equal(delayed.analyses[0].boundaries.length,1);
  delayed.session.hold();delayed.recorders[1].complete();await tick();
+ // Energy can be ambient noise: wait for analysis to cover it, rather than
+ // permanently invalidating an otherwise current acoustic endpoint.
+ const noisy=boot();await noisy.session.start();noisy.sources[0].emit(3200);noisy.activity(1,true,false);
+ noisy.sources[0].acoustic(4000,4000);noisy.recorders[0].partial('Una frase completa');
+ noisy.activity(1,false,true);assert.equal(noisy.recorders[0].state,'recording','Unanalyzed energy still fences a delayed endpoint');
+ noisy.sources[0].emit(3200,0);
+ noisy.analyses[0].emit({generation:1,audio_bytes:6400,speaking:false,speech_seen:true});
+ assert.equal(noisy.recorders[0].state,'inactive','Later quiet analysis covering ambient energy must release the retained endpoint');
+ await until(()=>noisy.recorders.length===2);noisy.recorders[0].complete('Una frase completa');await until(()=>noisy.commits.length===1);
+ noisy.session.hold('Analysis could not continue.');noisy.recorders[1].complete();await tick();
+ assert.equal(noisy.states.at(-1).message,'Analysis could not continue.','Finalizing a retained original must preserve the first stop reason');
  const silent=boot();await silent.session.start();silent.sources[0].emit(3200);silent.activity(1,true,false);silent.activity(1,false,true);
  assert.equal(silent.session.floor,false,'A brief detected sound without words cannot hold playback for the entire capture budget');
  silent.activity(1,true,false);assert.equal(silent.session.floor,false,'A repeated old onset cannot reacquire a released floor');
