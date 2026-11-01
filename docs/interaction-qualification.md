@@ -3,6 +3,49 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Native waveform timing observations —1November2026
+
+One distinct three-phrase Spanish Chromium/CPU/Gemini session on **ec883adf**
+records scheduled waveform onset instead of treating the first PCM event as
+useful sound. Synthetic injected media passes through the shipped capture worklet,
+resampler, native voice route/history and browser playback. Output is muted;
+actor/original owner is synthetic. No Sol/worker/native task, production input,
+physical microphone or receiving deployment occurs.
+
+| Synthetic question | Native output caption | Last input signal → first scheduled nonquiet window | Detected end → same window |
+| --- | --- | --- | --- |
+| Seven times nine | Sesenta y tres. | 1.34s | 0.87s |
+| Twelve plus seventeen | Veintinueve. | 1.41s | 0.91s |
+| Half of ninety | Cuarenta y cinco. | 1.29s | 0.83s |
+
+The three-case median is1.34seconds. Input end is the last synthetic16kHz sample
+with absolute PCM amplitude at least128. Output onset is the first complete10ms
+window with RMS at least0.001 and peak at least0.003, mapped from captured
+AudioContext scheduling/currentTime to performance.now. Tiny two-byte events and
+quiet buffers do not qualify. Independently back-projecting observed buffer-end
+callbacks agrees within18ms in these cases; this is not a hardware clock bound.
+These thresholds establish nonquiet digital signal, not intelligibility, physical
+hearing or the first useful word. Correct output captions do not independently
+prove that the audio said those words. Three cases are not a general latency
+distribution, a controlled526 speedup or a comparison against the modular baseline.
+
+The original trial remains **failed**: its verifier expected three originals,
+but natural pauses yielded five, all confirmed with matching retained hashes and
+released by the browser. Three separated response records already contain the
+necessary waveform observations; a corrected verifier derives the table without
+replaying any provider/native input. The synthetic owner also omitted the ordinary
+original-list API, causing refresh HTTP500s. That fixture limitation and excluded
+normal bootstrap/shared login prevent full-application acceptance claims; it is
+not a receiving product diagnosis. No page errors were recorded.
+
+The single provider connection, browser context and server closed; ephemeral
+synthetic media/TLS/database state was removed. Selected records remain below2MiB. The declared8MiB temporary-state size check
+was not reached before the failed assertion; all that state was nevertheless
+removed. No raw generated PCM archive or automatic retry.
+Existing phone/avatar/hearing/echo/noise/interruption acceptance and the full
+stages2/3/necessary4 goal remain open. Use retained data, never rerun the terminal
+trial to repair its verifier.
+
 ## Selected incomplete-text report: retained-source verification —1November2026
 
 The exact human-selected historical reply remains complete in the receiving
