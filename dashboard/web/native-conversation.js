@@ -4,21 +4,22 @@ window.NativeConversation=(()=>{
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&!window.NativeSpeechAudio?.backgroundPlayback);
   function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
-    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining;
+    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput;
     const state=message=>onState({active,starting,floor,pending:false,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function position(node){return Math.min(node.end,node.begin+Math.max(0,Math.floor((context.currentTime-node.at)*24000))*2);}
     function report(id,count){if(count<=(played.get(id)||0))return;played.set(id,count);control({type:'playback',id,played_bytes:count});}
-    function silence(){
-      for(const node of nodes){node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
+    function silence(retire=false){
+      if(retire&&latestOutput)retired.add(latestOutput);
+      for(const node of nodes){if(retire)retired.add(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
       nodes.clear();next=context?.currentTime||0;onState({active,starting,floor,pending:false,playback:'paused'});
     }
     function play(value){
       if(value.sample_rate!==24000||typeof value.pcm!=='string'||value.pcm.length>350000||!Number.isSafeInteger(value.end))throw Error('Invalid native audio');
       const raw=atob(value.pcm);if(!raw.length||raw.length%2)throw Error('Invalid native PCM');
       const begin=received.get(value.id)||0;if(value.end!==begin+raw.length||value.end>300*48000)throw Error('Native audio continuity changed');
-      received.set(value.id,value.end);
-      if(!audible||floor||blocked)return;
+      received.set(value.id,value.end);latestOutput=value.id;
+      if(!audible||floor||blocked||retired.has(value.id))return;
       if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
       const samples=new Float32Array(raw.length/2);
       for(let i=0;i<samples.length;i++){const n=raw.charCodeAt(2*i)|(raw.charCodeAt(2*i+1)<<8);samples[i]=(n>=32768?n-65536:n)/32768;}
@@ -51,7 +52,7 @@ window.NativeConversation=(()=>{
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
       try{control({type:'close'});socket?.close();}catch{}socket=undefined;
       if(context){void context.close().catch(()=>{});context=undefined;}
-      parts=[];bytes=0;state(message);void writing.finally(()=>onReview([...originals.values()]));
+      parts=[];bytes=0;retired.clear();latestOutput=undefined;state(message);void writing.finally(()=>onReview([...originals.values()]));
     }
     async function event(value,owned){
       if(stopped||owned!==epoch||binding!==getBinding())return;
@@ -59,7 +60,7 @@ window.NativeConversation=(()=>{
         case 'audio':play(value);break;
         case 'capture_started':
           if(current||typeof value.id!=='string')throw Error('Original capture changed');
-          current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence();onInterrupt();state('Listening');
+          current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence(true);onInterrupt();state('Listening');
           onHandoff({id:value.id,gate:'speaking'});break;
         case 'phrase_end':{
           if(!current||current.id!==value.id||current.start!==value.start)throw Error('Phrase boundary changed');
@@ -76,7 +77,7 @@ window.NativeConversation=(()=>{
         }
         case 'input_caption':case 'input_transcript':onCaption(value.text);break;
         case 'assistant_utterance':onUtterance(value.utterance);onCaption(value.utterance.text);break;
-        case 'interrupted':silence();break;
+        case 'interrupted':silence(true);break;
         case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded)blocked=false;break;
         case 'turn_activity':
           if(current)onHandoff({id:current.id,gate:value.activity.speaking?'speaking':'waiting_endpoint'});break;
@@ -86,7 +87,7 @@ window.NativeConversation=(()=>{
     }
     async function start(){
       if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
-      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;lastEnded=pendingScope=lastRemaining=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();state('Preparing native voice');
+      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
       context=new (window.AudioContext||window.webkitAudioContext)();void context.resume().catch(()=>{});
       timer=setTimeout(()=>hold('Voice session reached five minutes.'),300000);
@@ -123,7 +124,10 @@ window.NativeConversation=(()=>{
             const snapshot=getQuestions?.();pendingScope=snapshot===undefined?{}:JSON.parse(JSON.stringify(snapshot));
             control({type:'capture_scope',audio_bytes:value.activityBytes,capture_questions:pendingScope});
           }
-          if(value.activityBytes>0&&value.activityBytes>=bytes&&nodes.size){silence();onInterrupt();}
+          if(value.activityBytes>0&&value.activityBytes>=bytes){
+            if(latestOutput)retired.add(latestOutput);
+            if(nodes.size){silence(true);onInterrupt();}
+          }
           if(!value.pcm)return;
           if(!(value.pcm instanceof ArrayBuffer)||value.pcm.byteLength%2||bytes+value.pcm.byteLength>300*32000||socket?.readyState!==WebSocket.OPEN||socket.bufferedAmount>256000){hold('Voice connection could not keep up.');return;}
           if(current&&bytes+value.pcm.byteLength-current.start>120*32000){hold('Your phrase reached two minutes. The recording is kept for review.');return;}
