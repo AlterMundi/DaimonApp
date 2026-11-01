@@ -155,13 +155,15 @@ function boot(fail){
  untap();source.close();source.close();assert(shared.contexts[0].closed);assert(source.closed);
  await assert.rejects(shared.create({},{captureSource:source}));
  const prefixed=boot(),prefixGraph=await prefixed.window.StreamingVoice.openCapture({kind:'synthetic-media'}),cuts=[];
- const prefixRecorder=await prefixed.create(undefined,{captureSource:prefixGraph,initialPCM:end=>{assert.equal(end,4);return [pcm(111,222)];},onFlushed:end=>cuts.push(end)});
+ const prefixRecorder=await prefixed.create(undefined,{captureSource:prefixGraph,initialPCM:end=>{assert.equal(end,4);return [pcm(111,222)];},onFlushed:(end,blob)=>cuts.push({end,blob})});
  prefixRecorder.start();const ps=prefixed.sockets[0],pw=prefixed.worklets[0];ps.open();ps.message({type:'ready'});
  pw.emit({boundary:uuid+':begin',totalBytes:4});pw.emit({pcm:pcm(333),totalBytes:6});prefixRecorder.stop();pw.emit({boundary:uuid+':end',totalBytes:6});
- assert.deepEqual(cuts,[6]);prefixGraph.close();
+ assert.equal(cuts.length,1);assert.equal(cuts[0].end,6);assert(cuts[0].blob,'A flushed complete WAV must be available before recognition finalizes');
+ const flushedBytes=await cuts[0].blob.arrayBuffer();assert.deepEqual([...new Int16Array(flushedBytes.slice(44))],[111,222,333]);prefixGraph.close();
  assert.equal(prefixed.events.length,0,'A flushed old ASR must survive closure of the microphone graph');
  ps.message({type:'prepared',id:uuid,text:'Exact prefixed words'});
  assert.equal(prefixRecorder.captureStop,undefined);assert.equal(prefixRecorder.preparedText,'Exact prefixed words');
+ assert.equal(prefixed.events[0].data,cuts[0].blob,'Final confirmation cannot replace the already retained immutable WAV');
  const prefixBytes=await prefixed.events[0].data.arrayBuffer();assert.deepEqual([...new Int16Array(prefixBytes.slice(44))],[111,222,333]);
  assert.equal(prefixed.events.length,2);
  for(const why of ['explicit-close','wall-limit','sample-limit']){

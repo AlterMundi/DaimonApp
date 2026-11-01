@@ -5,7 +5,7 @@ const until=async f=>{for(let i=0;i<100;i++){if(f())return;await new Promise(yes
 const deferred=()=>{let resolve;return {promise:new Promise(yes=>resolve=yes),resolve};};
 function boot(){
  const events={},timers=[],analyses=[],sources=[],recorders=[],medias=[],retained=[],commits=[],sent=[],reviews=[],states=[],captions=[],timings=[];
- let binding='a'.repeat(64),interrupts=0,permission,commitHold,questions={old:'v1'},playback={source:'synthetic-reply',position_millis:123};
+ let binding='a'.repeat(64),interrupts=0,permission,commitHold,retainHold,retentionCalls=0,questions={old:'v1'},playback={source:'synthetic-reply',position_millis:123};
  const document={hidden:false,addEventListener:(n,f)=>events[n]=f};
  const window={crypto,addEventListener:(n,f)=>events[n]=f,navigator:{mediaDevices:{async getUserMedia(options){
   assert.equal(options.audio.echoCancellation,true);assert.equal(options.video,false);
@@ -23,25 +23,41 @@ function boot(){
    const events={},s=options.captureSource;
    const r={options,parts:[],state:'inactive',addEventListener:(n,f)=>events[n]=f,
     start(){this.state='recording';this.parts.push(...options.initialPCM(s.bytes));this.unsubscribe=s.subscribe(v=>{if(v.pcm)this.parts.push(v.pcm);});s.start();},
-    stop(){if(this.state==='inactive')return;this.state='inactive';this.unsubscribe?.();options.onFlushed(s.bytes);},
+    stop(){if(this.state==='inactive')return;this.state='inactive';this.unsubscribe?.();this.flushedBlob=new Blob(this.parts,{type:'audio/wav'});options.onFlushed(s.bytes,this.flushedBlob);},
     discard(){this.state='inactive';this.unsubscribe?.();},
     partial(text){options.onPartial(text);},
-    complete(text){if(text)this.preparedText=text;events.dataavailable({data:new Blob(this.parts,{type:'audio/wav'})});events.stop();}
+    complete(text){if(text)this.preparedText=text;events.dataavailable({data:this.flushedBlob||new Blob(this.parts,{type:'audio/wav'})});events.stop();}
    };recorders.push(r);return r;
   }
  };
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-session.js','utf8'),{window,document,AbortController,ArrayBuffer,JSON,Map,Promise,Infinity,setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{if(t)t.closed=true;}});
  const session=window.ContinuousConversation.create({headers:()=>({}),getBinding:()=>binding,getQuestions:()=>questions,getPlayback:()=>playback,
-  async retain(original){const v={...original,audio_sha256:Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex')};retained.push(v);return v;},
+  async retain(original){retentionCalls++;const v={...original,audio_sha256:Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex')};if(retainHold)await retainHold.promise;retained.push(v);return v;},
   async commit(original){commits.push(original);if(commitHold)return commitHold.promise;return {confirmed:true,value:{id:original.id,voice:{audio_sha256:original.audio_sha256}}};},
   onTiming:(id,stage,detail)=>timings.push({id,stage,detail}),onState:v=>states.push(v),onCaption:v=>captions.push(v),onInterrupt:()=>interrupts++,onSent:v=>sent.push(v),onReview:v=>reviews.push(v)
  });
  const activity=(generation,onset,endpoint)=>analyses.at(-1).emit({schema:'telecodex.turn-activity/v1',type:'activity',generation,audio_bytes:sources.at(-1).bytes,speech_seen:true,speaking:!endpoint,
   ...(onset?{onset:{generation,audio_bytes:sources.at(-1).bytes}}:{}),...(endpoint?{endpoint:{generation,audio_bytes:sources.at(-1).bytes,probability:.9,authority:'analysis_only'}}:{})});
  return {session,analyses,sources,recorders,medias,retained,commits,sent,reviews,states,captions,timings,document,events,timers,activity,interrupts:()=>interrupts,
-  questions:v=>questions=v,playback:v=>playback=v,bind:v=>binding=v,permission:()=>{permission=deferred();return permission;},holdCommit:()=>{commitHold=deferred();return commitHold;}};
+  questions:v=>questions=v,playback:v=>playback=v,bind:v=>binding=v,permission:()=>{permission=deferred();return permission;},holdCommit:()=>{commitHold=deferred();return commitHold;},holdRetention:()=>{retainHold=deferred();return retainHold;},retentionCalls:()=>retentionCalls};
 }
 (async()=>{
+ const early=boot();await early.session.start();early.sources[0].emit(3200);early.activity(1,true,false);
+ early.session.hold('Voice view closed.');
+ await until(()=>early.retained.length===1);
+ assert.equal(early.retained[0].blob.size,3200,'The flushed original is durable before any provider final/stop event');
+ assert.equal(early.retained[0].preparedText,undefined);assert.equal(early.commits.length,0,'Durability is not permission to submit an unconfirmed recording');
+ assert.equal(early.session.originals.length,1);assert(early.reviews.length,'Leaving the view exposes the retained original without waiting for ASR');
+ const earlyId=early.retained[0].id,earlyHash=early.retained[0].audio_sha256;
+ early.recorders[0].complete('Late provider confirmation');await tick();
+ assert.equal(early.retained.length,1,'Late provider confirmation must reuse the existing durable original');
+ assert.equal(early.session.originals[0].id,earlyId);assert.equal(early.session.originals[0].audio_sha256,earlyHash);assert.equal(early.commits.length,0);
+ const retaining=boot(),transaction=retaining.holdRetention();await retaining.session.start();retaining.sources[0].emit(3200);retaining.recorders[0].partial('Una frase completa');retaining.activity(1,true,false);retaining.activity(1,false,true);
+ await until(()=>retaining.recorders.length===2);retaining.recorders[0].complete('Una frase completa');await tick();
+ assert.equal(retaining.retentionCalls(),1);assert.equal(retaining.commits.length,0,'Provider confirmation cannot outrun the original durability transaction');
+ transaction.resolve();await until(()=>retaining.sent.length===1);
+ assert.equal(retaining.retentionCalls(),1,'Successful confirmation reuses the flushed original rather than replacing it');
+ assert.equal(retaining.commits[0].preparedText,'Una frase completa');retaining.session.hold();retaining.recorders[1].complete();await tick();
  const countdown=boot();await countdown.session.start();assert.equal(countdown.states.at(-1).remaining,120);
  for(let n=0;n<105;n++)countdown.sources[0].emit(32000,0);
  assert.equal(countdown.states.at(-1).remaining,15,'The displayed budget follows this exact recorder PCM, including silence');

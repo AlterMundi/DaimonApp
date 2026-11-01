@@ -83,6 +83,17 @@ hidden state and binding/analysis loss retain originals for review. No provider
 or native request is replayed. Retention and commit are injected from the owning
 ordinary voice path, not a second input endpoint.
 
+A complete worklet flush now supplies the same immutable WAV to local recovery
+before waiting for ASR confirmation. The existing IndexedDB transaction must
+finish before confirmed automatic dispatch; a late final receipt reuses that
+original rather than writing another capture. On view exit, review becomes
+available once local retention finishes even if the provider has not finalized.
+Reload preserves the exact UUID, audio hash and frozen question context; absent
+confirmation remains review-only. A real Chromium/IndexedDB synthetic fixture
+verified that boundary across reload without a provider final event or any
+native submission. Physical phone acceptance and unfinished active PCM before
+a complete flush remain separate limitations.
+
 The fullscreen status line shows the current original's remaining120-second
 recording budget, including silence already captured for that original. It
 updates only when the remaining whole second changes and uses the existing
