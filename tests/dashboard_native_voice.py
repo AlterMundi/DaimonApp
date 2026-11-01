@@ -27,6 +27,7 @@ from dashboard_io import Receiver
 class Stream:
     activity_mode='manual';model='gemini-3.8-live';max_tools=32;opened=[]
     def __init__(self,*args,**kwargs):
+        self.context=kwargs.get('context')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
         self.tool_results=queue.Queue();self.opened.append(self)
     def receive(self):
@@ -143,6 +144,19 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.owner.calls,[])
         self.assertTrue(Stream.opened[0].closed_event.wait(2),'Wait for actual provider cleanup, not client context exit')
         self.assertTrue(Detector.opened[0].closed_event.wait(2))
+    def test_reopened_voice_context_uses_current_binding_without_removing_history(self):
+        history=self.app.state.native_history
+        current=str(uuid.uuid4());earlier=str(uuid.uuid4())
+        history.retain(100,self.ident,self.owner.binding,current,'Current conversation','b'*64,4)
+        history.retain(100,self.ident,'c'*64,earlier,'Earlier binding','d'*64,4)
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            sources=Stream.opened[0].context['sources']
+            selected=[item['id'] for item in sources if item['speaker']=='assistant_foreground']
+            self.assertEqual(selected,[current])
+            ws.send_json({'type':'close'})
+        self.assertEqual({item['id'] for item in history.page(100)['items']},{current,earlier})
+        with self.assertRaises(ValueError):history.page(100,binding='invalid')
     def test_native_voice_continues_while_an_integrating_return_watch_is_pending(self):
         self.owner.return_kind='integrator_progress'
         self.owner.native_returns=['result:retained-worker-return']

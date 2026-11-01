@@ -192,7 +192,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 for item in originals.get('items',[]):
                     sources.append({'id':item['id'],'speaker':'retained_original','origin_kind':item.get('origin_kind'),'source_data':True,'phase':item['phase'],'capture_order':item.get('capture_order'),'received_at':item.get('received_at'),
                         'text_excerpt':excerpt(item.get('preview','')),'bounded':True,'can_delegate':False})
-                history=await asyncio.to_thread(app.state.native_history.page,owner)
+                history=await asyncio.to_thread(app.state.native_history.page,owner,binding=meta['binding'])
                 for item in history['items'][:4]:
                     sources.append({'id':item['id'],'speaker':'assistant_foreground','observed_at':item['observed_at'],
                         'text_excerpt':excerpt(item['text']),'interrupted':item['interrupted'],

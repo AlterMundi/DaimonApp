@@ -22,6 +22,11 @@ confirmation step. Its formulation preserves constraints, uncertainty and
 corrections. New speech remains conversational while work is pending; filler
 acknowledgments do not count as useful-response latency.
 
+On opening, assistant voice context is selected from the current integrating
+binding. Earlier bindings remain in readable history, but are not silently
+injected into the new voice conversation. Playback positions remain client
+observations, not proof that the person heard the generated words.
+
 ```mermaid
 flowchart LR
   H[Human] <-->|Native audio and captions| V[Conversational foreground]
