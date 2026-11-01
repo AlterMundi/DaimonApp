@@ -68,6 +68,7 @@ class Owner(Receiver):
         self.receiver={'db_path':str(root/'native.sqlite3'),'voice':{'enabled':True}}
         (root/'native.sqlite3').touch();self.inputs={};self.completed=threading.Event();self.delegations=[];self.return_ready=False
         self.return_kind='integrator_answer';self.native_returns=[]
+        self.return_current=True;self.return_seen=threading.Event()
         self.input_id=Provider.input_id
     def presentation(self,command):
         if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible}
@@ -75,7 +76,8 @@ class Owner(Receiver):
         raise AssertionError(command)
     def presentation_list(self,*args):
         cursor=args[1] if len(args)>1 else 0
-        item={'id':'native:1','revision':'b'*64,'kind':self.return_kind,'native_returns':self.native_returns,'current':True,'label':'Integrator'}
+        item={'id':'native:1','revision':'b'*64,'kind':self.return_kind,'native_returns':self.native_returns,'current':self.return_current,'label':'Integrator'}
+        if self.return_ready and cursor<1:self.return_seen.set()
         return {'binding':self.binding,'items':[item] if self.return_ready and cursor<1 else [],
                 'newest':{'delivery':0,'native':int(self.return_ready)},'cursor':{'delivery':0,'native':int(self.return_ready)},'more':False}
     def presentation_part(self,ident,revision,offset):
@@ -178,6 +180,25 @@ class Mounted(unittest.TestCase):
             while not seen or seen[-1]['type']!='audio':seen.append(ws.receive_json())
             self.assertTrue(any(v['type']=='proposal_cancelled' for v in seen))
             self.assertFalse(stream.closed);self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
+    def test_existing_source_metadata_can_become_a_current_return(self):
+        self.owner.return_kind='integrator_progress'
+        self.owner.return_current=False
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'integrator_watch','call_id':'watch'}])
+            self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'progress first visible')
+            self.assertTrue(self.owner.return_seen.wait(2))
+            self.assertTrue(stream.tool_results.empty())
+            # Same ID, revision and row cursor; canonical metadata changes.
+            self.owner.native_returns=['result:retained-worker-result']
+            self.owner.return_current=True
+            (self.root/'native.sqlite3').write_bytes(b'current source-linked return')
+            call,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'watch');self.assertEqual(result['text'],'Canonical integrating return.')
             ws.send_json({'type':'close'})
 
     def test_revoked_actor_cannot_receive_generated_audio(self):

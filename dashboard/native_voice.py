@@ -126,9 +126,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         async def returns(cursor):
             # Watch first, then catch up from the pre-open cursor. Never replay
             # historical speech or submit work to recover an observation.
+            start=dict(cursor)
             async for changed in changes([Path(provider.receiver['db_path'])]):
                 await actor()
                 if not changed:continue
+                # A source can acquire currentness/publication metadata without
+                # a new row ID. Re-read this session's bounded window instead
+                # of advancing permanently past an as-yet-unoffered source.
+                # The bridge deduplicates exact offered/queued revisions.
+                cursor=dict(start)
                 for _ in range(8):
                     value=await bridge._owner(provider.presentation_list,cursor['delivery'],cursor['native'],'after')
                     if value['binding']!=meta['binding']:raise ForegroundUnavailable('Integrating conversation changed')

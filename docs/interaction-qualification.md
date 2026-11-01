@@ -44,6 +44,18 @@ return acceptance remains open; do not rerun the completed worker/model work
 to repair an observation. Both actual native turns were read as completed and
 their task-owned root was archived.
 
+The next real-provider case also retained the canonical return without spoken
+output. A focused mounted reproduction then showed a cursor gap: an existing
+source can become current/source-linked without acquiring a new row ID. Advancing
+past its initially ineligible descriptor loses the later invalidation. Re-read
+the bounded session-new window from its opening cursor on database changes;
+deduplicate exact queued/offered revisions in the existing bridge. The regression
+times out before the correction and passes afterward. Keep this demonstrated
+gap distinct from a claim that every unspoken return had the same cause. The
+window remains bounded to eight existing presentation pages; overflow ends the
+live mode visibly instead of silently dropping sources. Real spoken-return
+acceptance after this correction is still required.
+
 The follow-up observer also incorrectly waited for raw `output_transcript`
 socket events; this mounted route emits the assistant text through
 `assistant_utterance`. Observe that existing event/history contract, including
