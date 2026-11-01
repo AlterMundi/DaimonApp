@@ -145,8 +145,15 @@ class Mounted(unittest.TestCase):
                 events.append(ws.receive_json())
             self.assertTrue(self.owner.completed.wait(2))
             audio=next(v for v in events if v['type']=='audio')
-            ws.send_json({'type':'playback','id':audio['id'],'played_bytes':640})
-            ws.send_json({'type':'close'})
+            # Sending a control is not its durable receipt. TestClient socket
+            # teardown may cancel the route before the asynchronous write runs.
+            persisted=threading.Event();played=self.app.state.native_history.played
+            def observe_playback(*args):
+                result=played(*args);persisted.set();return result
+            with patch.object(self.app.state.native_history,'played',observe_playback):
+                ws.send_json({'type':'playback','id':audio['id'],'played_bytes':640})
+                self.assertTrue(persisted.wait(2),'Wait for the actual playback commit before closing the fixture')
+                ws.send_json({'type':'close'})
         self.assertEqual(len(self.owner.inputs),1)
         original=next(iter(self.owner.inputs.values()))
         self.assertEqual(original['phase'],'foreground');self.assertEqual(original['text'],'Exact synthetic interpretation')
