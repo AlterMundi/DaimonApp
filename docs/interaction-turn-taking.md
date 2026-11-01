@@ -400,15 +400,15 @@ speech request cannot prove that playback. Retain partial evidence rather than
 repeating completed provider inputs to repair an early verifier exit.
 
 An exact analyzer endpoint can precede its streaming captions. Subsequent silence
-does not expire that endpoint after one second: later local acoustic activity or
-a changed VAD generation still invalidates it. The coordinator may consume the
-endpoint only while the next recorder's prefix fits the existing eight-second
-PCM ring. A later caption outside that window stops capture for explicit original
-review instead of silently waiting in Listening or sending automatically. This
-reproduced client defect is covered with late-caption, renewed-activity and
-expired-window cases; an observed browser stall is consistent with it, but that
-browser did not retain every analyzer verdict needed to prove its individual
-timing cause.
+does not expire that endpoint: later unanalyzed acoustic activity or a changed
+VAD generation still fences it. An earlier eight-second endpoint-age check was
+removed after the1November phone report: the current original owns PCM through
+its actual worklet flush and the next recorder begins at that flush, not at the
+old endpoint. The eight-second handoff ring still independently bounds the gap
+between recorders. Do not confuse that bounded handoff with a caption deadline.
+Regression coverage includes captions more than eight seconds after the endpoint,
+exact full-original retention, the next recorder's separate gap, newer acoustic
+activity and generation changes.
 
 A current acoustic endpoint also releases the playback floor while ASR captions
 are still pending. The recording remains open and unsent: floor ownership is not
@@ -520,3 +520,23 @@ unconfirmed at bounded fixture shutdown; the browser profile is retained. This
 case does not qualify idle finalization/recovery, spontaneous idle offers,
 physical echo/hearing, phone acceptance or the full milestone. No existing
 original or paid call was replayed to repair the verifier or player regression.
+
+
+### Phone review at the old caption deadline — 2026-11-01
+
+The human's UI0000ea09cda2 screenshot shows the exact stop reason “Voice
+confirmation arrived too late”, establishing that the endpoint-age branch ran.
+This is not a measured provider finalization duration or proof that Gemini alone
+caused the wait. That branch required a nonempty caption and a currently valid
+quiet endpoint, then unnecessarily rejected it when the endpoint was over eight
+seconds old. The already open original still held all PCM, including later
+silence, under its existing120second bound. The next recording begins at the
+actual flushed worklet boundary; its prefix does not begin at the old endpoint.
+Remove that age rejection while retaining capture-duration, handoff-ring,
+freshness, generation, ordering and exact-prepared-original checks.
+
+The updated regression fails with the old rejection and passes with it removed:
+291200bytes remain in the first original after nine seconds of delayed captions,
+only a later32byte boundary gap belongs to the second, and exactly one original
+is confirmed. Renewed sound still fences the old endpoint. Existing failed phone
+recordings remain available for review; no retry or new transcription is implied.

@@ -40,8 +40,9 @@ window.ContinuousConversation=(()=>{
       if(!slot.words)return;
       // Captions can arrive after the analyzer's exact endpoint. Advancing
       // silence is not renewed speech; the acoustic fence above still owns it.
-      // Keep the next recorder's prefix within the existing eight-second ring.
-      if(bytes-end.audio_bytes>256000){hold('Voice confirmation arrived too late. Review your recording before sending.');return;}
+      // The current original owns PCM through its actual worklet flush. The
+      // next recorder starts at that flush, not at this acoustic endpoint, so
+      // late captions do not need the endpoint in the eight-second handoff ring.
       if(!analysis?.boundary(end)){hold('Voice analysis lost its turn boundary. Your recordings are kept.');return;}
       slot.send=true;floor=false;verdict=undefined;onTiming(slot.id,'ended');slot.recorder.stop();if(!stopping)state('Finishing your phrase');
     }
