@@ -114,9 +114,27 @@ window.Conversation = (() => {
     const speechGaps={chunk:180,reply:450,question:1200};
     let speechWait;
     const voiceQueue=[],voiceSeen=new Set(),voiceFinalTimes=new Map();
-    const queuedPreparations=new Map(),skippedMessages=new Map();
+    const queuedPreparations=new Map(),skippedMessages=new Map(),interruptedTurns=new Map();
     const messageKey=source=>sameNative(source,source)?JSON.stringify([source.native_turn,source.native_item]):JSON.stringify([source?.id,source?.revision]);
     const sameMessage=(a,b)=>a && b && (a.id===b.id && a.revision===b.revision || sameNative(a,b));
+    function rememberSkipped(source){
+      if(!source)return;
+      skippedMessages.set(messageKey(source),true);
+      while(skippedMessages.size>128)skippedMessages.delete(skippedMessages.keys().next().value);
+    }
+    function retainedCorrection(value){
+      const reference=value?.playback;
+      for(const [turn,source] of interruptedTurns)if(reference?.source===source.id && reference.revision===source.revision)interruptedTurns.delete(turn);
+    }
+    const automaticInterrupted=source=>{
+      const previous=source?.kind?.startsWith("integrator_") && interruptedTurns.get(source.native_turn);
+      if(!previous)return false;
+      // A newly sourced internal return is independent useful conversation,
+      // even if the native runtime steers it into the same physical turn.
+      const key=value=>typeof value==="string"?value:JSON.stringify(value);
+      const known=new Set((previous.native_returns||[]).map(key));
+      return !Array.isArray(source.native_returns) || !source.native_returns.some(value=>!known.has(key(value)));
+    };
     const preparationKey=(source,offset=source?.speech_start||0)=>JSON.stringify([source?.id,source?.revision,offset]);
     const sameNative=(a,b)=>a && b && typeof a.native_turn==="string" && typeof a.native_item==="string" && a.native_turn===b.native_turn && a.native_item===b.native_item;
     function removeQueued(index){
@@ -176,7 +194,7 @@ window.Conversation = (() => {
     }
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=replyFocus?.reference||voiceContext;return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=replyFocus?.reference||voiceContext;return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
       const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
       if(!card)return;
@@ -924,6 +942,7 @@ window.Conversation = (() => {
       try {
         const result = await api("interaction/inputs", {binding, id, text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
         if (owned !== inputGeneration) return;
+        retainedCorrection(result);
         const confirmed = inputCard(result, observation);
         visual?.consumed(selectedVisual);attachedFiles?.consumed(selectedFiles);
         if(focusAtSubmit===focusVersion)clearFocus();
@@ -1148,8 +1167,7 @@ window.Conversation = (() => {
     async function skipReply(){
       const selected=active;if(!selected || captureBusy)return;
       // A skip is an explicit selection, never a claim that unsaid text was heard.
-      skippedMessages.set(messageKey(selected.source),true);
-      while(skippedMessages.size>128)skippedMessages.delete(skippedMessages.keys().next().value);
+      rememberSkipped(selected.source);
       liveSpeech?.interrupt(selected.source);
       for(let n=voiceQueue.length-1;n>=0;n--)if(sameMessage(voiceQueue[n],selected.source))removeQueued(n);
       if(prefetched?.ahead && prefetched.selection)await prefetched.selection;
@@ -1163,7 +1181,7 @@ window.Conversation = (() => {
       try{const storage=window.localStorage;if(!storage)return false;storage.setItem(positionKey(),JSON.stringify([...speechPositions.values()]));return true;}catch{return false;}
     }
     function loadPositions(){
-      if(positionBinding===binding)return;positionBinding=binding;speechPositions.clear();skippedMessages.clear();
+      if(positionBinding===binding)return;positionBinding=binding;speechPositions.clear();skippedMessages.clear();interruptedTurns.clear();
       if(!standalone)return;
       try{
         const raw=window.localStorage?.getItem(positionKey());if(!raw || raw.length>16384)return;
@@ -1226,11 +1244,18 @@ window.Conversation = (() => {
     function beginVoiceCapture() {
       const pauseStarted=active && !audio.paused && !audio.muted?window.performance?.now?.():undefined;
       liveSpeech?.interrupt(active?.source);
+      if(active?.source.kind.startsWith("integrator_") && typeof active.source.native_turn==="string"){
+        interruptedTurns.set(active.source.native_turn,active.source);rememberSkipped(active.source);
+        while(interruptedTurns.size>128)interruptedTurns.delete(interruptedTurns.keys().next().value);
+      }
+      if(automaticInterrupted(prefetched?.source||prefetched?.owner) && !sameMessage(prefetched?.source||prefetched?.owner,active?.source)){prefetched.controller.abort();prefetched=undefined;}
       for(const prepared of queuedPreparations.values())liveSpeech?.interrupt(prepared.source);
       // A canonical tail can already be queued while its live prefix plays.
       // Interrupt the whole native message, including that queued continuation;
       // floor release is not permission to resume it ahead of the correction.
-      for(let n=voiceQueue.length-1;n>=0;n--)if(queuedPreparations.has(preparationKey(voiceQueue[n])) || sameMessage(voiceQueue[n],active?.source))removeQueued(n);
+      for(let n=voiceQueue.length-1;n>=0;n--)if(queuedPreparations.has(preparationKey(voiceQueue[n])) || sameMessage(voiceQueue[n],active?.source) || automaticInterrupted(voiceQueue[n])){
+        if(automaticInterrupted(voiceQueue[n]))rememberSkipped(voiceQueue[n]);removeQueued(n);
+      }
       draft.blur?.();enableVoice();voiceBusy=false;cancelSpeechWait();
       if(active && blobUrl && !active.verifying){
         rememberPosition();active.generation=++generation;active.auto=false;active.interrupted=true;
@@ -1247,6 +1272,7 @@ window.Conversation = (() => {
       voiceFinalTimes.set(key,Math.max(voiceFinalTimes.get(key)||0,time));
     }
     function offerVoice(source) {
+      if(automaticInterrupted(source)){rememberSkipped(source);return;}
       if(!voiceEnabled || voiceSeen.has(voiceKey(source)) || skippedMessages.has(messageKey(source)))return;
       voiceSeen.add(voiceKey(source));
       if(voiceSuspended)return;
@@ -1298,7 +1324,7 @@ window.Conversation = (() => {
     }
     async function drainVoice() {
       if(!voiceEnabled || voiceSuspended || voiceBusy || speechWait || captureBusy || questionRefreshPending || !enabled || !canListen || !playbackAllowed())return;
-      while(voiceQueue.length&&(sessionMuted(voiceQueue[0]) || skippedMessages.has(messageKey(voiceQueue[0]))))removeQueued(0);
+      while(voiceQueue.length&&(sessionMuted(voiceQueue[0]) || skippedMessages.has(messageKey(voiceQueue[0])) || automaticInterrupted(voiceQueue[0])))removeQueued(0);
       voiceBusy=true;const selectionGeneration=generation;
       if(prefetched?.ahead && !active?.interrupted)await prefetched.selection;
       if(generation!==selectionGeneration)return;
@@ -1319,6 +1345,7 @@ window.Conversation = (() => {
         voiceBusy=false;if(!questionRefreshPending)drainVoice();return;
       }
       voiceStatus();if(!next){voiceBusy=false;return;}
+      if(automaticInterrupted(next)){rememberSkipped(next);liveSpeech?.interrupt(next);liveSpeech?.unsent(next);voiceBusy=false;return;}
       const offset=next.speech_start||0;
       prepared ||= queuedPreparations.get(preparationKey(next,offset));
       if(!voiceEnabled || voiceSuspended || captureBusy || !enabled || !playbackAllowed() || sessionMuted(next)){liveSpeech?.unsent(next);voiceBusy=false;return;}
@@ -1328,6 +1355,7 @@ window.Conversation = (() => {
         nextSpokenReply("reply",next);
     }
     function continueSpeech(){
+      interruptedTurns.delete(active?.source.native_turn);if(active)skippedMessages.delete(messageKey(active.source));
       const remaining=liveSpeech?.continueSource(active?.source);
       if(!remaining || voiceQueue.some(source=>source.id===remaining.id && source.revision===remaining.revision))return;
       const nextReply=voiceQueue.findIndex(source=>source.kind!=="native_question");
@@ -1430,7 +1458,7 @@ window.Conversation = (() => {
       if(active && !active.segmentEnded && !voiceSuspended && (active.auto && !audio.paused || requestAbort) && sameMessage(active.source,card.source))return skipReply();
       const saved=speechPositions.get(card.source.id);
       if(active?.source.id===card.source.id && active.source.revision===card.source.revision && blobUrl && !audio.ended && (!saved || saved.offset>=active.offset)){
-        voiceSuspended=false;voiceStatus();return startPlayback();
+        continueSpeech();voiceSuspended=false;voiceStatus();return startPlayback();
       }
       return listenTo(card.source,saved?.revision===card.source.revision?saved.offset:0);
     }
@@ -1810,7 +1838,7 @@ window.Conversation = (() => {
       if(prepared===prefetched)prefetched=undefined;
       queuedPreparations.delete(key);
       if(!chain?.queued){cancelPreparedMessage(source);for(let n=voiceQueue.length-1;n>=0;n--)if(sameNative(voiceQueue[n],source))removeQueued(n);}
-      if(!chain?.queued){skippedMessages.delete(messageKey(source));liveSpeech?.continueSource(source);voiceSuspended=false;}
+      if(!chain?.queued){interruptedTurns.delete(source.native_turn);skippedMessages.delete(messageKey(source));liveSpeech?.continueSource(source);voiceSuspended=false;}
       stop();
       if(voiceEnabled)voiceBusy=true;
       const owned = generation;
@@ -1927,7 +1955,7 @@ window.Conversation = (() => {
       }
     });
     const mediaActions={
-      play:()=>{voiceSuspended=false;voiceStatus();if(active && blobUrl)startPlayback();else {enableVoice();drainVoice();}},
+      play:()=>{voiceSuspended=false;voiceStatus();if(active && blobUrl){continueSpeech();startPlayback();}else {enableVoice();drainVoice();}},
       pause:()=>pause("media-session"),stop:()=>disableVoice()
     };
     window.NativeSpeechAudio?.setControls?.(mediaActions);
