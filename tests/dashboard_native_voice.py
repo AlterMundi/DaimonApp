@@ -196,8 +196,7 @@ class Mounted(unittest.TestCase):
             call,result=stream.tool_results.get(timeout=2)
             self.assertEqual(result['kind'],'integrator_admission');self.assertIn('Not established',result['completion'])
             self.assertEqual(len(self.owner.delegations),1)
-            stream.queue.put([{'type':'integrator_watch','call_id':'watch'},
-                              {'type':'audio','pcm':b'\2\0'*320,'sample_rate':24000},
+            stream.queue.put([{'type':'audio','pcm':b'\2\0'*320,'sample_rate':24000},
                               {'type':'output_transcript','text':'I can keep talking while work continues.'},
                               {'type':'turn_complete'}])
             while ws.receive_json()['type']!='audio':pass
@@ -205,7 +204,7 @@ class Mounted(unittest.TestCase):
             self.owner.return_ready=True
             (self.root/'native.sqlite3').write_bytes(b'synthetic source notification')
             call,result=stream.tool_results.get(timeout=3)
-            self.assertEqual(call,'watch');self.assertEqual(result['text'],'Canonical integrating return.')
+            self.assertEqual(call,'work');self.assertEqual(result['text'],'Canonical integrating return.')
             self.assertEqual(len(self.owner.delegations),1)
             ws.send_json({'type':'close'})
     def test_source_tool_reads_current_playback_without_claiming_hearing(self):

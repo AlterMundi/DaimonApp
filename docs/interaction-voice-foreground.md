@@ -248,6 +248,12 @@ carry an assistant formulation and bounded original IDs; only the owning bridge
 can validate their actual retained source/actor/binding and admit work.
 
 The adapter exposes provider input transcripts separately from interim captions.
+Transcription text is optional in the provider schema. Empty transcription
+metadata without an explicit input-end marker is ignored, while audio carried
+in that same message is still delivered. A mounted real-provider trial observed
+`outputTranscription:{}` alongside generated PCM; requiring its missing text
+closed the session. The regression reproduces that rejection and verifies that
+the corrected parser keeps the audio without inventing a human transcript.
 It deliberately does not interpret model output or `turnComplete` as a final human
 original: the [Live protocol](https://ai.google.dev/api/live) gives no guaranteed
 ordering between input transcription and other events. The capture/source bridge
@@ -263,7 +269,7 @@ acknowledgment does not end that subscription or depend on another model call.
 Each connection is limited to300seconds,300seconds of16kHz input and24kHz output,
 16384provider events,256KiB per event,128KiB total transcripts,32tool proposals and
 4pending proposals and160total tool responses, including streamed updates.
-Only the return subscription can continue. Each input frame is at most one second; request/source lists
+Only admitted delegation and return-subscription calls can continue. Each input frame is at most one second; request/source lists
 and returned outcomes are bounded. The adapter retains no media or transcripts
 after its owner releases it and never opens a replacement connection. Longer
 conversation continuity belongs to the existing durable source/result bridge,
@@ -333,10 +339,23 @@ existing original retention, integrator admission and canonical text readers.
 Its `recent_originals` tool returns genuine references; delegation requires the
 latest captured correction and retains its distinct assistant formulation. Each
 provider call ID can produce at most one owner invocation, including lost ACKs.
-`await_integrator_update` waits on actual source notifications while the speech
-stream remains independent. The bridge re-reads the selected revision and rejects
+The first admitted delegation itself stays pending with `willContinue:true` and
+owns the existing event-driven return reader. The model does not need to make a
+second tool call to hear its result or a returned question. Later admissions
+reuse that reader instead of creating another one. `await_integrator_update`
+remains available for pending work without an active continued delegation/watch,
+including recovery after provider cancellation. The speech stream remains
+independent. The bridge re-reads the selected revision and rejects
 obsolete content, pending corrections, worker progress and changed native bindings.
 It never starts workers itself or treats admission as task completion.
+An answer to an integrating question or a correction to pending work must also
+reach Sol through its retained originals, even if terse. The foreground cannot
+replace that action with a spoken acknowledgment or claim forwarding before
+observed admission. Original question/approval authority still belongs to the
+existing integrator and native controls; no automatic native answer is added.
+The source list must be refreshed after each new answer/correction; a cached ID
+from the earlier request cannot replace that new original. The existing owner
+rejects a proposal that omits the latest captured source without admitting work.
 
 The bridge retains exact PCM as the existing private WAV before native control,
 then uses the existing prepared-transcript receipt and completed reader. Closing
@@ -406,7 +425,8 @@ skip provider closure or the separate bounded cleanup of already captured data.
 Before microphone acquisition, a bounded source-labelled context includes recent
 owned integrating text, original excerpts and assistant voice history. Those
 prior source IDs are contextual only; a delegation still requires genuine
-current-dialogue originals. One pending event-driven watch consumes current
+current-dialogue originals. One pending event-driven reader, normally attached
+to the admitted delegation call, consumes current
 integrating result/question references, not arbitrary worker history. Source
 revision/currentness is checked again at offer time. Synthetic socket tests prove
 that native audio continues while this watch is pending and that successive

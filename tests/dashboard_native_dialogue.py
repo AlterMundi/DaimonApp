@@ -96,6 +96,14 @@ class Dialogue(unittest.TestCase):
             self.stream.tool_result(name,{'kind':'source_data'})
             response=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
             self.assertEqual(response['name'],name)
+    def test_admitted_delegation_can_stream_its_return_on_the_same_tool_call(self):
+        self.ready();self.event(self.proposal())
+        for result in ({'kind':'integrator_admission'},{'kind':'integrating_source','text':'A real returned question'}):
+            self.stream.tool_result('call-1',result,will_continue=True)
+            reply=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
+            self.assertEqual(reply['name'],'delegate_to_integrator');self.assertTrue(reply['willContinue'])
+            self.assertEqual(self.stream.tools['call-1']['state'],'pending')
+        self.assertEqual(self.event(self.audio())[0]['type'],'audio')
     def test_source_cursor_rejects_boolean_and_out_of_range(self):
         self.ready()
         with self.assertRaises(DialogueUnavailable):
@@ -145,6 +153,12 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event({'serverContent':{'outputTranscription':{'finished':True}}}),[])
         self.assertEqual(self.stream.tools,{})
         self.assertEqual(len(self.socket.sent),1)
+    def test_empty_optional_transcriptions_do_not_drop_coincident_audio(self):
+        self.ready()
+        events=self.event(self.audio(inputTranscription={},outputTranscription={}))
+        self.assertEqual([item['type'] for item in events],['audio'])
+        self.assertEqual(events[0]['pcm'],b'\1\0'*160)
+        self.assertEqual(self.event({'serverContent':{'inputTranscription':{'text':''}}}),[])
     def test_interruption_drops_same_event_audio_and_does_not_cancel_work(self):
         self.ready();self.event(self.proposal())
         items=self.event(self.audio(interrupted=True))
