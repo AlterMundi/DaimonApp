@@ -14,7 +14,7 @@ window.ConversationVoiceMode=(()=>{
     const back=document.createElement('button');back.type='button';back.textContent='Back to conversation';
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(speak,back);
     dialog.append(heading,hint,stage,status,caption,controls);document.body.append(dialog);
-    let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false;
+    let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage;
     function entryState(){
       portrait.dataset.voiceEntry=String(available);
       if(!available){
@@ -34,7 +34,7 @@ window.ConversationVoiceMode=(()=>{
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
-      opened=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
+      opened=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false,directMessage;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();
@@ -50,7 +50,7 @@ window.ConversationVoiceMode=(()=>{
     function update(value){
       if(!opened)return;
       if(value.connected===false){close();return;}
-      if(value.continuousState){listening=value.continuousState.active;preparing=value.continuousState.starting;directPending=value.continuousState.pending;directWorking=value.continuousState.working;remaining=Number.isInteger(value.continuousState.remaining)&&value.continuousState.remaining>=0&&value.continuousState.remaining<=120?value.continuousState.remaining:undefined;}
+      if(value.continuousState){directMessage=value.continuousState.message;listening=value.continuousState.active;preparing=value.continuousState.starting;directPending=value.continuousState.pending;directWorking=value.continuousState.working;remaining=Number.isInteger(value.continuousState.remaining)&&value.continuousState.remaining>=0&&value.continuousState.remaining<=120?value.continuousState.remaining:undefined;}
       if(Object.hasOwn(value,'capture'))phase=value.capture||'idle';
       if(Object.hasOwn(value,'pending'))pending=value.pending;
       if(Number.isInteger(value.remaining)&&value.remaining>=0&&value.remaining<=120)remaining=value.remaining;
@@ -62,7 +62,7 @@ window.ConversationVoiceMode=(()=>{
         status.dataset.nearLimit=String(listening&&remaining!==undefined&&remaining<=15);
         status.setAttribute('aria-label',status.textContent+(listening&&remaining!==undefined?`. ${remaining} seconds of recording remaining`:''));
         if(Object.hasOwn(value,'caption'))caption.textContent=value.caption;
-        if(directPending)caption.textContent='Return to the conversation to review your recordings.';
+        if(directPending)caption.textContent=(directMessage?directMessage+' ':'')+'Return to the conversation to review your recordings.';
         speak.hidden=preparing||listening||directPending;speak.disabled=directWorking||!canStart();speak.textContent='Start voice';
         dialog.dataset.phase=phase==='recording'?'listening':playing?'speaking':'waiting';return;
       }
