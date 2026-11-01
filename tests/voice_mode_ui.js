@@ -74,4 +74,11 @@ background.mode.update({continuousState:{active:false,starting:false,pending:fal
 assert.equal(background.nodes.find(n=>n.className==='voice-mode-state').textContent,'Speaking · microphone paused');
 background.document.hidden=false;background.listeners.visibilitychange();assert.equal(background.counts().starts,1,'Showing the view never reopens the microphone');
 background.listeners.pagehide();assert(!background.mode.active,'Leaving the page still closes the bounded view');assert.equal(background.counts().leaves,1);
+const unavailable=boot();unavailable.mode.configure(true,true);unavailable.portrait.events.click();
+unavailable.mode.update({continuousState:{active:false,starting:false,pending:false,working:false,message:'Native voice disconnected'}});
+assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','A stopped native session without an original must still explain why it stopped');
+unavailable.mode.update({capture:'idle',pending:false});
+assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','Ordinary composer updates cannot hide a native stop reason');
+unavailable.mode.update({continuousState:{active:true,starting:false,pending:false,working:false,message:'Listening'}});
+assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'','Restart clears the previous stop reason');unavailable.mode.close();
 console.log('Fullscreen voice: avatar identity, explicit opt-in, response/rearm fences, review, Escape, hidden and bounded exit passed.');

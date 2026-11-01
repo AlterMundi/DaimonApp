@@ -536,3 +536,14 @@ See [qualification](interaction-qualification.md#native-foreground-qualification
 and the receiving operator record for current adoption and software rollback.
 After native foreground originals exist, keep compatible native/completed-reader
 support when restoring an earlier web UI; never roll back source journals.
+
+## Native avatar recovery feedback
+
+When native voice stops with an unconfirmed original, its continuous state reports
+review pending. The avatar shows the actual stop reason and the existing return
+to conversation recovery action, and hides Start voice until that original is
+reviewed. With no original, a stopped session still shows its reason rather than
+leaving only Voice paused and an old caption. Ordinary composer/playback updates
+do not erase that reason; explicitly starting voice again clears it. This uses
+the existing local recording store/recovery path, not a second sender, retry or
+provider action. It changes no endpointing, native admission or job cancellation.

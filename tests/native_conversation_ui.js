@@ -51,6 +51,7 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   socket.push({type:'voice_activity',id:first,activity:'ACTIVITY_END'});socket.push(audio(1920));await tick();assert.equal(value.contexts[0].nodes.length,1,'An earlier phrase ACK cannot release stale audio');
   socket.push({type:'voice_activity',id:second,activity:'ACTIVITY_END'});socket.push({type:'audio',id:crypto.randomUUID(),end:640,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});await until(()=>value.contexts[0].nodes.length===2);
   value.engine.hold();await tick();assert.equal(value.engine.active,false);assert.equal(value.media.stopped,true);assert.equal(value.contexts[0].state,'closed');assert.equal(value.engine.originals.length,1,'Only unconfirmed original remains for recovery');assert.equal(value.engine.originals[0].id,second);
+  assert.equal(value.states.at(-1).pending,true,'Stopping with an unconfirmed original must expose review in the avatar');
   assert.ok(value.timers.every(t=>t.cleared),'Readiness/session timers are cleared');
   const refused=boot(),pending=refused.engine.start();await until(()=>refused.sockets.length===1);refused.sockets[0].push({type:'review',message:'Listener unsupported'});assert.equal(await pending,false);assert.equal(refused.permissionCalls,0);
   console.log('Native avatar: owner preflight before mic, exact recovery/ACK, frozen scope, native PCM controls, interruption generation fences and cleanup passed; no real devices/models.');
