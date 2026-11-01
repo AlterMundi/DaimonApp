@@ -140,6 +140,35 @@ work admission and the native-audio/avatar bridge remain subsequent work. The
 store and owner-socket regressions exercise retention/restart, exact-original
 identity and absence of native work without invoking a model.
 
+## Native dialogue transport seam
+
+`dashboard/native_dialogue.py` implements the dedicated Gemini3.8Live transport;
+ordinary `TranscriptionStream`, Sol configuration and Qwen rendering are unchanged.
+The transport uses native automatic activity detection and concurrent PCM input,
+audio output, captions and nonblocking integrator proposals. It has no native
+submission, worker, storage, reconnect or automatic retry capability. Proposals
+carry an assistant formulation and bounded original IDs; only the owning bridge
+can validate their actual retained source/actor/binding and admit work.
+
+The adapter exposes provider input transcripts separately from interim captions.
+It deliberately does not interpret model output or `turnComplete` as a final human
+original: the [Live protocol](https://ai.google.dev/api/live) gives no guaranteed
+ordering between input transcription and other events. The capture/source bridge
+still needs to establish durable utterance/audio boundaries before delegation.
+Provider cancellation is a cancelled speech proposal, never a native job cancel.
+An interrupted event clears output, including audio in that same event. A tool
+response is marked uncertain before writing and cannot be sent twice.
+
+Each connection is limited to300seconds,300seconds of16kHz input and24kHz output,
+16384provider events,256KiB per event,128KiB total transcripts,32tool proposals and
+4pending proposals. Each input frame is at most one second; request/source lists
+and returned outcomes are bounded. The adapter retains no media or transcripts
+after its owner releases it and never opens a replacement connection. Longer
+conversation continuity belongs to the existing durable source/result bridge,
+not automatic replay. Synthetic socket regressions cover concurrent speech while
+a tool is pending, interruption, once-only uncertain returns and resource bounds;
+they establish no real audio-input, native admission, avatar or phone acceptance.
+
 ## Bounds and acceptance
 
 Start with one owned synthetic provider session,60seconds, at most1024events,
