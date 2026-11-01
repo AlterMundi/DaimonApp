@@ -5,3 +5,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = 'DaimonInteraction'
 include ':app'
+// A second UID exists only in the bounded emulator qualification.
+if (providers.gradleProperty("focusProbe").orNull == "true") include ":focus-probe"

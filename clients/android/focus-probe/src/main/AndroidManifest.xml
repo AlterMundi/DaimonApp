@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="homes.dmn.interaction.focusprobe.CONTROL" android:protectionLevel="signature" />
+    <uses-permission android:name="homes.dmn.interaction.focusprobe.CONTROL" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <application android:label="Bounded test focus probe" android:allowBackup="false">
+        <activity android:name=".FocusProbeActivity" android:exported="true" android:permission="homes.dmn.interaction.focusprobe.CONTROL" />
+        <service android:name=".FocusProbeActivity$Player" android:exported="true"
+            android:permission="homes.dmn.interaction.focusprobe.CONTROL" android:foregroundServiceType="mediaPlayback" />
+    </application>
+</manifest>
