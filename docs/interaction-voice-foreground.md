@@ -348,6 +348,20 @@ including recovery after provider cancellation. The speech stream remains
 independent. The bridge re-reads the selected revision and rejects
 obsolete content, pending corrections, worker progress and changed native bindings.
 It never starts workers itself or treats admission as task completion.
+
+A long integrating return retains its canonical `offset`/`next_offset` in the
+voice tool response. `read_integrating_source` reads one requested page through
+the existing presentation reader, restricted to exact source/revision pairs
+already offered in this dialogue. Each page rechecks currentness, correction and
+native-binding state, canonical kind and offset before returning text. An obsolete
+source or unrelated ID returns no text; the foreground must not invent missing
+details from a truncated first page. The offered-reference dictionary uses the
+existing128offer/session bound; each read uses the same finite tool-call and
+16KiB response bounds. It starts no work, answers no native question and creates
+no parallel source store. Mocked transport, source ownership and mounted app
+regressions cover a multi-page Unicode result and changed/unoffered sources;
+these do not establish real-provider tool selection or phone hearing.
+
 An answer to an integrating question or a correction to pending work must also
 reach Sol through its retained originals, even if terse. The foreground cannot
 replace that action with a spoken acknowledgment or claim forwarding before

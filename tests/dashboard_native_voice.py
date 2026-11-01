@@ -82,8 +82,9 @@ class Owner(Receiver):
         return {'binding':self.binding,'items':[item] if self.return_ready and cursor<1 else [],
                 'newest':{'delivery':0,'native':int(self.return_ready)},'cursor':{'delivery':0,'native':int(self.return_ready)},'more':False}
     def presentation_part(self,ident,revision,offset):
+        text=getattr(self,'return_text','Canonical integrating return.');end=min(offset+1600,len(text))
         return {'id':ident,'revision':revision,'kind':self.return_kind,'native_returns':self.native_returns,'entry_binding':[100],
-                'current':True,'text':'Canonical integrating return.','next_offset':None}
+                'current':True,'text':text[offset:end],'offset':offset,'next_offset':end if end<len(text) else None}
     def conversation_foreground_originals(self,dialogue,binding,before):
         return {'sources':[{'id':ident,'phase':value['phase']} for ident,value in self.inputs.items()]}
     def conversation_foreground_delegate(self,body):
@@ -207,6 +208,24 @@ class Mounted(unittest.TestCase):
             self.assertEqual(call,'work');self.assertEqual(result['text'],'Canonical integrating return.')
             self.assertEqual(len(self.owner.delegations),1)
             ws.send_json({'type':'close'})
+    def test_native_voice_can_read_the_remainder_of_an_offered_long_return(self):
+        self.owner.return_text='Contexto inicial. '*100+' Último detalle: azafrán.'
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'integrator_watch','call_id':'watch'}])
+            self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'synthetic source notification')
+            call,result=stream.tool_results.get(timeout=3)
+            self.assertEqual(call,'watch');self.assertEqual(result['next_offset'],1600)
+            stream.queue.put([{'type':'integrating_source_query','call_id':'remainder',
+                'source':result['source']['id'],'revision':result['source']['revision'],'offset':result['next_offset']}])
+            call,page=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'remainder');self.assertEqual(page['kind'],'integrating_source')
+            self.assertEqual(result['text']+page['text'],self.owner.return_text)
+            self.assertIsNone(page['next_offset']);self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
     def test_source_tool_reads_current_playback_without_claiming_hearing(self):
         history=self.app.state.native_history
         ident=str(uuid.uuid4());other=str(uuid.uuid4())

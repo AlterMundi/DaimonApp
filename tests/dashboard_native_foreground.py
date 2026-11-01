@@ -45,7 +45,10 @@ class Owner:
         self.delegations.append(body)
         if self.fail:raise TimeoutError()
         return {'id':body['id'],'phase':'accepted','native_acceptance':'pending'}
-    def presentation_part(self,ident,revision,offset):return self.parts[ident]
+    def presentation_part(self,ident,revision,offset):
+        value=self.parts[ident];text=value['text'];end=min(offset+1600,len(text))
+        return {**value,'text':text[offset:end],'offset':offset,
+                'next_offset':end if end<len(text) else None}
 
 
 class Bridge(unittest.IsolatedAsyncioTestCase):
@@ -186,6 +189,38 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.stream.continuations,[True,True])
         self.assertEqual(len(self.bridge._tool_calls),1)
         await self.bridge.close();await task
+    async def test_long_offered_return_can_be_read_on_demand_without_new_work(self):
+        source=self.source();text='First-page context. '*100+' Último detalle: azafrán.'
+        self.owner.parts[source['id']]={**source,'kind':'integrator_answer','entry_binding':[1],
+                                      'current':True,'text':text}
+        task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
+        self.bridge.integrating_source(source);await self.results(1)
+        offered=self.stream.results[0][1]
+        self.assertEqual(offered['text'],text[:1600]);self.assertEqual(offered['next_offset'],1600)
+        page=await self.bridge.tool({'type':'integrating_source_query','call_id':'remainder',
+            'source':source['id'],'revision':source['revision'],'offset':offered['next_offset']})
+        self.assertEqual(page['kind'],'integrating_source')
+        self.assertEqual(offered['text']+page['text'],text)
+        self.assertIsNone(page['next_offset']);self.assertFalse(page['text_bounded'])
+        self.assertEqual(self.owner.delegations,[])
+        # The same offered revision loses eligibility as soon as its source changes.
+        for changes in ({'current':False},{'correction_pending':True},
+                        {'native_binding_current':False},{'revision':'c'*64},{'kind':'worker_progress'}):
+            self.owner.parts[source['id']]={**self.owner.parts[source['id']],**changes}
+            result=await self.bridge.tool({'type':'integrating_source_query','call_id':str(uuid.uuid4()),
+                'source':source['id'],'revision':source['revision'],'offset':1600})
+            self.assertEqual(result['kind'],'not_ready')
+            self.assertNotIn('text',result)
+            self.owner.parts[source['id']]={**source,'kind':'integrator_answer','entry_binding':[1],
+                                          'current':True,'text':text}
+        await self.bridge.close();await task
+
+    async def test_integrating_read_cannot_select_an_unoffered_source(self):
+        with patch.object(self.owner,'presentation_part',side_effect=AssertionError('Unscoped read')):
+            result=await self.bridge.tool({'type':'integrating_source_query','call_id':'outside',
+                'source':'native:999','revision':'b'*64,'offset':0})
+        self.assertEqual(result['kind'],'not_ready');self.assertEqual(self.owner.delegations,[])
+
     async def test_changed_or_worker_progress_cannot_be_announced_as_return(self):
         task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
         await asyncio.sleep(0)

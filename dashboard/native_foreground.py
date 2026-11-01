@@ -60,7 +60,7 @@ class ForegroundBridge:
         self._owners=asyncio.Semaphore(2)
         self._files=asyncio.Semaphore(1)
         self._returns=asyncio.Queue(maxsize=8)
-        self._offered=set()
+        self._offered={}
         self._queued=set()
         self._watching=False
         self._tool_calls=set()
@@ -210,6 +210,13 @@ class ForegroundBridge:
                         candidate={**result,'assistant_speech':result.get('assistant_speech',[])+[item]}
                         if len(json.dumps(candidate,allow_nan=False).encode())>16384:break
                         result=candidate
+            elif event['type']=='integrating_source_query':
+                source=self._offered.get((event['source'],event['revision']))
+                if source is None:
+                    raise ForegroundUnavailable('Select a source already offered in this foreground dialogue')
+                result=await self._integrating_part(source,event['offset'])
+                if result is None:
+                    raise ForegroundUnavailable('Selected integrating source is no longer current')
             elif event['type']=='delegation_proposed':
                 sources=event['original_ids'];root=self.latest
                 if root not in sources:
@@ -245,6 +252,25 @@ class ForegroundBridge:
             await asyncio.to_thread(self.stream.tool_result,ident,result)
         return result
 
+    async def _integrating_part(self,source,offset):
+        """Reuse the scoped canonical reader, revalidating every requested page."""
+        if type(offset) is not int or not 0<=offset<=10**9:
+            raise ForegroundUnavailable('Select a bounded integrating source offset')
+        result=await self._owner(self.provider.presentation_part,source['id'],source['revision'],offset)
+        next_offset=result.get('next_offset')
+        if (result.get('id')!=source['id'] or result.get('revision')!=source['revision']
+                or result.get('offset')!=offset or result.get('entry_binding') is None
+                or result.get('current') is False or result.get('correction_pending') is True
+                or result.get('native_binding_current') is False
+                or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
+                or result.get('kind')=='integrator_progress' and not result.get('native_returns')
+                or not isinstance(result.get('text'),str) or not result['text'].strip()
+                or next_offset is not None and (type(next_offset) is not int or not offset<next_offset<=10**9)):
+            return None
+        return {'kind':'integrating_source','source':dict(source),'text':result['text'],
+                'offset':offset,'next_offset':next_offset,'text_bounded':next_offset is not None,
+                'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
+
     async def _watch(self,ident,initial=None):
         if self._watching:raise ForegroundUnavailable('An integrating watch is already pending')
         self._watching=True
@@ -259,26 +285,12 @@ class ForegroundBridge:
                 self._queued.discard((source['id'],source['revision']))
                 # Re-read the exact canonical revision at offer time. The
                 # queue stores only references, never an authoritative copy.
-                result=await self._owner(self.provider.presentation_part,
-                                        source['id'],source['revision'],0)
-                if (result.get('id')!=source['id']
-                        or result.get('revision')!=source['revision']
-                        or result.get('entry_binding') is None
-                        or result.get('current') is False
-                        or result.get('correction_pending') is True
-                        or result.get('native_binding_current') is False
-                        or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
-                        or result.get('kind')=='integrator_progress' and not result.get('native_returns')
-                        or not isinstance(result.get('text'),str) or not result['text'].strip()):
-                    # Currentness can change between invalidation and
-                    # this exact read. Keep the subscription alive; a
-                    # later owner invalidation may offer it afresh.
+                result=await self._integrating_part(source,0)
+                if result is None:
+                    # A newer owner invalidation may offer a current revision.
                     source=None
                     continue
-                result={'kind':'integrating_source','source':source,
-                        'text':result['text'],'text_bounded':result.get('next_offset') is not None,
-                        'meaning':'Attributed integrating content, not human speech. Native acceptance/progress is not task completion.'}
-                self._offered.add((source['id'],source['revision']))
+                self._offered[(source['id'],source['revision'])]=dict(source)
                 await asyncio.to_thread(self.stream.tool_result,ident,result,will_continue=True)
                 source=None
         except asyncio.CancelledError:
