@@ -26,6 +26,29 @@ formulated request was handed over and stay conversational rather than wait
 silently for its result. Pending/unconfirmed native acceptance is described as
 such. This confirmation is an admission-status acknowledgment, not a useful work
 result or evidence that the worker completed anything.
+The confirmation describes the request as sent. It cannot imply that a named
+worker received or started it from integrator admission alone; that requires
+canonical worker confirmation.
+
+Keep the work product separate from its spoken presentation. A request for a
+complete unsummarized report with only its conclusion spoken still requires the
+complete report to return to the integrator. Speech-only brevity or reading
+preferences apply in this foreground, without restricting the worker deliverable.
+A retained actual-Sol attempt exposed an ambiguous formulation and a spoken
+acknowledgment that instead described requesting only the conclusion. This does
+not prove a worker returned the wrong product: the fixture ended before a result.
+
+When a requested conclusion/detail is absent from the current return page and a
+next_offset exists, read onward before answering; describing where the answer
+would be is not the answer. Continue only until the requested information is
+found or that current source ends, under existing finite read/tool/session limits.
+A distinct bounded native-provider check with simulated original/integrator
+callbacks preserved the complete report, confirmed only that the request was
+sent, read offset1600 of2370 and generated the granate conclusion. One earlier
+candidate preserved the report but did not read past the first-page description;
+its terminal failure remains retained. This is provider-policy evidence, not
+actual-Sol/worker/device/hearing or general-latency acceptance.
+
 
 Two bounded synthetic native-audio policy trials on1November observed the
 exploration/execution distinction and this admission response separately. With
