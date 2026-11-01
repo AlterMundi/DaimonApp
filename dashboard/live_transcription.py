@@ -1,6 +1,7 @@
 """Authenticated voice preparation over one bounded WebSocket; no input dispatch."""
 import asyncio
 from contextlib import suppress
+from collections import deque
 import hashlib
 import io
 import json
@@ -20,6 +21,77 @@ from .private_state import private_directory, read_json, write_json
 from .transcription import TranscriptionStream, TranscriptionUnavailable
 from .turn_detection import Detector, DetectionUnavailable, analyze_capture, command as detection_command
 from scripts.speech_render import lock, RenderError
+
+
+class VoiceInbox:
+    """Collect already-arrived frames while fresh authorization is in flight.
+
+    No delay, dropped PCM/events, auth cache or persistence. Input is bounded to
+    eight seconds pending PCM and 128 messages; output retains at most 128 worker
+    events (the worker already bounds each JSON line). Control boundaries and
+    original packet sizes survive batching, preserving detector decisions.
+    """
+    def __init__(self, receive, *, pcm=False):
+        self.receive = receive
+        self.pcm = pcm
+        self.items = deque()
+        self.bytes = 0
+        self.changed = asyncio.Event()
+        self.error = None
+        self.task = asyncio.create_task(self.collect())
+
+    async def collect(self):
+        try:
+            while True:
+                value = await self.receive()
+                size = 0
+                if self.pcm:
+                    if value.get('bytes') is not None:
+                        size = len(value['bytes'])
+                        if not size or size % 2 or size > 32000:
+                            raise ValueError('Foreground PCM exceeds frame bounds')
+                    elif len(value.get('text', '').encode()) > 256:
+                        raise ValueError('Foreground control exceeds bound')
+                if len(self.items) >= 128 or self.bytes + size > 256000:
+                    raise ValueError('Voice processing backlog exceeds bound')
+                self.items.append((value, size))
+                self.bytes += size
+                self.changed.set()
+                if self.pcm and value['type'] == 'websocket.disconnect':
+                    return
+        except Exception as error:
+            self.error = error
+            self.changed.set()
+
+    async def batch(self):
+        while not self.items:
+            if self.error is not None:
+                raise self.error
+            self.changed.clear()
+            await self.changed.wait()
+        if self.error is not None:
+            raise self.error
+        values, size = [], 0
+        while self.items and len(values) < 10:
+            value, count = self.items[0]
+            # Keep a control/disconnect in its own fresh authorized batch.
+            if self.pcm and (not count or size + count > 32000):
+                if values:
+                    break
+            self.items.popleft()
+            self.bytes -= count
+            size += count
+            values.append(value)
+            if self.pcm and not count:
+                break
+        return values
+
+    async def close(self):
+        self.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self.task
+        self.items.clear()
+        self.bytes = 0
 
 
 def wav_bytes(pcm):
@@ -354,7 +426,7 @@ def install(app, config, provider, authorize, origins):
     @app.websocket('/api/interaction/voice/activity')
     async def foreground_activity(socket: WebSocket):
         """One explicit warm foreground analyzer; no ASR, originals or work."""
-        worker = reader = incoming = None
+        worker = reader = incoming = inbox = None
         owner = None
         sending = asyncio.Lock()
         async def send(value):
@@ -386,45 +458,54 @@ def install(app, config, provider, authorize, origins):
                 await recheck()
                 await send({'type': 'ready', 'id': meta['id'], 'analysis_only': True})
                 async def receive():
-                    while True:
-                        value = await worker.receive()
-                        if value.get('type') not in ('activity', 'boundary'):
-                            raise DetectionUnavailable('Unexpected foreground analysis response')
-                        await actor()
-                        await send({'type': 'turn_activity' if value['type'] == 'activity' else 'boundary',
-                                    'id': meta['id'], 'activity': value})
+                    events = VoiceInbox(worker.receive)
+                    try:
+                        while True:
+                            batch = await events.batch()
+                            if any(value.get('type') not in ('activity', 'boundary') for value in batch):
+                                raise DetectionUnavailable('Unexpected foreground analysis response')
+                            await actor()
+                            for value in batch:
+                                await send({'type': 'turn_activity' if value['type'] == 'activity' else 'boundary',
+                                            'id': meta['id'], 'activity': value})
+                    finally:
+                        await events.close()
                 reader = asyncio.create_task(receive())
+                inbox = VoiceInbox(socket.receive, pcm=True)
                 checked = time.monotonic()
                 total = 0
                 while True:
-                    incoming = asyncio.create_task(socket.receive())
+                    incoming = asyncio.create_task(inbox.batch())
                     done, _ = await asyncio.wait((incoming, reader), return_when=asyncio.FIRST_COMPLETED)
                     if reader in done:
                         incoming.cancel()
                         await reader
-                    message = await incoming
-                    if message['type'] == 'websocket.disconnect':
+                    batch = await incoming
+                    if batch[0]['type'] == 'websocket.disconnect':
                         break
                     await actor()
                     if time.monotonic() - checked >= 15:
                         await recheck()
                         checked = time.monotonic()
-                    if message.get('bytes') is not None:
-                        pcm = message['bytes']
-                        if not pcm or len(pcm) % 2 or len(pcm) > 32000 or total + len(pcm) > 300 * 32000:
-                            raise ValueError('Foreground PCM exceeds session bounds')
-                        total += len(pcm)
-                        await worker.feed(pcm)
-                    else:
-                        raw = message.get('text', '')
-                        if len(raw.encode()) > 256:
-                            raise ValueError('Foreground control exceeds bound')
-                        value = json.loads(raw)
-                        if value == {'type': 'close'}:
-                            break
-                        if not isinstance(value, dict) or set(value) != {'boundary'}:
-                            raise ValueError('Unknown foreground control')
-                        await worker.boundary(value['boundary'])
+                    closing = False
+                    for message in batch:
+                        if message.get('bytes') is not None:
+                            pcm = message['bytes']
+                            if total + len(pcm) > 300 * 32000:
+                                raise ValueError('Foreground PCM exceeds session bounds')
+                            total += len(pcm)
+                            await worker.feed(pcm)
+                        else:
+                            value = json.loads(message.get('text', ''))
+                            if value == {'type': 'close'}:
+                                closing = True
+                                break
+                            if not isinstance(value, dict) or set(value) != {'boundary'}:
+                                raise ValueError('Unknown foreground control')
+                            await worker.boundary(value['boundary'])
+                    if closing:
+                        break
+
         except (HTTPException, ValueError, OSError, UnicodeError, DetectionUnavailable,
                 WebSocketDisconnect, TimeoutError):
             with suppress(Exception):
@@ -434,6 +515,8 @@ def install(app, config, provider, authorize, origins):
                 for task in (reader, incoming):
                     if task is not None:
                         task.cancel()
+                if inbox is not None:
+                    await inbox.close()
                 if worker is not None:
                     closing = asyncio.create_task(worker.close())
                     closing.add_done_callback(lambda task: None if task.cancelled() else task.exception())
