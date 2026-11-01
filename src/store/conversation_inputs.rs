@@ -1182,7 +1182,7 @@ impl Store {
                 "native_binding_current":input.native==native,
             });
             if let Some(dialogue) = &input.foreground_dialogue {
-                item["foreground_dialogue"] = json!(dialogue);
+                item["foreground_dialogue"] = serde_json::json!(dialogue);
             }
             items.push(item);
         }
