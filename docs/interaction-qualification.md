@@ -26,6 +26,36 @@ verifier or inspect the retained source context. Whole actual-Sol paged return,
 physical device/hearing and useful-latency acceptance remain open. Do not rerun
 that terminal journey; use its retained state for any further observation.
 
+A subsequent **new** synthetic request qualified the changed PR506 policy through
+the mounted app, actual manual Gemini/CPU activity and actual Sol6.1/openai/medium.
+It retained three exact sentence originals in one source-bound formulation,
+dispatched once to an isolated simulated worker, and stored its complete
+1851character report unchanged. Actual Sol read that same report at offsets0and1600
+under one exact return revision, then returned the requested conclusion as a
+short canonical answer. The foreground generated that conclusion with196322PCM
+bytes in a closed, uninterrupted utterance. There were two native ACKs (original
+input and internal return continuation) in **one physical completed turn** and
+one native user message, not two separate physical turns. The completed isolated
+Sol thread was read terminal/idle and archived.
+
+The initial observer for this new request timed out because it required a
+foreground page query. That query was correctly unnecessary: Sol had already
+read both worker pages and the canonical first page contained the entire requested
+conclusion. Retained verification proved the full report hash, both actual Sol
+source reads, canonical text/revision and final generated utterance without any
+new model/provider/native submission. Keep the raw observer timeout and corrected
+outcome evidence distinct; do not rerun successful work to repair the verifier.
+
+Qualify the requested source-preserving outcome rather than requiring pagination
+at a particular layer. A foreground reads further offered pages when a requested
+detail is absent; it can answer directly when the integrator already supplied the
+complete requested detail. The earlier direct-provider/simulated-owner page test
+covers the first case; this actual-Sol journey covers the second. It does not
+establish actual-Sol foreground pagination, an independent worker model, browser
+rendering, physical microphone/playback/hearing, real echo/noise or general
+useful-latency acceptance. The earlier unrelated uncertain worker submission
+remains retained and was never replayed.
+
 ## Product outcome
 
 One habitual text/voice conversation lets a person discuss ideas and advance
