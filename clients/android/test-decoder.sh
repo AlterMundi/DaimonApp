@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+test "$#" -eq 2
+test -f "$2"
 mkdir -p decoder-evidence
 decoder_emulator_pid=''
+decoder_adb=''
 decoder_user_home=$(mktemp -d "${RUNNER_TEMP:-/tmp}/interaction-decoder.XXXXXX")
 decoder_avd_home="$decoder_user_home/avd"
 mkdir -p "$decoder_avd_home"
 cleanup() {
+  if [ -n "$decoder_adb" ] && [ ! -f decoder-evidence/logcat.log ]; then
+    timeout 10s "$decoder_adb" logcat -d -t 2000 >decoder-evidence/logcat.log 2>&1 || true
+  fi
   if [ -n "$decoder_emulator_pid" ]; then
     kill "$decoder_emulator_pid" 2>/dev/null || true
     wait "$decoder_emulator_pid" 2>/dev/null || true
@@ -35,9 +41,10 @@ for attempt in $(seq 1 60); do
 done
 test "$("$decoder_adb" shell getprop sys.boot_completed | tr -d '\r')" = 1
 "$decoder_adb" shell input keyevent 82
+"$decoder_adb" install -t "$2"
 "$decoder_adb" install -t "$1/debug/app-debug.apk"
 "$decoder_adb" install -t "$1/androidTest/debug/app-debug-androidTest.apk"
 timeout 140s "$decoder_adb" shell am instrument -w -r -e class homes.dmn.interaction.NativePcmSpeechTest,homes.dmn.interaction.ProgressiveSpeechTest,homes.dmn.interaction.BackgroundSpeechTest,homes.dmn.interaction.FileExportTest,homes.dmn.interaction.MicrophoneCaptureTest homes.dmn.interaction.pilot.test/androidx.test.runner.AndroidJUnitRunner | tee decoder-evidence/test.log
 "$decoder_adb" logcat -d -t 2000 >decoder-evidence/logcat.log
-grep -q 'OK (5 tests)' decoder-evidence/test.log
+grep -q 'OK (6 tests)' decoder-evidence/test.log
 test "$(du -sk decoder-evidence | cut -f1)" -lt 2048

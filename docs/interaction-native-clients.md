@@ -95,6 +95,16 @@ actual resume behavior must be tested; a successful focus API call is not proof
 that YouTube Music resumed. See #454 and Android's
 [audio focus contract](https://developer.android.com/media/optimize/audio-focus).
 
+The emulator suite includes a separate test APK/UID as the music focus holder.
+Its bounded foreground player asks to pause when ducked, handles the real
+system's transient loss/gain callbacks, and reports actual playback-head advance
+after resumption. Two PCM utterances must return focus while the same native
+session stays open between them. This tests the cross-app OS boundary, not
+YouTube Music's own policy, physical sound or phone acceptance. The probe has no
+network/microphone/storage permission, accepts only same-debug-signer control,
+and stops after30seconds even if instrumentation fails. It is a test fixture,
+not a product audio owner or a cross-app Play workaround.
+
 The first0.1 pilot deliberately buffers each speech segment. The0.2 candidate
 reuses the existing verified NDJSON speech reader for progressive native output:
 each checked block is passed to Android, whose bounded random-access source
@@ -197,6 +207,17 @@ The emulator job has a15-minute limit,2virtual cores/1536MiB RAM,10GiB initial
 runner headroom, bounded SDK/boot/test commands and a trap that stops its own
 emulator. AVD creation and emulator lookup use the same explicit task-owned Android user/AVD directories; the AVD index must exist before launch. The trap removes that directory after stopping its emulator. SDK state is ephemeral to that hosted job. Build success is not
 signing, receiving selection or installation.
+
+The six-case decoder suite requires a debug focus probe in addition to the app
+and instrumentation APKs. Enable only that fixture with `-PfocusProbe=true` and
+build `:focus-probe:assembleDebug` beside the existing debug/test tasks; the
+ordinary release command above omits the module. The app's probe permission is
+in `src/debug` only. CI retains the separate probe artifact for1day and invokes
+`test-decoder.sh <app-apk-directory> <focus-probe-apk>`. Install the probe first
+so Android can grant its signature permission to the same-debug-signed target.
+The emulator remains muted, with the existing140second instrumentation deadline;
+failed runs also retain bounded logcat before teardown. These checks do not
+require a new signed/released APK or production recording.
 
 Sign the exact qualified release with the receiving operator's retained private
 Android signing key using the standard SDK `apksigner`; verify the signature and

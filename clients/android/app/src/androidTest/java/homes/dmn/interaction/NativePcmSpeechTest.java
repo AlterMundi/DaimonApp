@@ -1,8 +1,16 @@
 package homes.dmn.interaction;
 
 import androidx.test.core.app.ActivityScenario;
+import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.lifecycle.Lifecycle;
 import org.junit.Test;
 import static org.junit.Assert.*;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
@@ -60,6 +68,64 @@ public class NativePcmSpeechTest {
                 assertTrue(positions.getOrDefault(interrupted, 0) < longTone.length);
             } finally { scenario.onActivity(activity -> output.get().stop()); }
         }
+    }
+    @Test public void separateMusicClientResumesAfterEachNativePcmUtterance() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String probePackage = "homes.dmn.interaction.focusprobe";
+        String permission = probePackage + ".CONTROL";
+        ComponentName player = new ComponentName(probePackage, probePackage + ".FocusProbeActivity$Player");
+        AtomicReference<SpeechOutput> output = new AtomicReference<>();
+        AtomicReference<String> error = new AtomicReference<>();
+        ConcurrentHashMap<String,Integer> positions = new ConcurrentHashMap<>();
+        AtomicInteger probeUid = new AtomicInteger(-1), losses = new AtomicInteger(), gains = new AtomicInteger();
+        AtomicInteger head = new AtomicInteger(), pausedHead = new AtomicInteger(), transientLosses = new AtomicInteger();
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context ignored, Intent value) {
+                probeUid.set(value.getIntExtra("uid", -1));
+                losses.set(value.getIntExtra("losses", 0)); gains.set(value.getIntExtra("gains", 0));
+                head.set(value.getIntExtra("head", 0)); pausedHead.set(value.getIntExtra("paused_head", 0));
+                if (value.getStringExtra("phase").equals("error")) error.set("Separate focus probe failed; inspect logcat");
+                if (value.getStringExtra("phase").equals("paused")) {
+                    int change = value.getIntExtra("change", 0);
+                    if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+                        transientLosses.incrementAndGet();
+                    else error.set("Speech caused permanent/unknown focus loss: " + change);
+                }
+            }
+        };
+        context.registerReceiver(receiver, new IntentFilter(probePackage + ".STATE"), permission,
+            new Handler(Looper.getMainLooper()), Context.RECEIVER_EXPORTED);
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            try {
+                scenario.onActivity(activity -> activity.startActivity(new Intent().setComponent(
+                    new ComponentName(probePackage, probePackage + ".FocusProbeActivity"))));
+                await(() -> probeUid.get() > 0 && head.get() > 0 && scenario.getState() == Lifecycle.State.RESUMED, error);
+                assertNotEquals("A same-UID listener is not an external music client", context.getApplicationInfo().uid, probeUid.get());
+                scenario.onActivity(activity -> output.set(new SpeechOutput(activity, new Handler(Looper.getMainLooper()), value -> {
+                    if (value.optString("type").equals("error")) error.set(value.toString());
+                    JSONArray items = value.optJSONArray("positions");
+                    if (items != null) for (int n = 0; n < items.length(); n++) {
+                        JSONObject item = items.optJSONObject(n);
+                        if (item != null) positions.put(item.optString("utterance"), item.optInt("played_bytes"));
+                    }
+                })));
+                command(scenario, output, "pcm_begin", new JSONObject());
+                byte[] speech = tone(12000);
+                for (int n = 0; n < 2; n++) {
+                    int round = n + 1; String utterance = UUID.randomUUID().toString();
+                    send(scenario, output, n, utterance, speech.length, speech);
+                    await(() -> positions.getOrDefault(utterance, 0) == speech.length, error);
+                    await(() -> losses.get() >= round && gains.get() >= round && head.get() > pausedHead.get(), error);
+                    assertEquals(round, transientLosses.get());
+                    assertEquals(round, losses.get()); assertEquals(round, gains.get());
+                }
+                // Keep the PCM session open: its idle gaps must not hold the other app paused.
+                assertNull(error.get());
+            } finally {
+                if (output.get() != null) scenario.onActivity(activity -> output.get().stop());
+                context.stopService(new Intent().setComponent(player));
+            }
+        } finally { context.unregisterReceiver(receiver); }
     }
     private byte[] tone(int samples) {
         byte[] bytes = new byte[samples * 2];
