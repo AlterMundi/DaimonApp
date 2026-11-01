@@ -39,6 +39,10 @@ try{
  const result=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});
  assert(!result.exceptionDetails,JSON.stringify(result.exceptionDetails));assert(result.result.value?.offlineAudio);
  console.log(JSON.stringify(result.result.value));
+ const nativeExpression=fs.readFileSync('tests/dashboard_native_audio_waveform_fixture.js','utf8').replace('__NATIVE_SOURCE__',JSON.stringify(fs.readFileSync('dashboard/web/native-conversation.js','utf8')));
+ const native=await call('Runtime.evaluate',{expression:nativeExpression,awaitPromise:true,returnByValue:true});
+ assert(!native.exceptionDetails,JSON.stringify(native.exceptionDetails));assert(native.result.value?.nativeOfflineAudio);
+ console.log(JSON.stringify(native.result.value));
 }finally{
  socket?.close();
  try{process.kill(-browser.pid,'SIGTERM');}catch(error){if(error.code!=='ESRCH')throw error;}

@@ -444,8 +444,16 @@ questions. Missing markers retain the earlier arm-time fallback. No late Send,
 retry or transcript completion widens that scope. Unconfirmed copies remain for
 review on exit. Native PCM playback has a30second/512node queue bound, ordinary
 speaker and pause/resume controls, and matching phrase-ACK fences against an
-interrupted output restarting. Browser playback counters are observations, not
-proof of physical hearing or exact word uptake.
+interrupted output restarting. The first local acoustic marker also retires the
+latest received output ID and all queued output IDs before server onset arrives,
+including when playback is between chunks. Late chunks still validate byte
+continuity but cannot restart those utterances; a fresh output ID can play.
+Retired IDs are bounded by the existing finite session/event limit and cleared
+on exit or a new session. The existing Chromium offline-audio qualification
+renders both active-playback and between-chunk interruption, plus fresh output
+afterward. It measures rendered graph silence against a synthetic local marker,
+not physical microphone-to-silence latency. Browser playback counters are
+observations, not proof of physical hearing or exact word uptake.
 
 Assistant utterances live as explicitly assistant-authored records in the
 existing app state database. They are not human inputs or invented native work
