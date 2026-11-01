@@ -1846,6 +1846,83 @@ mod tests {
     }
 
     #[test]
+    fn foreground_sources_follow_integrator_routing_without_replacing_human_text() {
+        use crate::interaction::{InputReference, RequestRelation};
+        let (_file, store, entry, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let dialogue = Uuid::now_v7().to_string();
+        let original = "Yes, use the amended scope.";
+        store
+            .conversation_foreground_capture(100, entry, &binding, &id, original, &dialogue, None)
+            .unwrap();
+        let (delegated, _) = store
+            .conversation_foreground_delegate(
+                100,
+                entry,
+                &binding,
+                &id,
+                &Uuid::now_v7().to_string(),
+                "Prepare the selected private report.",
+                std::slice::from_ref(&id),
+            )
+            .unwrap();
+        let local = turn(&store, entry);
+        store
+            .conversation_input_event(
+                100,
+                &id,
+                E::Begin {
+                    local_turn: local,
+                    steer: false,
+                },
+            )
+            .unwrap();
+        store
+            .conversation_input_event(100, &id, E::Accepted { local_turn: local })
+            .unwrap();
+        let worker = SessionKey::new(100, Some(7));
+        let row = store
+            .ensure_session(worker, 100, &super::super::tests::defaults())
+            .unwrap();
+        store
+            .set_session_codex_thread(worker, "worker-native")
+            .unwrap();
+        let (mut source, _) = store
+            .interaction_entry_original(
+                entry,
+                100,
+                "entry-native",
+                &InputReference::Conversation(id),
+                "telegram:fixture",
+            )
+            .unwrap();
+        assert_eq!(source.text, original);
+        source.target_sessions = vec![row.id];
+        let admitted = store
+            .interaction_admit_entry_plan(
+                entry,
+                100,
+                "entry-native",
+                &source,
+                &[(worker, RequestRelation::New)],
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(admitted[0].0.text, original);
+        let provenance = store
+            .interaction_original_provenance(&admitted[0].0.id, 100)
+            .unwrap();
+        assert_eq!(
+            provenance["foreground_delegation"],
+            serde_json::to_value(delegated.foreground_delegation).unwrap()
+        );
+        assert_eq!(
+            provenance["foreground_delegation"]["sources"][0]["text"],
+            original
+        );
+    }
+
+    #[test]
     fn playback_context_is_immutable_advisory_and_survives_restart() {
         let (file, store, key, binding) = setup();
         let id = Uuid::now_v7().to_string();

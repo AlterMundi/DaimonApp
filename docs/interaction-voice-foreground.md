@@ -163,8 +163,12 @@ without invoking a model.
 
 `dashboard/native_dialogue.py` implements the dedicated Gemini3.8Live transport;
 ordinary `TranscriptionStream`, Sol configuration and Qwen rendering are unchanged.
-The transport uses native automatic activity detection and concurrent PCM input,
-audio output, captions and nonblocking integrator proposals. It has no native
+The transport requires explicit `manual` or `automatic` activity ownership and
+supports concurrent PCM input, audio output, captions and nonblocking integrator
+proposals. Manual start/end are bridge-owned acoustic events, never text captions;
+provider acknowledgments of those events are labelled separately from automatic
+voice detection. Stopping a microphone closes its active manual activity or sends
+the documented automatic-mode `audioStreamEnd`. It has no native
 submission, worker, storage, reconnect or automatic retry capability. Proposals
 carry an assistant formulation and bounded original IDs; only the owning bridge
 can validate their actual retained source/actor/binding and admit work.
@@ -187,6 +191,32 @@ conversation continuity belongs to the existing durable source/result bridge,
 not automatic replay. Synthetic socket regressions cover concurrent speech while
 a tool is pending, interruption, once-only uncertain returns and resource bounds;
 they establish no real audio-input, native admission, avatar or phone acceptance.
+
+## Actual audio-input qualification —1November2026
+
+The synthetic audio-input journey did not establish automatic end-of-phrase:
+setup succeeded, but continuous PCM and silence produced no transcript, activity
+or output before the finite deadline. Documented microphone-stop handling and
+the official SDK's outer message spelling did not resolve that observation.
+Explicitly enabling automatic detection likewise produced no response. Those
+outcomes remain retained failures, not fluency or provider-wide capability claims.
+
+A distinct diagnostic using the supported manual activity protocol did produce
+an input transcript, provider activity acknowledgments and native PCM with the
+matching arithmetic answer. Its first audio arrived674ms after the explicit
+microphone-stop signal; the entire synthetic session lasted12.323seconds. This
+is a protocol/audio-intake observation, not independently heard speech or a
+measurement from a natural intended pause. No human recording or Sol/native
+work admission was used. The provider transcript omitted the synthetic greeting;
+retain original audio and label its transcript as an automatic interpretation,
+never assume that transcription alone preserves the entire spoken original.
+
+The first source/capture bridge must therefore use explicit, owned acoustic
+activities for the observed manual protocol, with the existing detector and its
+actual offsets. Keep audio generation independent of final file ASR, Sol work
+and separate TTS. The automatic provider mode remains unqualified. Device end
+of phrase, echo/noise, interruption and useful latency still require an integrated
+journey; successful explicit start/end cannot close those acceptance items.
 
 ## Bounds and acceptance
 

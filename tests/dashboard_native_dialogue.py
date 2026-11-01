@@ -30,7 +30,8 @@ class Dialogue(unittest.TestCase):
         self.socket=Socket();self.openings=[];self.now=0
         def connect(endpoint, **kwargs):
             self.openings.append((endpoint, kwargs));return self.socket
-        self.stream=NativeDialogue(self.key,connect=connect,clock=lambda:self.now)
+        self.connect=connect
+        self.stream=NativeDialogue(self.key,activity_mode="automatic",connect=connect,clock=lambda:self.now)
         self.original=str(uuid.uuid4())
     def tearDown(self):self.stream.close();self.tmp.cleanup()
     def event(self, value):
@@ -46,7 +47,7 @@ class Dialogue(unittest.TestCase):
         setup=self.socket.sent[0]['setup']
         self.assertEqual(setup['generationConfig']['responseModalities'],['AUDIO'])
         self.assertEqual(setup['tools'][0]['functionDeclarations'][0]['behavior'],'NON_BLOCKING')
-        self.assertNotIn('realtimeInputConfig',setup,'Use native activity detection rather than the old detector/final-ASR gate')
+        self.assertEqual(setup['realtimeInputConfig'],{'automaticActivityDetection':{'disabled':False}},'Explicit native detection rather than the old detector/final-ASR gate')
         self.assertEqual(self.openings[0][1]['redirect_limit'],0)
         self.ready();self.stream.append(b'\0\0'*320)
         proposal=self.event(self.proposal())[0]
@@ -62,6 +63,33 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(reply['response']['scheduling'],'WHEN_IDLE')
         with self.assertRaises(ValueError):self.stream.tool_result('call-1',{'status':'completed'})
         self.assertEqual(self.stream.tools['call-1']['state'],'response_sent')
+    def test_stopped_microphone_is_signalled_without_closing_or_reconnecting(self):
+        self.ready();self.stream.append(b'\0\0');self.stream.end_input()
+        self.assertEqual(self.socket.sent[-1],{'realtimeInput':{'audioStreamEnd':True}})
+        self.stream.append(b'\1\0')
+        self.assertEqual(self.stream.phase,'ready');self.assertEqual(len(self.openings),1)
+    def test_manual_native_audio_requires_owned_acoustic_boundaries(self):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='manual',connect=self.connect,clock=lambda:self.now)
+        self.assertEqual(self.socket.sent[-1]['setup']['realtimeInputConfig'],
+                         {'automaticActivityDetection':{'disabled':True}})
+        self.ready()
+        with self.assertRaises(ValueError):self.stream.append(b'\0\0')
+        self.stream.activity_start();self.stream.append(b'\1\0')
+        with self.assertRaises(ValueError):self.stream.activity_start()
+        self.stream.activity_end()
+        self.assertEqual(self.socket.sent[-1],{'realtimeInput':{'activityEnd':{}}})
+        with self.assertRaises(ValueError):self.stream.activity_end()
+        activity=self.event({'voiceActivity':{'type':'ACTIVITY_END','audioOffset':'1s'}})[0]
+        self.assertEqual(activity['source'],'provider_manual_activity_ack')
+        self.stream.activity_start();self.stream.end_input()
+        self.assertFalse(self.stream.input_active)
+        count=len(self.socket.sent);self.stream.end_input();self.assertEqual(len(self.socket.sent),count)
+    def test_native_activity_is_exposed_with_its_audio_offset(self):
+        self.ready()
+        self.assertEqual(self.event({'voiceActivity':{'type':'ACTIVITY_END','audioOffset':'2.25s'}}),
+                         [{'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':'2.25s','source':'provider_automatic_activity'}])
+        self.assertEqual(len(self.socket.sent),1)
     def test_transcripts_are_not_final_original_or_implicit_admission(self):
         self.ready()
         items=self.event({'serverContent':{'interimInputTranscription':{'text':'A draft'},

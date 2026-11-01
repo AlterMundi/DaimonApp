@@ -29,7 +29,11 @@ class NativeDialogue:
     max_tools = 32
     max_pending = 4
 
-    def __init__(self, credential_file, *, connect=None, clock=time.monotonic):
+    def __init__(self, credential_file, *, activity_mode, connect=None, clock=time.monotonic):
+        if activity_mode not in ('manual', 'automatic'):
+            raise ValueError('Select explicit native activity ownership')
+        self.activity_mode = activity_mode
+        self.input_active = False
         token = private_bytes(credential_file, 16384).decode().strip()
         if not token or any(c.isspace() for c in token):
             raise ValueError('Native dialogue credential unavailable')
@@ -54,6 +58,7 @@ class NativeDialogue:
                 'model': 'models/' + self.model,
                 'generationConfig': {'responseModalities': ['AUDIO'], 'maxOutputTokens': 512},
                 'inputAudioTranscription': {}, 'outputAudioTranscription': {},
+                'realtimeInputConfig': {'automaticActivityDetection': {'disabled': activity_mode == 'manual'}},
                 'systemInstruction': {'parts': [{'text':
                     'You are the fluent voice foreground of an existing integrating conversation. '
                     'Converse naturally in the human\'s language, clarify and formulate requests. '
@@ -101,6 +106,8 @@ class NativeDialogue:
         """Stream PCM16 mono16kHz without waiting for a native turn or ASR final."""
         with self._lock:
             self._active()
+            if self.activity_mode == 'manual' and not self.input_active:
+                raise ValueError('Start an owned acoustic activity before sending manual audio')
             if (not isinstance(pcm, bytes) or not pcm or len(pcm) % 2
                     or len(pcm) > 32000):
                 raise ValueError('Provide a bounded PCM16 frame')
@@ -109,6 +116,39 @@ class NativeDialogue:
             self.input_bytes += len(pcm)
             self._send({'realtimeInput': {'audio': {
                 'mimeType': 'audio/pcm;rate=16000', 'data': base64.b64encode(pcm).decode()}}})
+
+    def activity_start(self):
+        """Open a bridge-owned acoustic activity, never from a text caption."""
+        with self._lock:
+            self._active()
+            if self.activity_mode != 'manual' or self.input_active:
+                raise ValueError('Manual acoustic activity cannot be started here')
+            self.input_active = True
+            self._send({'realtimeInput': {'activityStart': {}}})
+
+    def activity_end(self):
+        """Close that acoustic activity without an ASR/Sol/TTS round trip."""
+        with self._lock:
+            self._active()
+            if self.activity_mode != 'manual' or not self.input_active:
+                raise ValueError('Manual acoustic activity is not active')
+            self.input_active = False
+            self._send({'realtimeInput': {'activityEnd': {}}})
+
+    def end_input(self):
+        """Signal a stopped microphone; this is not a synthetic phrase-end/VAD.
+
+        In manual mode, close only an already active acoustic activity. In
+        automatic mode, use the documented microphone-stop message. Neither
+        mode opens a replacement connection or admits native work.
+        """
+        with self._lock:
+            self._active()
+            if self.activity_mode == 'manual':
+                if self.input_active:
+                    self.activity_end()
+            else:
+                self._send({'realtimeInput': {'audioStreamEnd': True}})
 
     def tool_result(self, call_id, result):
         """Return one bridge-owned outcome; this method never invokes the bridge.
@@ -175,12 +215,21 @@ class NativeDialogue:
             if self.phase != 'opening' or not isinstance(value['setupComplete'], dict):
                 raise ValueError('Unexpected readiness')
             self.phase = 'ready'
-            events.append({'type': 'ready', 'model': self.model})
+            events.append({'type': 'ready', 'model': self.model, 'activity_mode': self.activity_mode})
         content = value.get('serverContent', {})
         calls = value.get('toolCall', {}).get('functionCalls', [])
         cancelled = value.get('toolCallCancellation', {}).get('ids', [])
-        if self.phase != 'ready' and (content or calls or cancelled):
+        if self.phase != 'ready' and (content or calls or cancelled or 'voiceActivity' in value):
             raise ValueError('Output before readiness')
+        if 'voiceActivity' in value:
+            activity = value['voiceActivity']
+            if (activity.get('type') not in ('ACTIVITY_START', 'ACTIVITY_END')
+                    or not isinstance(activity.get('audioOffset'), str)
+                    or len(activity['audioOffset']) > 32):
+                raise ValueError('Invalid native voice activity')
+            events.append({'type': 'voice_activity', 'activity': activity['type'],
+                           'audio_offset': activity['audioOffset'],
+                           'source': 'provider_manual_activity_ack' if self.activity_mode == 'manual' else 'provider_automatic_activity'})
         if content.get('interrupted'):
             events.append({'type': 'interrupted'})
         for field, kind in (('interimInputTranscription', 'input_caption'),
