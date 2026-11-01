@@ -52,7 +52,7 @@ window.NativeConversation=(()=>{
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
       try{control({type:'close'});socket?.close();}catch{}socket=undefined;
       if(context){void context.close().catch(()=>{});context=undefined;}
-      parts=[];bytes=0;retired.clear();latestOutput=undefined;state(message);void writing.finally(()=>onReview([...originals.values()]));
+      parts=[];bytes=0;retired.clear();latestOutput=undefined;if(originals.size)onHandoff({id:originals.keys().next().value,gate:'review'});state(message);void writing.finally(()=>onReview([...originals.values()]));
     }
     async function event(value,owned){
       if(stopped||owned!==epoch||binding!==getBinding())return;
