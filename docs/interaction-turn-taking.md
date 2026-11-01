@@ -567,3 +567,15 @@ interruption fences remain. A mounted regression fails before the change and
 checks that the announcement and following decision speak in order, once.
 The retained provider journey is not replayed; physical hearing and a complete
 post-fix provider journey remain separate acceptance gaps.
+
+## Useful live prefixes exclude standalone list markers —1 November2026
+
+The retained selected-provider journey first requested the frozen live range0–3
+containing only `1. `. Markdown speech projection rejected it as empty, and its
+transport ended incomplete before the useful range3–158 could start. The live
+selector now skips standalone ordered/bullet list-marker boundaries without
+consuming source characters. The first useful sentence includes its original
+marker and retains the same exact-prefix hash/canonical handover contract.
+Numeric content and long whole-word prefixes remain supported. This removes an
+observed empty request; it is not a measured provider speedup or proof that the
+remaining model-to-audio delay meets the latency target.

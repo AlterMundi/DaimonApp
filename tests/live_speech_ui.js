@@ -5,6 +5,17 @@ const deadline=setTimeout(()=>{throw Error("Live speech test did not settle");},
 (async()=>{
  const empty=context.window.LiveSpeech.mount();empty.unsent(undefined);
  const state=context.window.LiveSpeech.mount(),turn='native-turn',item='native-item',key={native_turn:turn,native_item:item};
+ const listed=context.window.LiveSpeech.mount();
+ listed.observe({...key,text:'1. **Mientras se prepara una página**, acá afinamos el texto'},'listed');
+ assert.equal(await listed.next(),undefined,'An ordered-list marker alone has no useful spoken text');
+ listed.observe({...key,text:'1. **Mientras se prepara una página**, acá afinamos el texto. Siguiente'},'listed');
+ const listedFirst=await listed.next();assert(listed.admit(listedFirst));
+ assert.equal(listedFirst.speech_start,0,'Skipping a structural boundary must not consume canonical characters');
+ assert.equal(listedFirst.preview,'1. **Mientras se prepara una página**, acá afinamos el texto. ');
+ assert.equal(listedFirst.id.split(':').at(-1),crypto.createHash('sha256').update(listedFirst.preview).digest('hex'));
+ const numberedAnswer=context.window.LiveSpeech.mount();numberedAnswer.observe({...key,text:'11 es el resultado. Siguiente'},'numeric');
+ assert.equal((await numberedAnswer.next()).preview,'11 es el resultado. ','Numeric content remains useful speech');
+
  state.observe({...key,text:'Hola Nicolás. Incomplete',provisional:true},'binding');
  const first=await state.next();assert(state.admit(first));assert.equal(first.speech_start,0);assert.equal(first.preview,'Hola Nicolás. ');
  assert.equal(await state.next(),undefined,'Incomplete text cannot become audible');
