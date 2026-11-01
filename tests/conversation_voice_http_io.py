@@ -186,8 +186,13 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         provider=Provider(config);binding=j.read('presentation','list','0','0')['result']['binding']
         data=audio();ident=str(uuid.uuid4());dialogue=str(uuid.uuid4())
         body={'binding':binding,'id':ident,'audio_sha256':hashlib.sha256(data).hexdigest(),'mime':'audio/wav','capture_questions':{}}
-        result=provider.conversation_voice_submit(body,data,foreground_dialogue=dialogue)
-        assert result['phase'] in ('preparing','foreground')
+        result=provider.conversation_voice_submit(body,data,foreground_dialogue=dialogue,defer_foreground=True)
+        assert result['phase']=='foreground_captured'
+        assert not (j.root/'completed-calls').exists() and not j.packets
+        later=str(uuid.uuid4())
+        provider.conversation_foreground_retain({'id':later,'binding':binding,'dialogue_id':dialogue,
+                                                'text':'Use the later scope correction.'})
+        provider.conversation_foreground_complete(ident,binding,dialogue)
         j.wait(lambda:provider.conversation_input_status(ident)['phase']=='foreground')
         saved=provider.conversation_input_status(ident)
         assert saved['voice']['transcription']['actual_transcriber']=='gemini-3.8-live'
@@ -199,13 +204,15 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         again=provider.conversation_voice_submit(body,data,foreground_dialogue=dialogue)
         assert not again['new_input'] and again['phase']=='foreground'
         assert (j.root/'completed-calls').read_text().splitlines()==['read']
-        delegated={'binding':binding,'id':ident,'intent_id':str(uuid.uuid4()),
-                   'formulation':'Resolve the selected synthetic request.','source_ids':[ident]}
+        delegated={'binding':binding,'id':later,'intent_id':str(uuid.uuid4()),
+                   'formulation':'Resolve the selected synthetic request with the later correction.','source_ids':[ident,later]}
         provider.conversation_foreground_delegate(delegated)
-        j.wait(lambda:provider.conversation_input_status(ident)['phase']=='accepted')
+        j.wait(lambda:provider.conversation_input_status(later)['phase']=='accepted')
         assert len(j.packets)==1
+        orders=j.row("SELECT event_id FROM original_ingress_order WHERE channel='conversation' ORDER BY id")
+        assert orders==[(ident,),(later,)],'Deferred transcript completion changed original capture order'
         text=j.packets[0][1]['input'][0]['text']
-        assert 'not verified written speech' in text and 'gemini-3.8-live' in text
+        assert saved['voice']['transcription']['interpretation'] in text and 'gemini-3.8-live' in text
         assert body['audio_sha256'] in text
         assert not provider.conversation_foreground_delegate(delegated)['new_input']
         assert len(j.packets)==1

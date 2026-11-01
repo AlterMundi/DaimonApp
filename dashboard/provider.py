@@ -540,6 +540,18 @@ class Provider:
         for source in body['source_ids']:self.input_id(source)
         return self.decorate_input(self.presentation('input foreground delegate '+json.dumps(body,ensure_ascii=False)))
 
+    def conversation_foreground_complete(self, ident, binding, dialogue):
+        """Read a now-completed receipt for the same retained acoustic original."""
+        self.input_id(ident);self.input_id(dialogue)
+        if not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding):
+            raise ValueError('Select the original foreground binding')
+        original=self.conversation_input_status(ident)
+        if original.get('foreground_dialogue')!=dialogue:
+            raise ValueError('Completed foreground original belongs to another dialogue')
+        value=self.decorate_input(self.presentation('input voice recover '+json.dumps({'id':ident,'binding':binding})))
+        self.retire_voice_capture(value)
+        return value
+
     def conversation_input_submit(self, body):
         if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files'}:
             raise ValueError('Select the conversation and provide one original message')
@@ -698,7 +710,7 @@ class Provider:
                        or not isinstance(v,str) or not re.fullmatch('[a-f0-9]{64}',v) for k,v in value.items())):
             raise ValueError('Invalid bounded capture question restriction')
 
-    def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None):
+    def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
         import re
         if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop'}:
             raise ValueError('Select one original voice recording')
@@ -706,6 +718,9 @@ class Provider:
         if foreground_dialogue is not None:
             self.input_id(foreground_dialogue)
             metadata={**metadata,'foreground_dialogue':foreground_dialogue}
+        if type(defer_foreground) is not bool or defer_foreground and foreground_dialogue is None:
+            raise ValueError('Deferred completion requires a foreground capture')
+        if defer_foreground:metadata={**metadata,'defer_foreground':True}
         if metadata.get('capture_stop') not in (None,'duration_limit','audio_flush_unconfirmed'):raise ValueError('Invalid recording stop reason')
         self.check_reply(metadata.get('reply'))
         self.check_playback(metadata.get('playback'))

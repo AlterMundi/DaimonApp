@@ -23,7 +23,7 @@ struct Submit {
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
     let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
         "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
-        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.phase=="foreground" {"not_requested"}else if input.phase=="accepted" {"observed"}else{"unconfirmed"},
+        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {"not_requested"}else if input.phase=="accepted" {"observed"}else{"unconfirmed"},
         "incorporation":"Not established by input retention or native acceptance"});
     if let Some(dialogue) = &input.foreground_dialogue {
         value["foreground_dialogue"] = json!(dialogue);
@@ -213,7 +213,10 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .shared
             .store
             .conversation_input_read(human, cfg.entry(), &selected.id)?;
-        if input.phase != "preparation_unconfirmed" {
+        if !matches!(
+            input.phase.as_str(),
+            "preparation_unconfirmed" | "foreground_captured"
+        ) {
             return response(app, &input, false);
         }
         let voice = input.voice.context("Original voice capture unavailable")?;
@@ -686,6 +689,8 @@ struct VoiceSubmit {
     binding: String,
     #[serde(default)]
     foreground_dialogue: Option<String>,
+    #[serde(default)]
+    defer_foreground: bool,
     id: String,
     audio_sha256: String,
     mime: String,
@@ -712,6 +717,9 @@ async fn voice_submit(
 ) -> Result<Value> {
     use crate::store::ConversationVoice;
     let request: VoiceSubmit = serde_json::from_str(body)?;
+    if request.defer_foreground && request.foreground_dialogue.is_none() {
+        bail!("Deferred completion requires a foreground capture");
+    }
     let mut config = app
         .shared
         .config
@@ -770,12 +778,15 @@ async fn voice_submit(
     } else {
         super::voice::snapshot(app).await
     };
-    let permit = app
-        .shared
-        .voice_preparations
-        .clone()
-        .try_acquire_owned()
-        .ok();
+    let permit = if request.defer_foreground {
+        None
+    } else {
+        app.shared
+            .voice_preparations
+            .clone()
+            .try_acquire_owned()
+            .ok()
+    };
     let _ingress = app.shared.conversation_ingress.lock().await;
     if recover && permit.is_none() {
         bail!("Voice preparation busy; recovery was not started");

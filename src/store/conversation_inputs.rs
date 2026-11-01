@@ -1021,7 +1021,7 @@ impl Store {
                 || super::maintenance_writer_held_on(&tx, entry)?
             {
                 if foreground_dialogue.is_some() && voice.is_some() {
-                    "preparation_unconfirmed"
+                    "foreground_captured"
                 } else {
                     "retained_unsent"
                 }
@@ -1068,11 +1068,13 @@ impl Store {
         {
             bail!("Recovery requires the same untranscribed voice original");
         }
-        if input.phase != "preparation_unconfirmed" {
+        let can_resume = input.phase == "preparation_unconfirmed"
+            || input.phase == "foreground_captured" && input.foreground_dialogue.is_some();
+        if !can_resume {
             return Ok((input, false));
         }
         input.phase = "preparing".into();
-        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase='preparing',instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='preparation_unconfirmed'",params![serde_json::to_string(&input)?,self.instance_id,id,human])?;
+        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase='preparing',instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase IN ('preparation_unconfirmed','foreground_captured')",params![serde_json::to_string(&input)?,self.instance_id,id,human])?;
         tx.commit()?;
         Ok((input, changed == 1))
     }
@@ -1945,7 +1947,7 @@ mod tests {
 
     #[test]
     fn foreground_voice_busy_capture_can_only_resume_its_same_preparation() {
-        let (_file, store, key, binding) = setup();
+        let (file, store, key, binding) = setup();
         let id = Uuid::now_v7().to_string();
         let (capture, _) = store
             .conversation_foreground_voice_capture(
@@ -1959,7 +1961,9 @@ mod tests {
                 Some(Default::default()),
             )
             .unwrap();
-        assert_eq!(capture.phase, "preparation_unconfirmed");
+        assert_eq!(capture.phase, "foreground_captured");
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         assert!(
             store
                 .conversation_voice_resume(100, key, &binding, &id)

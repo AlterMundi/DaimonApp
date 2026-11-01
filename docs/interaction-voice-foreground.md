@@ -170,6 +170,15 @@ receipt remains recoverable preparation, never a fallback model call or work
 admission. Native3.8 transcripts use the same source/hash/PCM-verified prepared
 receipt as the existing transcription providers.
 
+At the acoustic endpoint, the server can retain the exact WAV with
+`defer_foreground=True` before its provider transcript arrives. This records
+`foreground_captured` and receiver capture order without starting any reader or
+work. A later `conversation_foreground_complete` reads only the now-completed
+receipt for that same original/dialogue. Restart retains the captured source and
+its frozen question scope. A delayed transcript cannot move it after a later
+captured correction. Capacity-unavailable foreground preparation follows that
+same known-unsent capture path; no failed provider operation is retried.
+
 After committing that receiving-owned proof, the native capture moves to
 `foreground` and does not invoke routing, answer a question or submit a Sol turn.
 Explicit later delegation includes the voice proof in its frozen source context,
