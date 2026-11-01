@@ -112,7 +112,8 @@ window.Conversation = (() => {
       placeInspector();
     }
     const budgetView=$("#conversation-coordination"),budgetRefresh=$("#conversation-coordination-refresh"),budgetStatus=$("#conversation-coordination-status"),budgetEpisodes=$("#conversation-coordination-episodes");
-    let canBudgets=false,budgetLoading=false;
+    let canBudgets=false,budgetLoading=false,budgetControlBusy=false;
+    const pendingBudgetControls=new Map();
     const budgetLabels={paused:"Paused",expired:"Expired",not_started:"Not started",call_fuel_exhausted:"Call allowance exhausted",charge_exposure_unavailable:"Charge allowance reserved or insufficient",concurrency_full:"Concurrency limit reached",uncertain_exposure:"An earlier operation is unconfirmed",clock_untrusted:"Clock requires operator attention"};
     async function loadBudgets(){
       if(!canBudgets||budgetLoading)return;
@@ -139,7 +140,28 @@ window.Conversation = (() => {
           }
           card.append(accounts);
           if(episode.notice){const notice=node("p","Earlier allowance notice. Check the current balances above; reservations may have changed.","note");notice.dataset.noticeId=episode.notice.id;card.append(notice);}
-          card.append(node("p","Read only. These observations do not start work or change its limits.","note"));budgetEpisodes.append(card);
+          const root=episode.accounts.find(account=>account.kind==="episode"&&account.account_id===episode.id);
+          if(value.can_control===true&&Number.isSafeInteger(root?.control_revision)&&root.control_revision>=0){
+            const button=node("button",pendingBudgetControls.has(episode.id)?"Check previous control":root.paused?"Resume coordination":"Pause new coordination");button.type="button";
+            button.disabled=budgetControlBusy;
+            button.addEventListener("click",async()=>{
+              if(budgetControlBusy||!canBudgets||fileCredential()!==authority)return;
+              if(!pendingBudgetControls.has(episode.id)&&pendingBudgetControls.size>=8){budgetStatus.textContent="Check the retained controls before selecting another episode.";return;}
+              const body=pendingBudgetControls.get(episode.id)||{nonce:crypto.randomUUID(),account_id:episode.id,expected_revision:root.control_revision,paused:!root.paused};
+              pendingBudgetControls.set(episode.id,body);budgetControlBusy=true;button.disabled=true;
+              budgetStatus.textContent="Recording coordination control…";
+              try{
+                const outcome=await api("interaction/coordination/control",body);
+                if(fileCredential()!==authority)return;
+                if(outcome.state==="confirmed"||outcome.state==="rejected")pendingBudgetControls.delete(episode.id);
+                budgetControlBusy=false;await loadBudgets();
+                budgetStatus.textContent=outcome.state==="confirmed"?"Control recorded. Pausing blocks new work; resuming does not start or repeat work.":outcome.state==="rejected"?"Control rejected. Refresh the current allowance and its authority.":"Control outcome is unconfirmed. Check the same action before another control.";
+              }catch(error){if(fileCredential()===authority){button.textContent="Check previous control";budgetStatus.textContent="Control outcome is unconfirmed. Check the same action before another control.";}}
+              finally{budgetControlBusy=false;button.disabled=false;}
+            });
+            card.append(button,node("p","Pause blocks new coordination. It does not stop an active call or change the allowance.","note"));
+          }else card.append(node("p","Read only. These observations do not start work or change its limits.","note"));
+          budgetEpisodes.append(card);
         }
         budgetStatus.textContent="Current budget observation. Refresh to read again.";
       }catch(error){budgetEpisodes.replaceChildren();budgetStatus.textContent="Budgets are unavailable. The conversation can continue.";}
