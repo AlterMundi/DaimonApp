@@ -31,7 +31,8 @@ public final class FocusProbeActivity extends Activity {
         private AudioFocusRequest focus;
         private AudioTrack track;
         private boolean paused;
-        private int losses, gains, pausedHead;
+        private int losses, gains, pausedHead, initialState;
+        private String failure = "";
         private final Runnable tick = new Runnable() {
             @Override public void run() { if (track != null) { emit("position", 0); handler.postDelayed(this, 50); } }
         };
@@ -59,11 +60,18 @@ public final class FocusProbeActivity extends Activity {
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(24000).setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                     .setBufferSizeInBytes(tone.length).setTransferMode(AudioTrack.MODE_STATIC).build();
-                if (track.getState() != AudioTrack.STATE_INITIALIZED || track.write(tone, 0, tone.length) != tone.length
+                // Static tracks report NO_STATIC_DATA until their first write.
+                initialState = track.getState();
+                if (initialState == AudioTrack.STATE_UNINITIALIZED || track.write(tone, 0, tone.length) != tone.length
+                        || track.getState() != AudioTrack.STATE_INITIALIZED
                         || track.setLoopPoints(0, 24000, -1) != AudioTrack.SUCCESS)
-                    throw new IllegalStateException("Probe track unavailable");
+                    throw new IllegalStateException("Probe track unavailable; initial state " + initialState);
                 track.play(); emit("ready", 0); handler.post(tick);
-            } catch (Exception error) { android.util.Log.e("DaimonFocusProbe", "Probe initialization failed", error); emit("error", 0); stopSelf(); }
+            } catch (Exception error) {
+                failure = error.getClass().getSimpleName() + ": " + String.valueOf(error.getMessage());
+                if (failure.length() > 300) failure = failure.substring(0, 300);
+                android.util.Log.e("DaimonFocusProbe", "Probe initialization failed", error); emit("error", 0); stopSelf();
+            }
         }
         private void changed(int change) {
             if (track == null) return;
@@ -75,10 +83,13 @@ public final class FocusProbeActivity extends Activity {
             }
         }
         private void emit(String phase, int change) {
+            if (!phase.equals("position")) android.util.Log.i("DaimonFocusProbe",
+                phase + " initial=" + initialState + " losses=" + losses + " gains=" + gains + " " + failure);
             sendBroadcast(new Intent("homes.dmn.interaction.focusprobe.STATE").setPackage("homes.dmn.interaction.pilot")
                 .putExtra("phase", phase).putExtra("uid", Process.myUid()).putExtra("change", change)
+                .putExtra("reason", failure).putExtra("initial_state", initialState)
                 .putExtra("losses", losses).putExtra("gains", gains).putExtra("paused_head", pausedHead)
-                .putExtra("head", track == null ? 0 : track.getPlaybackHeadPosition()), CONTROL);
+                .putExtra("head", track == null || track.getState() != AudioTrack.STATE_INITIALIZED ? 0 : track.getPlaybackHeadPosition()), CONTROL);
         }
         @Override public int onStartCommand(Intent intent, int flags, int id) { return START_NOT_STICKY; }
         @Override public IBinder onBind(Intent intent) { return null; }

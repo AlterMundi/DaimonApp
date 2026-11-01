@@ -20,3 +20,8 @@ the debug signer. CI installs the probe first, then calls the existing decoder
 helper with the app APK directory and probe APK path. Artifacts expire after
 one day; bounded logs retain seven days. Do not sign/distribute this as the
 Daimon client or infer YouTube Music/physical-device acceptance from OS callbacks.
+
+For MODE_STATIC, write the complete tone before requiring STATE_INITIALIZED;
+STATE_NO_STATIC_DATA before that write is valid. Startup errors carry their exact
+bounded reason to instrumentation, and a task-owned filtered logcat stream keeps
+ready/loss/gain events across later tests. It stops with the emulator trap.

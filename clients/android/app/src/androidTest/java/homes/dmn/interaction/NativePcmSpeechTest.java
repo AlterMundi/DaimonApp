@@ -84,7 +84,10 @@ public class NativePcmSpeechTest {
                 probeUid.set(value.getIntExtra("uid", -1));
                 losses.set(value.getIntExtra("losses", 0)); gains.set(value.getIntExtra("gains", 0));
                 head.set(value.getIntExtra("head", 0)); pausedHead.set(value.getIntExtra("paused_head", 0));
-                if (value.getStringExtra("phase").equals("error")) error.set("Separate focus probe failed; inspect logcat");
+                if (value.getStringExtra("phase").equals("error")) error.set("Separate focus probe failed: " + value.getStringExtra("reason"));
+                if (!value.getStringExtra("phase").equals("position")) android.util.Log.i("DaimonFocusTest",
+                    value.getStringExtra("phase") + " uid=" + probeUid.get() + " initial=" + value.getIntExtra("initial_state", -1)
+                    + " losses=" + losses.get() + " gains=" + gains.get() + " head=" + head.get() + " paused=" + pausedHead.get());
                 if (value.getStringExtra("phase").equals("paused")) {
                     int change = value.getIntExtra("change", 0);
                     if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
