@@ -139,6 +139,10 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             'original_ids':[ident],'formulation':'Please prepare the proposal.'}))
         await self.results(1)
         self.assertTrue(self.stream.continuations[0]);self.assertFalse(task.done())
+        initial=self.stream.results[0][1]
+        self.assertEqual(initial['recipient'],'integrating_conversation')
+        self.assertEqual(initial['worker_delivery'],'not_established_by_this_receipt')
+        self.assertEqual(initial['native_acceptance'],'pending')
         source=self.source();source['kind']='question'
         self.owner.parts[source['id']]={'id':source['id'],'revision':source['revision'],
             'entry_binding':[1,2],'kind':'native_question','text':'Which ordering?','current':True}
@@ -149,6 +153,8 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         admitted=await self.bridge.tool({'type':'delegation_proposed','call_id':'answer',
             'original_ids':[answer],'formulation':'The human selected preparation time.'})
         self.assertEqual(admitted['kind'],'integrator_admission')
+        self.assertEqual(admitted['recipient'],'integrating_conversation')
+        self.assertEqual(admitted['worker_delivery'],'not_established_by_this_receipt','A follow-up answer admission is not a worker receipt either')
         self.assertEqual(len(self.owner.delegations),2)
         final={'id':'native:124','revision':'c'*64,'kind':'result'}
         self.owner.parts[final['id']]={'id':final['id'],'revision':final['revision'],
