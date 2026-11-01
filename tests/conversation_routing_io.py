@@ -82,6 +82,8 @@ topic_id=8
 
     def answer_worker(self, topic, text, *, item=None, finish=True, phase="final_answer"):
         native = self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?', (topic,))[0][0]
+        # A durable queued instruction precedes the simulated peer's native ACK.
+        self.wait(lambda: native in self.workers)
         rows = self.instructions(topic)
         requests = sorted({request for _, _, doc in rows for request in json.loads(doc)['requests']})
         claim = {'requests': requests, 'covered': [row[0] for row in rows], 'completed': requests}
