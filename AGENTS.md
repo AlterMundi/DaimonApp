@@ -164,7 +164,10 @@ current development/qualification state and compatible-writer rollback.
 
 CI scope follows the owning implementation: browser voice/timing and Python
 preparation retain the always-run dashboard/speech suites, not unchanged Rust
-optional-ASR builds. Native source/test, compiler/dependency and relevant workflow
+optional-ASR builds. The optional implementation lives in `src/transcribe.rs` and
+uses `AttachmentTranscript` from `src/models.rs`; generic `src/voice.rs` source
+proof/envelope changes retain text/native qualification without rebuilding the
+unchanged optional recognizer. Native source/test, compiler/dependency and relevant workflow
 changes retain their native checks. In particular timing_ui.js is exercised by
 the dashboard job. Reuse exact unchanged native source qualification when shipping
 a web-only delta; do not turn a filename containing voice into native evidence.

@@ -21,10 +21,15 @@ struct Submit {
 }
 
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
-    json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
+    let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
         "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
-        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.phase=="accepted" {"observed"}else{"unconfirmed"},
-        "incorporation":"Not established by input retention or native acceptance"})
+        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {"not_requested"}else if input.phase=="accepted" {"observed"}else{"unconfirmed"},
+        "incorporation":"Not established by input retention or native acceptance"});
+    if let Some(dialogue) = &input.foreground_dialogue {
+        value["foreground_dialogue"] = json!(dialogue);
+        value["foreground_delegation"] = json!(input.foreground_delegation);
+    }
+    value
 }
 
 fn response(app: &App, input: &ConversationInput, fresh: bool) -> Result<Value> {
@@ -124,6 +129,65 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("foreground retain ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Retain {
+            binding: String,
+            id: String,
+            text: String,
+            dialogue_id: String,
+            #[serde(default)]
+            capture_questions: Option<std::collections::BTreeMap<String, String>>,
+        }
+        let selected: Retain = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let (input, fresh) = app.shared.store.conversation_foreground_capture(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.text,
+            &selected.dialogue_id,
+            selected.capture_questions,
+        )?;
+        // Retention never calls deliver/submit, selects a worker or answers work.
+        return response(app, &input, fresh);
+    }
+    if let Some(body) = args.strip_prefix("foreground delegate ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Delegate {
+            binding: String,
+            id: String,
+            intent_id: String,
+            formulation: String,
+            source_ids: Vec<String>,
+        }
+        let selected: Delegate = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let (input, fresh) = app.shared.store.conversation_foreground_delegate(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.intent_id,
+            &selected.formulation,
+            &selected.source_ids,
+        )?;
+        if fresh {
+            // Bypass voice-selected routing and automatic question answers.
+            // Only the existing integrator decides downstream work.
+            submit(app.clone(), input.clone()).await?;
+        }
+        return response(
+            app,
+            &app.shared
+                .store
+                .conversation_input_read(human, cfg.entry(), &input.id)?,
+            fresh,
+        );
+    }
     if args == "voice capabilities" {
         let mut result = app
             .shared
@@ -149,12 +213,18 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .shared
             .store
             .conversation_input_read(human, cfg.entry(), &selected.id)?;
-        if input.phase != "preparation_unconfirmed" {
+        if !matches!(
+            input.phase.as_str(),
+            "preparation_unconfirmed" | "foreground_captured"
+        ) {
             return response(app, &input, false);
         }
         let voice = input.voice.context("Original voice capture unavailable")?;
-        let payload = json!({"binding":selected.binding,"id":selected.id,
+        let mut payload = json!({"binding":selected.binding,"id":selected.id,
             "audio_sha256":voice.audio_sha256,"mime":voice.mime,"capture_stop":voice.capture_stop,"files":input.files,"visual":input.visual,"reply":input.reply,"playback":input.playback,"capture_questions":input.capture_questions});
+        if let Some(dialogue) = input.foreground_dialogue {
+            payload["foreground_dialogue"] = json!(dialogue);
+        }
         return voice_submit(app, human, cfg.entry(), &payload.to_string(), true).await;
     }
     if let Some(body) = args.strip_prefix("retry ") {
@@ -617,6 +687,10 @@ fn enqueue(
 #[serde(deny_unknown_fields)]
 struct VoiceSubmit {
     binding: String,
+    #[serde(default)]
+    foreground_dialogue: Option<String>,
+    #[serde(default)]
+    defer_foreground: bool,
     id: String,
     audio_sha256: String,
     mime: String,
@@ -643,13 +717,16 @@ async fn voice_submit(
 ) -> Result<Value> {
     use crate::store::ConversationVoice;
     let request: VoiceSubmit = serde_json::from_str(body)?;
+    if request.defer_foreground && request.foreground_dialogue.is_none() {
+        bail!("Deferred completion requires a foreground capture");
+    }
     let mut config = app
         .shared
         .config
         .voice
         .clone()
         .context("Voice input is not configured")?;
-    if recover {
+    if recover || request.foreground_dialogue.is_some() {
         config.transcription_command = config
             .completed_transcription_command
             .clone()
@@ -696,30 +773,57 @@ async fn voice_submit(
     {
         super::conversation_requests::validate_reply(app, human, request.reply.as_ref()).await?;
     }
-    let interruption_targets = super::voice::snapshot(app).await;
-    let permit = app
-        .shared
-        .voice_preparations
-        .clone()
-        .try_acquire_owned()
-        .ok();
+    let interruption_targets = if request.foreground_dialogue.is_some() {
+        Default::default()
+    } else {
+        super::voice::snapshot(app).await
+    };
+    let permit = if request.defer_foreground {
+        None
+    } else {
+        app.shared
+            .voice_preparations
+            .clone()
+            .try_acquire_owned()
+            .ok()
+    };
     let _ingress = app.shared.conversation_ingress.lock().await;
     if recover && permit.is_none() {
         bail!("Voice preparation busy; recovery was not started");
     }
-    let (mut input, mut fresh) = app.shared.store.conversation_voice_capture_files(
-        human,
-        entry,
-        &request.binding,
-        &request.id,
-        voice,
-        permit.is_some(),
-        request.reply,
-        request.visual,
-        request.playback,
-        request.capture_questions,
-        request.files,
-    )?;
+    let (mut input, mut fresh) = if let Some(dialogue) = request.foreground_dialogue.as_ref() {
+        if request.reply.is_some()
+            || request.visual.is_some()
+            || request.playback.is_some()
+            || !request.files.is_empty()
+        {
+            bail!("Foreground capture metadata must come from its own acoustic activity");
+        }
+        app.shared.store.conversation_foreground_voice_capture(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+            voice,
+            permit.is_some(),
+            dialogue,
+            request.capture_questions,
+        )?
+    } else {
+        app.shared.store.conversation_voice_capture_files(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+            voice,
+            permit.is_some(),
+            request.reply,
+            request.visual,
+            request.playback,
+            request.capture_questions,
+            request.files,
+        )?
+    };
     if recover {
         (input, fresh) = app.shared.store.conversation_voice_resume(
             human,
@@ -763,7 +867,9 @@ async fn voice_submit(
                     // can finish exact cleanup without repeating ASR or work.
                     tracing::warn!("Committed conversation voice cleanup deferred");
                 }
-                if let Err(error) = deliver(&worker, ready, None).await {
+                if ready.foreground_dialogue.is_none()
+                    && let Err(error) = deliver(&worker, ready, None).await
+                {
                     worker
                         .shared
                         .store

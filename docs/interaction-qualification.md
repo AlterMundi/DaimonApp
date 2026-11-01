@@ -32,6 +32,15 @@ replace the live binary. Known-unadmitted preparation can continue once after
 reconciling the qualified artifact; retain its failed preimage and prohibit replay
 when any original/provider/native admission is uncertain.
 
+Synthetic native peers must not publish completion merely because a
+`turn/start` packet arrived. The late-artifact qualifier now waits for the
+matching retained `native_collections.first_turn` in the running local turn,
+then emits its synthetic answer/completion. Delaying the fake ACK/start by250ms
+reproduced the old verifier failure; the same compiled CI executable passes when
+the qualifier waits for that actual start. Keep the artifact cooldown/retention
+checks intact. This is fixture synchronization, not a new product repair or
+permission to replay native work.
+
 ## Complete visible message text
 
 Visible canonical answers remain eligible for the bounded text reader when a

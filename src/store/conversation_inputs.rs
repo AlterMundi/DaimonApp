@@ -55,6 +55,27 @@ impl ConversationPlayback {
     }
 }
 
+/// Frozen human sources and separately attributed assistant formulation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForegroundSource {
+    pub id: String,
+    pub capture_order: i64,
+    pub text: String,
+    pub text_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<ConversationVoice>,
+    pub question_versions: Option<std::collections::BTreeMap<String, String>>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForegroundDelegation {
+    pub intent_id: String,
+    pub dialogue_id: String,
+    pub formulation: String,
+    pub sources: Vec<ForegroundSource>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationInput {
     pub id: String,
@@ -64,6 +85,12 @@ pub struct ConversationInput {
     pub native: String,
     pub epoch: String,
     pub text: String,
+    /// Retained voice-layer exchange, separate from an admitted work request.
+    /// The identifier groups originals; it is not provider or execution authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_dialogue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_delegation: Option<ForegroundDelegation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visual: Option<crate::visual::VisualSelection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -128,9 +155,16 @@ impl ConversationVoice {
     }
 }
 impl ConversationInput {
+    pub fn foreground_context(&self) -> String {
+        self.foreground_delegation.as_ref().map_or_else(String::new, |value| format!(
+            "[Voice foreground formulation]\n{}\nThe formulation is an assistant-authored derivative of these exact retained human originals, not a human quotation, extra authority or completed work. Source text and chronology remain authoritative; incorporate later human corrections. This request is delegated to the existing integrator, which owns routing and final return. Ordinary foreground conversation does not start worker tasks.\n\n",
+            serde_json::to_string(value).expect("typed foreground delegation")))
+    }
+
     pub fn rendered(&self) -> String {
         let text = format!(
-            "{}{}",
+            "{}{}{}",
+            self.foreground_context(),
             self.visual
                 .as_ref()
                 .map(|v| v.rendered())
@@ -335,6 +369,13 @@ fn trace_original_on(
 }
 
 pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
+    if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {
+        bail!("Foreground conversation has not been delegated as work");
+    }
+    eligible_binding_on(conn, input)
+}
+
+fn eligible_binding_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
     let (session, native) = super::presentation::entry_on(conn, input.human, input.entry)?;
     if input.retired
         || session != input.session
@@ -629,6 +670,234 @@ impl Store {
         capture_questions: Option<std::collections::BTreeMap<String, String>>,
         files: Vec<crate::files::FileReference>,
     ) -> Result<(ConversationInput, bool)> {
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            voice,
+            can_prepare,
+            reply,
+            visual,
+            playback,
+            capture_questions,
+            files,
+            None,
+        )
+    }
+
+    /// Preserve a completed foreground transcript without starting native work.
+    /// A later, separately admitted formulation must retain these exact sources.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_capture(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        text: &str,
+        dialogue_id: &str,
+        capture_questions: Option<std::collections::BTreeMap<String, String>>,
+    ) -> Result<(ConversationInput, bool)> {
+        if Uuid::parse_str(dialogue_id)
+            .ok()
+            .is_none_or(|v| v.to_string() != dialogue_id)
+        {
+            bail!("Invalid foreground dialogue identity");
+        }
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            None,
+            true,
+            None,
+            None,
+            None,
+            capture_questions,
+            Vec::new(),
+            Some(dialogue_id.into()),
+        )
+    }
+
+    /// Foreground audio uses the existing source-bound completed-transcript reader,
+    /// but completion retains conversation instead of dispatching native work.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_voice_capture(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        voice: ConversationVoice,
+        can_prepare: bool,
+        dialogue_id: &str,
+        capture_questions: Option<std::collections::BTreeMap<String, String>>,
+    ) -> Result<(ConversationInput, bool)> {
+        if Uuid::parse_str(dialogue_id)
+            .ok()
+            .is_none_or(|v| v.to_string() != dialogue_id)
+        {
+            bail!("Invalid foreground dialogue identity");
+        }
+        voice.validate()?;
+        if voice.transcription.is_some() {
+            bail!("Transcription is receiving-owned");
+        }
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            "",
+            Some(voice),
+            can_prepare,
+            None,
+            None,
+            None,
+            capture_questions,
+            Vec::new(),
+            Some(dialogue_id.into()),
+        )
+    }
+
+    /// Admit one immutable formulation directly to the integrator, never a
+    /// voice-selected worker. Exact retries observe; uncertain work is not replayed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_delegate(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        intent_id: &str,
+        formulation: &str,
+        source_ids: &[String],
+    ) -> Result<(ConversationInput, bool)> {
+        use sha2::{Digest, Sha256};
+        if Uuid::parse_str(intent_id)
+            .ok()
+            .is_none_or(|v| v.to_string() != intent_id)
+            || formulation.trim().is_empty()
+            || formulation.len() > 8192
+            || formulation.contains('\0')
+            || source_ids.is_empty()
+            || source_ids.len() > 8
+            || source_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != source_ids.len()
+            || !source_ids.iter().any(|source| source == id)
+        {
+            bail!("Invalid bounded foreground formulation");
+        }
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, native) = super::presentation::entry_on(&tx, human, entry)?;
+        if binding != super::presentation::entry_binding(&tx, human, entry, session)? {
+            bail!("Selected conversation changed before foreground delegation");
+        }
+        let mut input = read_on(&tx, id, human)?;
+        if input.entry != entry || input.session != session || input.native != native {
+            bail!("Foreground original belongs to another conversation");
+        }
+        if let Some(old) = &input.foreground_delegation {
+            let mut selected = source_ids.to_vec();
+            selected.sort();
+            let mut retained = old.sources.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+            retained.sort();
+            if old.intent_id != intent_id || old.formulation != formulation || selected != retained
+            {
+                bail!("Foreground delegation identity is immutable");
+            }
+            return Ok((input, false));
+        }
+        let dialogue = input
+            .foreground_dialogue
+            .clone()
+            .context("Not a foreground original")?;
+        if input.phase != "foreground" {
+            bail!("Foreground original already has an admission outcome");
+        }
+        eligible_binding_on(&tx, &input)?;
+        let duplicate:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs WHERE json_extract(doc,'$.foreground_delegation.intent_id')=?1)",[intent_id],|r|r.get(0))?;
+        if duplicate {
+            bail!("Foreground delegation identity is already retained");
+        }
+        let mut sources = Vec::new();
+        let mut size = 0;
+        for source_id in source_ids {
+            let original = read_on(&tx, source_id, human)?;
+            eligible_binding_on(&tx, &original)?;
+            if original.entry != entry
+                || original.session != session
+                || original.native != native
+                || original.foreground_dialogue.as_ref() != Some(&dialogue)
+            {
+                bail!("Foreground source crosses dialogue or original ownership");
+            }
+            size += original.text.len();
+            if size > 65536 {
+                bail!("Foreground source context exceeds bound");
+            }
+            let order:i64=tx.query_row("SELECT id FROM original_ingress_order WHERE channel='conversation' AND event_id=?1",[source_id],|r|r.get(0))?;
+            sources.push(ForegroundSource {
+                id: original.id,
+                capture_order: order,
+                text_sha256: format!("{:x}", Sha256::digest(original.text.as_bytes())),
+                text: original.text,
+                voice: original.voice,
+                question_versions: original.question_versions,
+            });
+        }
+        sources.sort_by_key(|source| source.capture_order);
+        let latest:Option<String>=tx.query_row("SELECT x.id FROM conversation_inputs x JOIN original_ingress_order o ON o.channel='conversation' AND o.event_id=x.id WHERE x.human_id=?1 AND x.session_id=?2 AND json_extract(x.doc,'$.foreground_dialogue')=?3 ORDER BY o.id DESC LIMIT 1",params![human,session,dialogue],|r|r.get(0)).optional()?;
+        if sources.last().is_none_or(|source| source.id != id) || latest.as_deref() != Some(id) {
+            bail!("Foreground delegation must include the latest captured correction as its root");
+        }
+        input.foreground_delegation = Some(ForegroundDelegation {
+            intent_id: intent_id.into(),
+            dialogue_id: dialogue,
+            formulation: formulation.into(),
+            sources,
+        });
+        input.phase = "queued".into();
+        let doc = serde_json::to_string(&input)?;
+        // Keep the full retained outcome below the existing256KiB owner reply
+        // limit, including JSON escaping, rather than only counting raw text.
+        if doc.len() > 192 * 1024 {
+            bail!("Encoded foreground source context exceeds owner reply bound");
+        }
+        select_return_on(&tx, human, &input.native, &input.id)?;
+        let changed=tx.execute("UPDATE conversation_inputs SET phase='queued',doc=?1,instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='foreground'",params![doc,self.instance_id,id,human])?;
+        if changed != 1 {
+            bail!("Foreground delegation admission changed");
+        }
+        tx.commit()?;
+        Ok((input, true))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_original_mode(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        text: &str,
+        voice: Option<ConversationVoice>,
+        can_prepare: bool,
+        reply: Option<ConversationReply>,
+        visual: Option<crate::visual::VisualSelection>,
+        playback: Option<ConversationPlayback>,
+        capture_questions: Option<std::collections::BTreeMap<String, String>>,
+        files: Vec<crate::files::FileReference>,
+        foreground_dialogue: Option<String>,
+    ) -> Result<(ConversationInput, bool)> {
         if Uuid::parse_str(id)
             .ok()
             .is_none_or(|uuid| uuid.to_string() != id)
@@ -642,7 +911,7 @@ impl Store {
             value.validate()?;
         }
         if let Some(versions) = &capture_questions {
-            if voice.is_none()
+            if (voice.is_none() && foreground_dialogue.is_none())
                 || versions.len() > 32
                 || versions.iter().any(|(id, version)| {
                     id.len() != 32
@@ -670,6 +939,7 @@ impl Store {
         if existing {
             let input = read_on(&tx, id, human)?;
             if input.entry != entry
+                || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
                 || input.reply != reply
@@ -733,6 +1003,8 @@ impl Store {
             native,
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
+            foreground_dialogue: foreground_dialogue.clone(),
+            foreground_delegation: None,
             visual,
             files,
             question_versions: Some(question_versions),
@@ -742,11 +1014,17 @@ impl Store {
             playback,
             focus,
             routing: None,
-            phase: if !can_prepare
+            phase: if foreground_dialogue.is_some() && voice.is_none() {
+                "foreground"
+            } else if !can_prepare
                 || super::stopping::fenced_on(&tx, entry)?
                 || super::maintenance_writer_held_on(&tx, entry)?
             {
-                "retained_unsent"
+                if foreground_dialogue.is_some() && voice.is_some() {
+                    "foreground_captured"
+                } else {
+                    "retained_unsent"
+                }
             } else if voice.is_some() {
                 "preparing"
             } else {
@@ -780,7 +1058,7 @@ impl Store {
             bail!("Entry changed before voice recovery");
         }
         let mut input = read_on(&tx, id, human)?;
-        eligible_on(&tx, &input)?;
+        eligible_binding_on(&tx, &input)?;
         if input.entry != entry
             || input.session != session
             || input
@@ -790,11 +1068,13 @@ impl Store {
         {
             bail!("Recovery requires the same untranscribed voice original");
         }
-        if input.phase != "preparation_unconfirmed" {
+        let can_resume = input.phase == "preparation_unconfirmed"
+            || input.phase == "foreground_captured" && input.foreground_dialogue.is_some();
+        if !can_resume {
             return Ok((input, false));
         }
         input.phase = "preparing".into();
-        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase='preparing',instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='preparation_unconfirmed'",params![serde_json::to_string(&input)?,self.instance_id,id,human])?;
+        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase='preparing',instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase IN ('preparation_unconfirmed','foreground_captured')",params![serde_json::to_string(&input)?,self.instance_id,id,human])?;
         tx.commit()?;
         Ok((input, changed == 1))
     }
@@ -802,7 +1082,7 @@ impl Store {
     pub fn conversation_voice_validate(&self, human: i64, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = read_on(&conn, id, human)?;
-        eligible_on(&conn, &input)?;
+        eligible_binding_on(&conn, &input)?;
         if input.phase != "preparing" || input.voice.is_none() {
             bail!("Voice capture is not pending preparation");
         }
@@ -821,7 +1101,7 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let mut input = read_on(&tx, id, human)?;
-        eligible_on(&tx, &input)?;
+        eligible_binding_on(&tx, &input)?;
         let voice = input.voice.as_mut().context("Missing voice source")?;
         if input.phase != "preparing"
             || proof.capture_id.as_deref() != Some(id)
@@ -834,8 +1114,13 @@ impl Store {
         proof.capture_stop = voice.capture_stop.clone();
         voice.transcription = Some(proof);
         input.text = text.into();
-        input.phase = "retained".into();
-        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase='retained' WHERE id=?2 AND human_id=?3 AND phase='preparing' AND instance_id=?4",params![serde_json::to_string(&input)?,id,human,self.instance_id])?;
+        input.phase = if input.foreground_dialogue.is_some() {
+            "foreground"
+        } else {
+            "retained"
+        }
+        .into();
+        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase=?5 WHERE id=?2 AND human_id=?3 AND phase='preparing' AND instance_id=?4",params![serde_json::to_string(&input)?,id,human,self.instance_id,input.phase])?;
         if changed != 1 {
             bail!("Voice preparation instance changed");
         }
@@ -1094,12 +1379,16 @@ impl Store {
                 [id],
                 |r| r.get(0),
             )?;
-            items.push(serde_json::json!({
+            let mut item = serde_json::json!({
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
                 "phase":input.phase,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
                 "native_binding_current":input.native==native,
-            }));
+            });
+            if let Some(dialogue) = &input.foreground_dialogue {
+                item["foreground_dialogue"] = serde_json::json!(dialogue);
+            }
+            items.push(item);
         }
         Ok(
             serde_json::json!({"schema":"telecodex.conversation-input-list/v1",
@@ -1339,6 +1628,483 @@ mod tests {
             .unwrap()
             .to_string();
         (file, store, key, binding)
+    }
+
+    #[test]
+    fn foreground_originals_are_durable_but_not_work_admission() {
+        let (file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let dialogue = Uuid::now_v7().to_string();
+        let text = "Podemos afinar la idea mientras el otro trabajo continúa.";
+        let capture = || {
+            store.conversation_foreground_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                text,
+                &dialogue,
+                Some(Default::default()),
+            )
+        };
+        let (input, fresh) = capture().unwrap();
+        assert!(fresh);
+        assert_eq!(input.phase, "foreground");
+        assert_eq!(
+            input.foreground_dialogue.as_deref(),
+            Some(dialogue.as_str())
+        );
+        assert_eq!(input.text, text);
+        assert!(input.local_turn.is_none());
+        assert!(!capture().unwrap().1);
+        assert!(
+            store
+                .conversation_input_event(100, &id, ConversationInputEvent::Queue)
+                .is_err()
+        );
+        assert!(eligible_on(&store.conn.lock().unwrap(), &input).is_err());
+        assert!(
+            store
+                .conversation_input_capture(100, key, &binding, &id, text)
+                .is_err(),
+            "Ordinary submit cannot promote the same chatter original into work"
+        );
+        assert!(
+            store
+                .conversation_foreground_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    "A rewritten prompt",
+                    &dialogue,
+                    Some(Default::default())
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_foreground_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    text,
+                    &Uuid::now_v7().to_string(),
+                    Some(Default::default())
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM turns", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM original_ingress_order WHERE event_id=?1",
+                    [&id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        drop(store);
+        let reopened = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let saved = reopened.conversation_input_read(100, key, &id).unwrap();
+        assert_eq!(saved.phase, "foreground");
+        assert_eq!(saved.text, text);
+        assert_eq!(
+            saved.foreground_dialogue.as_deref(),
+            Some(dialogue.as_str())
+        );
+        assert!(
+            reopened
+                .conversation_input_event(100, &id, ConversationInputEvent::Queue)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn foreground_delegation_freezes_sources_and_observes_retries() {
+        let (file, store, key, binding) = setup();
+        let dialogue = Uuid::now_v7().to_string();
+        let first = Uuid::now_v7().to_string();
+        let last = Uuid::now_v7().to_string();
+        for (id, text) in [
+            (&first, "Build a report, without publishing."),
+            (&last, "Use the corrected number nineteen."),
+        ] {
+            store
+                .conversation_foreground_capture(
+                    100,
+                    key,
+                    &binding,
+                    id,
+                    text,
+                    &dialogue,
+                    Some(Default::default()),
+                )
+                .unwrap();
+        }
+        let intent = Uuid::now_v7().to_string();
+        let formulation = "Prepare the report using nineteen; keep it private.";
+        let sources = vec![last.clone(), first.clone()];
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &first,
+                    &intent,
+                    formulation,
+                    std::slice::from_ref(&first)
+                )
+                .is_err(),
+            "A newer correction cannot be omitted as the root"
+        );
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    "stale",
+                    &last,
+                    &intent,
+                    formulation,
+                    &sources
+                )
+                .is_err()
+        );
+        let other = Uuid::now_v7().to_string();
+        store
+            .conversation_foreground_capture(
+                100,
+                key,
+                &binding,
+                &other,
+                "Another dialogue",
+                &Uuid::now_v7().to_string(),
+                None,
+            )
+            .unwrap();
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &intent,
+                    formulation,
+                    &[last.clone(), other]
+                )
+                .is_err()
+        );
+        let (input, fresh) = store
+            .conversation_foreground_delegate(
+                100,
+                key,
+                &binding,
+                &last,
+                &intent,
+                formulation,
+                &sources,
+            )
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(input.phase, "queued");
+        assert_eq!(input.text, "Use the corrected number nineteen.");
+        let frozen = input.foreground_delegation.as_ref().unwrap();
+        assert_eq!(
+            frozen
+                .sources
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>(),
+            vec![first.clone(), last.clone()]
+        );
+        assert_eq!(
+            frozen.sources[0].text,
+            "Build a report, without publishing."
+        );
+        assert_eq!(frozen.sources[0].text_sha256.len(), 64);
+        assert!(input.rendered().contains("assistant-authored derivative"));
+        assert!(input.rendered().contains(formulation));
+        assert_eq!(
+            store
+                .conversation_input_read(100, key, &first)
+                .unwrap()
+                .phase,
+            "foreground"
+        );
+        assert!(
+            !store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &intent,
+                    formulation,
+                    &sources
+                )
+                .unwrap()
+                .1
+        );
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &intent,
+                    "Publish it instead.",
+                    &sources
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &Uuid::now_v7().to_string(),
+                    formulation,
+                    &sources
+                )
+                .is_err()
+        );
+        drop(store);
+        let reopened = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (saved, fresh) = reopened
+            .conversation_foreground_delegate(
+                100,
+                key,
+                &binding,
+                &last,
+                &intent,
+                formulation,
+                &sources,
+            )
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(saved.phase, "retained_unsent");
+        assert_eq!(saved.foreground_delegation, input.foreground_delegation);
+        assert!(saved.local_turn.is_none());
+    }
+
+    #[test]
+    fn encoded_foreground_context_cannot_overflow_the_owner_reply() {
+        let (_file, store, key, binding) = setup();
+        let dialogue = Uuid::now_v7().to_string();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let id = Uuid::now_v7().to_string();
+            store
+                .conversation_foreground_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    &"\u{0001}".repeat(16000),
+                    &dialogue,
+                    None,
+                )
+                .unwrap();
+            ids.push(id);
+        }
+        let root = ids.last().unwrap();
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    root,
+                    &Uuid::now_v7().to_string(),
+                    "Prepare the selected request",
+                    &ids
+                )
+                .is_err()
+        );
+        let retained = store.conversation_input_read(100, key, root).unwrap();
+        assert_eq!(retained.phase, "foreground");
+        assert!(retained.foreground_delegation.is_none());
+    }
+
+    #[test]
+    fn foreground_voice_busy_capture_can_only_resume_its_same_preparation() {
+        let (file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let (capture, _) = store
+            .conversation_foreground_voice_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                clip(),
+                false,
+                &Uuid::now_v7().to_string(),
+                Some(Default::default()),
+            )
+            .unwrap();
+        assert_eq!(capture.phase, "foreground_captured");
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(
+            store
+                .conversation_voice_resume(100, key, &binding, &id)
+                .unwrap()
+                .1
+        );
+        store.conversation_voice_validate(100, &id).unwrap();
+        let ready = store
+            .conversation_voice_commit(100, &id, "Completed original", voice_proof(&id))
+            .unwrap();
+        assert_eq!(ready.phase, "foreground");
+        assert!(ready.local_turn.is_none());
+    }
+
+    #[test]
+    fn foreground_voice_commit_preserves_receiving_proof_without_work() {
+        let (_file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let dialogue = Uuid::now_v7().to_string();
+        let voice = ConversationVoice {
+            audio_sha256: "a".repeat(64),
+            mime: "audio/wav".into(),
+            capture_stop: None,
+            transcription: None,
+        };
+        let (capture, fresh) = store
+            .conversation_foreground_voice_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                voice,
+                true,
+                &dialogue,
+                Some(Default::default()),
+            )
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(capture.phase, "preparing");
+        assert!(eligible_on(&store.conn.lock().unwrap(), &capture).is_err());
+        store.conversation_voice_validate(100, &id).unwrap();
+        let mut proof = voice_proof(&id);
+        proof.actual_transcriber = Some("gemini-3.8-live".into());
+        let retained = store
+            .conversation_voice_commit(100, &id, "Exact automatic interpretation", proof)
+            .unwrap();
+        assert_eq!(retained.phase, "foreground");
+        assert!(retained.local_turn.is_none());
+        assert!(store.conversation_input_event(100, &id, E::Queue).is_err());
+        let (delegated, _) = store
+            .conversation_foreground_delegate(
+                100,
+                key,
+                &binding,
+                &id,
+                &Uuid::now_v7().to_string(),
+                "An attributed derivative",
+                std::slice::from_ref(&id),
+            )
+            .unwrap();
+        let snapshot = &delegated.foreground_delegation.as_ref().unwrap().sources[0];
+        assert_eq!(snapshot.voice, retained.voice);
+        assert_eq!(snapshot.text, retained.text);
+        assert!(delegated.rendered().contains("not verified written speech"));
+    }
+
+    #[test]
+    fn foreground_sources_follow_integrator_routing_without_replacing_human_text() {
+        use crate::interaction::{InputReference, RequestRelation};
+        let (_file, store, entry, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let dialogue = Uuid::now_v7().to_string();
+        let original = "Yes, use the amended scope.";
+        store
+            .conversation_foreground_capture(100, entry, &binding, &id, original, &dialogue, None)
+            .unwrap();
+        let (delegated, _) = store
+            .conversation_foreground_delegate(
+                100,
+                entry,
+                &binding,
+                &id,
+                &Uuid::now_v7().to_string(),
+                "Prepare the selected private report.",
+                std::slice::from_ref(&id),
+            )
+            .unwrap();
+        let local = turn(&store, entry);
+        store
+            .conversation_input_event(
+                100,
+                &id,
+                E::Begin {
+                    local_turn: local,
+                    steer: false,
+                },
+            )
+            .unwrap();
+        store
+            .conversation_input_event(100, &id, E::Accepted { local_turn: local })
+            .unwrap();
+        let worker = SessionKey::new(100, Some(7));
+        let row = store
+            .ensure_session(worker, 100, &super::super::tests::defaults())
+            .unwrap();
+        store
+            .set_session_codex_thread(worker, "worker-native")
+            .unwrap();
+        let (mut source, _) = store
+            .interaction_entry_original(
+                entry,
+                100,
+                "entry-native",
+                &InputReference::Conversation(id),
+                "telegram:fixture",
+            )
+            .unwrap();
+        assert_eq!(source.text, original);
+        source.target_sessions = vec![row.id];
+        let admitted = store
+            .interaction_admit_entry_plan(
+                entry,
+                100,
+                "entry-native",
+                &source,
+                &[(worker, RequestRelation::New)],
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(admitted[0].0.text, original);
+        let provenance = store
+            .interaction_original_provenance(&admitted[0].0.id, 100)
+            .unwrap();
+        assert_eq!(
+            provenance["foreground_delegation"],
+            serde_json::to_value(delegated.foreground_delegation).unwrap()
+        );
+        assert_eq!(
+            provenance["foreground_delegation"]["sources"][0]["text"],
+            original
+        );
     }
 
     #[test]

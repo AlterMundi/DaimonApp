@@ -46,8 +46,10 @@ jobs:
           text_ci_changed = header_changed or workflow_job(current,'text') != workflow_job(previous,'text')
           text = common or text_ci_changed or any(p.startswith('src/') or p.startswith('tests/') and not p.startswith(('tests/activity','tests/dashboard','tests/conversation_ui.js','tests/live_speech_ui.js','tests/timing_ui.js','tests/markdown_ui.js','tests/companion_ui.js','tests/conversation_requests_ui.js','tests/microphone_ui.js','tests/voice_stream_ui.js','tests/visual_ui.js','tests/routing_graph_ui.js','tests/bot_traffic_io.py','tests/routing_eval.py','tests/speech_render.py','tests/interaction_asr.py','tests/turn_end.py','tests/capture_turn.py','tests/voice_mode_ui.js','tests/voice_session_ui.js','tests/presentation_io.py','tests/matrix_execution.py','tests/fixtures/routing-eval-')) for p in files)
           # Python/browser voice belongs to the always-run speech/dashboard gates.
-          # This job compiles the Rust optional transcription feature only.
-          audio = common or header_changed or workflow_job(current,'audio') != workflow_job(previous,'audio') or any((p.startswith('src/') or p.startswith('tests/') and p.endswith('.rs')) and any(word in p for word in ('audio','transcrib','voice')) for p in files)
+          # The optional implementation lives in transcribe.rs and consumes
+          # AttachmentTranscript from models.rs. Generic voice.rs envelopes
+          # are covered by text; they do not change the optional recognizer.
+          audio = common or header_changed or workflow_job(current,'audio') != workflow_job(previous,'audio') or any(p in {'src/transcribe.rs','src/models.rs'} or p.startswith('tests/') and p.endswith('.rs') and 'transcrib' in p for p in files)
           activity = common or header_changed or workflow_job(current,'activity') != workflow_job(previous,'activity') or any(p.startswith(('activity/','tests/activity','scripts/activity_indicator.py')) for p in files)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               for key, value in [('text',text),('audio',audio),('activity',activity)]:
@@ -360,6 +362,7 @@ jobs:
       - run: python -B tests/dashboard_media_retention.py
       - run: python -B tests/dashboard_live.py
       - run: python -B tests/dashboard_transcription.py
+      - run: python -B tests/dashboard_native_dialogue.py
       - run: python -B tests/dashboard_live_transcription.py
       - run: node tests/dashboard_live_ui.js
       - run: python -B tests/dashboard_sonic.py

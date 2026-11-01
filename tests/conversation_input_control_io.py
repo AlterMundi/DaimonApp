@@ -21,6 +21,7 @@ class Inputs(Goals):
     def __init__(self,binary):
         self.packets=[]
         self.drop_ack=False
+        self.native_ack_delay=0
         self.web_thread=None
         self.web_turn=None
         self.late_ack=None
@@ -59,6 +60,7 @@ class Inputs(Goals):
         self.web_thread=params['threadId']
         if method=='turn/start':
             self.web_turn='conversation-turn-'+str(len(self.packets))
+            if self.native_ack_delay:time.sleep(self.native_ack_delay)
             send({'id':message['id'],'result':{'turn':{'id':self.web_turn}}})
             self.broadcast(self.web_thread,'turn/started',{'turn':{'id':self.web_turn,'status':'inProgress'}})
         elif not self.drop_ack:
@@ -66,6 +68,79 @@ class Inputs(Goals):
         else:
             self.late_ack=(send,message['id'],self.web_turn)
         return True
+
+
+
+def foreground_retention(binary):
+    journey=Inputs(binary)
+    try:
+        journey.start()
+        journey.admit('Seed the existing integrating conversation.',topic=1)
+        journey.wait(lambda:journey.has('Initial goal turn delivered.',1))
+        journey.idle()
+        journey.wait_control_socket(journey.socket)
+        binding=journey.read('presentation','list','0','0')['result']['binding']
+        initial_turns=journey.row('SELECT count(*) FROM turns')
+        initial_packets=list(journey.packets)
+        original={'binding':binding,'id':str(uuid.uuid4()),'text':'  Una idea sin delegar todavía. 🦉\n',
+                  'dialogue_id':str(uuid.uuid4()),'capture_questions':{}}
+        def retain(body=original,ok=True):
+            return journey.read('input','foreground','retain',json.dumps(body),ok=ok)
+        first=retain()['result']
+        assert first['new_input'] and first['phase']=='foreground'
+        assert first['text']==original['text'] and first['foreground_dialogue']==original['dialogue_id']
+        assert first['native_acceptance']=='not_requested' and first['local_turn'] is None
+        assert not retain()['result']['new_input']
+        assert not retain({**original,'text':'Rewritten as work'},ok=False)['ok']
+        assert not retain({**original,'dialogue_id':str(uuid.uuid4())},ok=False)['ok']
+        assert not journey.read('input','submit',json.dumps({k:original[k] for k in ('binding','id','text')}),ok=False)['ok']
+        status=journey.read('input','status',original['id'])['result']
+        assert status['phase']=='foreground' and status['text']==original['text']
+        history=journey.read('input','list','0')['result']['items']
+        listed=next(item for item in history if item['id']==original['id'])
+        assert listed['phase']=='foreground' and listed['foreground_dialogue']==original['dialogue_id']
+        assert journey.row('SELECT count(*) FROM original_ingress_order WHERE event_id=?',(original['id'],))==[(1,)]
+        assert journey.row('SELECT count(*) FROM turns')==initial_turns
+        assert journey.packets==initial_packets,'Foreground retention started native work'
+        print('PASS foreground original retained once, immutable and visible; no native work admission; zero models.')
+    finally:
+        journey.close()
+
+
+
+def foreground_delegation(binary):
+    journey=Inputs(binary)
+    try:
+        journey.start();journey.admit('Seed integrating conversation.',topic=1)
+        journey.wait(lambda:journey.has('Initial goal turn delivered.',1));journey.idle()
+        journey.wait_control_socket(journey.socket)
+        binding=journey.read('presentation','list','0','0')['result']['binding']
+        dialogue=str(uuid.uuid4());originals=[]
+        for text in ('Build the selected report without publishing.','#UnknownWorker Use nineteen, not seventeen.'):
+            body={'binding':binding,'id':str(uuid.uuid4()),'text':text,'dialogue_id':dialogue}
+            journey.read('input','foreground','retain',json.dumps(body));originals.append(body)
+        assert not journey.packets
+        latest=originals[-1]
+        delegated={'binding':binding,'id':latest['id'],'intent_id':str(uuid.uuid4()),
+                   'formulation':'Prepare the report with nineteen. Keep it private.',
+                   'source_ids':[body['id'] for body in originals]}
+        result=journey.read('input','foreground','delegate',json.dumps(delegated))['result']
+        assert result['new_input']
+        journey.wait(lambda:journey.row('SELECT phase FROM conversation_inputs WHERE id=?',(latest['id'],))==[('accepted',)])
+        assert len(journey.packets)==1
+        packet=journey.packets[0][1]
+        text=packet['input'][0]['text']
+        assert 'assistant-authored derivative' in text and delegated['formulation'] in text
+        assert all(original['text'] in text for original in originals)
+        assert packet['clientUserMessageId']=='conversation:'+latest['id']
+        repeated=journey.read('input','foreground','delegate',json.dumps(delegated))['result']
+        assert not repeated['new_input'] and repeated['phase']=='accepted'
+        assert not journey.read('input','foreground','delegate',json.dumps({**delegated,'formulation':'Changed request'}),ok=False)['ok']
+        assert len(journey.packets)==1,'Exact delegation retry duplicated integrator work'
+        assert journey.read('input','status',originals[0]['id'])['result']['phase']=='foreground'
+        journey.finish(journey.web_thread,journey.web_turn);journey.idle()
+        print('PASS sourced foreground formulation enters only the integrator once; originals and retry attribution preserved; zero models.')
+    finally:journey.close()
 
 
 def qualify(binary):
@@ -208,11 +283,15 @@ def late_artifact_return(binary):
         journey.wait(lambda:journey.has('Initial goal turn delivered.',1));journey.idle()
         binding=journey.read('presentation','list','0','0')['result']['binding']
         journey.hold_telegram=True
+        journey.native_ack_delay=.25
         journey.admit('Produce an artifact on the original return surface.',topic=1)
         journey.wait(lambda:len(journey.packets)==1)
         runtime=''.join(v['value'] for k,v in sorted(journey.packets[0][1]['additionalContext'].items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
         output=Path(re.search(r'\n([^\n]+/out)\n',runtime).group(1))
         artifact=output/'late-deliverable.txt';artifact.write_text('Retained across return-selection race')
+        # A fixture packet can precede the proxy ACK and live collection. Do
+        # not emit synthetic completion into an execution that is not ready.
+        journey.wait(lambda:journey.row("SELECT count(*) FROM native_collections n JOIN turns t ON t.id=n.local_turn WHERE t.native_thread_id=? AND n.first_turn=? AND t.status='running'",(journey.web_thread,journey.web_turn))==[(1,)])
         journey.finish(journey.web_thread,journey.web_turn)
         # The ordinary final text has completed. The artifact is now waiting at
         # the shared outbound limiter, after its retained attempt record.
@@ -301,6 +380,8 @@ def canonical_turn_skips_unused_limits_history(binary):
 
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
+    foreground_retention(binary)
+    foreground_delegation(binary)
     qualify(binary)
     mixed_origin_returns(binary)
     late_artifact_return(binary)

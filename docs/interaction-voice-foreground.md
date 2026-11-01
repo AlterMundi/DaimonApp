@@ -122,6 +122,137 @@ than adding a second reasoning turn for each casual spoken exchange.
    Keep server-side credentials private and current actor/generation checks on
    tool effects. Preserve ongoing captures during receiving adoption.
 
+## Foreground original retention seam
+
+The owner command `input foreground retain JSON` accepts `binding`, `id`, `text`,
+`dialogue_id` and an optional frozen `capture_questions` narrowing map. It stores
+an exact original in the existing conversation journal with phase `foreground`.
+Status and history expose that grouping; `native_acceptance` is `not_requested`.
+It neither routes work, answers questions nor calls the native worker. Repeating
+the exact identity observes the retained original; changing its text or dialogue,
+or submitting it through the ordinary input command, is rejected. The ordinary
+input schema and admission behavior remain unchanged.
+
+The separate owner command `input foreground delegate JSON` takes `binding`,
+`id` (the latest original), `intent_id`, `formulation` and `source_ids`. It freezes
+up to8same-dialogue originals in capture order, their exact text/hash and captured
+server question versions, under an immutable intent. Source context is bounded
+to64KiB and the assistant formulation to8KiB. A newer captured correction must be
+the root. The original text remains unchanged. Admission queues that root directly
+to the existing integrator, bypassing voice-selected destinations and automatic
+question answering. A repeated exact intent only observes its outcome, including
+uncertainty or known-unsent restart recovery; it never resubmits work. Changing
+its formulation, source set or intent identity is rejected.
+
+The integrator receives a labelled assistant derivative and exact frozen sources.
+If it later dispatches the selected original, the normal worker packet carries
+that same attributed context beside the unchanged human text. Ordinary routing,
+source identity validation and return ownership remain in force. The native
+socket regression deliberately includes an unknown worker selector in the latest
+original: delegation still enters the integrator once rather than selecting that
+worker from the voice layer.
+
+These are native owner primitives under implementation, not an activated browser
+mode. The dialogue UUID groups originals and grants no authority. The live
+audio/activity capture bridge and avatar mounting remain unfinished. Store/restart and
+owner-socket regressions exercise exact-source identity, stale/cross-dialogue
+rejection, once-only delegated admission and absence of work for casual retention,
+without invoking a model.
+
+## Source-bound foreground audio retention
+
+The server-side `Provider.conversation_voice_submit` supports an explicit
+`foreground_dialogue` keyword; ordinary HTTP uploads do not expose that keyword.
+The same private bounded WAV store, hash checks, selected original-media protection,
+decoder and native capture journal are reused. Foreground capture requires the
+configured completed-transcript reader, which cannot initiate file ASR. A missing
+receipt remains recoverable preparation, never a fallback model call or work
+admission. Native3.8 transcripts use the same source/hash/PCM-verified prepared
+receipt as the existing transcription providers.
+
+At the acoustic endpoint, the server can retain the exact WAV with
+`defer_foreground=True` before its provider transcript arrives. This records
+`foreground_captured` and receiver capture order without starting any reader or
+work. A later `conversation_foreground_complete` reads only the now-completed
+receipt for that same original/dialogue. Restart retains the captured source and
+its frozen question scope. A delayed transcript cannot move it after a later
+captured correction. Capacity-unavailable foreground preparation follows that
+same known-unsent capture path; no failed provider operation is retried.
+
+After committing that receiving-owned proof, the native capture moves to
+`foreground` and does not invoke routing, answer a question or submit a Sol turn.
+Explicit later delegation includes the voice proof in its frozen source context,
+retaining automatic-transcription attribution. Ordinary chat and capture/recovery
+keep their existing behavior. Source context also bounds the entire encoded
+retained outcome to192KiB, below the existing256KiB owner reply limit, so JSON
+escaping cannot leave a queued request with an unreadable acknowledgment.
+
+This completes the owner-side audio commit primitive; the live activity/source
+bridge, session continuity and avatar mounting remain unfinished. It does not
+claim a natural end-of-phrase or phone qualification. Original byte retirement
+continues through the existing policy after durable text and any selected media
+protection, with the same256MiB unresolved-capture budget; no new archive or
+background retention process is introduced.
+
+## Native dialogue transport seam
+
+`dashboard/native_dialogue.py` implements the dedicated Gemini3.8Live transport;
+ordinary `TranscriptionStream`, Sol configuration and Qwen rendering are unchanged.
+The transport requires explicit `manual` or `automatic` activity ownership and
+supports concurrent PCM input, audio output, captions and nonblocking integrator
+proposals. Manual start/end are bridge-owned acoustic events, never text captions;
+provider acknowledgments of those events are labelled separately from automatic
+voice detection. Stopping a microphone closes its active manual activity or sends
+the documented automatic-mode `audioStreamEnd`. It has no native
+submission, worker, storage, reconnect or automatic retry capability. Proposals
+carry an assistant formulation and bounded original IDs; only the owning bridge
+can validate their actual retained source/actor/binding and admit work.
+
+The adapter exposes provider input transcripts separately from interim captions.
+It deliberately does not interpret model output or `turnComplete` as a final human
+original: the [Live protocol](https://ai.google.dev/api/live) gives no guaranteed
+ordering between input transcription and other events. The capture/source bridge
+still needs to establish durable utterance/audio boundaries before delegation.
+Provider cancellation is a cancelled speech proposal, never a native job cancel.
+An interrupted event clears output, including audio in that same event. A tool
+response is marked uncertain before writing and cannot be sent twice.
+
+Each connection is limited to300seconds,300seconds of16kHz input and24kHz output,
+16384provider events,256KiB per event,128KiB total transcripts,32tool proposals and
+4pending proposals. Each input frame is at most one second; request/source lists
+and returned outcomes are bounded. The adapter retains no media or transcripts
+after its owner releases it and never opens a replacement connection. Longer
+conversation continuity belongs to the existing durable source/result bridge,
+not automatic replay. Synthetic socket regressions cover concurrent speech while
+a tool is pending, interruption, once-only uncertain returns and resource bounds;
+they establish no real audio-input, native admission, avatar or phone acceptance.
+
+## Actual audio-input qualification —1November2026
+
+The synthetic audio-input journey did not establish automatic end-of-phrase:
+setup succeeded, but continuous PCM and silence produced no transcript, activity
+or output before the finite deadline. Documented microphone-stop handling and
+the official SDK's outer message spelling did not resolve that observation.
+Explicitly enabling automatic detection likewise produced no response. Those
+outcomes remain retained failures, not fluency or provider-wide capability claims.
+
+A distinct diagnostic using the supported manual activity protocol did produce
+an input transcript, provider activity acknowledgments and native PCM with the
+matching arithmetic answer. Its first audio arrived674ms after the explicit
+microphone-stop signal; the entire synthetic session lasted12.323seconds. This
+is a protocol/audio-intake observation, not independently heard speech or a
+measurement from a natural intended pause. No human recording or Sol/native
+work admission was used. The provider transcript omitted the synthetic greeting;
+retain original audio and label its transcript as an automatic interpretation,
+never assume that transcription alone preserves the entire spoken original.
+
+The first source/capture bridge must therefore use explicit, owned acoustic
+activities for the observed manual protocol, with the existing detector and its
+actual offsets. Keep audio generation independent of final file ASR, Sol work
+and separate TTS. The automatic provider mode remains unqualified. Device end
+of phrase, echo/noise, interruption and useful latency still require an integrated
+journey; successful explicit start/end cannot close those acceptance items.
+
 ## Bounds and acceptance
 
 Start with one owned synthetic provider session,60seconds, at most1024events,
