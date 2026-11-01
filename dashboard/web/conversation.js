@@ -451,7 +451,9 @@ window.Conversation = (() => {
       if(!card){
         const box=node("article",undefined,"reply session-update"),title=node("h3"),body=node("p",undefined,"reply-text"),listen=node("button","Listen");
         const time=node("time",undefined,"message-time"),reply=node("button","Reply to this update");reply.type="button";reply.className="session-update-reply";
-        listen.type="button";listen.className="session-update-listen";box.append(title,body,listen,reply,routingMapButton(()=>cards.get(card.source)?.source),copyButton(()=>copySource(cards.get(card.source))),time);card={box,title,body,listen,reply,time};progressCards.set(key,card);
+        const read=node("button","Read reply"),error=node("p","","reply-error");read.type="button";read.className="session-update-read";error.setAttribute("role","status");
+        listen.type="button";listen.className="session-update-listen";box.append(title,body,listen,reply,routingMapButton(()=>cards.get(card.source)?.source),copyButton(()=>copySource(cards.get(card.source))),read,error,time);card={box,title,body,listen,reply,read,error,time};progressCards.set(key,card);
+        read.addEventListener("click",()=>{const original=cards.get(card.source);if(!original || original.source.revision!==card.revision)return;return readCard(original);});
         reply.addEventListener("click",()=>{const original=cards.get(card.source);if(!original || original.source.revision!==card.revision || !canReplyUpdates || readOnly)return;selectFocus({source:card.source,revision:card.revision},original.source.label||"this session");});
         listen.addEventListener("click",()=>{const original=cards.get(card.source);if(!original || original.source.revision!==card.revision || !canListen)return;return listenCard(original);});
       }
@@ -462,10 +464,19 @@ window.Conversation = (() => {
       setReplyText(card.body,original?.expanded && original.source.revision===source.revision?replyText(original.body):source.preview);
       card.listen.hidden=!canListen;card.listen.setAttribute("aria-label",`Listen to update from ${source.label}`);
       card.reply.hidden=readOnly||!canReplyUpdates;
+      if(original)progressTextControls(original);
       messageTime(card.time,source.observed_at);
       placeInTimeline(card.box,`session-update:${key}`,source.observed_at);
       if(changed)textObserver?.unobserve(card.box);
       textObserver?.observe(card.box);
+    }
+
+    function progressTextControls(original){
+      for(const visible of progressCards.values())if(visible.source===original.source.id && visible.revision===original.source.revision){
+        visible.read.hidden=original.read.hidden;visible.read.disabled=original.read.disabled;
+        visible.read.textContent=original.read.textContent;
+        visible.error.textContent=original.error.textContent;visible.error.hidden=!original.error.textContent;
+      }
     }
 
     // Read visible answers through the existing immutable source endpoint. Two
@@ -501,11 +512,13 @@ window.Conversation = (() => {
       card.expanded=true;card.offset=result.next_offset;
       for(const visible of progressCards.values())if(visible.source===card.source.id && visible.revision===card.source.revision)setReplyText(visible.body,replyText(card.body));
       card.read.hidden=card.offset===null;card.read.textContent="Continue reading";
+      progressTextControls(card);
       if(following && timeline)timeline.scrollTop=timeline.scrollHeight;
     }
     async function readCard(card,automatic=false){
       if(card.textLoading || cards.get(card.source.id)!==card)return;
       const selected=card.source;card.textLoading=true;card.read.disabled=true;card.error.textContent="";
+      progressTextControls(card);
       if(automatic)card.autoRevision=selected.revision;
       try{
         let parts=0;
@@ -520,10 +533,10 @@ window.Conversation = (() => {
         }
       }catch(error){
         if(cards.get(selected.id)===card && card.source.revision===selected.revision){
-          card.error.textContent=error.message;
+          card.error.textContent=error.message;card.read.textContent="Retry reading";
           if(error.status===401 || error.status===403)failed(error);
         }
-      }finally{card.textLoading=false;card.read.disabled=false;if(automatic && card.autoWanted && card.autoRevision===undefined)queueText(card);}
+      }finally{card.textLoading=false;card.read.disabled=false;progressTextControls(card);if(automatic && card.autoWanted && card.autoRevision===undefined)queueText(card);}
     }
 
     const inputs = new Map();
