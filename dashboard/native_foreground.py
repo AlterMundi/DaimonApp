@@ -236,7 +236,8 @@ class ForegroundBridge:
                             or result.get('current') is False
                             or result.get('correction_pending') is True
                             or result.get('native_binding_current') is False
-                            or result.get('kind') not in ('integrator_answer','native_question','route_clarification')
+                            or result.get('kind') not in ('integrator_answer','integrator_progress','native_question','route_clarification')
+                            or result.get('kind')=='integrator_progress' and not result.get('native_returns')
                             or not isinstance(result.get('text'),str) or not result['text'].strip()):
                         raise ForegroundUnavailable('Integrating return changed before this offer')
                     result={'kind':'integrating_source','source':source,

@@ -133,7 +133,12 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     value=await bridge._owner(provider.presentation_list,cursor['delivery'],cursor['native'],'after')
                     if value['binding']!=meta['binding']:raise ForegroundUnavailable('Integrating conversation changed')
                     for item in value['items']:
-                        if (item.get('kind')=='integrator_answer' and item.get('current') is not False
+                        # Reported worker results/questions can be presented as
+                        # integrating commentary with an empty final answer.
+                        # Ordinary progress is not an integrating return.
+                        returning=(item.get('kind')=='integrator_answer' or
+                            item.get('kind')=='integrator_progress' and bool(item.get('native_returns')))
+                        if (returning and item.get('current') is not False
                                 and item.get('correction_pending') is not True and item.get('native_binding_current') is not False):
                             bridge.integrating_source({'id':item['id'],'revision':item['revision'],
                                 'kind':'question' if any(x.startswith('question:') for x in item.get('native_returns',[])) else 'result',

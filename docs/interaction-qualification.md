@@ -32,6 +32,25 @@ text contract; the prepared interpretation and exact audio bytes remain intact.
 The regression covers both values. This failed journey is retained, not a pass
 for asynchronous delegation/returns, and its originals must not be replayed.
 
+A distinct follow-up retained two completed voice originals, actual Sol
+admission and dispatch, native foreground audio while Alpha was pending,
+interruption, and a canonical worker return incorporated by Sol. The return was
+published as `integrator_progress` with `native_returns` and an empty final
+answer. The foreground had selected only `integrator_answer`, so it did not
+speak that return. Select current, source-linked integrating progress as well;
+ordinary commentary without return references remains excluded. The mounted
+regression exercises that exact descriptor shape. Full real-provider spoken
+return acceptance remains open; do not rerun the completed worker/model work
+to repair an observation. Both actual native turns were read as completed and
+their task-owned root was archived.
+
+The follow-up observer also incorrectly waited for raw `output_transcript`
+socket events; this mounted route emits the assistant text through
+`assistant_utterance`. Observe that existing event/history contract, including
+closed/interrupted status. Retain the timeout separately from the missing
+spoken-return defect. Reuse the bound `Native.read` method for metadata-only
+native reads rather than executing its source with incomplete module globals.
+
 A WebSocket client context ending does not prove provider cleanup. The mounted
 fixture now waits on actual provider/detector closure. Its forced ASGI
 cancellation exposed cleanup being skipped at an awaited cancellation point;

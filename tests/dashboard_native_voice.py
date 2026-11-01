@@ -67,6 +67,7 @@ class Owner(Receiver):
         super().__init__();self.root=root;self.binding='a'*64;self.compatible=True
         self.receiver={'db_path':str(root/'native.sqlite3'),'voice':{'enabled':True}}
         (root/'native.sqlite3').touch();self.inputs={};self.completed=threading.Event();self.delegations=[];self.return_ready=False
+        self.return_kind='integrator_answer';self.native_returns=[]
         self.input_id=Provider.input_id
     def presentation(self,command):
         if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible}
@@ -74,11 +75,11 @@ class Owner(Receiver):
         raise AssertionError(command)
     def presentation_list(self,*args):
         cursor=args[1] if len(args)>1 else 0
-        item={'id':'native:1','revision':'b'*64,'kind':'integrator_answer','current':True,'label':'Integrator'}
+        item={'id':'native:1','revision':'b'*64,'kind':self.return_kind,'native_returns':self.native_returns,'current':True,'label':'Integrator'}
         return {'binding':self.binding,'items':[item] if self.return_ready and cursor<1 else [],
                 'newest':{'delivery':0,'native':int(self.return_ready)},'cursor':{'delivery':0,'native':int(self.return_ready)},'more':False}
     def presentation_part(self,ident,revision,offset):
-        return {'id':ident,'revision':revision,'kind':'integrator_answer','entry_binding':[100],
+        return {'id':ident,'revision':revision,'kind':self.return_kind,'native_returns':self.native_returns,'entry_binding':[100],
                 'current':True,'text':'Canonical integrating return.','next_offset':None}
     def conversation_foreground_originals(self,dialogue,binding,before):
         return {'sources':[{'id':ident,'phase':value['phase']} for ident,value in self.inputs.items()]}
@@ -141,6 +142,8 @@ class Mounted(unittest.TestCase):
         self.assertTrue(Stream.opened[0].closed_event.wait(2),'Wait for actual provider cleanup, not client context exit')
         self.assertTrue(Detector.opened[0].closed_event.wait(2))
     def test_native_voice_continues_while_an_integrating_return_watch_is_pending(self):
+        self.owner.return_kind='integrator_progress'
+        self.owner.native_returns=['result:retained-worker-return']
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
             ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
