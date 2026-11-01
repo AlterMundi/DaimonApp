@@ -217,8 +217,11 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             return response(app, &input, false);
         }
         let voice = input.voice.context("Original voice capture unavailable")?;
-        let payload = json!({"binding":selected.binding,"id":selected.id,
+        let mut payload = json!({"binding":selected.binding,"id":selected.id,
             "audio_sha256":voice.audio_sha256,"mime":voice.mime,"capture_stop":voice.capture_stop,"files":input.files,"visual":input.visual,"reply":input.reply,"playback":input.playback,"capture_questions":input.capture_questions});
+        if let Some(dialogue) = input.foreground_dialogue {
+            payload["foreground_dialogue"] = json!(dialogue);
+        }
         return voice_submit(app, human, cfg.entry(), &payload.to_string(), true).await;
     }
     if let Some(body) = args.strip_prefix("retry ") {
@@ -681,6 +684,8 @@ fn enqueue(
 #[serde(deny_unknown_fields)]
 struct VoiceSubmit {
     binding: String,
+    #[serde(default)]
+    foreground_dialogue: Option<String>,
     id: String,
     audio_sha256: String,
     mime: String,
@@ -713,7 +718,7 @@ async fn voice_submit(
         .voice
         .clone()
         .context("Voice input is not configured")?;
-    if recover {
+    if recover || request.foreground_dialogue.is_some() {
         config.transcription_command = config
             .completed_transcription_command
             .clone()
@@ -760,7 +765,11 @@ async fn voice_submit(
     {
         super::conversation_requests::validate_reply(app, human, request.reply.as_ref()).await?;
     }
-    let interruption_targets = super::voice::snapshot(app).await;
+    let interruption_targets = if request.foreground_dialogue.is_some() {
+        Default::default()
+    } else {
+        super::voice::snapshot(app).await
+    };
     let permit = app
         .shared
         .voice_preparations
@@ -771,19 +780,39 @@ async fn voice_submit(
     if recover && permit.is_none() {
         bail!("Voice preparation busy; recovery was not started");
     }
-    let (mut input, mut fresh) = app.shared.store.conversation_voice_capture_files(
-        human,
-        entry,
-        &request.binding,
-        &request.id,
-        voice,
-        permit.is_some(),
-        request.reply,
-        request.visual,
-        request.playback,
-        request.capture_questions,
-        request.files,
-    )?;
+    let (mut input, mut fresh) = if let Some(dialogue) = request.foreground_dialogue.as_ref() {
+        if request.reply.is_some()
+            || request.visual.is_some()
+            || request.playback.is_some()
+            || !request.files.is_empty()
+        {
+            bail!("Foreground capture metadata must come from its own acoustic activity");
+        }
+        app.shared.store.conversation_foreground_voice_capture(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+            voice,
+            permit.is_some(),
+            dialogue,
+            request.capture_questions,
+        )?
+    } else {
+        app.shared.store.conversation_voice_capture_files(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+            voice,
+            permit.is_some(),
+            request.reply,
+            request.visual,
+            request.playback,
+            request.capture_questions,
+            request.files,
+        )?
+    };
     if recover {
         (input, fresh) = app.shared.store.conversation_voice_resume(
             human,
@@ -827,7 +856,9 @@ async fn voice_submit(
                     // can finish exact cleanup without repeating ASR or work.
                     tracing::warn!("Committed conversation voice cleanup deferred");
                 }
-                if let Err(error) = deliver(&worker, ready, None).await {
+                if ready.foreground_dialogue.is_none()
+                    && let Err(error) = deliver(&worker, ready, None).await
+                {
                     worker
                         .shared
                         .store

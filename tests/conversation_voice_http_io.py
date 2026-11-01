@@ -167,5 +167,51 @@ print(json.dumps({'text':item['text'],'final':True}))
         if client:client.close()
         j.close()
 
+def foreground_capture(binary):
+    j=Requests(str(Path(binary).resolve()))
+    try:
+        j.start();j.admit('Seed foreground capture integrator',topic=1)
+        j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.stop()
+        helper=j.root/'completed-foreground.py'
+        helper.write_text("""import json,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+if '--completed-only' not in sys.argv:
+ (root/'unexpected-asr').touch();sys.exit(2)
+with (root/'completed-calls').open('a') as out:out.write('read\\n')
+print(json.dumps({'text':'Synthetic native foreground interpretation.','final':True,'streaming_model':'gemini-3.8-live'}))
+""")
+        j.config.write_text(j.config.read_text()+'\n[voice]\ntranscriber_label="synthetic/no-inference"\ntimeout_seconds=20\ntranscription_command='+json.dumps(['/usr/bin/python3',str(helper),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(helper),str(j.root),'--completed-only'])+'\n')
+        j.start();j.wait_control_socket(j.socket)
+        config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
+        provider=Provider(config);binding=j.read('presentation','list','0','0')['result']['binding']
+        data=audio();ident=str(uuid.uuid4());dialogue=str(uuid.uuid4())
+        body={'binding':binding,'id':ident,'audio_sha256':hashlib.sha256(data).hexdigest(),'mime':'audio/wav','capture_questions':{}}
+        result=provider.conversation_voice_submit(body,data,foreground_dialogue=dialogue)
+        assert result['phase'] in ('preparing','foreground')
+        j.wait(lambda:provider.conversation_input_status(ident)['phase']=='foreground')
+        saved=provider.conversation_input_status(ident)
+        assert saved['voice']['transcription']['actual_transcriber']=='gemini-3.8-live'
+        assert saved['voice']['transcription']['audio_sha256']==body['audio_sha256']
+        assert saved['voice']['transcription']['capture_id']==ident
+        assert saved['native_acceptance']=='not_requested' and not j.packets
+        assert not (j.root/'unexpected-asr').exists()
+        assert (j.root/'completed-calls').read_text().splitlines()==['read']
+        again=provider.conversation_voice_submit(body,data,foreground_dialogue=dialogue)
+        assert not again['new_input'] and again['phase']=='foreground'
+        assert (j.root/'completed-calls').read_text().splitlines()==['read']
+        delegated={'binding':binding,'id':ident,'intent_id':str(uuid.uuid4()),
+                   'formulation':'Resolve the selected synthetic request.','source_ids':[ident]}
+        provider.conversation_foreground_delegate(delegated)
+        j.wait(lambda:provider.conversation_input_status(ident)['phase']=='accepted')
+        assert len(j.packets)==1
+        text=j.packets[0][1]['input'][0]['text']
+        assert 'not verified written speech' in text and 'gemini-3.8-live' in text
+        assert body['audio_sha256'] in text
+        assert not provider.conversation_foreground_delegate(delegated)['new_input']
+        assert len(j.packets)==1
+        print('PASS native foreground WAV/proof through existing decoder/owner: completed reader only, no ASR or work before delegation; one sourced native admission; zero models.')
+    finally:j.close()
+
 if __name__=='__main__':
+    foreground_capture(sys.argv[1])
     for reason in ('duration_limit','audio_flush_unconfirmed'):qualify(sys.argv[1],reason)

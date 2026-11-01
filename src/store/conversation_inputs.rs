@@ -63,6 +63,8 @@ pub struct ForegroundSource {
     pub capture_order: i64,
     pub text: String,
     pub text_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<ConversationVoice>,
     pub question_versions: Option<std::collections::BTreeMap<String, String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,7 +369,7 @@ fn trace_original_on(
 }
 
 pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
-    if input.phase == "foreground" {
+    if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {
         bail!("Foreground conversation has not been delegated as work");
     }
     eligible_binding_on(conn, input)
@@ -721,6 +723,47 @@ impl Store {
         )
     }
 
+    /// Foreground audio uses the existing source-bound completed-transcript reader,
+    /// but completion retains conversation instead of dispatching native work.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_voice_capture(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        voice: ConversationVoice,
+        can_prepare: bool,
+        dialogue_id: &str,
+        capture_questions: Option<std::collections::BTreeMap<String, String>>,
+    ) -> Result<(ConversationInput, bool)> {
+        if Uuid::parse_str(dialogue_id)
+            .ok()
+            .is_none_or(|v| v.to_string() != dialogue_id)
+        {
+            bail!("Invalid foreground dialogue identity");
+        }
+        voice.validate()?;
+        if voice.transcription.is_some() {
+            bail!("Transcription is receiving-owned");
+        }
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            "",
+            Some(voice),
+            can_prepare,
+            None,
+            None,
+            None,
+            capture_questions,
+            Vec::new(),
+            Some(dialogue_id.into()),
+        )
+    }
+
     /// Admit one immutable formulation directly to the integrator, never a
     /// voice-selected worker. Exact retries observe; uncertain work is not replayed.
     #[allow(clippy::too_many_arguments)]
@@ -807,6 +850,7 @@ impl Store {
                 capture_order: order,
                 text_sha256: format!("{:x}", Sha256::digest(original.text.as_bytes())),
                 text: original.text,
+                voice: original.voice,
                 question_versions: original.question_versions,
             });
         }
@@ -822,8 +866,14 @@ impl Store {
             sources,
         });
         input.phase = "queued".into();
+        let doc = serde_json::to_string(&input)?;
+        // Keep the full retained outcome below the existing256KiB owner reply
+        // limit, including JSON escaping, rather than only counting raw text.
+        if doc.len() > 192 * 1024 {
+            bail!("Encoded foreground source context exceeds owner reply bound");
+        }
         select_return_on(&tx, human, &input.native, &input.id)?;
-        let changed=tx.execute("UPDATE conversation_inputs SET phase='queued',doc=?1,instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='foreground'",params![serde_json::to_string(&input)?,self.instance_id,id,human])?;
+        let changed=tx.execute("UPDATE conversation_inputs SET phase='queued',doc=?1,instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='foreground'",params![doc,self.instance_id,id,human])?;
         if changed != 1 {
             bail!("Foreground delegation admission changed");
         }
@@ -964,13 +1014,17 @@ impl Store {
             playback,
             focus,
             routing: None,
-            phase: if foreground_dialogue.is_some() {
+            phase: if foreground_dialogue.is_some() && voice.is_none() {
                 "foreground"
             } else if !can_prepare
                 || super::stopping::fenced_on(&tx, entry)?
                 || super::maintenance_writer_held_on(&tx, entry)?
             {
-                "retained_unsent"
+                if foreground_dialogue.is_some() && voice.is_some() {
+                    "preparation_unconfirmed"
+                } else {
+                    "retained_unsent"
+                }
             } else if voice.is_some() {
                 "preparing"
             } else {
@@ -1004,7 +1058,7 @@ impl Store {
             bail!("Entry changed before voice recovery");
         }
         let mut input = read_on(&tx, id, human)?;
-        eligible_on(&tx, &input)?;
+        eligible_binding_on(&tx, &input)?;
         if input.entry != entry
             || input.session != session
             || input
@@ -1026,7 +1080,7 @@ impl Store {
     pub fn conversation_voice_validate(&self, human: i64, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = read_on(&conn, id, human)?;
-        eligible_on(&conn, &input)?;
+        eligible_binding_on(&conn, &input)?;
         if input.phase != "preparing" || input.voice.is_none() {
             bail!("Voice capture is not pending preparation");
         }
@@ -1045,7 +1099,7 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let mut input = read_on(&tx, id, human)?;
-        eligible_on(&tx, &input)?;
+        eligible_binding_on(&tx, &input)?;
         let voice = input.voice.as_mut().context("Missing voice source")?;
         if input.phase != "preparing"
             || proof.capture_id.as_deref() != Some(id)
@@ -1058,8 +1112,13 @@ impl Store {
         proof.capture_stop = voice.capture_stop.clone();
         voice.transcription = Some(proof);
         input.text = text.into();
-        input.phase = "retained".into();
-        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase='retained' WHERE id=?2 AND human_id=?3 AND phase='preparing' AND instance_id=?4",params![serde_json::to_string(&input)?,id,human,self.instance_id])?;
+        input.phase = if input.foreground_dialogue.is_some() {
+            "foreground"
+        } else {
+            "retained"
+        }
+        .into();
+        let changed=tx.execute("UPDATE conversation_inputs SET doc=?1,phase=?5 WHERE id=?2 AND human_id=?3 AND phase='preparing' AND instance_id=?4",params![serde_json::to_string(&input)?,id,human,self.instance_id,input.phase])?;
         if changed != 1 {
             bail!("Voice preparation instance changed");
         }
@@ -1843,6 +1902,128 @@ mod tests {
         assert_eq!(saved.phase, "retained_unsent");
         assert_eq!(saved.foreground_delegation, input.foreground_delegation);
         assert!(saved.local_turn.is_none());
+    }
+
+    #[test]
+    fn encoded_foreground_context_cannot_overflow_the_owner_reply() {
+        let (_file, store, key, binding) = setup();
+        let dialogue = Uuid::now_v7().to_string();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let id = Uuid::now_v7().to_string();
+            store
+                .conversation_foreground_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    &"\u{0001}".repeat(16000),
+                    &dialogue,
+                    None,
+                )
+                .unwrap();
+            ids.push(id);
+        }
+        let root = ids.last().unwrap();
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    root,
+                    &Uuid::now_v7().to_string(),
+                    "Prepare the selected request",
+                    &ids
+                )
+                .is_err()
+        );
+        let retained = store.conversation_input_read(100, key, root).unwrap();
+        assert_eq!(retained.phase, "foreground");
+        assert!(retained.foreground_delegation.is_none());
+    }
+
+    #[test]
+    fn foreground_voice_busy_capture_can_only_resume_its_same_preparation() {
+        let (_file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let (capture, _) = store
+            .conversation_foreground_voice_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                clip(),
+                false,
+                &Uuid::now_v7().to_string(),
+                Some(Default::default()),
+            )
+            .unwrap();
+        assert_eq!(capture.phase, "preparation_unconfirmed");
+        assert!(
+            store
+                .conversation_voice_resume(100, key, &binding, &id)
+                .unwrap()
+                .1
+        );
+        store.conversation_voice_validate(100, &id).unwrap();
+        let ready = store
+            .conversation_voice_commit(100, &id, "Completed original", voice_proof(&id))
+            .unwrap();
+        assert_eq!(ready.phase, "foreground");
+        assert!(ready.local_turn.is_none());
+    }
+
+    #[test]
+    fn foreground_voice_commit_preserves_receiving_proof_without_work() {
+        let (_file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let dialogue = Uuid::now_v7().to_string();
+        let voice = ConversationVoice {
+            audio_sha256: "a".repeat(64),
+            mime: "audio/wav".into(),
+            capture_stop: None,
+            transcription: None,
+        };
+        let (capture, fresh) = store
+            .conversation_foreground_voice_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                voice,
+                true,
+                &dialogue,
+                Some(Default::default()),
+            )
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(capture.phase, "preparing");
+        assert!(eligible_on(&store.conn.lock().unwrap(), &capture).is_err());
+        store.conversation_voice_validate(100, &id).unwrap();
+        let mut proof = voice_proof(&id);
+        proof.actual_transcriber = Some("gemini-3.8-live".into());
+        let retained = store
+            .conversation_voice_commit(100, &id, "Exact automatic interpretation", proof)
+            .unwrap();
+        assert_eq!(retained.phase, "foreground");
+        assert!(retained.local_turn.is_none());
+        assert!(store.conversation_input_event(100, &id, E::Queue).is_err());
+        let (delegated, _) = store
+            .conversation_foreground_delegate(
+                100,
+                key,
+                &binding,
+                &id,
+                &Uuid::now_v7().to_string(),
+                "An attributed derivative",
+                std::slice::from_ref(&id),
+            )
+            .unwrap();
+        let snapshot = &delegated.foreground_delegation.as_ref().unwrap().sources[0];
+        assert_eq!(snapshot.voice, retained.voice);
+        assert_eq!(snapshot.text, retained.text);
+        assert!(delegated.rendered().contains("not verified written speech"));
     }
 
     #[test]

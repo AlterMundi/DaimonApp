@@ -184,9 +184,9 @@ pub async fn transcribe_committed(
     let actual_transcriber = match value.get("streaming_model") {
         None => None,
         Some(model) => match model.as_str() {
-            Some("gemini-3.5-transcribe-live" | "qwen-audio-3.0-realtime-plus") => {
-                model.as_str().map(str::to_owned)
-            }
+            Some(
+                "gemini-3.8-live" | "gemini-3.5-transcribe-live" | "qwen-audio-3.0-realtime-plus",
+            ) => model.as_str().map(str::to_owned),
             _ => bail!("Transcriber returned an unsupported streaming model"),
         },
     };

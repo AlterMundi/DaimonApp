@@ -153,11 +153,37 @@ original: delegation still enters the integrator once rather than selecting that
 worker from the voice layer.
 
 These are native owner primitives under implementation, not an activated browser
-mode. The dialogue UUID groups originals and grants no authority. Durable audio
-capture and the native-audio/avatar bridge remain unfinished. Store/restart and
+mode. The dialogue UUID groups originals and grants no authority. The live
+audio/activity capture bridge and avatar mounting remain unfinished. Store/restart and
 owner-socket regressions exercise exact-source identity, stale/cross-dialogue
 rejection, once-only delegated admission and absence of work for casual retention,
 without invoking a model.
+
+## Source-bound foreground audio retention
+
+The server-side `Provider.conversation_voice_submit` supports an explicit
+`foreground_dialogue` keyword; ordinary HTTP uploads do not expose that keyword.
+The same private bounded WAV store, hash checks, selected original-media protection,
+decoder and native capture journal are reused. Foreground capture requires the
+configured completed-transcript reader, which cannot initiate file ASR. A missing
+receipt remains recoverable preparation, never a fallback model call or work
+admission. Native3.8 transcripts use the same source/hash/PCM-verified prepared
+receipt as the existing transcription providers.
+
+After committing that receiving-owned proof, the native capture moves to
+`foreground` and does not invoke routing, answer a question or submit a Sol turn.
+Explicit later delegation includes the voice proof in its frozen source context,
+retaining automatic-transcription attribution. Ordinary chat and capture/recovery
+keep their existing behavior. Source context also bounds the entire encoded
+retained outcome to192KiB, below the existing256KiB owner reply limit, so JSON
+escaping cannot leave a queued request with an unreadable acknowledgment.
+
+This completes the owner-side audio commit primitive; the live activity/source
+bridge, session continuity and avatar mounting remain unfinished. It does not
+claim a natural end-of-phrase or phone qualification. Original byte retirement
+continues through the existing policy after durable text and any selected media
+protection, with the same256MiB unresolved-capture budget; no new archive or
+background retention process is introduced.
 
 ## Native dialogue transport seam
 

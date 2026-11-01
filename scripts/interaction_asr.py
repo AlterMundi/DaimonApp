@@ -95,7 +95,7 @@ def streaming_result(cfg, source, source_hash):
     if (not isinstance(record,dict) or record.get('schema') != 'telecodex.streaming-transcript/v1'
             or record.get('capture_id') != ident or record.get('source_sha256') != source_hash
             or record.get('final') is not True
-            or record.get('model') not in ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live')
+            or record.get('model') not in ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live', 'gemini-3.8-live')
             or not re.fullmatch('[a-f0-9]{64}',str(record.get('binding','')))
             or not isinstance(record.get('text'),str) or not record['text'].strip()
             or len(record['text'].encode()) > 16000):
@@ -159,7 +159,7 @@ def final_result(state, preparation_deleted, include_retention):
     result = {'text': state['result']['text'], 'final': True}
     if state.get('preparation_kind') == 'streaming':
         model = state['result'].get('streaming_model')
-        if model not in ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live'):
+        if model not in ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live', 'gemini-3.8-live'):
             raise RenderError('invalid-completed-streaming-transcript')
         result['streaming_model'] = model
     if include_retention:

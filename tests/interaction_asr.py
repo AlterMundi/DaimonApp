@@ -82,6 +82,13 @@ class Retention(unittest.TestCase):
         record.unlink()
         self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Live final words')
         self.assertEqual(self.calls(),0)
+    def test_native_dialogue_transcript_uses_exact_existing_audio_receipt(self):
+        record,value=self.streaming_fixture();value['model']='gemini-3.8-live'
+        record.write_text(json.dumps(value))
+        result=asr.process(self.source,self.binding,completed_only=True)
+        self.assertEqual(result['text'],'Live final words')
+        self.assertEqual(result['streaming_model'],'gemini-3.8-live')
+        self.assertEqual(self.calls(),0)
     def identity_job(self):
         identity={'schema':'telecodex.interaction-asr-result/v1',
             'source_sha256':asr.digest(self.source.read_bytes()),
