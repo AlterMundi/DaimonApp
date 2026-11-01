@@ -27,22 +27,31 @@ Spanish/device experience or latency measurement. The
 records the separation, known seams, bounds and next delivery path. Historical
 modular decisions and their useful evidence remain below with their dates.
 
-The1November browser pilot is receiving-selected with backend250736e
-(PR500/501) and UI f76add405687 (PR502). A real mounted native-speech/Sol
-journey returned canonical work through a continued subscription while dialogue
-remained available. A later actual-app/provider journey with a synthetic owner
-and detector retained two exact originals and spoke an integrating question and
-answer/result without a separate model-selected watch. Explicit fragmented input
-transcripts and optional empty output metadata are handled. Local interruptions
-retire old output even between chunks; real Chromium offline rendering verifies
-that old chunks remain silent and fresh output can play afterward.
+The1November browser pilot is receiving-selected at backend3e63fd8955bf
+(PR506), UIa7cdaa6c7c27. It keeps complete work products separate from concise
+spoken presentation and makes admission acknowledgment no stronger than the
+observed request-sent outcome. Exact offered canonical returns support bounded
+revision-checked pagination; partial input transcripts and empty output metadata
+are handled. Browser interruptions retire old output between chunks, with
+Chromium offline waveform evidence for old silence and fresh playback.
 
-Full applicable CI and exact receiving bytes/capabilities passed. These are
-separate synthetic/provider/receiving observations, not human browser/hearing,
-useful latency, actual native-question approval, long-utterance or echo/noise
-acceptance. The requested phone trial remains pending. This advances the selected
-architecture and does not complete stages2/3/necessary4 or the retained
-Android/Beacon/iOS/base obligations.
+An actual mounted Gemini/CPU/Sol6.1 journey retained three exact originals in one
+formulation, dispatched once to a simulated worker, preserved its complete
+1851character report, and returned/spoke the requested short conclusion after
+Sol read both report pages. An independent real Chromium/worklet/CPU/Gemini
+trial with fake microphone/local owner confirmed two originals without Send
+and completed a correct spoken answer through11Web Audio buffers. These are
+complementary bounded digital observations, not one full physical-device trial.
+See the [qualification record](interaction-qualification.md) for limits and
+retained failed attempts, which were not replayed.
+
+Full applicable CI and exact receiving bytes/capabilities passed for the selected
+runtime. Physical microphone/hearing, the full avatar journey on the person's
+phone, echo/noise, interruption/correction and useful real-world latency remain
+open. The753ms synthetic detected-end→browser-playing interval does not establish
+final-speech→heard latency. The requested phone trial remains pending. This
+advances the selected architecture and does not complete stages2/3/necessary4
+or the retained Android/Beacon/iOS/base obligations.
 
 ## Navigation and current selection
 

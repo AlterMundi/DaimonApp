@@ -2,7 +2,9 @@
 
 Human selection:1November2026. Owns the next #301/#302/#303/#304 implementation;
 [this roadmap](interaction-roadmap.md) retains the complete horizon. This is an
-implementation contract, not a claim that native speech is deployed.
+implementation contract. The opt-in receiving pilot and bounded provider/browser
+evidence are recorded in the roadmap and qualification record; physical-device
+acceptance remains open.
 
 ## Conversation ownership
 
