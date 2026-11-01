@@ -111,6 +111,14 @@ speech frontier retained these alternatives and the modular recovery path; its
 initial modular recommendation is superseded for the fluent foreground by the
 current human correction, not rewritten as if it had selected this rollout.
 
+A later three-phrase synthetic browser/CPU/native session on ec883adf records
+first scheduled nonquiet10ms waveform windows about1.29–1.41seconds after its
+last synthetic input signal, with correct native response captions. This replaces
+neither the historical first-event metrics nor physical/useful-word acceptance.
+The [qualification record](interaction-qualification.md#native-waveform-timing-observations-1november2026)
+retains the method, failed fixture cardinality/API assumptions, existing-data
+verification and limits; no provider input was repeated to repair the verifier.
+
 Current human evidence: avatar-only interaction occurred, but the person reports
 nearly a minute before useful speech and an overlap on resuming speech. This
 contradicts fluid-dialogue acceptance. Existing digital6–13second observations,
@@ -526,8 +534,7 @@ A populated4097-row regression at both text/row limits keeps sixteen PCM updates
 playback and closure within a deterministic SQLite work budget while refusing
 new rows/text growth. The earlier per-fragment aggregate exhausts that budget.
 This removes history-size-dependent work, not proof of phone/provider speedup.
- No automatic expiry or archive is
-introduced. Existing original media retention remains its own owner. Only text
+No automatic expiry or archive is introduced. Existing original media retention remains its own owner. Only text
 and turn changes notify the existing event stream; PCM/playback bookkeeping does
 not cause whole-conversation refresh loops.
 
