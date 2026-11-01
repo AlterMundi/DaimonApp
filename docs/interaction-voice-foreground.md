@@ -552,6 +552,18 @@ and the receiving operator record for current adoption and software rollback.
 After native foreground originals exist, keep compatible native/completed-reader
 support when restoring an earlier web UI; never roll back source journals.
 
+A further distinct mounted qualification replaces the simulated worker with an
+actual selected Sol6.1 worker. The foreground generates a correct casual answer
+while that worker remains active, then speaks its canonical24133result after
+Sol incorporates the complete verified100-prime report. Two casual originals
+stay foreground-only; one work instruction/result and one continued speech
+watch. The existing controller rejects the model's initial ineligible source-ID
+selection before it inspects/selects the accepted formulation root; two attempts
+do not become two tasks. Exact terminal native reads and bounds are recorded in
+[qualification](interaction-qualification.md#actual-worker-and-conversational-concurrency--1november2026).
+Synthetic capture/actor and generated PCM are not browser/phone/hearing or
+useful-latency acceptance. Production receiving code is unchanged by this trial.
+
 ## Native avatar recovery feedback
 
 When native voice stops with an unconfirmed original, its continuous state reports
