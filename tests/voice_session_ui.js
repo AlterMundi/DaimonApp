@@ -93,6 +93,7 @@ function boot(){
  const ambient=boot();await ambient.session.start();ambient.sources[0].emit(3200);ambient.activity(1,true,false);
  ambient.recorders[0].partial('Una frase completa');ambient.sources[0].acoustic(6400,6400);
  ambient.activity(1,false,true);assert.equal(ambient.recorders[0].state,'recording');
+ assert.equal(ambient.timings.filter(v=>v.stage==='handoff').at(-1).detail.gate,'waiting_analysis');
  ambient.sources[0].emit(3200,0);ambient.sources[0].acoustic(9600,9600);
  ambient.analyses[0].emit({generation:1,audio_bytes:6400,speaking:false,speech_seen:true});
  assert.equal(ambient.recorders[0].state,'inactive','Continuous ambient energy must not starve a confirmed same-generation endpoint');
@@ -104,6 +105,15 @@ function boot(){
  assert.equal(ambientRenewed.recorders[0].state,'recording','Renewed classified speech invalidates a pending older noise-watermark decision');
  assert.equal(ambientRenewed.commits.length,0);assert.equal(ambientRenewed.analyses[0].boundaries.length,0);
  ambientRenewed.session.hold();ambientRenewed.recorders[0].complete();await tick();
+ const observed=boot();await observed.session.start();observed.sources[0].emit(3200);
+ for(let n=0;n<20;n++)observed.analyses[0].emit({generation:0,audio_bytes:3200,speaking:false,speech_seen:false});
+ assert.equal(observed.timings.filter(v=>v.stage==='handoff').length,1,'Unchanged analysis does not create per-chunk diagnostics');
+ observed.recorders[0].partial('Private transcript must not enter diagnostics');
+ assert.equal(observed.timings.filter(v=>v.stage==='handoff').at(-1).detail.gate,'waiting_speech','Captions alone do not establish detected speech');
+ observed.session.hold();observed.recorders[0].complete();await tick();
+ const lastObservation=observed.timings.filter(v=>v.stage==='handoff').at(-1).detail;
+ assert.equal(lastObservation.gate,'review');assert.equal(lastObservation.review_after,'waiting_speech');
+ assert(!JSON.stringify(observed.timings.filter(v=>v.stage==='handoff')).includes('Private transcript'));
  const silent=boot();await silent.session.start();silent.sources[0].emit(3200);silent.activity(1,true,false);silent.activity(1,false,true);
  assert.equal(silent.session.floor,false,'A brief detected sound without words cannot hold playback for the entire capture budget');
  silent.activity(1,true,false);assert.equal(silent.session.floor,false,'A repeated old onset cannot reacquire a released floor');
@@ -123,6 +133,7 @@ function boot(){
  const renewed=boot();await renewed.session.start();renewed.sources[0].emit(3200);renewed.activity(1,true,false);renewed.activity(1,false,true);
  renewed.sources[0].emit(64000,0);renewed.sources[0].acoustic(67200,67200);renewed.recorders[0].partial('La persona volvió a hablar');
  assert.equal(renewed.recorders[0].state,'recording','New acoustic activity still fences an earlier endpoint');
+ assert.equal(renewed.timings.filter(v=>v.stage==='handoff').at(-1).detail.gate,'waiting_analysis');
  renewed.session.hold();renewed.recorders[0].complete();await tick();assert.equal(renewed.commits.length,0);
  const expired=boot();await expired.session.start();expired.sources[0].emit(3200);expired.activity(1,true,false);expired.activity(1,false,true);
  for(let n=0;n<9;n++)expired.sources[0].emit(32000,0);expired.recorders[0].partial('La confirmación llegó demasiado tarde');
@@ -144,8 +155,9 @@ function boot(){
  assert.equal(f.recorders[1].parts.reduce((n,p)=>n+p.byteLength,0),32,'The boundary gap belongs to the next exact original');
  f.recorders[0].preparationTiming={provider_final_ms:456};
  f.recorders[0].complete('Una frase');await until(()=>f.sent.length===1);
- assert.deepEqual(f.timings.filter(v=>v.id===f.retained[0].id).map(v=>v.stage),['requested','started','partial','ended','ready','prepared']);
+ assert.deepEqual(f.timings.filter(v=>v.id===f.retained[0].id&&v.stage!=='handoff').map(v=>v.stage),['requested','started','partial','ended','ready','prepared']);
  assert.equal(f.timings.find(v=>v.stage==='prepared').detail.provider_final_ms,456);
+ assert.deepEqual(f.timings.filter(v=>v.id===f.retained[0].id&&v.stage==='handoff').map(v=>v.detail.gate),['waiting_speech','waiting_speech','speaking','finishing','confirming','confirmed']);
  assert.equal(f.retained[0].blob.size,3200);assert.equal(f.commits.length,1);assert.equal(f.session.active,true,'Finalizing an old original does not stop the next microphone capture');
  f.sources[0].emit(3200,3);f.recorders[1].partial('Otra frase');f.activity(2,true,false);f.activity(2,false,true);
  await until(()=>f.recorders.length===3);f.recorders[1].complete('Otra frase');await until(()=>f.sent.length===2);

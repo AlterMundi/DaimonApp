@@ -5,6 +5,7 @@ window.ConversationTiming=(()=>{
     const list=document.querySelector('#conversation-timing-records'),pause=document.querySelector('#conversation-timing-pause'),clear=document.querySelector('#conversation-timing-clear');
     if(!list || !pause || !clear)return;
     const recordings=new Map(),sources=new Map();let binding,sequence=0,pauseMillis;
+    const gates={waiting_speech:'waiting for detected speech',speaking:'speech detected',waiting_endpoint:'waiting for a complete phrase',waiting_analysis:'waiting for analysis to cover captured sound',waiting_transcript:'waiting for transcript',finishing:'finishing audio',confirming:'confirming original',confirmed:'original confirmed',review:'recording needs review'};
     const positive=value=>Number.isSafeInteger(value)&&value>0;
     const duration=(start,end)=>Number.isFinite(start)&&Number.isFinite(end)&&end>=start?`${((end-start)/1000).toFixed(2)} s`:'not observed';
     const element=(tag,text)=>{const node=document.createElement(tag);node.textContent=text;return node;};
@@ -18,6 +19,10 @@ window.ConversationTiming=(()=>{
         const first=field=>Math.min(...matches.map(s=>s[field]).filter(t=>Number.isFinite(t)&&t>=stages.send));
         const row=element('li','');row.append(element('strong',`Recording ${recording.sequence}`));
         row.append(element('p',`First caption: ${duration(stages.started,stages.partial)} · Stop → saved: ${duration(stages.ended,stages.retained)}`));
+        if(recording.handoff){
+          const h=recording.handoff,seconds=value=>Number.isSafeInteger(value)?`${(value/1000).toFixed(2)} s`:'not observed';
+          row.append(element('p',`Turn handoff: ${gates[h.gate]}${h.review_after?` (after ${gates[h.review_after]})`:''} · Captured: ${seconds(h.captured_ms)} · Analyzed: ${seconds(h.analyzed_ms)} · Acoustic fence: ${seconds(h.fence_ms)} · Captions: ${h.words?'present':'not observed'}.`));
+        }
         if(recording.preparation){
           const t=recording.preparation,ms=key=>Number.isFinite(t[key])?`${(t[key]/1000).toFixed(2)} s`:'not observed';
           row.append(element('p',`Server finish → prepared: ${ms('finish_to_prepared_ms')} · Finish authorization: ${ms('finish_authorization_ms')} · Provider final: ${ms('provider_final_ms')} · Final authorization: ${ms('final_authorization_ms')} · Receipt write: ${ms('receipt_write_ms')} (server intervals; not final speech or sound).`));
@@ -32,9 +37,20 @@ window.ConversationTiming=(()=>{
     clear.addEventListener('click',reset);
     function bind(value){if(binding!==value){binding=value;reset();}}
     function mark(id,stage,detail){
-      if(typeof id!=='string'||id.length>128||!['requested','started','partial','ended','send','ready','retained','discarded','prepared'].includes(stage))return;
+      if(typeof id!=='string'||id.length>128||!['requested','started','partial','ended','send','ready','retained','discarded','prepared','handoff'].includes(stage))return;
       let recording=recordings.get(id);
       if(!recording){if(stage!=='requested')return;recording={sequence:++sequence,stages:{}};recordings.set(id,recording);while(recordings.size>8)recordings.delete(recordings.keys().next().value);}
+      if(stage==='handoff'){
+        if(!detail||!Object.hasOwn(gates,detail.gate)||typeof detail.words!=='boolean')return;
+        const clean={gate:detail.gate,words:detail.words};
+        for(const key of ['captured_ms','analyzed_ms','fence_ms']){
+          if(Number.isSafeInteger(detail[key])&&detail[key]>=0&&detail[key]<=120000)clean[key]=detail[key];
+        }
+        if(Object.hasOwn(gates,detail.review_after))clean.review_after=detail.review_after;
+        const old=recording.handoff;
+        if(old?.gate==='confirmed'||old?.gate==='review'&&clean.gate!=='review')return;
+        recording.handoff=clean;render();return;
+      }
       if(recording.stages[stage]!==undefined)return;
       if(stage==='prepared'){
         if(!detail||typeof detail!=='object'||Array.isArray(detail))return;
