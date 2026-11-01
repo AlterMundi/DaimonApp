@@ -70,6 +70,7 @@ window.ConversationVoiceMode=(()=>{
       if(!opened)return;
       if(value.connected===false){close();return;}
       if(continuous&&value.handoff)showDetection(value.handoff);
+      const wasStopped=!listening&&!preparing&&!!directMessage;
       if(value.continuousState){directMessage=value.continuousState.message;listening=value.continuousState.active;preparing=value.continuousState.starting;directPending=value.continuousState.pending;directWorking=value.continuousState.working;remaining=Number.isInteger(value.continuousState.remaining)&&value.continuousState.remaining>=0&&value.continuousState.remaining<=120?value.continuousState.remaining:undefined;}
       if(Object.hasOwn(value,'capture'))phase=value.capture||'idle';
       if(Object.hasOwn(value,'pending'))pending=value.pending;
@@ -83,6 +84,8 @@ window.ConversationVoiceMode=(()=>{
         status.setAttribute('aria-label',status.textContent+(listening&&remaining!==undefined?`. ${remaining} seconds of recording remaining`:''));
         if(Object.hasOwn(value,'caption'))caption.textContent=value.caption;
         if(directPending)caption.textContent=(directMessage?directMessage+' ':'')+'Return to the conversation to review your recordings.';
+        else if(!listening&&!preparing&&directMessage)caption.textContent=directMessage;
+        else if(value.continuousState&&wasStopped&&!Object.hasOwn(value,'caption'))caption.textContent='';
         speak.hidden=preparing||listening||directPending;speak.disabled=directWorking||!canStart();speak.textContent='Start voice';
         dialog.dataset.phase=phase==='recording'?'listening':playing?'speaking':'waiting';return;
       }
