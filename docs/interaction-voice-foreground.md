@@ -14,6 +14,14 @@ The Sol integrator retains routing, work progression and final-return ownership;
 its persistent workers keep their own sessions. Integrating results/questions
 return to the voice layer, which remains the interlocutor throughout.
 
+The foreground distinguishes exploring an idea from requesting its execution.
+It handles explanations and prompt refinement conversationally, uses available
+context, and asks a brief clarification only when a missing detail materially
+changes the requested outcome. A clear request goes to Sol without a redundant
+confirmation step. Its formulation preserves constraints, uncertainty and
+corrections. New speech remains conversational while work is pending; filler
+acknowledgments do not count as useful-response latency.
+
 ```mermaid
 flowchart LR
   H[Human] <-->|Native audio and captions| V[Conversational foreground]
