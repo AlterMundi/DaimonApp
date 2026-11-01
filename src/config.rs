@@ -726,11 +726,14 @@ mod tests {
             activated_after = 1
         "#;
         let mut config: Config = toml::from_str(raw).unwrap();
+        config.codex.binary = std::env::current_exe().unwrap();
         config.validate().unwrap();
         for mode in ["bounded", "unknown"] {
             let selected = raw.replace("mode = 'interaction'", &format!("mode = '{mode}'"));
-            let result = toml::from_str::<Config>(&selected)
-                .and_then(|mut c| c.validate().map_err(serde::de::Error::custom));
+            let result = toml::from_str::<Config>(&selected).and_then(|mut c| {
+                c.codex.binary = config.codex.binary.clone();
+                c.validate().map_err(serde::de::Error::custom)
+            });
             assert!(result.is_err());
         }
         let mut wrong_owner = config.clone();
