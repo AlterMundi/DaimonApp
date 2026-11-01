@@ -61,12 +61,14 @@ function boot(readOnly=false,standalone=false,options={}) {
       if(options.telegramDenied)throw Object.assign(Error('Telegram observation denied'),{status:403});
       const before=Number(url.searchParams.get('before')),after=url.searchParams.get('direction')==='after';
       const rows=[...telegramOriginals.values()].filter(v=>after?v.sequence>before:!before||v.sequence<before).sort((a,b)=>after?a.sequence-b.sequence:b.sequence-a.sequence);
-      const items=rows.slice(0,8);requests.push({telegram:true,body});
+      const items=rows.slice(0,8).map(v=>options.inputPreviews?{...v,text:undefined,preview:Array.from(v.text).slice(0,1000).join('')}:v);requests.push({telegram:true,body});
       return {schema:'telecodex.telegram-input-list/v1',binding:'fixture',items,cursor:items.at(-1)?.sequence||0,newest:Math.max(0,...items.map(v=>v.sequence)),more:rows.length>8};
     }
     if(url.pathname.endsWith('/trace/original')) {
       const id=decodeURIComponent(url.pathname.split('/').at(-3)),offset=Number(url.searchParams.get('offset'));
-      return {id,source:'original',offset,text:(originals.get(id)||telegramOriginals.get(id)).text.slice(offset),next_offset:null};
+      const chars=Array.from((originals.get(id)||telegramOriginals.get(id)).text),end=options.inputPreviews?Math.min(offset+2048,chars.length):chars.length;
+      if(options.inputPreviews)requests.push({originalPart:id,offset});
+      return {id,source:'original',offset,text:chars.slice(offset,end).join(''),next_offset:end<chars.length?end:null};
     }
     if(url.pathname.endsWith('/trace')) {
       const id=decodeURIComponent(url.pathname.split('/').at(-2)),original=originals.get(id)||telegramOriginals.get(id);
@@ -122,7 +124,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       const rows=[...originals.values()].filter(v=>direction==="after"?v.sequence>before:!before||v.sequence<before);
       rows.sort((a,b)=>direction==="after"?a.sequence-b.sequence:b.sequence-a.sequence);
       const selected=rows.slice(0,8);
-      const snapshot={binding:"fixture",csrf:"synthetic",routing_choices:[{selector:"t7",label:"Alpha"},{selector:"t8",label:"Beta"}],items:selected.map(v=>({...v})),cursor:selected.at(-1)?.sequence||0,newest:Math.max(0,...selected.map(v=>v.sequence)),more:rows.length>8};
+      const snapshot={binding:"fixture",csrf:"synthetic",routing_choices:[{selector:"t7",label:"Alpha"},{selector:"t8",label:"Beta"}],items:selected.map(v=>options.inputPreviews?{...v,text:undefined,preview:Array.from(v.text).slice(0,1000).join('')}:{...v}),cursor:selected.at(-1)?.sequence||0,newest:Math.max(0,...selected.map(v=>v.sequence)),more:rows.length>8};
       if (heldInputs && (!heldInputs.direction || heldInputs.direction===direction)) {const held=heldInputs;heldInputs=undefined;held.started();await held.promise;}
       return snapshot;
     }
@@ -223,7 +225,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     rangeGeometry(fn){context.document.createRange=fn;},
     reducedMotion(value){context.window.matchMedia=()=>({matches:value});},
     holdReplyText(id){let release,started;const entered=new Promise(yes=>{started=yes;}),promise=new Promise(yes=>{release=yes;});replyHolds.set(id,{promise,started});return {entered,release};},
-    intersect(id,visible=true){const target=nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId===id);assert(target,JSON.stringify({id,keys:nodes.get("#conversation-timeline").children.map(c=>c.dataset),state:nodes.get("#conversation-state")?.textContent}));intersection([{target,isIntersecting:visible}]);}, telegramOriginals, nativePosts,taskPosts,audioCalls,clock,recoveryPosts,
+    intersect(id,visible=true){const target=nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId===id||c.dataset.inputId===id);assert(target,JSON.stringify({id,keys:nodes.get("#conversation-timeline").children.map(c=>c.dataset),state:nodes.get("#conversation-state")?.textContent}));intersection([{target,isIntersecting:visible}]);}, telegramOriginals, nativePosts,taskPosts,audioCalls,clock,recoveryPosts,
     profile(value){presentationProfile=value;},
     mediaSession,mediaActions,event(name,value){for(const fn of windowEvents.get(name)||[])fn(value);},
     hide(){document.hidden=true;for(const fn of documentEvents.get('visibilitychange')||[])fn();},
@@ -329,8 +331,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   const bodies=new Map([['native:8','A complete answer. '.repeat(200)],['native:7','A second topic. '.repeat(200)],['native:6','A third topic. '.repeat(200)]]);
   const holds=new Map();
   for(const [id,text] of bodies){const n=Number(id.split(':')[1]);automatic.overrideSource(n,{preview:text.slice(0,20),text_characters:text.length});automatic.replyTexts.set(id,text);holds.set(id,automatic.holdReplyText(id));}
+  automatic.overrideSource(8,{preview:bodies.get('native:8').slice(0,20),text_characters:bodies.get('native:8').length,correction_pending:true});
+  automatic.overrideSource(7,{preview:bodies.get('native:7').slice(0,20),text_characters:bodies.get('native:7').length,native_binding_current:false});
   await automatic.ui.refresh();
   for(const id of bodies.keys())automatic.intersect(id);
+  await new Promise(setImmediate);assert.equal(automatic.partReads.length,2,'Historical and correction-pending answers remain readable');
   await Promise.all([holds.get('native:8').entered,holds.get('native:7').entered]);
   assert.equal(automatic.partReads.length,2,'visible answers may use only two concurrent readers');
   const autoCompose=automatic.nodes.get('#conversation-compose'),autoDraft=automatic.nodes.get('#conversation-message');
@@ -348,6 +353,33 @@ function boot(readOnly=false,standalone=false,options={}) {
   automatic.overrideSource(8,{preview:'🙂🙂',text_characters:8,text_sha256:'new-emoji',revision:'emoji-revision'});automatic.replyTexts.set('native:8','🙂🙂abcdef');
   await automatic.ui.refresh();automatic.intersect('native:8');await new Promise(setImmediate);
   assert.equal(automatic.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8').children[2].textContent,'🙂🙂abcdef','truncation uses Unicode code points, not UTF-16 units');
+  {
+    const originalsView=boot(false,true,{autoText:true,inputPreviews:true});
+    const whole='🙂 Un mensaje de voz conserva cada palabra aunque su vista previa termine a mitad de frase. '.repeat(40)+'Final completo.';
+    originalsView.originals.set('long-voice',{id:'long-voice',text:whole,voice:{audio_sha256:'a'.repeat(64)},sequence:1,phase:'accepted'});
+    originalsView.telegramOriginals.set('telegram-voice',{id:'telegram-voice',text:whole,voice:{audio_sha256:'b'.repeat(64)},sequence:2,phase:'accepted',origin_kind:'telegram',read_only:true});
+    await originalsView.ui.refresh();
+    assert.equal(originalsView.requests.filter(r=>r.originalPart).length,0,'Offscreen originals must not fetch history');
+    for(const id of ['long-voice','telegram-voice'])originalsView.intersect(id);
+    await new Promise(setImmediate);
+    for(const id of ['long-voice','telegram-voice']){
+      const card=originalsView.nodes.get('#conversation-timeline').children.find(c=>c.dataset.inputId===id);
+      assert.equal(card.children[1].textContent,'Automatic voice transcript:\n'+whole,'App and read-only Telegram transcripts expand completely');
+      assert.equal(card.children[3].children[0].hidden,true);
+    }
+    const reads=originalsView.requests.filter(r=>r.originalPart).length;assert(reads>=4);
+    await originalsView.ui.refresh();for(const id of ['long-voice','telegram-voice'])originalsView.intersect(id);await new Promise(setImmediate);
+    assert.equal(originalsView.requests.filter(r=>r.originalPart).length,reads,'Metadata refresh retains full originals without fetching again');
+    assert.equal(originalsView.nativePosts.length,0);assert.equal(originalsView.audioCalls.length,0);originalsView.ui.stop();
+  }
+  {
+    const view=boot(false,true,{autoText:true,inputPreviews:true}),whole='Long original transcript. '.repeat(700);
+    view.originals.set('bounded-original',{id:'bounded-original',text:whole,sequence:1,phase:'accepted'});
+    await view.ui.refresh();view.intersect('bounded-original');await new Promise(setImmediate);
+    const card=view.nodes.get('#conversation-timeline').children.find(c=>c.dataset.inputId==='bounded-original'),read=card.children[3].children[0];
+    assert(!read.hidden);assert.equal(read.textContent,'Continue reading','The bounded reader must expose the remaining original');
+    while(!read.hidden)await read.handlers.click();assert.equal(card.children[1].textContent,whole);view.ui.stop();
+  }
   const localProgress=boot(false,true,{autoText:true});
   const completeLocalProgress='Queda establecido: seguimos con el trabajo. '.repeat(80)+'La última palabra permanece completa.';
   localProgress.overrideSource(8,{kind:'integrator_progress',preview:completeLocalProgress.slice(0,240),text_characters:Array.from(completeLocalProgress).length});
