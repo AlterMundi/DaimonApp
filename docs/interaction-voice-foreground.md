@@ -449,7 +449,9 @@ than another isolated arithmetic or transport probe.
 `/api/interaction/voice/native` WebSocket when the existing prepared Gemini
 credential and acoustic detector are configured. Default is false. The avatar
 selects it only when the server advertises it and the browser supports the PCM
-path. The Android native audio client retains the existing mode in this pilot.
+path. Android clients through0.5 retain the existing mode. The0.6 candidate
+adds the same foreground protocol through the existing Android speech owner
+and an AudioTrack PCM branch; source/CI APK is not device acceptance.
 Normal chat, selected Sol workers, ASR and Qwen playback remain available.
 
 The route reuses shared login, exact Origin, CSRF and current entry checks. It
@@ -649,3 +651,40 @@ credential, persistence, network request, polling or new server/provider operati
 is collected by timing. The existing engine callbacks are optional; ordinary
 chat and native speech ownership/receipts are unchanged. The inspector stays
 closed by default and does not add diagnostic text to the avatar or audio dock.
+
+## Android native PCM candidate
+
+Android0.6 advertises `NativeSpeechAudio.pcm` with `openPcm` only from its bundled
+origin-scoped adapter. Older APKs keep the prior voice mode. A supported avatar
+uses the same authenticated native WebSocket, frozen question scope, exact
+originals, interpretation confirmation and Sol delegation/returns as the browser.
+It opens no second Web Audio output; microphone capture remains the existing
+explicit WebView/worklet path and requires unchanged Android permissions.
+
+The single SpeechOutput owner selects its existing encoded MediaPlayer branch or
+PCM AudioTrack branch. PCM16 mono24000Hz is verified in ordered at-most32KiB
+SHA-256 chunks. Bounds:30seconds queued,512spans,128utterance IDs,300seconds
+or14.4MB per session. Partial nonblocking writes are not playback; native frame
+head positions map back to the exact generated utterance offsets. They establish
+neither word boundaries nor physical hearing. Pause retains the queue; flush
+reports the current position, retires old sources and discards queued sound.
+Fresh utterances can then play; old IDs cannot resume after a flush. Sequence and
+lifetime budgets are not renewed by interruption. Device/stall/readiness failure
+closes to existing original review, never another synthesizer, upload or replay.
+
+Audio focus is acquired just before play and released on drain/pause/flush/error/
+stop, with the existing speech/navigation attributes. Focus loss closes this
+foreground voice session instead of reclaiming focus. MediaSession controls reuse
+the same web/native control owner. Activity backgrounding closes PCM natively
+before relying on JavaScript, refuses new PCM commands while hidden, and closes
+capture/provider/session through the existing original recovery path. Ordinary
+explicit encoded background replies retain their existing two-hour service.
+No background microphone or automatic resume/reconnect is added.
+
+Source and synthetic Node/JVM checks do not qualify Android AudioTrack, the full
+WebView/provider/phone journey, music recovery, echo/noise or heard latency. The
+existing bounded emulator job includes a real AudioTrack head/pause/flush/fresh-
+utterance test alongside encoded playback, service, export and microphone checks.
+Use that actual result and retain failures before describing the candidate as
+qualified. Same-key higher-versionCode delivery preserves login/app data; a
+rollback is a forward build, never uninstall/clear-data or native/history restore.

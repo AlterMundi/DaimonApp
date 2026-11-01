@@ -23,6 +23,7 @@ final class SpeechOutput {
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
     private AudioFocusRequest focus;
     private MediaPlayer player;
+    private PcmSpeechOutput pcm;
     private ByteArrayOutputStream pending;
     private VerifiedAudioBuffer liveSource;
     private String id, hash;
@@ -51,12 +52,11 @@ final class SpeechOutput {
     }
     private void pause(String reason) {
         playWhenSeekDone = false;
+        if (pcm != null) pcm.pause();
         if (prepared && player != null && player.isPlaying()) player.pause();
         releaseFocus(); event(reason);
     }
-    private void play() {
-        if (!prepared || player == null) throw new IllegalStateException("Audio not prepared");
-        if (seeking) { playWhenSeekDone = true; return; }
+    private void acquireFocus() {
         if (focus == null) {
             focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(attributes).setAcceptsDelayedFocusGain(false)
@@ -68,7 +68,12 @@ final class SpeechOutput {
                 releaseFocus(); throw new IllegalStateException("Audio focus unavailable");
             }
         }
-        player.setVolume(volume, volume); player.start(); event("playing"); handler.post(tick);
+    }
+    private void play() {
+        if (pcm != null) { pcm.resume(); return; }
+        if (!prepared || player == null) throw new IllegalStateException("Audio not prepared");
+        if (seeking) { playWhenSeekDone = true; return; }
+        acquireFocus(); player.setVolume(volume, volume); player.start(); event("playing"); handler.post(tick);
     }
     private final Runnable tick = new Runnable() {
         public void run() {
@@ -76,12 +81,17 @@ final class SpeechOutput {
         }
     };
     void stop() {
+        if (pcm != null) { pcm.close(); pcm = null; }
         handler.removeCallbacks(tick); releaseFocus(); prepared = seeking = playWhenSeekDone = false;
         // Wake the codec reader before release(), which can wait for its I/O.
         if (liveSource != null) { liveSource.close(); liveSource = null; }
         if (player != null) { player.release(); player = null; }
         if (pending != null) { pending.reset(); pending = null; }
         id = hash = null;
+    }
+    boolean leaveForeground() {
+        if (pcm == null) return false;
+        event("focuslost"); stop(); return true;
     }
     void background() { pause("focuslost"); stop(); }
     void command(JSONObject value) {
@@ -95,6 +105,16 @@ final class SpeechOutput {
                 handler.postDelayed(() -> { if (requested.equals(id) && pending != null) { event("error"); stop(); } }, 30000);
                 return;
             }
+            if (command.equals("pcm_begin")) {
+                stop(); id = requested;
+                pcm = new PcmSpeechOutput(attributes, handler, this::acquireFocus, this::releaseFocus, fields -> {
+                    if (!requested.equals(id)) return;
+                    try { fields.put("id", requested); } catch (Exception ignored) { }
+                    emit.accept(fields);
+                    if (fields.optString("type").equals("error")) stop();
+                });
+                event("pcm_ready"); return;
+            }
             if (command.equals("stream_begin")) {
                 stop(); id = requested; liveSource = new VerifiedAudioBuffer();
                 VerifiedAudioBuffer buffer = liveSource;
@@ -107,6 +127,13 @@ final class SpeechOutput {
             }
             if (!requested.equals(id)) return; // Late commands cannot affect another source.
             switch (command) {
+                case "pcm_chunk": {
+                    String encoded = value.getString("data");
+                    if (pcm == null || encoded.length() > 44000) throw new IllegalArgumentException();
+                    pcm.append(value.getInt("sequence"), value.getString("utterance"), value.getInt("end"),
+                        android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP), value.getString("sha256")); break;
+                }
+                case "pcm_flush": if (pcm == null) throw new IllegalArgumentException(); else pcm.flush(); break;
                 case "stream_chunk": {
                     String encoded = value.getString("data");
                     if (liveSource == null || encoded.length() > 44000) throw new IllegalArgumentException();
@@ -148,7 +175,7 @@ final class SpeechOutput {
                     int position = Math.max(0, value.getInt("millis")), duration = player.getDuration();
                     seeking = true; player.seekTo(duration > 0 ? Math.min(duration, position) : position);
                 } break;
-                case "volume": volume = (float)Math.max(0, Math.min(1, value.getDouble("value"))); if (player != null && prepared) player.setVolume(volume, volume); break;
+                case "volume": volume = (float)Math.max(0, Math.min(1, value.getDouble("value"))); if (player != null && prepared) player.setVolume(volume, volume); if (pcm != null) pcm.volume(volume); break;
                 case "stop": stop(); break;
                 default: throw new IllegalArgumentException();
             }

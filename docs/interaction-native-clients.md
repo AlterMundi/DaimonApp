@@ -6,6 +6,22 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
+## Native conversation candidate0.6 —1November2026
+
+The0.6 source candidate connects the existing native speech foreground above Sol
+to Android's single speech owner through verified streaming PCM/AudioTrack.
+It preserves ordinary encoded playback/background sessions, shared login,
+permissions, original/question scope and existing native work. Older APKs retain
+the prior avatar mode; the browser is unchanged. Native conversation remains
+foreground-only and closes on Activity background/focus loss, retaining original
+recovery. No new background capture or automatic model/input replay.
+
+See the [PCM contract](interaction-voice-foreground.md#android-native-pcm-candidate)
+for chunk/frame-head/interruption bounds and actual qualification limits. JVM
+queue and Node engine/adapter checks are component evidence; real AudioTrack/
+WebView/provider/phone acceptance must remain separate. VersionCode6 requires
+same-key upgrade. Source or a CI APK is not a deployed/installed client.
+
 ## First Android pilot
 
 Source: `clients/android`. This is a thin Android WebView host with a Java audio
