@@ -23,7 +23,7 @@ from dashboard.provider import Provider
 from dashboard.companion import Grants
 from scripts.interaction_asr import streaming_result
 from dashboard.private_state import read_json
-from dashboard.live_transcription import save_prepared, wav_bytes
+from dashboard.live_transcription import save_prepared, wav_bytes, VoiceInbox
 from dashboard.transcription import TranscriptionUnavailable
 from dashboard_io import Receiver
 
@@ -322,6 +322,66 @@ class LiveTranscription(unittest.TestCase):
     def open_activity(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/activity',headers={'origin':origin})
 
+    def shared_home(self):
+        self.client.__exit__(None,None,None)
+        home='https://home.example.test'
+        self.config['origin']=home
+        self.config['shared_auth']={'enabled':True,'home_origin':home}
+        self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=home)
+        self.client.__enter__()
+        self.client.cookies.set('__Host-home','h'*43,path='/')
+        return home
+
+    def test_shared_home_delayed_auth_batches_without_dropping_activity_or_boundaries(self):
+        home=self.shared_home();warm=self.analysis();calls=[]
+        def identity(origin,token):
+            calls.append(time.monotonic());time.sleep(.03)
+            return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
+                    'actor':{'ref':'human:telegram:100','kind':'human','name':'Synthetic'}}
+        with patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.live_transcription.Detector',warm):
+            self.csrf=self.client.get('/api/interaction/access').json()['csrf']
+            with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/activity',headers={'origin':home}) as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                before=len(calls)
+                chunks=[bytes([i,0])*1600 for i in range(20)]
+                for chunk in chunks[:10]:ws.send_bytes(chunk)
+                ws.send_json({'boundary':{'generation':1,'audio_bytes':32000}})
+                for chunk in chunks[10:]:ws.send_bytes(chunk)
+                events=[ws.receive_json() for _ in range(21)]
+                self.assertEqual([v['type'] for v in events],['turn_activity']*10+['boundary']+['turn_activity']*10)
+                self.assertEqual([v['activity']['audio_bytes'] for v in events if v['type']=='turn_activity'],
+                                 list(range(3200,64001,3200)))
+                self.assertEqual(events[11]['activity']['onset']['generation'],2)
+                self.assertEqual(warm.opened[0].pcm,b''.join(chunks))
+                # Old per-packet+per-event authorization needs41 lookups. Fresh
+                # checks still happen, but already queued packets share a check.
+                self.assertLess(len(calls)-before,30)
+                self.assertGreaterEqual(len(calls)-before,4)
+                ws.send_json({'type':'close'})
+        self.assertTrue(warm.opened[0].closed)
+        self.assertEqual(Stream.opened,[]);self.assertEqual(self.provider.calls,[])
+
+    def test_shared_home_revocation_during_pending_audio_prevents_feed(self):
+        home=self.shared_home();warm=self.analysis();entered=threading.Event();release=threading.Event();gate=False
+        def identity(origin,token):
+            if gate:
+                entered.set()
+                if not release.wait(2):raise TimeoutError('Fixture gate')
+            return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
+                    'actor':{'ref':'human:telegram:100','kind':'human'}}
+        with patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.live_transcription.Detector',warm):
+            self.csrf=self.client.get('/api/interaction/access').json()['csrf']
+            try:
+                with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/activity',headers={'origin':home}) as ws:
+                    ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready');gate=True
+                    ws.send_bytes(b'\0'*3200);self.assertTrue(entered.wait(1))
+                    for _ in range(10):ws.send_bytes(b'\0'*3200)
+                    self.provider.allowed=False;release.set()
+                    self.assertEqual(ws.receive_json()['type'],'unavailable')
+            finally:release.set()
+        self.assertEqual(warm.opened[0].pcm,b'');self.assertTrue(warm.opened[0].closed)
+        self.assertEqual(self.provider.calls,[])
+
     def test_foreground_analysis_stays_warm_between_utterance_boundaries(self):
         warm=self.analysis()
         with patch('dashboard.live_transcription.Detector',warm),self.open_activity() as ws:
@@ -545,6 +605,48 @@ class LiveTranscription(unittest.TestCase):
         with self.open() as ws:
             ws.send_json(self.meta(authorization='Bearer invalid'));self.assertEqual(ws.receive_json()['type'],'unavailable')
         self.assertEqual(Stream.opened,[])
+
+
+class VoiceInboxBounds(unittest.IsolatedAsyncioTestCase):
+    async def test_backlog_bounds_release_and_keep_original_control_order(self):
+        queue=asyncio.Queue()
+        inbox=VoiceInbox(queue.get,pcm=True)
+        try:
+            for value in ({'type':'websocket.receive','bytes':b'a'*3200},
+                          {'type':'websocket.receive','text':'{"boundary":{}}'},
+                          {'type':'websocket.receive','bytes':b'b'*3200},
+                          {'type':'websocket.disconnect'}):
+                queue.put_nowait(value)
+            await asyncio.sleep(0)
+            self.assertEqual((await inbox.batch())[0]['bytes'],b'a'*3200)
+            self.assertIn('text',(await inbox.batch())[0])
+            self.assertEqual((await inbox.batch())[0]['bytes'],b'b'*3200)
+            self.assertEqual((await inbox.batch())[0]['type'],'websocket.disconnect')
+        finally:await inbox.close()
+        self.assertTrue(inbox.task.done());self.assertEqual(inbox.bytes,0)
+        for frames in ([{'type':'websocket.receive','bytes':b'0'*3200}]*81,
+                       [{'type':'websocket.receive','text':'{}'}]*129,
+                       [{'type':'websocket.receive','bytes':b'x'}],
+                       [{'type':'websocket.receive','bytes':b'0'*32002}],
+                       [{'type':'websocket.receive','text':'x'*257}]):
+            queue=asyncio.Queue()
+            for frame in frames:queue.put_nowait(frame)
+            inbox=VoiceInbox(queue.get,pcm=True)
+            try:
+                await asyncio.sleep(0)
+                with self.assertRaises(ValueError):await inbox.batch()
+                self.assertLessEqual(inbox.bytes,256000);self.assertLessEqual(len(inbox.items),128)
+            finally:await inbox.close()
+            self.assertTrue(inbox.task.done())
+
+    async def test_output_backlog_never_drops_events_silently(self):
+        queue=asyncio.Queue()
+        for _ in range(129):queue.put_nowait({'type':'activity'})
+        inbox=VoiceInbox(queue.get)
+        try:
+            await asyncio.sleep(0)
+            with self.assertRaises(ValueError):await inbox.batch()
+        finally:await inbox.close()
 
 
 if __name__=='__main__':unittest.main()

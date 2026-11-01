@@ -636,3 +636,29 @@ available for Resume, preserving the existing no-resynthesis behavior. Mounted
 regressions cover queued, late canonical and late live siblings, the corrective
 turn, explicit Listen and existing prepared-media Resume. This is a playback
 boundary, never native cancellation or question completion.
+
+
+### Shared-session activity backpressure
+
+The continuous activity WebSocket uses fresh shared-home authorization on input
+and output. A remote identity check on every100ms packet can fall behind capture
+while the independent ASR still displays captions. An observed coverage gap is
+not proof that the person was silent or that a specific identity call caused it.
+
+The activity route now collects already-arrived messages while authorization is
+in flight. Each fresh authorized batch contains at most10 original packets and
+32000 PCM bytes; packets are fed individually, preserving all detector decisions
+and onset/end events. Controls retain their exact ordered boundary and a separate
+fresh check. Worker outputs likewise retain every event in order, with a fresh
+check before each batch of at most10. There is no coalescing delay, identity cache,
+dropped audio/event, new admission or retry. Binding rechecks remain every15s.
+
+Pending input is limited to256000 PCM bytes (8s) and128 messages; pending output
+to128 already bounded worker events. Overflow fails visibly and closes the owned
+intake/worker rather than growing memory or silently skipping audio. Existing
+300s session, per-frame validation and original recovery remain. The independent
+live-ASR route does not perform these per-packet identity checks and is unchanged.
+Qualification must exercise the actual shared-home cookie route with delayed
+identity, revocation, ordered boundaries and overflow, beside existing companion
+grants. Synthetic delay proves the mechanism; phone latency/acceptance and the
+reported individual failure remain separate.
