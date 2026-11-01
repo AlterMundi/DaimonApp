@@ -153,6 +153,7 @@ impl Store {
         )
         .to_string();
         let source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
             event_id: id.clone(),
@@ -393,6 +394,7 @@ impl Store {
             d.body.chars().take(16000).collect::<String>()
         );
         let source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "local-session-result".into(),
             event_id: call.id.clone(),
@@ -478,6 +480,7 @@ mod tests {
         let i = s
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
                     event_id: "human-parent".into(),

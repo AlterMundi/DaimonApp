@@ -493,6 +493,7 @@ impl Store {
             serde_json::to_string(&predecessor)?
         );
         let source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
             event_id: format!("workflow:{}:{}", w.id, step.id),
@@ -2813,6 +2814,7 @@ mod tests {
         let amendment = s
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture-correction".into(),
                     event_id: "later-correction".into(),

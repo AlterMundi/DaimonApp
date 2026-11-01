@@ -17,6 +17,10 @@ class Recovery(Creation):
         self.fail_first=False
         self.inspect_resume=False
         self.reject_resume=False
+        # An old HTTP poll may outlive the deliberately crashed receiver.
+        # Reuse the fixture's Telegram offset ACK semantics: a lost response
+        # must not consume the new recovery message before durable admission.
+        self.acknowledged_updates=True
         super().__init__(binary)
 
     def wait(self,condition,seconds=15):
@@ -27,9 +31,10 @@ class Recovery(Creation):
             diagnostic={}
             if self.process:
                 if self.process.poll() is None:self.process.send_signal(signal.SIGINT)
-                _,error=self.process.communicate(timeout=8)
+                output,error=self.process.communicate(timeout=8)
                 self.process=None
-                diagnostic['stderr']=error.replace('synthetic-question-token','[redacted]')
+                diagnostic['stdout_tail']=output[-4000:].replace('synthetic-question-token','[redacted]')
+                diagnostic['stderr_tail']=error[-4000:].replace('synthetic-question-token','[redacted]')
             with sqlite3.connect(self.root/'state.sqlite') as db:
                 for table in ('incoming_updates','sessions','turns','interaction_creations'):
                     diagnostic[table]=db.execute('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 8').fetchall()

@@ -837,6 +837,7 @@ mod tests {
     }
     fn input(event: i64, targets: &[i64]) -> crate::interaction::SourceInput {
         crate::interaction::SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "telegram:test-bot".into(),
             event_id: event.to_string(),

@@ -440,10 +440,72 @@ fn sample_app() -> (App, NamedTempFile) {
 }
 
 #[tokio::test]
+async fn integrated_tribu_keeps_an_existing_native_binding_without_legacy_feature_profile() {
+    let (mut app, _db) = sample_app();
+    let key = SessionKey::new(100, Some(7));
+    app.shared
+        .store
+        .ensure_session(key, 100, &app.shared.session_defaults)
+        .unwrap();
+    app.shared
+        .store
+        .set_session_codex_thread(key, "existing-integrator-native")
+        .unwrap();
+    Arc::get_mut(&mut app.shared).unwrap().config.tribu = Some(serde_json::from_value(serde_json::json!({
+        "mode":"bounded", "socket_path":"/tmp/fixture.sock", "owner_client_file":"/tmp/fixture-owner.json",
+        "being_ref":"fixture-being", "body_label":"fixture.codex@fixture", "embodiment_id":"fixture-body",
+        "human_id":100, "chat_id":100, "topic_id":7, "activated_after":1
+    })).unwrap());
+    let existing = app.shared.store.get_session(key).unwrap().unwrap();
+    assert!(
+        super::turns::resolve_session_codex_binding_from_history(&app.shared, existing.clone())
+            .is_err()
+    );
+    Arc::get_mut(&mut app.shared)
+        .unwrap()
+        .config
+        .tribu
+        .as_mut()
+        .unwrap()
+        .mode = crate::config::TribuMode::Interaction;
+    let selected =
+        super::turns::resolve_session_codex_binding_from_history(&app.shared, existing).unwrap();
+    assert_eq!(
+        selected.codex_thread_id.as_deref(),
+        Some("existing-integrator-native")
+    );
+    assert_eq!(selected.key, key);
+    // Browser IDs are client supplied. An occupied UUID is not evidence that
+    // this authenticated public original was admitted or delivered.
+    let source_id = "a".repeat(64);
+    let id = crate::interaction::TribuSource::identity("fixture-being", &source_id, key);
+    let binding = app
+        .shared
+        .store
+        .interaction_presentation_list(100, key, 0, 0)
+        .unwrap()["binding"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.shared
+        .store
+        .conversation_input_capture(100, key, &binding, &id, "Unrelated private original")
+        .unwrap();
+    let error = super::tribu::handle_socket(
+        &app,
+        &serde_json::json!({"op":"admit","source_id":source_id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("unrelated original"));
+}
+
+#[tokio::test]
 async fn maintenance_hold_blocks_queued_turn_and_public_admission() {
     let (mut app, _db) = sample_app();
     let key = SessionKey::new(100, Some(7));
     Arc::get_mut(&mut app.shared).unwrap().config.tribu = Some(crate::config::TribuConfig {
+        mode: crate::config::TribuMode::Bounded,
         socket_path: sample_workspace().join("unused.sock"),
         owner_client_file: sample_workspace().join("nonexistent-owner.json"),
         being_ref: "synthetic-being".into(),

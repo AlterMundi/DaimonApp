@@ -276,7 +276,7 @@ pub(super) async fn process_turn(
         .config
         .tribu
         .as_ref()
-        .filter(|p| p.key() == session.key);
+        .filter(|p| p.mode == crate::config::TribuMode::Bounded && p.key() == session.key);
     if bounded.is_some() {
         shared.store.tribu_check_thread(&session)?;
     }
@@ -1001,6 +1001,7 @@ pub(super) async fn process_turn(
                                     let instruction=shared.store.interaction_instruction(id,requester_user_id)?.context("Interaction input missing before submission")?;
                                     if !super::routing::dispatch_allowed(&shared,&instruction)? {bail!("Interaction admission retired before native submission; input retained");}
                                     let source=shared.store.interaction_source(id,requester_user_id)?;
+                                    if let Some(external)=source.tribu_source.as_ref(){super::tribu::validate_integrated_source(&shared,external).await?;}
                                     super::nexus::validate_input_target(&shared,source.update_id,session_key,requester_user_id)?;
                                     shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Submitting,None)?;
                                 }
@@ -1013,7 +1014,7 @@ pub(super) async fn process_turn(
                                 if shared.store.maintenance_writer_held(session_key)? {
                                     bail!("Native writer held during controlled maintenance; input retained without submission");
                                 }
-                                if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
+                                if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeGoalBlocked { turn_id: native_turn, goal } => {
@@ -2504,7 +2505,7 @@ pub(super) fn resolve_session_codex_binding_from_history(
         .config
         .tribu
         .as_ref()
-        .is_some_and(|p| p.key() == session.key)
+        .is_some_and(|p| p.mode == crate::config::TribuMode::Bounded && p.key() == session.key)
     {
         shared.store.tribu_check_thread(&session)?;
         return Ok(session);

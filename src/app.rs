@@ -908,7 +908,7 @@ impl App {
             .config
             .tribu
             .as_ref()
-            .is_some_and(|p| p.key() == session.key)
+            .is_some_and(|p| p.mode == crate::config::TribuMode::Bounded && p.key() == session.key)
             && is_text_only_steer_candidate(&message, text)
             && self
                 .try_steer_active_turn(session.key, from.id, text)
@@ -926,12 +926,9 @@ impl App {
             && attachments
                 .iter()
                 .all(|a| !matches!(a.kind, AttachmentKind::Audio | AttachmentKind::Voice))
-            && !self
-                .shared
-                .config
-                .tribu
-                .as_ref()
-                .is_some_and(|p| p.key() == session.key)
+            && !self.shared.config.tribu.as_ref().is_some_and(|p| {
+                p.mode == crate::config::TribuMode::Bounded && p.key() == session.key
+            })
             && self
                 .try_steer_active_input(session.key, from.id, &prompt, &attachments)
                 .await?

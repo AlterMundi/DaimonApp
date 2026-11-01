@@ -562,6 +562,7 @@ mod tests {
             .set_session_codex_thread(target, "worker-native")
             .unwrap();
         let mut input = SourceInput {
+            tribu_source: None,
             transcription: Some(proof.clone()),
             channel: "telegram:fixture".into(),
             event_id: "20".into(),

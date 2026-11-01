@@ -500,6 +500,7 @@ impl Store {
             return Ok(Some(ConversationRouteAction::Interrupt(target)));
         }
         let source = SourceInput {
+            tribu_source: input.tribu_source.clone(),
             transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
             channel: "conversation".into(),
             event_id: input.id.clone(),
@@ -669,6 +670,43 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn tribu_routing_preserves_authenticated_original_and_single_integrator() {
+        let (_file, store, profile, _) = setup();
+        let source = crate::interaction::TribuSource {
+            record: json!({
+                "schema":"dm.tribu-human-request/v1", "id":"a".repeat(64),
+                "revision":"b".repeat(64), "being_ref":"fixture-being",
+                "human":{"telegram_id":100}, "text":"#Alpha inspect the requested fixture",
+                "attestation":{"kind":"authenticated-telegram-ingress"}
+            }),
+        };
+        let (input, _) = store
+            .conversation_tribu_capture(100, profile.entry(), source.clone(), 20)
+            .unwrap();
+        let action = store
+            .conversation_route(100, &input.id, &profile, None)
+            .unwrap()
+            .unwrap();
+        let ConversationRouteAction::Worker(instruction, _) = action else {
+            panic!("expected existing worker route");
+        };
+        let routed = store.interaction_source(&instruction.id, 100).unwrap();
+        assert_eq!(routed.tribu_source, Some(source));
+        assert_eq!(routed.event_id, input.id);
+        assert_eq!(routed.channel, "conversation");
+        assert_eq!(routed.origin.thread_id, profile.topic_id);
+        assert_eq!(
+            store
+                .get_session(profile.entry())
+                .unwrap()
+                .unwrap()
+                .codex_thread_id
+                .as_deref(),
+            Some("native-1")
+        );
+    }
+
     fn setup() -> (tempfile::NamedTempFile, Store, InteractionConfig, String) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let defaults = super::super::tests::defaults();

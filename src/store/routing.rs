@@ -725,6 +725,7 @@ mod tests {
     fn admit(s: &Store, target: &SessionRecord, event: i64, relation: R) -> Instruction {
         s.interaction_admit(
             &SourceInput {
+                tribu_source: None,
                 transcription: None,
                 channel: "fixture".into(),
                 event_id: event.to_string(),
@@ -916,6 +917,7 @@ mod tests {
             .unwrap();
         s.set_session_codex_thread(entry, "entry-native").unwrap();
         let source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "fixture".into(),
             event_id: "old-direct".into(),

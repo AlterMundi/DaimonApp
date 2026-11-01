@@ -429,6 +429,7 @@ mod tests {
         let (input, _) = store
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "telegram:fixture".into(),
                     event_id: "10".into(),

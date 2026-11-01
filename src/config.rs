@@ -78,6 +78,8 @@ pub struct SessionControlConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TribuConfig {
+    #[serde(default)]
+    pub mode: TribuMode,
     pub socket_path: PathBuf,
     pub owner_client_file: PathBuf,
     pub being_ref: String,
@@ -91,6 +93,15 @@ pub struct TribuConfig {
     pub deadline_seconds: u64,
     #[serde(default = "default_tribu_pending")]
     pub max_pending: usize,
+}
+
+/// Legacy bounded topic and integrated ingress are deliberately separate policies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TribuMode {
+    #[default]
+    Bounded,
+    Interaction,
 }
 
 fn default_tribu_deadline() -> u64 {
@@ -310,8 +321,10 @@ impl Config {
                 bail!("Interaction requires the selected shared native App Server");
             }
             if self.tribu.as_ref().is_some_and(|p| {
-                p.key() == interaction.entry()
-                    || interaction.target(p.topic_id).is_some() && p.chat_id == interaction.chat_id
+                p.mode == TribuMode::Bounded
+                    && (p.key() == interaction.entry()
+                        || interaction.target(p.topic_id).is_some()
+                            && p.chat_id == interaction.chat_id)
             }) {
                 bail!("Interaction entry/targets cannot overlap the bounded I/O profile");
             }
@@ -330,6 +343,16 @@ impl Config {
             }
         }
         if let Some(policy) = &self.tribu {
+            if policy.mode == TribuMode::Interaction
+                && self
+                    .interaction
+                    .as_ref()
+                    .is_none_or(|i| i.entry() != policy.key() || i.human_id != policy.human_id)
+            {
+                bail!(
+                    "Integrated Tribu ingress requires the existing Interaction entry and paired human"
+                );
+            }
             if !policy.socket_path.is_absolute()
                 || !policy.owner_client_file.is_absolute()
                 || policy.human_id <= 0
@@ -676,6 +699,50 @@ fn find_vendored_codex_exe(wrapper_path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integrated_tribu_requires_exact_interaction_owner_and_entry() {
+        let raw = r#"
+            [telegram]
+            bot_token = 'synthetic'
+            [codex]
+            default_cwd = '/tmp'
+            shared_app_server = true
+            [interaction]
+            human_id = 100
+            chat_id = 100
+            topic_id = 1
+            targets = [{name='Alpha',topic_id=7}]
+            [tribu]
+            mode = 'interaction'
+            socket_path = '/tmp/fixture.sock'
+            owner_client_file = '/tmp/fixture-owner.json'
+            being_ref = 'fixture-being'
+            body_label = 'fixture.codex@fixture'
+            embodiment_id = 'fixture-embodiment'
+            human_id = 100
+            chat_id = 100
+            topic_id = 1
+            activated_after = 1
+        "#;
+        let mut config: Config = toml::from_str(raw).unwrap();
+        config.codex.binary = std::env::current_exe().unwrap();
+        config.validate().unwrap();
+        for mode in ["bounded", "unknown"] {
+            let selected = raw.replace("mode = 'interaction'", &format!("mode = '{mode}'"));
+            let result = toml::from_str::<Config>(&selected).and_then(|mut c| {
+                c.codex.binary = config.codex.binary.clone();
+                c.validate().map_err(serde::de::Error::custom)
+            });
+            assert!(result.is_err());
+        }
+        let mut wrong_owner = config.clone();
+        wrong_owner.tribu.as_mut().unwrap().human_id = 101;
+        assert!(wrong_owner.validate().is_err());
+        let mut wrong_entry = config;
+        wrong_entry.tribu.as_mut().unwrap().topic_id = 7;
+        assert!(wrong_entry.validate().is_err());
+    }
 
     #[test]
     fn backend_configuration_loads_without_resolving_telegram_secrets() {
