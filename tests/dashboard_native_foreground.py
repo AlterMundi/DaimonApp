@@ -268,6 +268,28 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         result=await asyncio.wait_for(task,1)
         self.assertEqual(result['kind'],'not_ready');self.assertEqual(self.stream.results,[])
 
+    async def test_cancelled_unoffered_read_can_rearm_notice_without_replaying_a_response(self):
+        source=self.source()
+        self.owner.parts[source['id']]={**source,'kind':'integrator_answer','entry_binding':[1],
+                                      'current':True,'text':'The actual retained result.'}
+        self.bridge.integrating_source(source);self.bridge.noticed_generation=self.bridge.offer_generation
+        entered=asyncio.Event();wait=asyncio.Event();read=self.bridge._integrating_part
+        async def delayed(*args):entered.set();await wait.wait();return await read(*args)
+        self.bridge._integrating_part=delayed
+        task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'interrupted'}))
+        await asyncio.wait_for(entered.wait(),1);task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.assertEqual(self.stream.results,[],'Nothing was attempted at the provider')
+        self.assertTrue(self.bridge.notice_needed,'Known-unoffered requeue is a fresh attention event')
+        self.assertEqual(len(self.bridge._queued),1)
+        self.bridge._integrating_part=read
+        next_watch=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'continue'}))
+        await self.results(1);self.assertEqual(self.stream.results[0][1]['text'],'The actual retained result.')
+        next_watch.cancel()
+        with self.assertRaises(asyncio.CancelledError):await next_watch
+        self.assertFalse(self.bridge.notice_needed,'An attempted/offered response is never requeued')
+        self.assertEqual(self.owner.delegations,[])
+
     async def test_close_wakes_watch_without_cancelling_native_jobs(self):
         task=asyncio.create_task(self.bridge.tool({'type':'integrator_watch','call_id':'watch'}))
         await asyncio.sleep(0);await self.bridge.close()

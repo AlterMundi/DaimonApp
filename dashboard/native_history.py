@@ -28,6 +28,7 @@ class NativeHistory:
                 generated_bytes INTEGER NOT NULL,interrupted INTEGER NOT NULL,
                 closed INTEGER NOT NULL,played_bytes INTEGER NOT NULL DEFAULT 0)''')
             db.execute('CREATE INDEX IF NOT EXISTS foreground_utterance_owner ON foreground_utterances(human,scope,observed_at)')
+            db.execute('CREATE INDEX IF NOT EXISTS foreground_utterance_dialogue ON foreground_utterances(human,scope,dialogue)')
 
     def subscribe(self,notify):
         with self._lock:
@@ -87,6 +88,20 @@ class NativeHistory:
             for notify in listeners:
                 with suppress(RuntimeError):notify()
         return self.view(row)
+
+    def pending_audio(self,human,dialogue):
+        self.ident(dialogue)
+        with self.database() as db:
+            # Both shipped playback owners serialize output. A later fully
+            # played source cannot coexist with an older queued source: gaps
+            # belong to retired audio. Do not turn those gaps into hearing
+            # receipts or let them permanently block later attention.
+            row=db.execute('''SELECT interrupted,closed,played_bytes,generated_bytes
+                FROM foreground_utterances WHERE human=? AND scope=? AND dialogue=?
+                AND (generated_bytes>0 OR closed=0) ORDER BY rowid DESC LIMIT 1''',
+                (human,self.scope,dialogue)).fetchone()
+        return bool(row and not row['interrupted'] and
+                    (not row['closed'] or row['played_bytes']<row['generated_bytes']))
 
     def played(self,human,dialogue,ident,count):
         self.ident(dialogue);self.ident(ident)

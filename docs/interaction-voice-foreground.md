@@ -655,6 +655,50 @@ existing UI snapshot fallback. Receiver tests cover scope before immediate audio
 fresh canonical availability replacing a stale UI map, no late widening and the
 no-marker fallback.
 
+## Idle canonical-return attention
+
+A newly opened avatar can receive a new canonical result before any human speech
+or model-selected return watch. The previous adapter queued that result but
+could remain silent until another phrase caused the model to subscribe. The
+owner now sends one bounded `internal_integrator_update_available` control notice
+when an unconsumed return is queued and no continued delegation/watch owns it.
+This is a labelled server event, not human speech, an original, a function result,
+new native work or permission to route. The voice model uses the existing
+`await_integrator_update` tool; its normal revision-scoped reader still owns the
+actual content. Existing pending calls need no extra model turn or subscription.
+Historical setup excerpts are not queued or announced again by this change.
+
+The notice uses the provider's documented
+[incremental client content](https://ai.google.dev/gemini-api/docs/live-api/capabilities#incremental-content-updates).
+That API can interrupt generation, so the owner defers while capture, a pending
+interpretation/provider response or queued/paused speech owns the floor. Checks
+run only on existing canonical invalidations, provider output and playback
+receipts, with a final transport lock against a just-started activity/response.
+The dialogue-indexed existing assistant history gates the latest serialized PCM
+source; old partial/retired gaps are never rewritten into hearing receipts.
+The added index uses existing columns and remains compatible with older readers.
+
+Notices are deduplicated by queued-offer generation and bounded to32per existing
+five-minute session. A canceled read can rearm only when its canonical response
+was never offered/attempted; uncertain provider writes are never retried. Existing
+8queued/128offered references and tool/session bounds remain. There is no model
+poller, timer, new worker registry, source publication or background capture.
+
+Two distinct bounded actual Gemini/mounted-route trials generated canonical
+returns without a fresh human frame, original or native/Sol/worker delegation.
+Each used one notice and one real watch. With empty synthetic context the72
+result was generated in English. With retained synthetic Spanish human context,
+a distinct English51report was generated as “El resultado de la tarea es
+cincuenta y uno.” Outputs respectively contain162720/140640PCM bytes; this is
+not a hearing, browser/Android or latency acceptance claim. Providers close and
+synthetic ephemeral state is removed. The deterministic canceled-unoffered-read
+follow-up is covered separately without repeating those model inputs.
+
+Mounted regressions reproduce the original silent queue and cover notices before
+human speech, deferred capture/output, latest-source playback without fabricated
+old hearing, existing subscriptions and terminal uncertain sends. The same
+original/approval/native-return authority remains unchanged.
+
 ## Admission recipient and speech scope
 
 An `integrator_admission` receipt names `recipient=integrating_conversation` and

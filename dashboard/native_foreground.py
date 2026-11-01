@@ -63,6 +63,8 @@ class ForegroundBridge:
         self._offered={}
         self._queued=set()
         self._watching=False
+        self.offer_generation=0
+        self.noticed_generation=0
         self._tool_calls=set()
 
     async def _run(self, limit, function, *args, **kwargs):
@@ -310,6 +312,7 @@ class ForegroundBridge:
                 key=(source['id'],source['revision'])
                 if key not in self._offered and key not in self._queued and not self._returns.full():
                     self._returns.put_nowait(source);self._queued.add(key)
+                    self.offer_generation+=1  # Only a known-unoffered read can rearm attention.
             raise
         finally:self._watching=False
 
@@ -330,8 +333,15 @@ class ForegroundBridge:
         if (not in_context and self._returns.full()) or len(self._offered)+len(self._queued)>=128:
             raise ForegroundUnavailable('Integrating offers reached the live bound')
         if in_context:self._offered[key]=dict(source)
-        else:self._returns.put_nowait(dict(source));self._queued.add(key)
+        else:
+            self._returns.put_nowait(dict(source));self._queued.add(key)
+            self.offer_generation+=1
         return True
+
+    @property
+    def notice_needed(self):
+        return (not self.closed and not self._watching and bool(self._queued)
+                and self.offer_generation!=self.noticed_generation)
 
     async def close(self):
         self.closed=True
