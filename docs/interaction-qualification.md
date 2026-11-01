@@ -39,8 +39,9 @@ normal bootstrap/shared login prevent full-application acceptance claims; it is
 not a receiving product diagnosis. No page errors were recorded.
 
 The single provider connection, browser context and server closed; ephemeral
-synthetic media/TLS/database state was removed. Selected records stay bounded to
-2MiB, ephemeral state to8MiB; no raw generated PCM archive or automatic retry.
+synthetic media/TLS/database state was removed. Selected records remain below2MiB. The declared8MiB temporary-state size check
+was not reached before the failed assertion; all that state was nevertheless
+removed. No raw generated PCM archive or automatic retry.
 Existing phone/avatar/hearing/echo/noise/interruption acceptance and the full
 stages2/3/necessary4 goal remain open. Use retained data, never rerun the terminal
 trial to repair its verifier.
