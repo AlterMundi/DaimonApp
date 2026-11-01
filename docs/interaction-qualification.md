@@ -3,6 +3,35 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Selected incomplete-text report: retained-source verification —1November2026
+
+The exact human-selected historical reply remains complete in the receiving
+revision-scoped API:327characters, compared with its240character preview. One
+task-relevant long voice original also retains all1149characters, compared with
+its1000character list preview. This establishes retained text availability, not
+word-for-word acoustic transcription accuracy. Private texts, IDs and screenshots
+remain in the receiving operator's bounded selected-source evidence, not here.
+
+A model-free readonly Chromium Conversation fixture uses those exact retained
+responses at315and390px. Visible text automatically loads to completion; Copy
+captures the exact complete reply/original privately without OS clipboard writes.
+Visual inspection includes both terminal passages. Zero API writes/native
+submissions/model calls/page errors; owned contexts/browser close. Ordinary
+app.js/shared-login bootstrap, device cache and actual phone behavior are excluded.
+This verifies the selected cases on the tested renderer, not every historical
+message or a new phone acceptance claim.
+
+An independent coordination rollout changed the receiving selector during this
+review. Earlier content checks and a later served-asset check are retained as
+different observations. The final check pins immutable14bb2bd6 source files:
+**UI8248d1a370a0**, identical Conversation JS bytes at both viewports, local and
+public HTTPS, and matching public shell build. That rollout is not this
+operation's deployment or qualification of coordination features. The native
+voice/worker qualifications below retain their own70857ee7source snapshots.
+A model-free stub pathname correction is retained; no model/input replay,
+retention change or replacement text was used. No new product regression was
+reproduced in these selected cases on the served renderer.
+
 ## Rendered Conversation, real worker and interruption —1November2026
 
 A further distinct qualification joins the shipped Conversation/avatar modal,
