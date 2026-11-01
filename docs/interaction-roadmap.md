@@ -27,13 +27,24 @@ Spanish/device experience or latency measurement. The
 records the separation, known seams, bounds and next delivery path. Historical
 modular decisions and their useful evidence remain below with their dates.
 
-The1November browser pilot is receiving-selected at backend3e63fd8955bf
-(PR506), UIa7cdaa6c7c27. It keeps complete work products separate from concise
+The1November browser pilot is receiving-selected at backend2f7bbdf4b482
+(PR512), UIf26ddac2f03e. It keeps complete work products separate from concise
 spoken presentation and makes admission acknowledgment no stronger than the
 observed request-sent outcome. Exact offered canonical returns support bounded
 revision-checked pagination; partial input transcripts and empty output metadata
 are handled. Browser interruptions retire old output between chunks, with
 Chromium offline waveform evidence for old silence and fresh playback.
+
+Complete canonical pending questions and their choices now reach the same return
+watch. Their capture-version availability reaches the client before question
+audio and freezes at the first local acoustic marker, without late widening.
+The no-marker arm-time fallback stays frozen; answers retain the existing
+originals→Sol→native authority path. A real Gemini/CPU/Sol question-answer-result
+journey and a separate full-avatar browser scope/caption/original/return check
+are recorded below in the qualification protocol with their distinct limits.
+Missing final interpretation/manual-end ACK closes to retained review after
+15seconds rather than waiting indefinitely. These changes do not establish
+physical hearing or useful device latency.
 
 An actual mounted Gemini/CPU/Sol6.1 journey retained three exact originals in one
 formulation, dispatched once to a simulated worker, preserved its complete
