@@ -9,6 +9,7 @@ import uuid
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from dashboard.native_foreground import ForegroundBridge, ForegroundUnavailable
+from dashboard.provider import Provider, ProviderUnavailable
 from dashboard.live_transcription import wav_bytes
 
 
@@ -125,6 +126,28 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.close();release.set()
             with self.assertRaises(ForegroundUnavailable):await task
         self.assertEqual(seen,[pcm]);self.assertTrue((self.root/'prepared'/f'{ident}.json').exists())
+
+
+class OriginalPages(unittest.TestCase):
+    def test_original_lookup_preserves_owner_cursor_without_starting_work(self):
+        dialogue=str(uuid.uuid4());selected=str(uuid.uuid4());calls=[]
+        owner=Provider.__new__(Provider)
+        def read(command):
+            calls.append(command)
+            return {'binding':'a'*64,'cursor':12,'more':True,'items':[
+                {'id':selected,'phase':'foreground','foreground_dialogue':dialogue,
+                 'capture_order':17,'preview':'original','voice':{}},
+                {'id':str(uuid.uuid4()),'phase':'foreground','foreground_dialogue':str(uuid.uuid4()),
+                 'preview':'Another dialogue'}]}
+        owner.presentation=read
+        result=owner.conversation_foreground_originals(dialogue,'a'*64)
+        self.assertEqual([r['id'] for r in result['sources']],[selected])
+        self.assertEqual(result['before'],12);self.assertTrue(result['more'])
+        self.assertEqual(calls,['input list 0 before'])
+        with self.assertRaises(ProviderUnavailable):
+            owner.conversation_foreground_originals(dialogue,'b'*64)
+        with self.assertRaises(ValueError):
+            owner.conversation_foreground_originals(dialogue,'a'*64,True)
 
 
 if __name__=='__main__':unittest.main()

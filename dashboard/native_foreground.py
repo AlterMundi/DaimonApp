@@ -238,7 +238,8 @@ class ForegroundBridge:
         if (self.closed or not isinstance(source,dict) or set(source)-{'id','revision','kind','label'}
                 or not isinstance(source.get('id'),str) or len(source['id'])>256
                 or not isinstance(source.get('revision'),str) or not re.fullmatch('[a-f0-9]{64}',source['revision'])
-                or source.get('kind') not in ('result','question')):
+                or source.get('kind') not in ('result','question')
+                or 'label' in source and (not isinstance(source['label'],str) or len(source['label'])>200)):
             raise ForegroundUnavailable('Select an owned current integrating source')
         key=(source['id'],source['revision'])
         if key in self._offered or key in self._queued:return False
