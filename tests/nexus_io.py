@@ -25,6 +25,7 @@ def read(id):
 if a.op=='capabilities':
  if not (pathlib.Path(a.state)/'review-capabilities').exists():raise ValueError('old helper has no capabilities')
  out={'schema':'nexus.native-capabilities/v1','review_context_schemas':['narrated_visual:v1']}
+ if (pathlib.Path(a.state)/'review-capabilities').read_text()=='video':out['review_context_schemas']+=['interactive_3d:v1','video:v1']
 elif a.op=='binding':
  # Simulate the maintenance operator acquiring the hold during this async lookup.
  marker=pathlib.Path(a.state)/'hold-during-binding'
@@ -48,7 +49,7 @@ elif a.op in ('inspect','dispatch'):
 elif a.op=='review-admission':
  out=read(v['request_id']);assert out['target']['listener_id']==v['listener_id'] and out['dispatch_id']==v['dispatch_id']
  c=out['request']['contribution']
- assert c['review_context']['adapter']=='interactive_3d'
+ assert c['review_context']['adapter'] in ('interactive_3d','video')
  if out['dispatch_id'] and (pathlib.Path(a.state)/'deny-at-submission').exists():
   count=pathlib.Path(a.state)/'admission-count';n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
   limit=(pathlib.Path(a.state)/'deny-at-submission').read_text();limit=int(limit) if limit.isdigit() else 2
@@ -228,8 +229,9 @@ def visual_context(binary):
 
 
 
-def static_context(binary):
+def static_context(binary, kind='interactive_3d'):
     j=Nexus(binary)
+    if kind=='video':(j.state/'review-capabilities').write_text('video')
     try:
         j.prepare();j.idle()
         source=dict(resource='a'*32,publicationVersion='b'*64,id='model',version='c'*64)
@@ -239,19 +241,31 @@ def static_context(binary):
             source=source,snapshot=dict(schema='dm.review-3d-state/v1',model=source,camera=dict(azimuth=1,elevation=.4,zoom=2),
                 visiblePartIds=['part'],selectedPartIds=['part']),
             acknowledgment=dict(schema='dm.review-capture-ack/v1',model=source,renderStateConfirmed=True,decodedFrameTimeMs=None))
+        if kind=='video':
+            source=dict(source_id='clip',revision='v1',sha256='a'*64,clock_source_id='program',original_offset_ms=45000)
+            anchor.update(clock_source_id='program',source_time_ms=47000.25)
+            context.update(adapter='video',clock_source_id='program',source_time_ms=47000.25,source=source,
+                snapshot=dict(schema='dm.review-video-state/v1',source=source,media_time_ms=2000.25,duration_ms=30000.0,playback_rate=.75,
+                    frame_status='compositor_submission',frame=dict(method='requestVideoFrameCallback',media_time_ms=1960.0,presented_frames=49,width=320,height=180)),
+                acknowledgment=dict(schema='dm.review-video-ack/v1',source_time_ms=47000.25,frame_source_time_ms=46960.0))
+            with sqlite3.connect(j.state/'operator.sqlite') as db:
+                binding=json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
+                assert binding['supported_review_contexts']==['narrated_visual:v1','interactive_3d:v1','video:v1']
         def enqueue(id):
             with sqlite3.connect(j.state/'operator.sqlite') as db:
                 binding=json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
                 request=dict(request_id=id,table_id='table',author_ref='human:test',binding_id=binding['binding_id'],
                     binding_revision=binding['revision'],responder_ref=binding['responder_ref'],response_mode='artifact_reflection',
                     contribution=dict(text='Observe this selected part',anchors=[],artifact_anchor=anchor,review_context=context,review_actor_ref='human:verified'),
-                    artifact_context=dict(adapter='interactive_3d',review_id='review',revision='v1',source=source),return_context=None)
+                    artifact_context=dict(adapter=kind,review_id='review',revision='v1',source=source,**(dict(duration_ms=30000,source_table_id='source-evidence') if kind=='video' else {})),return_context=None)
                 db.execute("INSERT INTO requests VALUES(?,?,'queued',NULL,NULL,NULL)",(id,json.dumps(dict(target=binding['target'],request=request))))
         starts=j.native_turns
         enqueue('static');j.wait(lambda:j.state_of('static')[0]=='completed');j.idle()
         assert j.native_turns==starts+1
         submitted=[x for x in j.rpc if x.get('method')=='turn/start'][-1]['params']['input'][0]['text']
-        assert 'not proof you have visually inspected' in submitted and '"source_time_ms":null' in submitted
+        if kind=='video':
+            assert 'not the video image or sound' in submitted and '"source_time_ms":47000.25' in submitted
+        else:assert 'not proof you have visually inspected' in submitted and '"source_time_ms":null' in submitted
         assert 'Observe this selected part' in submitted and 'separate explicit human approval' in submitted
         (j.state/'deny-at-submission').write_text('controlled revocation')
         enqueue('revoked');j.wait(lambda:j.state_of('revoked')[0]=='rejected');j.idle()
@@ -264,11 +278,16 @@ def static_context(binary):
         enqueue('steer-revoked');j.wait(lambda:j.state_of('steer-revoked')[0]=='rejected')
         assert int((j.state/'admission-count').read_text())==3
         assert not any(x.get('method')=='turn/steer' and 'Observe this selected part' in json.dumps(x) for x in j.rpc)
-        print('PASS static native context delivery and revocation at submission/steering write boundary')
+        print(f'PASS {kind} native context delivery and revocation at submission/steering write boundary')
         return dict(profile='synthetic identity/model/operator; actual native process pipes',
-            static_context_delivered=True,source_clock=None,revoked_after_dispatch_rejected=True,
+            static_context_delivered=kind=='interactive_3d',video_context_delivered=kind=='video',
+            source_clock='program' if kind=='video' else None,revoked_after_dispatch_rejected=True,
             native_steering_boundary_revocation_rejected=True,new_review_native_turns=1)
     finally:j.close()
+
+
+def video_context(binary):
+    return static_context(binary, 'video')
 
 
 def table_launches(binary):
@@ -531,6 +550,6 @@ def writer_hold_other_target(binary):
 
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
-    scenarios=(delivered,visual_context,static_context,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
+    scenarios=(delivered,visual_context,static_context,video_context,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
     for run in scenarios:
         if len(sys.argv)==2 or run.__name__ in sys.argv[2:]:run(binary)
