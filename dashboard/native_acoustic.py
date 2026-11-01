@@ -30,12 +30,14 @@ class Span:
     text: str | None = None
     transcript_parts: str = ''
     fragmented: bool = False
+    final_deadline: float | None = None
 
 
 class NativeAcousticSession:
     max_bytes=300*32000
     max_backlog=8*32000
     max_spans=128
+    transcript_timeout=15
 
     def __init__(self,bridge,detector,questions,notify):
         self.bridge,self.stream,self.detector=bridge,bridge.stream,detector
@@ -46,7 +48,7 @@ class NativeAcousticSession:
         self.pcm=bytearray();self.analyzed=0;self.boundary=0;self.sent=0
         self.spans=[];self.local=None;self.provider=None;self.created=0
         self.markers=[]
-        self.closed=False;self.lock=asyncio.Lock()
+        self.closed=False;self.lock=asyncio.Lock();self.changed=asyncio.Event()
 
     async def marker(self,audio_bytes,questions):
         # The client emits this narrowing snapshot before the PCM containing its
@@ -118,6 +120,7 @@ class NativeAcousticSession:
             await self._pump()
 
     async def _pump(self):
+        self.changed.set()
         if self.closed:return
         if self.provider is None and self.spans:
             self.provider=self.spans[0];self.provider.stream_start=self.sent
@@ -134,6 +137,7 @@ class NativeAcousticSession:
         if span.end is not None and span.stream_end is None:
             span.stream_end=self.sent
             await asyncio.to_thread(self.stream.activity_end)
+            span.final_deadline=asyncio.get_running_loop().time()+self.transcript_timeout
         if span.end_ack and span.text is not None:
             # One finalized input transcript plus its exact manual-end ACK.
             # Output completion/generation does not finalize a human original.
@@ -141,6 +145,27 @@ class NativeAcousticSession:
             self.spans.pop(0);self.provider=None
             await self.notify({'type':'input_interpreted','id':span.ident,'text':span.text})
             await self._pump()
+
+    async def watch_transcripts(self):
+        """Bound a missing final transcript/ACK, independently of model tool calls."""
+        loop=asyncio.get_running_loop()
+        while True:
+            async with self.lock:
+                if self.closed:return
+                span=self.provider
+                deadline=span.final_deadline if span else None
+                self.changed.clear()
+            try:
+                if deadline is None:await self.changed.wait()
+                else:await asyncio.wait_for(self.changed.wait(),max(0,deadline-loop.time()))
+            except TimeoutError:
+                async with self.lock:
+                    expired=(not self.closed and self.provider is span
+                             and span.final_deadline==deadline and loop.time()>=deadline)
+                if expired:
+                    await self.notify({'type':'review','id':span.ident,
+                        'message':'The final voice transcript was not confirmed in time. Your recording is kept for review; integrating work continues.'})
+                    return
 
     @staticmethod
     def _offset(value):
@@ -196,7 +221,7 @@ class NativeAcousticSession:
     async def close(self):
         async with self.lock:
             if self.closed:return
-            self.closed=True
+            self.closed=True;self.changed.set()
             # A disconnect does not throw away an unfinished, analyzed original.
             # It remains foreground_captured, never automatically delegated.
             if self.local and len(self.pcm)>self.local.start:

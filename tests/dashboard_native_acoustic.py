@@ -1,4 +1,5 @@
 """Exact acoustic span/provider correlation with no ASR, Sol, hardware or network."""
+import asyncio
 from pathlib import Path
 import sys
 import unittest
@@ -141,6 +142,36 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         for kind in ('input_caption','output_transcript','generation_complete','turn_complete'):
             await self.session.provider_event({'type':kind,'text':'Not a human final'})
         self.assertEqual(self.bridge.transcripts,[])
+    async def test_missing_final_transcript_enters_review_without_model_polling(self):
+        self.session.transcript_timeout=.02
+        await self.first();await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'turn_complete'})
+        await asyncio.wait_for(self.session.watch_transcripts(),.3)
+        review=self.events[-1]
+        self.assertEqual(review['type'],'review')
+        self.assertEqual(review['id'],self.bridge.captures[0][0])
+        self.assertIn('not confirmed in time',review['message'])
+        self.assertEqual(self.bridge.transcripts,[],'Timeout cannot invent or finalize an interpretation')
+        self.assertEqual(len(self.bridge.captures),1)
+
+    async def test_missing_manual_ack_also_enters_review(self):
+        self.session.transcript_timeout=.02
+        await self.first();await self.session.provider_event({'type':'input_transcript','text':'Exact original'})
+        await asyncio.wait_for(self.session.watch_transcripts(),.3)
+        self.assertEqual(self.events[-1]['type'],'review')
+        self.assertEqual(self.bridge.transcripts,[],'A transcript without matching manual-end ACK remains unconfirmed')
+
+    async def test_confirmed_transcript_retires_its_deadline_and_close_wakes_watch(self):
+        self.session.transcript_timeout=.02
+        await self.first();watch=asyncio.create_task(self.session.watch_transcripts())
+        await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        await asyncio.sleep(.04)
+        self.assertFalse(watch.done())
+        self.assertFalse(any(v['type']=='review' for v in self.events))
+        await self.session.close();await asyncio.wait_for(watch,.3)
+        self.assertEqual(self.bridge.transcripts[0][1],'Confirmed')
+
     async def test_wrong_audio_offset_is_not_attached_to_human_source(self):
         await self.first()
         with self.assertRaises(ForegroundUnavailable):await self.ack('ACTIVITY_END','3s')

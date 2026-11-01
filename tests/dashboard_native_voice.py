@@ -147,6 +147,26 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.owner.calls,[])
         self.assertTrue(Stream.opened[0].closed_event.wait(2),'Wait for actual provider cleanup, not client context exit')
         self.assertTrue(Detector.opened[0].closed_event.wait(2))
+    def test_missing_provider_final_closes_to_review_and_preserves_exact_original(self):
+        def no_transcript(stream):
+            stream.queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',
+                'audio_offset':f'{stream.total/32000:g}s','source':'provider_manual_activity_ack'},
+                {'type':'turn_complete'}])
+        with patch.object(Stream,'activity_end',no_transcript),patch('dashboard.native_acoustic.NativeAcousticSession.transcript_timeout',.05),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            events=[]
+            while not events or events[-1]['type']!='review':events.append(ws.receive_json())
+            self.assertIn('not confirmed in time',events[-1]['message'])
+            self.assertFalse(any(e['type']=='original_completed' for e in events))
+        self.assertTrue(Stream.opened[0].closed_event.wait(2))
+        self.assertTrue(Detector.opened[0].closed_event.wait(2))
+        original=next(iter(self.owner.inputs.values()))
+        self.assertEqual(original['phase'],'foreground_captured')
+        self.assertEqual(original['voice']['audio_sha256'],hashlib.sha256(wav_bytes(b'\1\0'*1600+b'\0\0'*1600)).hexdigest())
+        self.assertEqual(self.owner.delegations,[])
+        self.assertFalse(self.owner.completed.is_set())
+
     def test_reopened_voice_context_uses_current_binding_without_removing_history(self):
         history=self.app.state.native_history
         current=str(uuid.uuid4());earlier=str(uuid.uuid4())
