@@ -585,3 +585,24 @@ starting another page (plus the existing in-flight API deadline). Source/binding
 changes stop the read. Copy does not generate speech, resend input or run work.
 The button reports Copied only after browser clipboard confirmation. Local
 clipboard success is separate from real phone/browser acceptance.
+
+
+## Visible update text recovery — 2026-11-01
+
+Compact Update from cards use the same canonical source reader as their full
+message. Keep its read/continue control and error state visible on that card
+whenever the text is incomplete. Automatic viewport loading stays bounded;
+a failed text read exposes Retry reading, and reaching the automatic text bound
+retains Continue reading. Successful completion hides the reader and clears the
+error. The controls follow the current source/revision, without opening diagnostics
+or issuing any new input, speech, decision or worker operation.
+
+The source selected from the reported cut-off screenshot retained294characters
+and its presentation preview held240; the canonical reader returned all294. This
+establishes that its source text was intact, not the exact browser failure cause.
+A reproduced transient automatic-read failure previously left compact cards at
+the preview while their reader/error stayed inside the hidden full-message view.
+The regression now verifies visible retry and complete recovery, plus continuation
+after the automatic text bound. Actual Chromium at320/390px verifies the contained
+retry control, the full canonical rendered source and hidden completed controls.
+These are read-only synthetic/browser observations, not new phone acceptance.

@@ -130,6 +130,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       if (heldValidation) { const held=heldValidation;heldValidation=undefined;held.started = true;validationPending=true; return held.promise.finally(()=>{validationPending=false;}); }
       const sourceId=url.searchParams.get('source'),offset=Number(url.searchParams.get('offset'));
       partReads.push({source:sourceId,offset});
+      if(options.failTextOnce===sourceId){delete options.failTextOnce;throw new TypeError('Synthetic text connection lost');}
       if(sourceId.startsWith('live:')){
         const fields=sourceId.split(':'),end=Number(fields[4]),text=Array.from(options.liveText||options.responseDraft?.text||'').slice(0,end).join('');
         if(require('node:crypto').createHash('sha256').update(text).digest('hex')!==fields[5])throw Object.assign(Error('Changed live prefix'),{status:409});
@@ -368,6 +369,27 @@ function boot(readOnly=false,standalone=false,options={}) {
   const visibleProgress=progressText.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
   assert.equal(visibleProgress.children[1].textContent,completeProgress,'visible Update from cards must load full canonical text, without opening the inspector');
   progressText.ui.stop();
+  const updateRetry=boot(false,true,{autoText:true,failTextOnce:'native:8'});
+  const retryText='This update continues beyond its preview. '.repeat(12)+'Complete ending.';
+  updateRetry.overrideSource(8,{kind:'worker_progress',target:{chat_id:100,thread_id:7},label:'Realtime',preview:retryText.slice(0,240),text_characters:retryText.length});updateRetry.replyTexts.set('native:8',retryText);
+  await updateRetry.ui.refresh();updateRetry.intersect('native:8');await new Promise(setImmediate);
+  const retryUpdate=updateRetry.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+  const retryRead=retryUpdate.children.find(c=>c.className==='session-update-read');
+  assert(retryRead&&!retryRead.hidden,'A truncated visible update needs a reader after an automatic text failure');
+  assert.equal(retryRead.textContent,'Retry reading');
+  assert.equal(retryUpdate.children.find(c=>c.className==='reply-error').textContent,'Synthetic text connection lost');
+  await retryRead.handlers.click();assert.equal(retryUpdate.children[1].textContent,retryText);
+  assert.equal(retryRead.hidden,true);assert.equal(retryUpdate.children.find(c=>c.className==='reply-error').hidden,true);
+  updateRetry.ui.stop();
+  const updateLimit=boot(false,true,{autoText:true});const longUpdateText='Long update. '.repeat(1400);
+  updateLimit.overrideSource(8,{kind:'worker_progress',target:{chat_id:100,thread_id:7},label:'Realtime',preview:longUpdateText.slice(0,240),text_characters:longUpdateText.length});updateLimit.replyTexts.set('native:8',longUpdateText);
+  await updateLimit.ui.refresh();updateLimit.intersect('native:8');await new Promise(setImmediate);
+  const limitedUpdate=updateLimit.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+  const continueUpdate=limitedUpdate.children.find(c=>c.className==='session-update-read');
+  assert.equal(continueUpdate.hidden,false,'A bounded automatic reader must retain a visible continuation');
+  assert.equal(continueUpdate.textContent,'Continue reading');
+  for(let n=0;n<3&&!continueUpdate.hidden;n++)await continueUpdate.handlers.click();
+  assert.equal(limitedUpdate.children[1].textContent,longUpdateText);assert.equal(continueUpdate.hidden,true);updateLimit.ui.stop();
   const scrolledAway=boot(false,true,{autoText:true});const longText='Visible text only. '.repeat(300);
   scrolledAway.overrideSource(8,{preview:'Visible',text_characters:longText.length});scrolledAway.replyTexts.set('native:8',longText);
   await scrolledAway.ui.refresh();const heldText=scrolledAway.holdReplyText('native:8');scrolledAway.intersect('native:8');await heldText.entered;
