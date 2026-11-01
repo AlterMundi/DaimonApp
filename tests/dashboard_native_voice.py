@@ -449,6 +449,48 @@ class Mounted(unittest.TestCase):
         history.retain(100,self.ident,self.owner.binding,ident,'Words','c'*64,8,closed=True)
         self.assertEqual(len(calls),2);close()
 
+    def test_pcm_updates_stay_bounded_with_a_full_populated_text_history(self):
+        from contextlib import contextmanager
+        history=self.app.state.native_history;ident=str(uuid.uuid4())
+        history.retain(100,self.ident,self.owner.binding,ident,'Words','b'*64,0,closed=False)
+        original_database=history.database
+        with original_database() as db:
+            # Global bounds include other actors; no original needs to be deleted
+            # merely to continue an already-admitted assistant utterance.
+            db.executemany("""INSERT INTO foreground_utterances
+                (id,human,scope,dialogue,binding,observed_at,text,model,audio_sha256,
+                 generated_bytes,interrupted,closed) VALUES(?,?,?,?,?,0,?,'fixture',?,0,0,1)""",
+                [(str(uuid.uuid4()),101,history.scope,self.ident,self.owner.binding,'x'*256,'b'*64)
+                 for _ in range(4096)])
+        history.max_rows=4097;history.max_bytes=4096*256+len('Words')
+        @contextmanager
+        def bounded_database():
+            with original_database() as db:
+                # A deterministic SQLite work budget, independent of wall-clock
+                # speed: indexed single-utterance updates fit; a whole-history
+                # aggregate for each PCM fragment does not.
+                db.set_progress_handler(lambda:1,10000)
+                yield db
+        history.database=bounded_database
+        try:
+            for end in range(640,640*17,640):
+                history.retain(100,self.ident,self.owner.binding,ident,'Words','c'*64,end,closed=False)
+            history.played(100,self.ident,ident,640*16)
+        finally:history.database=original_database
+        item=history.page(100)['items'][0]
+        self.assertEqual((item['text'],item['generated_bytes'],item['played_bytes'],item['closed']),
+                         ('Words',640*16,640*16,False))
+        with self.assertRaises(ValueError):
+            history.retain(100,self.ident,self.owner.binding,str(uuid.uuid4()),'New','d'*64,2)
+        # The admitted open utterance still cannot grow text beyond the bound.
+        with self.assertRaises(ValueError):
+            history.retain(100,self.ident,self.owner.binding,ident,'Words!','d'*64,640*16)
+        self.assertEqual(history.page(100)['items'][0]['text'],'Words')
+        history.database=bounded_database
+        try:history.retain(100,self.ident,self.owner.binding,ident,'Words','c'*64,640*16,closed=True)
+        finally:history.database=original_database
+        self.assertTrue(history.page(100)['items'][0]['closed'])
+
     def test_history_does_not_rewrite_a_closed_utterance_or_cross_owner(self):
         history=self.app.state.native_history;ident=str(uuid.uuid4())
         history.retain(100,self.ident,self.owner.binding,ident,'Retained','b'*64,4)
