@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 import static org.junit.Assert.*;
 
-/** Real WebView permission and MediaRecorder, emulator input only; no upload/provider/archive. */
+/** Real WebView capture and origin-scoped PCM bridge, emulator only; no upload/provider/archive. */
 public class MicrophoneCaptureTest {
     public static final class Receipt {
         final CountDownLatch done = new CountDownLatch(1);
@@ -64,7 +64,15 @@ public class MicrophoneCaptureTest {
                 String html = "<!doctype html><script>" +
                     "(async()=>{let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});" +
                     "const recorder=new MediaRecorder(stream);let bytes=0;recorder.ondataavailable=e=>bytes+=e.data.size;" +
-                    "recorder.onstop=()=>{stream.getTracks().forEach(t=>t.stop());CaptureReceipt.finish(bytes>0?'recorded':'empty');};" +
+                    "recorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());let output,deadline;try{" +
+                    "if(!bytes)throw Error('Empty recording');if(!NativeSpeechAudio?.pcm)throw Error('Missing native PCM adapter');" +
+                    "let played=0,complete,failed;const ended=new Promise((yes,no)=>{complete=yes;failed=no;});" +
+                    "deadline=setTimeout(()=>failed(Error('Native PCM completion timed out')),8000);" +
+                    "output=NativeSpeechAudio.openPcm({onProgress:(id,count)=>{played=count;},onBufferEnded:()=>complete(),onUnavailable:reason=>failed(Error(reason))});" +
+                    "await output.ready;const raw=new Uint8Array(24000);for(let n=0;n<12000;n++){const v=Math.round(Math.sin(2*Math.PI*440*n/24000)*4096);raw[n*2]=v&255;raw[n*2+1]=(v>>8)&255;}" +
+                    "await output.append('11111111-1111-4111-8111-111111111111',raw.length,raw);await ended;" +
+                    "if(played!==raw.length)throw Error('Native frame-head position mismatch');CaptureReceipt.finish('recorded-native-pcm');" +
+                    "}catch(e){CaptureReceipt.finish(e.name+': '+e.message);}finally{clearTimeout(deadline);output?.close();}};" +
                     "recorder.start();setTimeout(()=>recorder.stop(),350);" +
                     "}catch(e){stream?.getTracks().forEach(t=>t.stop());CaptureReceipt.finish(e.name+': '+e.message);}})();" +
                     "</script>";
@@ -84,7 +92,7 @@ public class MicrophoneCaptureTest {
             });
             assertTrue("Capture completed: " + receipt.result, receipt.done.await(15, TimeUnit.SECONDS));
             assertNotNull("Actual host permission callback", receipt.permission);
-            assertEquals("Actual WebView capture; " + receipt.permission, "recorded", receipt.result);
+            assertEquals("Actual WebView capture; " + receipt.permission, "recorded-native-pcm", receipt.result);
         } finally {
             if (preferences.get() != null) {
                 if (previous.get() == null) preferences.get().edit().remove("home").commit();
