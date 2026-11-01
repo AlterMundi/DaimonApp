@@ -12,7 +12,7 @@ import tempfile
 workspace=Path(sys.argv[1]).resolve()
 sys.path.insert(0,str(workspace))
 from backend.tests.test_service import service,anchor,post
-from backend.store import Store
+from backend.store import Store,digest
 
 operator=Path(__file__).resolve().parents[1]/'scripts/nexus_operator.py'
 with tempfile.TemporaryDirectory(prefix='telecodex-nexus-operator-') as directory:
@@ -171,4 +171,47 @@ if 'interactive_3d:v1' in capabilities['review_context_schemas']:
         call('review-admission',scope,False)
         assert call('inspect',dict(listener_id='listener',request_id='static-real-operator'))['request']['status']=='handed_off'
         print('PASS actual static operator dispatch, exact-context recheck, policy revocation and non-mutating refusal')
+if 'video:v1' in capabilities['review_context_schemas']:
+    import copy
+    import pytest
+    from backend.tests.test_home_auth import shared
+    from backend.tests.test_video_reviews import video as video_fixture
+    with tempfile.TemporaryDirectory(prefix='telecodex-video-review-') as directory, pytest.MonkeyPatch.context() as patch:
+        root=Path(directory)
+        fixture=service.__wrapped__(root)
+        shared_fixture=shared.__wrapped__(fixture,root,patch)
+        app,client,_,source_token,_,source,edition,body,_=video_fixture.__wrapped__(shared_fixture,root)
+        state=app.state.store.path.parent
+        # Add a retained unreviewed transcript edition. The long segment must
+        # remain limited rather than inflating native evidence or being repaired.
+        source=dict(source,transcript_version='source-v2',segments=[
+            dict(segment_id='line',start_ms=1000,end_ms=3000,text='Controlled unreviewed video transcript',review_status='asr_draft'),
+            dict(segment_id='long',start_ms=1500,end_ms=2500,text='x'*4500,review_status='asr_draft')])
+        app.state.store.install(dict(table=dict(table_id='video-evidence'),sources=[source],fragments=[]))
+        edition=copy.deepcopy(edition);body=copy.deepcopy(body)
+        edition['source']['revision']='source-v2'
+        body['review_context']['source']['revision']='source-v2'
+        body['review_context']['snapshot']['source']['revision']='source-v2'
+        app.state.artifacts.install(edition)
+        assert post(client,'/api/tables/table/contributions',body).status_code==200
+        selector=app.state.store.register_launch('table')['start_param']
+        _,pending=app.state.store.telegram_access(selector,123,100)
+        app.state.store.approve_access(pending['request_id'],'table','human:nico','Nico')
+        binding=call('configure',{**config,'supported_response_modes':['artifact_reflection'],'supported_review_contexts':['video:v1']})
+        command=dict(request_id='video-real-operator',binding_id=binding['binding_id'],binding_revision=binding['revision'],
+            contribution_id=body['contribution_id'],response_mode='artifact_reflection')
+        assert post(client,'/api/tables/table/conversation-requests',command).status_code==200
+        dispatch=call('dispatch',dict(listener_id='listener',request_id=command['request_id']))
+        assert dispatch['request']['contribution']['review_context']==body['review_context']
+        evidence=dispatch['request']['selected_evidence'][0]
+        assert evidence['source_id']=='video-source' and evidence['transcript_version']=='source-v2'
+        assert evidence['requested_anchor']['start_ms']<=2000<evidence['requested_anchor']['end_ms']<=10000
+        assert evidence['segments'][0]['text']=='Controlled unreviewed video transcript'
+        assert evidence['excerpt_limited'] and len(evidence['segments'])==1
+        scope=dict(listener_id='listener',request_id=command['request_id'],dispatch_id=dispatch['dispatch_id'])
+        assert call('review-admission',scope)['allowed']
+        app.state.store.revoke(digest(source_token))
+        call('review-admission',scope,False)
+        assert call('inspect',dict(listener_id='listener',request_id=command['request_id']))['request']['status']=='handed_off'
+        print('PASS actual video operator uses bounded retained clip-clock evidence and current independent source grant; no native call')
 print('PASS actual Nexus backend HTTP/owner-local contract, selected retained evidence, one dispatch, exact receipt retry, private-state refusal; native receipts synthetic')
