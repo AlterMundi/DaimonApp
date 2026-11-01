@@ -518,7 +518,15 @@ existing app state database. They are not human inputs or invented native work
 results. Full text and Copy remain available in the normal timeline, including
 interrupted text marked as possibly unheard, with bounded16item history paging.
 History retains at most16384utterances/64MiB of text; capacity exhaustion stops
-new native voice rather than deleting history. No automatic expiry or archive is
+new native voice rather than deleting history. PCM/hash/playback/close updates
+for an existing utterance keep their durable transaction without recounting all
+actors' stored text. New rows and growing transcripts still check global quotas
+inside the same writer transaction; no cached counter, schema change or pruning.
+A populated4097-row regression at both text/row limits keeps sixteen PCM updates,
+playback and closure within a deterministic SQLite work budget while refusing
+new rows/text growth. The earlier per-fragment aggregate exhausts that budget.
+This removes history-size-dependent work, not proof of phone/provider speedup.
+ No automatic expiry or archive is
 introduced. Existing original media retention remains its own owner. Only text
 and turn changes notify the existing event stream; PCM/playback bookkeeping does
 not cause whole-conversation refresh loops.

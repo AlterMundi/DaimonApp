@@ -65,10 +65,15 @@ class NativeHistory:
                         or old['binding']!=binding or old['closed']
                         or generated_bytes<old['generated_bytes'] or not text.startswith(old['text'])):
                     raise ValueError('Retained assistant utterance cannot be rewritten')
-            count,size=db.execute('SELECT count(*),coalesce(sum(length(cast(text AS BLOB))),0) FROM foreground_utterances').fetchone()
-            if (count+(old is None)>self.max_rows
-                    or size+len(text.encode())-(len(old['text'].encode()) if old else 0)>self.max_bytes):
-                raise ValueError('Foreground conversation history reached its retention bound')
+            # PCM/hash/closed updates cannot grow the row or text quota. Keep
+            # their durable transaction without scanning every actor's history
+            # on the audio delivery path. Growth checks stay under this same
+            # writer lock; no cached counter can drift after another writer.
+            if old is None or text!=old['text']:
+                count,size=db.execute('SELECT count(*),coalesce(sum(length(cast(text AS BLOB))),0) FROM foreground_utterances').fetchone()
+                if (count+(old is None)>self.max_rows
+                        or size+len(text.encode())-(len(old['text'].encode()) if old else 0)>self.max_bytes):
+                    raise ValueError('Foreground conversation history reached its retention bound')
             if old:
                 db.execute('''UPDATE foreground_utterances SET text=?,audio_sha256=?,generated_bytes=?,interrupted=?,closed=? WHERE id=?''',
                            (text,audio_sha256,generated_bytes,int(interrupted),int(closed),ident))
