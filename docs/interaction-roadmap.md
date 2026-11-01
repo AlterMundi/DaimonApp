@@ -27,6 +27,15 @@ Spanish/device experience or latency measurement. The
 records the separation, known seams, bounds and next delivery path. Historical
 modular decisions and their useful evidence remain below with their dates.
 
+The1November browser pilot is now receiving-selected as UIc99f1b340f67
+(PR496/sourceba9ed22). A real mounted native-speech/Sol journey returned canonical
+work through one continued subscription while conversation remained available.
+Full CI and receiving bytes/capabilities passed; human browser/hearing, useful
+latency, questions/corrections, long utterances and echo/noise remain open. Keep
+this selected pilot stable during the requested human trial. This advances the
+selected architecture and does not complete stages2/3/necessary4 or the retained
+Android/Beacon/iOS/base obligations.
+
 ## Navigation and current selection
 
 Human priority restored, 31 October 2026: close stage2 continuous avatar voice

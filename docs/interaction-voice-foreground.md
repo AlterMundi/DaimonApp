@@ -392,3 +392,24 @@ recovery/interruption controls. The real integrated provider/native journey,
 useful-speech latency, precise heard/unsaid uptake, actual receiving adoption and
 human device/hearing remain
 unqualified. No new phone test is implied until those receiving steps finish.
+
+## Receiving browser pilot —1November2026
+
+PR496/sourceba9ed22 is receiving-selected as **UIc99f1b340f67**, after full
+CI41303898080 and Android/decoder41303898081 passed. Exact local/public assets,
+loaded native capabilities and the compatible worker/reader were verified.
+Existing native writers/goals, the native daemon, Nexus source-policy environment
+and unknown inputs were preserved. Ordinary chat/Qwen and Android native audio
+retain their existing paths; the browser avatar explicitly opens this pilot.
+
+A real mounted Gemini/Sol journey retained two originals, kept speech available
+during pending work, handled interruption and spoke the canonical returned
+recommendation using one continued subscription. Synthetic actors/worker/audio
+and generated PCM do not establish rendered-browser or human hearing acceptance.
+The first reply measured11.036s versus1.094s for the following conversational
+response; useful latency and the remaining full roadmap are unfinished. The
+human browser pause/response/interruption trial was requested for this exact UI.
+See [qualification](interaction-qualification.md#native-foreground-qualification)
+and the receiving operator record for current adoption and software rollback.
+After native foreground originals exist, keep compatible native/completed-reader
+support when restoring an earlier web UI; never roll back source journals.
