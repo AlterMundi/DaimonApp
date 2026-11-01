@@ -37,7 +37,7 @@ class Stream:
         self.queue.put([{'type':'voice_activity','activity':'ACTIVITY_START','audio_offset':f'{self.total/32000:g}s','source':'provider_manual_activity_ack'}])
     def append(self,pcm):self.total+=len(pcm)
     def activity_end(self):
-        self.queue.put([{'type':'input_transcript','text':'Exact synthetic interpretation'},
+        self.queue.put([{'type':'input_transcript','text':' \nExact synthetic interpretation  '},
             {'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':f'{self.total/32000:g}s','source':'provider_manual_activity_ack'},
             {'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
             {'type':'output_transcript','text':'A native foreground response.'},
@@ -97,7 +97,7 @@ class Owner(Receiver):
         self.inputs[meta['id']]=value;return value
     def conversation_foreground_complete(self,ident,binding,dialogue):
         record=json.loads((self.root/'prepared'/f'{ident}.json').read_text())
-        value=self.inputs[ident];value.update(phase='foreground',text=record['text']);self.completed.set();return value
+        value=self.inputs[ident];value.update(phase='foreground',text=record['text'].strip());self.completed.set();return value
     def conversation_input_status(self,ident):return self.inputs[ident]
 
 
@@ -138,6 +138,8 @@ class Mounted(unittest.TestCase):
         self.assertEqual(len(self.owner.inputs),1)
         original=next(iter(self.owner.inputs.values()))
         self.assertEqual(original['phase'],'foreground');self.assertEqual(original['text'],'Exact synthetic interpretation')
+        prepared=json.loads((self.root/'prepared'/f"{original['id']}.json").read_text())
+        self.assertEqual(prepared['text'],' \nExact synthetic interpretation  ','The prepared source remains exact while the owner normalizes its retained interpretation')
         self.assertEqual(original['voice']['audio_sha256'],hashlib.sha256(wav_bytes(b'\1\0'*1600+b'\0\0'*1600)).hexdigest())
         history=self.client.get('/api/interaction/foreground').json()['items']
         self.assertEqual(history[0]['speaker'],'assistant');self.assertEqual(history[0]['text'],'A native foreground response.')

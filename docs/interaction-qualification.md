@@ -56,6 +56,39 @@ rendering, physical microphone/playback/hearing, real echo/noise or general
 useful-latency acceptance. The earlier unrelated uncertain worker submission
 remains retained and was never replayed.
 
+## Browser capture and native-provider follow-up —1November2026
+
+A bounded owned Chromium qualification now exercises the shipped microphone
+AudioWorklet/resampler, native conversation client, actual CPU endpoint detector,
+mounted backend and selected Gemini3.8 dialogue together. Its fake mono input
+runs at48000Hz; the shipped worklet delivers16000Hz PCM. Two automatically
+closed sentence originals match their retained WAV hashes and are released only
+after confirmation, without Send. One real provider connection answers the
+synthetic eight-times-nine question correctly in Spanish. All11real Web Audio
+buffers end; the closed, uninterrupted utterance records147360generated and
+acknowledged played bytes. The observed detected-phrase-end to browser playing
+interval is753ms in this single synthetic trial, not a final-speech-to-heard or
+general latency measurement.
+
+The local owner remains simulated: there are zero Sol calls or worker
+admissions. This is a qualification page using the shipped clients, not the full
+avatar/conversation shell or human shared login. Output is muted; Web Audio
+scheduling, source completion and byte acknowledgment do not establish physical
+hearing, waveform fidelity, microphone behavior, echo/noise handling or phone
+acceptance. Both audio contexts, the capture track, CPU worker, isolated server
+and owned browser profile finish/close; bounded evidence is retained locally.
+The earlier model-free browser run separately verifies the same capture/endpoint
+and original-confirmation path with simulated provider audio.
+
+An earlier actual-provider fixture failed when its owner returned a raw leading
+transcript space instead of the real owner's normalized outer whitespace. A
+model-free bridge reproduction confirmed that mismatch. The shared test owner
+now follows the existing native normalization contract; a mounted regression
+keeps the prepared interpretation byte-exact while checking the normalized
+retained text. This is a fixture correction, not a deployed backend repair.
+Earlier failed fixture attempts and their diagnostic corrections remain retained;
+none of their original/model work was replayed to repair the observer.
+
 ## Product outcome
 
 One habitual text/voice conversation lets a person discuss ideas and advance
