@@ -1256,7 +1256,11 @@ window.Conversation = (() => {
       if(source.kind.endsWith("_progress") && observed && observed<=(voiceFinalTimes.get(speaker(source))||0))return;
       rememberFinal(source);
       if(sessionMuted(source))return;
-      const sameSpeaker=other=>source.kind.startsWith("integrator_")?other.kind==="integrator_progress":
+      // A source-bound return announcement is useful conversation, even when
+      // the same native turn ends with a different answer or pending decision.
+      // Coalesce routine progress without dropping that unheard announcement.
+      const sameSpeaker=other=>source.kind.startsWith("integrator_")?other.kind==="integrator_progress"
+        && !(Array.isArray(other.native_returns) && other.native_returns.length):
         other.kind==="worker_progress" && JSON.stringify(other.target)===JSON.stringify(source.target);
       if(source.kind.endsWith("_progress") || ["worker_result","integrator_answer"].includes(source.kind)){
         for(let n=voiceQueue.length-1;n>=0;n--)if(sameSpeaker(voiceQueue[n]))removeQueued(n);

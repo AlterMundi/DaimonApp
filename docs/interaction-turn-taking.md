@@ -551,3 +551,19 @@ The updated regression fails with the old rejection and passes with it removed:
 only a later32byte boundary gap belongs to the second, and exactly one original
 is confirmed. Renewed sound still fences the old endpoint. Existing failed phone
 recordings remain available for review; no retry or new transcription is implied.
+
+## Source-bound return announcements remain in the speech queue —1 November2026
+
+A new two-original selected-provider journey delivered both originals and
+spontaneously spoke Beta's pending question. Alpha's source-bound result was
+written and marked reported by the integrator but never requested for speech:
+the final answer removed the queued `integrator_progress` announcement. This is
+an observed client queue defect, not evidence that the return was never received.
+
+The queue now preserves progress messages carrying canonical `native_returns`
+when later progress/final answers coalesce. Routine progress still condenses;
+current/revision, stale-history, session mute, exact speech-source and human
+interruption fences remain. A mounted regression fails before the change and
+checks that the announcement and following decision speak in order, once.
+The retained provider journey is not replayed; physical hearing and a complete
+post-fix provider journey remain separate acceptance gaps.
