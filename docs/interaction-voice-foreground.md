@@ -453,7 +453,11 @@ on exit or a new session. The existing Chromium offline-audio qualification
 renders both active-playback and between-chunk interruption, plus fresh output
 afterward. It measures rendered graph silence against a synthetic local marker,
 not physical microphone-to-silence latency. Browser playback counters are
-observations, not proof of physical hearing or exact word uptake.
+observations, not proof of physical hearing or exact word uptake. Stopping a
+queued buffer before its scheduled start reports no played bytes for that buffer;
+its cumulative begin offset must not advance the utterance playback observation.
+The offline-audio regression queues two chunks before interruption and checks
+the reported position against elapsed rendered time as well as the silent tail.
 
 Assistant utterances live as explicitly assistant-authored records in the
 existing app state database. They are not human inputs or invented native work
