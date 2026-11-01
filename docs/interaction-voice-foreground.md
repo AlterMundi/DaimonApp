@@ -133,12 +133,31 @@ the exact identity observes the retained original; changing its text or dialogue
 or submitting it through the ordinary input command, is rejected. The ordinary
 input schema and admission behavior remain unchanged.
 
-This is a native owner primitive under implementation, not an activated browser
-mode or a provider delegation API. The dialogue UUID groups originals and grants
-no authority. Durable audio capture, separately attributed formulations, explicit
-work admission and the native-audio/avatar bridge remain subsequent work. The
-store and owner-socket regressions exercise retention/restart, exact-original
-identity and absence of native work without invoking a model.
+The separate owner command `input foreground delegate JSON` takes `binding`,
+`id` (the latest original), `intent_id`, `formulation` and `source_ids`. It freezes
+up to8same-dialogue originals in capture order, their exact text/hash and captured
+server question versions, under an immutable intent. Source context is bounded
+to64KiB and the assistant formulation to8KiB. A newer captured correction must be
+the root. The original text remains unchanged. Admission queues that root directly
+to the existing integrator, bypassing voice-selected destinations and automatic
+question answering. A repeated exact intent only observes its outcome, including
+uncertainty or known-unsent restart recovery; it never resubmits work. Changing
+its formulation, source set or intent identity is rejected.
+
+The integrator receives a labelled assistant derivative and exact frozen sources.
+If it later dispatches the selected original, the normal worker packet carries
+that same attributed context beside the unchanged human text. Ordinary routing,
+source identity validation and return ownership remain in force. The native
+socket regression deliberately includes an unknown worker selector in the latest
+original: delegation still enters the integrator once rather than selecting that
+worker from the voice layer.
+
+These are native owner primitives under implementation, not an activated browser
+mode. The dialogue UUID groups originals and grants no authority. Durable audio
+capture and the native-audio/avatar bridge remain unfinished. Store/restart and
+owner-socket regressions exercise exact-source identity, stale/cross-dialogue
+rejection, once-only delegated admission and absence of work for casual retention,
+without invoking a model.
 
 ## Native dialogue transport seam
 

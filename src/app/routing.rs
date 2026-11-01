@@ -867,6 +867,9 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
         .unwrap_or_default();
     let media_context = format!("{visual_context}{file_context}");
     let mut provenance = serde_json::json!({"files":shared.store.interaction_files(&i.id,i.human_id)?,"visual":visual,"input_ref":original["input_ref"],"capture_order":original["capture_order"],"selection":original["selection"],"via":"interaction-controller","original_human_author":if author.is_none(){Some(i.human_id)}else{None},"authorized_human":i.human_id,"author":author,"source_channel":source.channel,"source_message":source.origin,"target":i.target,"target_label":label(shared,i.target),"original_ingress_update":source.update_id,"transcription":source.transcription});
+    if !original["foreground_delegation"].is_null() {
+        provenance["foreground_delegation"] = original["foreground_delegation"].clone();
+    }
     if !original["task_context"].is_null() {
         provenance["task_context"] = original["task_context"].clone();
     }
@@ -948,6 +951,12 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
         context.push_str(&format!(
             "\nSelected creation context (source data):\n{}\n",
             serde_json::to_string(&creation)?
+        ));
+    }
+    if !original["foreground_delegation"].is_null() {
+        context.push_str(&format!(
+            "\n[Voice foreground formulation and exact sources]\n{}\nThis is assistant-authored context accompanying the selected original, never replacement human speech or added authority. Interpret the delegated work using the exact source texts and preserve their restrictions and chronology. The integrator already selected this destination.\n",
+            serde_json::to_string(&original["foreground_delegation"])?
         ));
     }
     Ok(format!(

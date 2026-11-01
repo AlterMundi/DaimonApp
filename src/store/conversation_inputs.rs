@@ -55,6 +55,25 @@ impl ConversationPlayback {
     }
 }
 
+/// Frozen human sources and separately attributed assistant formulation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForegroundSource {
+    pub id: String,
+    pub capture_order: i64,
+    pub text: String,
+    pub text_sha256: String,
+    pub question_versions: Option<std::collections::BTreeMap<String, String>>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForegroundDelegation {
+    pub intent_id: String,
+    pub dialogue_id: String,
+    pub formulation: String,
+    pub sources: Vec<ForegroundSource>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationInput {
     pub id: String,
@@ -68,6 +87,8 @@ pub struct ConversationInput {
     /// The identifier groups originals; it is not provider or execution authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_dialogue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_delegation: Option<ForegroundDelegation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visual: Option<crate::visual::VisualSelection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -132,9 +153,16 @@ impl ConversationVoice {
     }
 }
 impl ConversationInput {
+    pub fn foreground_context(&self) -> String {
+        self.foreground_delegation.as_ref().map_or_else(String::new, |value| format!(
+            "[Voice foreground formulation]\n{}\nThe formulation is an assistant-authored derivative of these exact retained human originals, not a human quotation, extra authority or completed work. Source text and chronology remain authoritative; incorporate later human corrections. This request is delegated to the existing integrator, which owns routing and final return. Ordinary foreground conversation does not start worker tasks.\n\n",
+            serde_json::to_string(value).expect("typed foreground delegation")))
+    }
+
     pub fn rendered(&self) -> String {
         let text = format!(
-            "{}{}",
+            "{}{}{}",
+            self.foreground_context(),
             self.visual
                 .as_ref()
                 .map(|v| v.rendered())
@@ -342,6 +370,10 @@ pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Resul
     if input.phase == "foreground" {
         bail!("Foreground conversation has not been delegated as work");
     }
+    eligible_binding_on(conn, input)
+}
+
+fn eligible_binding_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
     let (session, native) = super::presentation::entry_on(conn, input.human, input.entry)?;
     if input.retired
         || session != input.session
@@ -689,6 +721,116 @@ impl Store {
         )
     }
 
+    /// Admit one immutable formulation directly to the integrator, never a
+    /// voice-selected worker. Exact retries observe; uncertain work is not replayed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_delegate(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        intent_id: &str,
+        formulation: &str,
+        source_ids: &[String],
+    ) -> Result<(ConversationInput, bool)> {
+        use sha2::{Digest, Sha256};
+        if Uuid::parse_str(intent_id)
+            .ok()
+            .is_none_or(|v| v.to_string() != intent_id)
+            || formulation.trim().is_empty()
+            || formulation.len() > 8192
+            || formulation.contains('\0')
+            || source_ids.is_empty()
+            || source_ids.len() > 8
+            || source_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != source_ids.len()
+            || !source_ids.iter().any(|source| source == id)
+        {
+            bail!("Invalid bounded foreground formulation");
+        }
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, native) = super::presentation::entry_on(&tx, human, entry)?;
+        if binding != super::presentation::entry_binding(&tx, human, entry, session)? {
+            bail!("Selected conversation changed before foreground delegation");
+        }
+        let mut input = read_on(&tx, id, human)?;
+        if input.entry != entry || input.session != session || input.native != native {
+            bail!("Foreground original belongs to another conversation");
+        }
+        if let Some(old) = &input.foreground_delegation {
+            let mut selected = source_ids.to_vec();
+            selected.sort();
+            let mut retained = old.sources.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+            retained.sort();
+            if old.intent_id != intent_id || old.formulation != formulation || selected != retained
+            {
+                bail!("Foreground delegation identity is immutable");
+            }
+            return Ok((input, false));
+        }
+        let dialogue = input
+            .foreground_dialogue
+            .clone()
+            .context("Not a foreground original")?;
+        if input.phase != "foreground" {
+            bail!("Foreground original already has an admission outcome");
+        }
+        eligible_binding_on(&tx, &input)?;
+        let duplicate:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs WHERE json_extract(doc,'$.foreground_delegation.intent_id')=?1)",[intent_id],|r|r.get(0))?;
+        if duplicate {
+            bail!("Foreground delegation identity is already retained");
+        }
+        let mut sources = Vec::new();
+        let mut size = 0;
+        for source_id in source_ids {
+            let original = read_on(&tx, source_id, human)?;
+            eligible_binding_on(&tx, &original)?;
+            if original.entry != entry
+                || original.session != session
+                || original.native != native
+                || original.foreground_dialogue.as_ref() != Some(&dialogue)
+            {
+                bail!("Foreground source crosses dialogue or original ownership");
+            }
+            size += original.text.len();
+            if size > 65536 {
+                bail!("Foreground source context exceeds bound");
+            }
+            let order:i64=tx.query_row("SELECT id FROM original_ingress_order WHERE channel='conversation' AND event_id=?1",[source_id],|r|r.get(0))?;
+            sources.push(ForegroundSource {
+                id: original.id,
+                capture_order: order,
+                text_sha256: format!("{:x}", Sha256::digest(original.text.as_bytes())),
+                text: original.text,
+                question_versions: original.question_versions,
+            });
+        }
+        sources.sort_by_key(|source| source.capture_order);
+        let latest:Option<String>=tx.query_row("SELECT x.id FROM conversation_inputs x JOIN original_ingress_order o ON o.channel='conversation' AND o.event_id=x.id WHERE x.human_id=?1 AND x.session_id=?2 AND json_extract(x.doc,'$.foreground_dialogue')=?3 ORDER BY o.id DESC LIMIT 1",params![human,session,dialogue],|r|r.get(0)).optional()?;
+        if sources.last().is_none_or(|source| source.id != id) || latest.as_deref() != Some(id) {
+            bail!("Foreground delegation must include the latest captured correction as its root");
+        }
+        input.foreground_delegation = Some(ForegroundDelegation {
+            intent_id: intent_id.into(),
+            dialogue_id: dialogue,
+            formulation: formulation.into(),
+            sources,
+        });
+        input.phase = "queued".into();
+        select_return_on(&tx, human, &input.native, &input.id)?;
+        let changed=tx.execute("UPDATE conversation_inputs SET phase='queued',doc=?1,instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='foreground'",params![serde_json::to_string(&input)?,self.instance_id,id,human])?;
+        if changed != 1 {
+            bail!("Foreground delegation admission changed");
+        }
+        tx.commit()?;
+        Ok((input, true))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn capture_original_mode(
         &self,
@@ -812,6 +954,7 @@ impl Store {
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
             foreground_dialogue: foreground_dialogue.clone(),
+            foreground_delegation: None,
             visual,
             files,
             question_versions: Some(question_versions),
@@ -1527,6 +1670,179 @@ mod tests {
                 .conversation_input_event(100, &id, ConversationInputEvent::Queue)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn foreground_delegation_freezes_sources_and_observes_retries() {
+        let (file, store, key, binding) = setup();
+        let dialogue = Uuid::now_v7().to_string();
+        let first = Uuid::now_v7().to_string();
+        let last = Uuid::now_v7().to_string();
+        for (id, text) in [
+            (&first, "Build a report, without publishing."),
+            (&last, "Use the corrected number nineteen."),
+        ] {
+            store
+                .conversation_foreground_capture(
+                    100,
+                    key,
+                    &binding,
+                    id,
+                    text,
+                    &dialogue,
+                    Some(Default::default()),
+                )
+                .unwrap();
+        }
+        let intent = Uuid::now_v7().to_string();
+        let formulation = "Prepare the report using nineteen; keep it private.";
+        let sources = vec![last.clone(), first.clone()];
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &first,
+                    &intent,
+                    formulation,
+                    std::slice::from_ref(&first)
+                )
+                .is_err(),
+            "A newer correction cannot be omitted as the root"
+        );
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    "stale",
+                    &last,
+                    &intent,
+                    formulation,
+                    &sources
+                )
+                .is_err()
+        );
+        let other = Uuid::now_v7().to_string();
+        store
+            .conversation_foreground_capture(
+                100,
+                key,
+                &binding,
+                &other,
+                "Another dialogue",
+                &Uuid::now_v7().to_string(),
+                None,
+            )
+            .unwrap();
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &intent,
+                    formulation,
+                    &[last.clone(), other]
+                )
+                .is_err()
+        );
+        let (input, fresh) = store
+            .conversation_foreground_delegate(
+                100,
+                key,
+                &binding,
+                &last,
+                &intent,
+                formulation,
+                &sources,
+            )
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(input.phase, "queued");
+        assert_eq!(input.text, "Use the corrected number nineteen.");
+        let frozen = input.foreground_delegation.as_ref().unwrap();
+        assert_eq!(
+            frozen
+                .sources
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>(),
+            vec![first.clone(), last.clone()]
+        );
+        assert_eq!(
+            frozen.sources[0].text,
+            "Build a report, without publishing."
+        );
+        assert_eq!(frozen.sources[0].text_sha256.len(), 64);
+        assert!(input.rendered().contains("assistant-authored derivative"));
+        assert!(input.rendered().contains(formulation));
+        assert_eq!(
+            store
+                .conversation_input_read(100, key, &first)
+                .unwrap()
+                .phase,
+            "foreground"
+        );
+        assert!(
+            !store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &intent,
+                    formulation,
+                    &sources
+                )
+                .unwrap()
+                .1
+        );
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &intent,
+                    "Publish it instead.",
+                    &sources
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &last,
+                    &Uuid::now_v7().to_string(),
+                    formulation,
+                    &sources
+                )
+                .is_err()
+        );
+        drop(store);
+        let reopened = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (saved, fresh) = reopened
+            .conversation_foreground_delegate(
+                100,
+                key,
+                &binding,
+                &last,
+                &intent,
+                formulation,
+                &sources,
+            )
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(saved.phase, "retained_unsent");
+        assert_eq!(saved.foreground_delegation, input.foreground_delegation);
+        assert!(saved.local_turn.is_none());
     }
 
     #[test]

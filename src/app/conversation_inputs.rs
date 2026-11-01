@@ -27,6 +27,7 @@ fn outcome(input: &ConversationInput, fresh: bool) -> Value {
         "incorporation":"Not established by input retention or native acceptance"});
     if let Some(dialogue) = &input.foreground_dialogue {
         value["foreground_dialogue"] = json!(dialogue);
+        value["foreground_delegation"] = json!(input.foreground_delegation);
     }
     value
 }
@@ -152,6 +153,40 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         )?;
         // Retention never calls deliver/submit, selects a worker or answers work.
         return response(app, &input, fresh);
+    }
+    if let Some(body) = args.strip_prefix("foreground delegate ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Delegate {
+            binding: String,
+            id: String,
+            intent_id: String,
+            formulation: String,
+            source_ids: Vec<String>,
+        }
+        let selected: Delegate = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let (input, fresh) = app.shared.store.conversation_foreground_delegate(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.intent_id,
+            &selected.formulation,
+            &selected.source_ids,
+        )?;
+        if fresh {
+            // Bypass voice-selected routing and automatic question answers.
+            // Only the existing integrator decides downstream work.
+            submit(app.clone(), input.clone()).await?;
+        }
+        return response(
+            app,
+            &app.shared
+                .store
+                .conversation_input_read(human, cfg.entry(), &input.id)?,
+            fresh,
+        );
     }
     if args == "voice capabilities" {
         let mut result = app

@@ -105,6 +105,42 @@ def foreground_retention(binary):
         journey.close()
 
 
+
+def foreground_delegation(binary):
+    journey=Inputs(binary)
+    try:
+        journey.start();journey.admit('Seed integrating conversation.',topic=1)
+        journey.wait(lambda:journey.has('Initial goal turn delivered.',1));journey.idle()
+        journey.wait_control_socket(journey.socket)
+        binding=journey.read('presentation','list','0','0')['result']['binding']
+        dialogue=str(uuid.uuid4());originals=[]
+        for text in ('Build the selected report without publishing.','#UnknownWorker Use nineteen, not seventeen.'):
+            body={'binding':binding,'id':str(uuid.uuid4()),'text':text,'dialogue_id':dialogue}
+            journey.read('input','foreground','retain',json.dumps(body));originals.append(body)
+        assert not journey.packets
+        latest=originals[-1]
+        delegated={'binding':binding,'id':latest['id'],'intent_id':str(uuid.uuid4()),
+                   'formulation':'Prepare the report with nineteen. Keep it private.',
+                   'source_ids':[body['id'] for body in originals]}
+        result=journey.read('input','foreground','delegate',json.dumps(delegated))['result']
+        assert result['new_input']
+        journey.wait(lambda:journey.row('SELECT phase FROM conversation_inputs WHERE id=?',(latest['id'],))==[('accepted',)])
+        assert len(journey.packets)==1
+        packet=journey.packets[0][1]
+        text=packet['input'][0]['text']
+        assert 'assistant-authored derivative' in text and delegated['formulation'] in text
+        assert all(original['text'] in text for original in originals)
+        assert packet['clientUserMessageId']=='conversation:'+latest['id']
+        repeated=journey.read('input','foreground','delegate',json.dumps(delegated))['result']
+        assert not repeated['new_input'] and repeated['phase']=='accepted'
+        assert not journey.read('input','foreground','delegate',json.dumps({**delegated,'formulation':'Changed request'}),ok=False)['ok']
+        assert len(journey.packets)==1,'Exact delegation retry duplicated integrator work'
+        assert journey.read('input','status',originals[0]['id'])['result']['phase']=='foreground'
+        journey.finish(journey.web_thread,journey.web_turn);journey.idle()
+        print('PASS sourced foreground formulation enters only the integrator once; originals and retry attribution preserved; zero models.')
+    finally:journey.close()
+
+
 def qualify(binary):
     journey=Inputs(binary)
     try:
@@ -339,6 +375,7 @@ def canonical_turn_skips_unused_limits_history(binary):
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
     foreground_retention(binary)
+    foreground_delegation(binary)
     qualify(binary)
     mixed_origin_returns(binary)
     late_artifact_return(binary)
