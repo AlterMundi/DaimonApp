@@ -80,9 +80,14 @@ class Activity:
             if self._probability(frame) >= .5:
                 if not self.speaking:
                     self.pending_onset = True
-                self.speaking = True
                 self.positive += 1
-                self.quiet = 0
+                if self.speaking or self.positive >= 3:
+                    self.speaking = True
+                    self.quiet = 0
+                else:
+                    # Once speech has ended, an unconfirmed candidate cannot
+                    # restart it or erase the elapsed non-speech interval.
+                    self.quiet += 1
                 if self.positive >= 3:
                     self.speech_seen = True
                     if self.pending_onset:
@@ -102,7 +107,7 @@ class Activity:
                   'speaking': self.speaking, 'speech_seen': self.speech_seen, 'audio_bytes': self.bytes}
         if onset is not None:
             result['onset'] = onset
-        if analyze and self.confirmed_generation == self.generation and self.speech_seen and not self.speaking and self.generation != self.scored_generation:
+        if analyze and self.confirmed_generation == self.generation and self.speech_seen and not self.speaking and not self.positive and self.generation != self.scored_generation:
             if self.analyses >= self.max_analyses:
                 raise TurnEndUnavailable('Turn-analysis capture budget reached')
             self.scored_generation = self.generation
@@ -114,7 +119,7 @@ class Activity:
                 self.endpoints.append((self.generation, self.bytes))
                 del self.endpoints[:-2]
                 self.endpoint_generation=self.generation
-        if (analyze and self.silence_end_millis and self.speech_seen and not self.speaking
+        if (analyze and self.silence_end_millis and self.speech_seen and not self.speaking and not self.positive
                 and self.confirmed_generation==self.generation
                 and self.endpoint_generation!=self.generation
                 and self.quiet*32>=self.silence_end_millis):

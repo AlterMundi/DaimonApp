@@ -92,7 +92,7 @@ class CaptureTurn(unittest.TestCase):
                 self.assertIn('endpoint',result,'Short unconfirmed noise must not prevent the open phrase ending')
                 self.assertEqual(result['endpoint']['generation'],onset['generation'])
                 self.assertEqual(result['endpoint']['authority'],'acoustic_silence')
-                self.assertEqual(result['endpoint']['silence_millis'],1600)
+                self.assertGreaterEqual(result['endpoint']['silence_millis'],1600)
                 value.boundary(onset['generation'],result['audio_bytes'])
                 self.assertNotIn('endpoint',value.feed(b'\0'*(25*1024)))
                 self.probability=.9
@@ -121,6 +121,51 @@ class CaptureTurn(unittest.TestCase):
         self.assertEqual(len(self.scored),2,'Actual resumed voice receives its own completion decision')
         value.boundary(second['generation'],endpoints[0]['audio_bytes'])
         self.assertFalse(any('onset' in r or 'endpoint' in r for r in frames(.9,2)+frames(0,50)))
+
+    def test_repeated_unconfirmed_blips_do_not_hold_the_speech_floor(self):
+        for spike_frames,quiet_frames in ((1,2),(2,5)):
+            with self.subTest(spike_frames=spike_frames,quiet_frames=quiet_frames):
+                value=self.analyzer();value.silence_end_millis=1600
+                value.turn.predict=lambda *a,**k:{'candidate_complete':False,'probability':.1}
+                self.probability=.9;onset=value.feed(b'\0'*3072)['onset']
+                self.probability=0;value.feed(b'\0'*(7*1024))
+                events=[]
+                # No later run reaches the same three-frame speech requirement.
+                for _ in range(20):
+                    self.probability=0;events.append(value.feed(b'\0'*(quiet_frames*1024)))
+                    self.probability=.9;events.append(value.feed(b'\0'*(spike_frames*1024)))
+                self.assertFalse(any('onset' in event for event in events))
+                endpoints=[event['endpoint'] for event in events if 'endpoint' in event]
+                self.assertEqual(len(endpoints),1,'Unconfirmed blips must not indefinitely own the speech floor')
+                self.assertEqual(endpoints[0]['generation'],onset['generation'])
+                self.assertEqual(endpoints[0]['authority'],'acoustic_silence')
+                self.assertLessEqual(endpoints[0]['silence_millis'],1600+quiet_frames*32)
+
+    def test_unvoiced_frames_within_confirmed_speech_keep_the_existing_continuation(self):
+        value=self.analyzer();value.silence_end_millis=1600
+        value.turn.predict=lambda *a,**k:{'candidate_complete':False,'probability':.1}
+        self.probability=.9;value.feed(b'\0'*3072)
+        for _ in range(30):
+            self.probability=0;quiet=value.feed(b'\0'*1024)
+            self.probability=.9;voiced=value.feed(b'\0'*2048)
+            self.assertNotIn('endpoint',quiet)
+            self.assertNotIn('endpoint',voiced)
+            self.assertTrue(voiced['speaking'],'Debouncing a new onset must not cut continuing voice')
+
+    def test_phrase_end_waits_for_a_provisional_voice_candidate_at_the_deadline(self):
+        value=self.analyzer();value.silence_end_millis=1600
+        value.turn.predict=lambda *a,**k:{'candidate_complete':False,'probability':.1}
+        self.probability=.9;value.feed(b'\0'*3072)
+        self.probability=0
+        value.feed(b'\0'*(24*1024));value.feed(b'\0'*(25*1024))
+        self.probability=.9
+        self.assertNotIn('endpoint',value.feed(b'\0'*(2*1024)))
+        resumed=value.feed(b'\0'*1024)
+        self.assertEqual(resumed['onset']['generation'],2)
+        self.assertNotIn('endpoint',resumed,'Do not split actual resumed speech at the inactivity deadline')
+        self.probability=0
+        value.feed(b'\0'*(25*1024));ended=value.feed(b'\0'*(25*1024))
+        self.assertEqual(ended['endpoint']['generation'],2)
 
     def test_startup_backfill_defers_scoring_until_the_current_tail(self):
         value=self.analyzer();self.probability=.8;value.feed(b'\0'*3072,analyze=False)

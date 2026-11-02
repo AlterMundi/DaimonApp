@@ -368,9 +368,21 @@ confirmed speech, a rejected semantic completion, a short spike and1600ms quiet;
 the existing phrase now ends exactly once. Confirmed resumed speech still opens
 the next generation across partial PCM reads, and exact source bytes, offsets,
 question scope and recovery are unchanged. This repairs that deterministic state
-failure; it does not prove arbitrary car-noise classification. Repeated positive
-spikes can still postpone silence, and sustained false positives need separate
-noise qualification. Learned VAD probabilities are not word-recognition receipts.
+failure; it does not prove arbitrary car-noise classification. Learned VAD
+probabilities are not word-recognition receipts.
+
+After the existing seven-negative-frame release, a new speech candidate must
+also meet that three-positive-frame requirement before setting `speaking` or
+resetting elapsed quiet. Repeated one/two-frame spikes cannot indefinitely hold
+an already released phrase open. Both semantic and silence endpoints wait while
+a candidate is incomplete, so a real third positive frame can resume speech
+without being split at the inactivity deadline. Established speech retains its
+existing continuation rule: each positive frame still resets quiet, including
+voiced/unvoiced patterns that never require a new onset. The fallback duration
+therefore measures time without confirmed speech reacquisition, including
+rejected candidates, rather than exclusively below-threshold frames. Continuous
+false positives while already speaking and arbitrary road noise remain separate
+classifier/noise-processing and physical-device qualification gaps.
 
 ## Actual audio-input qualification —1November2026
 
