@@ -133,6 +133,8 @@ class Mounted(unittest.TestCase):
                 selected.write_text(text)
                 with self.open() as ws:
                     ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                    self.assertEqual(ws.receive_json(),{'type':'question_scope','binding':self.owner.binding,'capture_questions':{}},
+                                     'Observe the initial scope event before asking for close')
                     context=Stream.opened[-1].context
                     self.assertEqual(context['display_name'],'Oliva')
                     self.assertEqual(context['being_identity']['text'],text)
