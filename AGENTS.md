@@ -13,7 +13,10 @@ Do not equate packaged WebView, CI APK or bridge tests with phone acceptance.
 Telegram is an optional session projection, never the application shell or a
 required launch path. A child should be able to use only this app. Current UI
 and Beacon sound delivery is owned by #213/#221 and docs/interaction-v02.md:
-readable conversation first, read-only machinery in the header inspector (initially closed),
+readable conversation first, machinery in the header inspector (initially closed),
+with coordination pause/resume only through an explicitly provisioned human
+operator/grant. Observation remains read-only without that binding; no default
+funding or inference activation follows. Preserve
 perceptible per-being ASCII expression and an audible opt-in sonic composition.
 Do not equate renderer/mapping tests with the delivered visual or sonic experience.
 
@@ -185,3 +188,13 @@ menu selected/pending state and historical grants. Never clear a journal or
 silently re-enroll devices to bypass a mismatch. See docs/interaction-companion.md
 and the maintained Shared Resources Interaction receiving record. Loaded binary,
 health and served assets alone do not establish authenticated app continuity.
+
+
+Python-only Matrix host adapter changes use the dedicated `matrix-host` CI
+profile: the existing SDK adapter/legacy suite plus both ordinary and funded
+canonical HTTP journeys against the compiled native consumer. The profile accepts
+only its four explicit host/test paths and documentation. Rust, dependencies,
+unknown files or changed full-text qualification keep their owning full checks.
+Changes to the profile itself exercise that job; the actual embedded scope
+program is regression-tested. Reuse unchanged native qualification instead of
+repeating unrelated voice, lifecycle and multi-worker fixtures for host Python.

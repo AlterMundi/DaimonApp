@@ -26,8 +26,10 @@ and body through `runtime.status`, within the same absolute deadline. Both nativ
 clients must select the same runtime, server origin and socket. The SDK keeps
 messaging-only and observation capabilities separate; the host adapter routes
 each purpose through its existing capability rather than creating a mixed one. The SDK must support an
-absolute `deadline_ns` as well as a per-operation socket timeout. The qualified
-source is Matrix `9b2b8ec2c455d3bf316bc00dc9e1bac44e9d5094`.
+absolute `deadline_ns` as well as a per-operation socket timeout. The current qualified source is Matrix
+`79be4788680a3b18f5b04571370d50f0904cd82f`. Legacy nonqueued transport and
+controller compatibility is also checked against `9b2b8ec2c455d3bf316bc00dc9e1bac44e9d5094`;
+that older source does not supply funded source queues.
 
 The application relay explicitly identifies `interaction-controller` and
 `session_request` or `worker_result`. The signed native event identifies its
@@ -44,6 +46,40 @@ rewrite or reissue the original. An ambiguous submission remains charged in
 refund or new execution. `accept_verified_reply` correlates an already verified
 selected event to the original message ID, digest, author, thread and recipient.
 It does not perform signature verification itself or read an inbox.
+
+## Funded selected-original replies — Matrix #312 / Telecodex #532
+
+A finite approved purpose and a later received original are separate inputs.
+Do not embed a future original in the approved purpose: the original's signed
+coordination metadata references that approval's hash. The host constructs
+`MatrixExecutionBroker(instruction, purpose, authenticated_client,
+received_source=verified_event)` only after selecting the exact SDK-verified
+original. The purpose must match the approved task hash; the original fixes the
+reply parent/destination and its complete event digest. The broker accepts only
+`kind: work` metadata naming that exact instruction hash.
+
+Use the existing `broker.controller(store, qualified_runner)` and
+`run_due_once(instruction_id, revision, purpose, work_id=selected_work_id)`.
+This explicit mode requires the existing funding and queued-source gates; neither
+can be disabled. The work row must match the pinned account, instruction,
+message ID and full source digest before runner admission. Another eligible
+original cannot borrow this broker. Existing core approval, episode authority,
+source eligibility, deduplication and provider reservations still own admission;
+metadata itself grants none of them. The runner receives only the core's
+`selected_original`; it does not receive an arbitrary inbox or new conversation.
+
+A reply retains the same root/account/instruction correlation with `kind: result`.
+It is passive and cannot enqueue another work turn. The signed SDK reply and the
+existing `conversation_return` callback bring it back to the original canonical
+Interaction conversation. I/O remains ingress/egress for that same integrator,
+not an additional reasoning session or a private-history aggregation mechanism.
+
+The technical sender's programmatic `coordination=` keyword is for the trusted
+host to attach an already selected existing work correlation. CLI/stdin remains
+the closed `{status, source}` contract; neither model text nor that keyword can
+create an account, human approval, budget, provider or receiver activation.
+Without `received_source`, legacy manual single-cycle behavior remains unchanged;
+legacy controllers reject a queued work ID rather than silently using it.
 
 ## Technical original transport
 
@@ -91,7 +127,7 @@ execution store or paid admission is introduced.
 
 ```toml
 [interaction.matrix_transport]
-command = ["/path/to/python", "-B", "/path/to/matrix_operator.py", "--binding", "/path/to/private/host-binding.json"]
+command = ["/usr/bin/python3", "-B", "/path/to/matrix_operator.py", "--native-connection", "/path/to/current/connection.json", "--binding", "/path/to/private/host-binding.json"]
 source = {kind = "body", being_ref = "SOURCE_BEING_REF", embodiment_id = "SOURCE_EMBODIMENT_ID"}
 timeout_seconds = 15
 ```
@@ -108,6 +144,34 @@ observation separately permits `runtime.status`. The adapter never loads the
 runtime outside its daemon or creates credentials. Its two calls share one
 absolute deadline. Do not use a combined capability: the SDK rejects mixed
 messaging and observation profiles.
+
+### Current receiving SDK context
+
+The optional owner-only `--native-connection` flag reads the current managed
+Cluster owner connection at each invocation. It uses that connection's selected
+interpreter, closed imports, code digest and code owner, then calls the SAME
+maintained `sdk_parameters`/`qualified_startup` verifier before loading the host
+adapter. Preserve the exact isolated/no-site/no-bytecode context, including its
+disabled-bytecode prefix; do not relax qualification or import installed/global
+packages to get past a rejection. The connection's arbitrary Python code string
+is never executed. Only the supported managed-owner argv layout is accepted;
+other layouts fail explicitly rather than falling back to a cached older SDK.
+Without this flag, an operator can still supply an already qualified context.
+
+The parent never reads/repackages stdin before replacing itself with that
+receiving process. The exact original, ordinary process group, deadlines,
+request journal and conservative uncertain-send behavior remain unchanged.
+Bootstrap qualification failures return only their exception class, keeping
+private paths and diagnostics out of the controller/model result. A successor
+SDK is resolved from the existing connection; this creates no credential,
+permission, runtime identity or alternative transport.
+
+Keep the host binding in an existing owner-private directory whose ancestors
+satisfy the SDK's protected-file rules. A private leaf under a group-writable
+ancestor can still be refused. Use the established protected owner location;
+do not loosen validation or change unrelated global configuration permissions.
+Both purpose clients must match the same runtime/server/socket, and the online
+source observation must still match the selected body before any send.
 
 The existing request row freezes the selected source author as `claimed_source`
 and records `submitting` atomically before the command can have an effect.
@@ -234,8 +298,23 @@ source.
 `tests/matrix_conversation_http_io.py` also exercises the actual native controller,
 authenticated owner CLI and HTTP server around signed SDK fixtures, including
 canonical returns, correction context and local-plan exclusion. Run it with the
-same SDK source, existing dashboard dependencies and a freshly built text binary.
-Its native workers and execution instructions are synthetic, with zero inference.
+same SDK source, existing dashboard dependencies and a qualified text binary;
+reuse an unchanged binary. Add `--funded` for the funded selected-original journey.
+That variant passes through the actual controller, signed SDK request/reply,
+SQLite funding gate, owner callback and canonical HTTP return. It checks one
+call/full worst-case charge reservation, selected-source-only access, a passive
+result, one canonical return and preserved uncertainty across restart. The worker
+is a controlled model-free stand-in, not an actual provider/native worker. Earlier
+actual pinned-native first-use qualification is separate evidence; this fixture
+does not establish real provider spending, receiving human use or automatic
+integrator incorporation. CI runs both modes and two affected old-SDK legacy
+journeys. Python-only changes to the four known Matrix host/test paths select the dedicated
+`matrix-host` compiled canonical consumer job and the existing SDK/legacy suite,
+without repeating unrelated native, voice or lifecycle journeys. Documentation
+may accompany that profile; Rust, dependency, unknown-file and full-text-job
+changes retain their full qualification. The actual workflow scope program is
+tested, and a change to the dedicated job exercises it. The profile adds no
+receiving deployment or model activation.
 
 Production deployment, qualified receiver execution and the selected live
 cross-body correction/renewal trial remain open in #367. One inference/token admission does not establish a global

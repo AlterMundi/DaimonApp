@@ -23,17 +23,18 @@ spec = importlib.util.spec_from_file_location(
 adapter = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = adapter
 spec.loader.exec_module(adapter)
-from matrix_execution import MatrixConversationTransport, make_received_task
-from matrix_operator import send as operator_send
+MatrixConversationTransport = adapter.MatrixConversationTransport
+make_received_task = adapter.make_received_task
+operator_send = adapter.operator_send
 
 
-def qualify(binary):
+def qualify(binary, *, funded=False):
     sdk = adapter.AdapterTests()
     sdk.setUp()
     j = ColdEntry(str(Path(binary).resolve()))
     b = None
     observed = []
-    mode = {"drop": False}
+    mode = {"drop": False, "funded": None}
     source_author = {
         "being_ref": sdk.sender.lane.being_ref,
         "embodiment_id": sdk.sender.lane.local_embodiment_id,
@@ -47,7 +48,12 @@ def qualify(binary):
             value = json.loads(self.rfile.read(int(self.headers["content-length"])))
             assert value["source"] == source_author
             client = adapter.SignedGroupClient(sdk.fixture, sdk.sender)
-            outcome = operator_send(value, client, timeout=1)
+            if funded and mode["funded"] is None:
+                state = sdk.funded_original(status=value["status"])
+                mode["funded"] = state
+                outcome = state.outcome
+            else:
+                outcome = operator_send(value, client, timeout=1)
             observed.append((value, outcome))
             if mode["drop"]:
                 self.close_connection = True
@@ -150,13 +156,48 @@ def qualify(binary):
         reply_scope = replace(
             sdk.scope, thread=sent["thread_id"], tool="messaging_reply", action="reply"
         )
-        receiving_task = make_received_task(message, reply_scope)
-        responder = sdk.make_broker(sdk.receiver, reply_scope, task=receiving_task)
-        returned = responder.submit(
-            reply_scope, {"text": "La respuesta exacta del daimon seleccionado."}, 1
-        )
+        if funded:
+            state = mode["funded"]
+            assert state.sent["message_id"] == sent["message_id"]
+            context = state.controller.run_due_once(
+                state.instruction.instruction_id, 1, state.purpose, work_id=state.work
+            )
+            admissions = []
+            context.inference(
+                lambda: admissions.append("synthetic bounded provider admission"),
+                exposure=dict(
+                    route="isolated-fake",
+                    max_charge=30,
+                    provider=state.instruction.provider,
+                    model=state.instruction.model,
+                    max_input_tokens=state.instruction.max_input_tokens,
+                    max_output_tokens=state.instruction.max_output_tokens,
+                ),
+            )
+            returned = context.native(
+                reply_scope, {"text": "La respuesta exacta del daimon seleccionado."}
+            )
+            state.store.finish(context.cycle, "completed")
+            assert admissions == ["synthetic bounded provider admission"]
+            assert state.store.funding_status("episode")["calls"] == 1
+            assert state.store.funding_status("episode")["reserved"] == 30
+            assert len(state.runner.starts) == 1
+        else:
+            receiving_task = make_received_task(message, reply_scope)
+            responder = sdk.make_broker(sdk.receiver, reply_scope, task=receiving_task)
+            returned = responder.submit(
+                reply_scope, {"text": "La respuesta exacta del daimon seleccionado."}, 1
+            )
         signed_answer = sdk.sender.message(returned["message_id"])
         callback = broker.conversation_return(sent, signed_answer)
+        if funded:
+            assert signed_answer["payload"]["body"]["coordination"]["kind"] == "result"
+            assert (
+                state.store.enqueue_coordination(
+                    signed_answer["event_id"], sdk.sender.message
+                )
+                is None
+            )
         outcome = j.read("matrix", "return", json.dumps(callback))["result"]
         assert outcome["phase"] == "reply_received" and outcome["current"]
         j.read("matrix", "return", json.dumps(callback))
@@ -240,8 +281,26 @@ def qualify(binary):
         retained = j.read("matrix", "status", lost_id)["result"]
         assert retained["phase"] == "submission_uncertain" and len(observed) == 3
         assert retained["claimed_source"] == source_author
+        if funded:
+            print(
+                "FUNDED_RETURN_EVIDENCE",
+                json.dumps(
+                    {
+                        "call_fuel_consumed": 1,
+                        "reserved_charge_retained": 30,
+                        "selected_source_only": set(state.reads)
+                        == {state.source["event_id"]},
+                        "result_passive": True,
+                        "canonical_return_rows": 1,
+                        "provider_model_calls": 0,
+                        "native_reader_identity_preserved": True,
+                        "worker_kind": "controlled-model-free-stand-in",
+                        "real_peer_activation": False,
+                    }
+                ),
+            )
         print(
-            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; zero inference. Receiving native work/automatic return attachment remain unqualified."
+            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; zero provider/model calls. Funded mode uses a controlled worker stand-in; real receiving native work/automatic integrator incorporation remain unqualified."
         )
     finally:
         if b:
@@ -253,4 +312,4 @@ def qualify(binary):
 
 
 if __name__ == "__main__":
-    qualify(sys.argv[1])
+    qualify(sys.argv[1], funded="--funded" in sys.argv[2:])

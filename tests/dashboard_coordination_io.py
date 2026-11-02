@@ -69,8 +69,8 @@ class Tests(unittest.TestCase):
                         'episodes': [{'account_id': 'episode', 'instruction_file': str(self.instruction_file),
                                       'task': 'Selected objective'}]}}
 
-    def client(self):
-        return TestClient(create_app(self.config, self.receiver, lambda raw, bot: int(raw)),
+    def client(self, control=None):
+        return TestClient(create_app(self.config, self.receiver, lambda raw, bot: int(raw), coordination_control=control),
                           base_url='https://example.test')
 
     def auth(self, client):
@@ -140,6 +140,206 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             create_app(self.config, self.receiver)
         self.assertFalse(self.marker.exists())
+
+    def control_headers(self, client, headers):
+        import sqlite3
+        with closing(sqlite3.connect(self.root / 'state/dashboard.sqlite3')) as db:
+            csrf = db.execute('SELECT csrf FROM sessions WHERE human=100').fetchone()[0]
+        return {**headers, 'origin': 'https://example.test', 'x-dashboard-csrf': csrf}
+
+    def test_human_control_requires_authority_csrf_and_retains_exact_duplicate(self):
+        from types import SimpleNamespace
+        calls = []
+        def apply(human, selected, body, **kwargs):
+            calls.append(body)
+            return {'state': 'confirmed', 'control_revision': body['expected_revision']+1,
+                    'paused': body['paused'], 'execution_started': False}
+        control = SimpleNamespace(permits=lambda human, selected: human == 100, apply=apply)
+        body = {'nonce': 'native-pause-request-0001', 'account_id': 'episode', 'expected_revision': 0, 'paused': True}
+        with self.client(control) as client:
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body).status_code, 403)
+            headers = self.auth(client)
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body,
+                headers={**headers,'origin':'https://example.test'}).status_code, 403)
+            headers = self.control_headers(client, headers)
+            first = client.post('/api/interaction/coordination/control', json=body, headers=headers)
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body, headers=headers).json(), first.json())
+            self.assertEqual(len(calls), 1)
+            changed = client.post('/api/interaction/coordination/control', json=body | {'paused': False}, headers=headers)
+            self.assertEqual(changed.status_code, 409)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body | {'account_id': 'not-selected'}, headers=headers).status_code, 400)
+
+    def test_uncertain_control_is_never_replayed_or_replaced(self):
+        from types import SimpleNamespace
+        import sqlite3
+        calls = []
+        def apply(*args, **kwargs):
+            calls.append(1)
+            raise TimeoutError('Synthetic lost commit return')
+        control = SimpleNamespace(permits=lambda human, selected: True, apply=apply)
+        body = {'nonce': 'native-uncertain-request-1', 'account_id': 'episode', 'expected_revision': 0, 'paused': True}
+        with self.client(control) as client:
+            headers = self.control_headers(client, self.auth(client))
+            for value in (body, body, body | {'nonce': 'native-uncertain-request-2', 'paused': False}):
+                result = client.post('/api/interaction/coordination/control', json=value, headers=headers)
+                self.assertEqual(result.status_code, 202, result.text)
+                self.assertEqual(result.json()['state'], 'unconfirmed')
+            self.assertEqual(calls, [1])
+        with closing(sqlite3.connect(self.root / 'state/dashboard.sqlite3')) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM actions WHERE nonce LIKE 'coordination:%'").fetchone()[0], 1)
+
+    def test_budget_read_grant_does_not_authorize_control(self):
+        from types import SimpleNamespace
+        calls = []
+        control = SimpleNamespace(permits=lambda human, selected: True,
+            apply=lambda *args, **kwargs: calls.append(1) or {'state': 'confirmed'})
+        credential = self.root / 'control-device.json'
+        grants = Grants(self.config, self.receiver)
+        grants.enroll('Selected device', credential, 3600)
+        device = json.loads(credential.read_text())
+        headers = {'authorization': device['authorization'], 'origin': 'https://example.test', 'x-dashboard-csrf': device['csrf']}
+        body = {'nonce': 'native-device-request-0001', 'account_id': 'episode', 'expected_revision': 0, 'paused': True}
+        grants.coordination(device['grant_id'], True)
+        with self.client(control) as client:
+            self.assertFalse(client.get('/api/interaction/coordination', headers=headers).json()['can_control'])
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body, headers=headers).status_code, 403)
+            self.assertEqual(calls, [])
+            grants.coordination(device['grant_id'], True, control=True)
+            self.assertTrue(client.get('/api/interaction/coordination', headers=headers).json()['can_control'])
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body, headers=headers).status_code, 200)
+            self.assertEqual(calls, [1])
+            grants.coordination(device['grant_id'], False)
+            self.assertEqual(client.post('/api/interaction/coordination/control', json=body, headers=headers).status_code, 403)
+        self.assertEqual(json.loads(credential.read_text()), device)
+
+    def test_shared_login_control_is_distinct_from_budget_reading(self):
+        from types import SimpleNamespace
+        calls = []
+        control=SimpleNamespace(permits=lambda human,selected:True,
+            apply=lambda *args,**kwargs:calls.append(1) or {'state':'confirmed'})
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://example.test','coordination_access':True}
+        identity={'contract':'dm.home-session/v1','origin':'https://example.test',
+            'actor':{'kind':'human','ref':'human:telegram:100'},'expires':2**40}
+        body={'nonce':'shared-control-request-001','account_id':'episode','expected_revision':0,'paused':True}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            with self.client(control) as client:
+                client.cookies.set('__Host-home','A'*43)
+                csrf=client.get('/api/interaction/access').json()['csrf']
+                headers={'origin':'https://example.test','x-dashboard-csrf':csrf}
+                self.assertEqual(client.post('/api/interaction/coordination/control',json=body,headers=headers).status_code,403)
+            self.config['shared_auth']['coordination_control_access']=True
+            with self.client(control) as client:
+                client.cookies.set('__Host-home','A'*43)
+                csrf=client.get('/api/interaction/access').json()['csrf']
+                response=client.post('/api/interaction/coordination/control',json=body,
+                    headers={'origin':'https://example.test','x-dashboard-csrf':csrf})
+                self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(calls,[1])
+
+    def test_protected_unknown_slots_bound_admission_without_deleting_evidence(self):
+        from types import SimpleNamespace
+        import sqlite3
+        calls=[]
+        control=SimpleNamespace(permits=lambda human,selected:True,
+            apply=lambda *args,**kwargs:calls.append(1))
+        with self.client(control) as client:
+            headers=self.control_headers(client,self.auth(client))
+            with closing(sqlite3.connect(self.root/'state/dashboard.sqlite3')) as db:
+                for n in range(8):
+                    db.execute('INSERT INTO actions VALUES(?,?,?,?)',(100,'coordination:'+str(n),
+                        'unconfirmed',json.dumps({'request':{'nonce':str(n)},'outcome':{'state':'unconfirmed'}})))
+                db.commit()
+            body={'nonce':'bounded-control-request-001','account_id':'episode','expected_revision':0,'paused':True}
+            self.assertEqual(client.post('/api/interaction/coordination/control',json=body,headers=headers).status_code,409)
+            self.assertEqual(calls,[])
+        with closing(sqlite3.connect(self.root/'state/dashboard.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM actions').fetchone()[0],8)
+
+    @unittest.skipUnless(os.environ.get('MATRIX_COORDINATION_TEST_ROOT'),
+                         'Actual Matrix human funding operator source is optional')
+    def test_actual_human_frontend_pause_through_authenticated_http(self):
+        import importlib.util
+        import time
+        import uuid
+        from types import SimpleNamespace
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from dashboard.coordination import HumanControl
+        matrix = Path(os.environ['MATRIX_COORDINATION_TEST_ROOT']).resolve()
+        sys.path.insert(0, str(matrix / 'src'))
+        self.addCleanup(lambda: sys.path.remove(str(matrix / 'src')))
+        from daimon_matrix.execution_instruction import Instruction
+        from daimon_matrix.execution_store import ExecutionStore
+        from daimon_matrix.operator_execution import HumanExecutionOperator
+        from daimon_matrix.codex_review import CodexReviewRunner
+        from daimon_matrix.hermes_review import HermesReviewRunner
+        from daimon_matrix.review_runner import ReviewController
+        spec = importlib.util.spec_from_file_location('matrix_control_fixture', matrix/'tests/test_execution_instruction.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        key = Ed25519PrivateKey.generate()
+        store = ExecutionStore.create(self.root/'human-control.sqlite', fixture.verifier(key))
+        store.enable_episode_reporting()
+        now = int(time.time())
+        def signed(value, event): return fixture.proof(key, 'approve', value, event)
+        for kind in ('tribe', 'being', 'episode'):
+            account = dict(schema='execution/funding-account/v1', store_id=store.store_id,
+                principal='human:test',account_id=kind,kind=kind,
+                subject='being:test' if kind=='being' else kind,start=now-5,end=now+600,
+                unit='synthetic',max_calls=3,max_charge=100,max_active=1,max_bindings=3)
+            store.grant_budget(account,signed(account,'grant-'+kind))
+        payload = fixture.request(store_id=store.store_id,start=now-1,end=now+300,
+            task_sha256=hashlib.sha256(b'Selected objective').hexdigest())
+        instruction = Instruction.from_dict(payload)
+        store.approve(instruction,signed(payload,'instruction'))
+        funding = dict(schema='execution/instruction-funding/v1',store_id=store.store_id,
+            principal='human:test',instruction_sha256=instruction.sha256,
+            accounts=['tribe','being','episode'],route='isolated-test',max_charge=30)
+        store.fund_instruction(instruction,funding,signed(funding,'funding'))
+        policy = dict(schema='execution/episode-policy/v1',store_id=store.store_id,
+            principal='human:test',account_id='episode',participants=['being:peer'],
+            instructions=[instruction.sha256],threads=['selected-thread'],
+            max_requests=2,max_pending=1,max_input_bytes=4096)
+        store.configure_episode(policy,signed(policy,'policy'))
+        self.instruction_file.write_text(json.dumps(payload))
+        self.config['coordination']['store_id'] = store.store_id
+        self.report_file.write_text(json.dumps(store.episode_report('episode')))
+        bindings = {}
+        for kind, cls in (('codex',CodexReviewRunner),('hermes',HermesReviewRunner)):
+            runner = object.__new__(cls)
+            runner.registration = SimpleNamespace(binding=instruction.binding,principal='human:test')
+            bindings[kind]=(store,ReviewController(store,runner,None))
+        factory_calls = []
+        def factory(authenticate):
+            factory_calls.append(1)
+            return HumanExecutionOperator(challenge_path=self.root/'human-challenges.sqlite',
+                bindings=bindings,authenticate=authenticate,
+                signer=lambda principal,data:key.sign(data),challenge_id=lambda:uuid.uuid4().hex)
+        control = HumanControl(factory,human=100,principal='human:test',store_id=store.store_id,runner_type='codex')
+        body={'nonce':'actual-human-control-0001','account_id':'episode','expected_revision':0,'paused':True}
+        with self.client(control) as client:
+            headers=self.control_headers(client,self.auth(client))
+            result=client.post('/api/interaction/coordination/control',json=body,headers=headers)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertEqual(result.json()['applied_revision'],1)
+            self.assertTrue(store.funding_status('episode')['paused'])
+            self.assertEqual(client.post('/api/interaction/coordination/control',json=body,headers=headers).json(),result.json())
+            self.assertEqual(factory_calls,[1])
+            stale=body|{'nonce':'actual-stale-resume-0001','paused':False}
+            self.assertEqual(client.post('/api/interaction/coordination/control',json=stale,headers=headers).json()['state'],'rejected')
+            self.assertTrue(store.funding_status('episode')['paused'])
+            resume=body|{'nonce':'actual-resume-control-001','expected_revision':1,'paused':False}
+            result=client.post('/api/interaction/coordination/control',json=resume,headers=headers)
+            self.assertEqual(result.json()['applied_revision'],2,result.text)
+            reopened=ExecutionStore(store.path,store.verifier)
+            self.assertFalse(reopened.funding_status('episode')['paused'])
+            self.assertEqual(reopened.funding_status('episode')['calls'],0)
+        import sqlite3
+        with closing(sqlite3.connect(store.path)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM cycles').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM coordination_work').fetchone()[0],0)
+        self.assertEqual(self.receiver.calls,0)
 
     @unittest.skipUnless(os.environ.get('MATRIX_COORDINATION_TEST_ROOT'),
                          'Actual selected Matrix operator source is optional')

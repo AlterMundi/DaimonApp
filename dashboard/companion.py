@@ -19,7 +19,9 @@ def authority(config, provider):
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False):
+    if path == '/api/interaction/coordination/control':
+        return method == 'POST' and scope == 'interaction_only' and coordination_control_access is True
     if path == '/api/interaction/coordination':
         return method == 'GET' and scope == 'interaction_only' and coordination_access is True
     if path == '/api/interaction/foreground':
@@ -80,6 +82,7 @@ class Grants:
                     or not isinstance(grant.get('csrf'), str)
                     or not re.fullmatch(r'[A-Za-z0-9_-]{43}', grant['csrf'])
                     or type(grant.get('coordination_access', False)) is not bool
+                    or type(grant.get('coordination_control_access', False)) is not bool
                     or not self.provider.authorized(grant['human'])):
                 return None
             grant.setdefault('presentation_profile', self.default_profile)
@@ -253,10 +256,10 @@ class Grants:
             write_json(path,{**grant,'artifact_access':allow})
             return {'grant_id':ident,'artifact_access':allow,'scope':grant['scope']}
 
-    def coordination(self, ident, allow):
+    def coordination(self, ident, allow, *, control=False):
         """Explicit owner change to this one device's retained-budget read permission."""
         if (self.root is None or not isinstance(ident,str) or
-                not re.fullmatch('[a-f0-9]{64}',ident) or type(allow) is not bool):
+                not re.fullmatch('[a-f0-9]{64}',ident) or type(allow) is not bool or type(control) is not bool):
             raise ValueError('Select one device and an explicit budget read permission')
         with lock(self.root / 'owner-mutation.lock'):
             self.provider.assert_binding()
@@ -266,8 +269,17 @@ class Grants:
                     or grant.get('human')!=self.provider.human or type(grant.get('expires')) is not int or grant['expires']<=time.time()
                     or not self.provider.authorized(self.provider.human)):
                 raise ValueError('Current same-human interaction grant required')
-            write_json(path,{**grant,'coordination_access':allow})
-            return {'grant_id':ident,'coordination_access':allow,'scope':grant['scope']}
+            if control:
+                grant['coordination_control_access'] = allow
+                if allow:
+                    grant['coordination_access'] = True
+            else:
+                grant['coordination_access'] = allow
+                if not allow:
+                    grant['coordination_control_access'] = False
+            write_json(path,grant)
+            return {'grant_id':ident,'coordination_access':grant.get('coordination_access',False),
+                    'coordination_control_access':grant.get('coordination_control_access',False),'scope':grant['scope']}
 
 
 def main():
@@ -297,6 +309,7 @@ def main():
     decision.add_argument('--deny',dest='allow',action='store_false')
     budgets=commands.add_parser('coordination')
     budgets.add_argument('grant_id')
+    budgets.add_argument('--control', action='store_true', help='Explicit signed funding-control permission; includes budget reading')
     budget_decision=budgets.add_mutually_exclusive_group(required=True)
     budget_decision.add_argument('--allow',dest='allow',action='store_true')
     budget_decision.add_argument('--deny',dest='allow',action='store_false')
@@ -310,7 +323,7 @@ def main():
         if args.command == 'enroll':
             result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access,coordination_access=args.coordination_access)
         elif args.command == 'coordination':
-            result = grants.coordination(args.grant_id, args.allow)
+            result = grants.coordination(args.grant_id, args.allow, control=args.control)
         elif args.command == 'renew':
             result = grants.renew(args.grant_id, args.seconds)
         elif args.command == 'reauthorize':

@@ -139,9 +139,9 @@ or background task is installed. Unavailable/mismatched reports return a bounded
 including `coordination.py`, with the matching frontend; use the existing scoped
 receiving adoption and preserve concurrently selected voice/native software.
 
-This is budget visibility only. Human pause controls, integrating writer/return
-adoption, actual exclusive inference-route enforcement and real participant use
-remain distinct #312 delivery requirements. A UI fixture, merge or installed
+This view is read-only unless the separately provisioned human control below is
+present. Integrating writer/return adoption, actual exclusive inference-route
+enforcement and real participant use remain distinct #312 delivery requirements. A UI fixture, merge or installed
 reader alone does not prove those effects or authorize autonomous activation.
 
 ## Configuration and explicit selection
@@ -1417,3 +1417,92 @@ replayed. The presentation reports loaded `automatic_routed_native_return`
 separately from retained receipt phases. Full stages2/3/required4, foreground
 speech/coalescing and real-device acceptance remain unfinished; this is not a
 whole-stage completion or hearing claim.
+
+
+## Explicit human coordination pause — Matrix #312 / Telecodex #529
+
+The existing budget card offers **Pause new coordination** / **Resume
+coordination** only when its configured operator and the authenticated person's
+actual control grant permit it. The displayed account revision is part of the
+request. Pausing fences new provider/native work; it does not certify an active
+process stopped, refund fuel/unknown charges or change a limit. Resume never
+starts or repeats work. Existing exact cancellation remains the active-process
+interruption path; global Stop still requires its own human consent.
+
+Normal `create_app` has no funding-control adapter. The owning trusted frontend
+may compose its EXISTING `HumanExecutionOperator` and external signer using
+`dashboard.coordination.HumanControl`; no key/trust loader, new login, signing
+service or balance store is provided here. Provision this only outside
+model-controlled processes/state, under the existing human-frontend isolation
+contract. Account authority, finite allowances, prices and inference selection
+remain actual owner decisions. A read grant never authorizes signing.
+
+```python
+# Illustrative host composition, not an activation configuration or new signer.
+# Existing bindings share the single authoritative journal/accounting domain.
+def operator_factory(authenticate):
+    return HumanExecutionOperator(
+        challenge_path=existing_challenge_journal,
+        bindings=existing_codex_hermes_bindings,
+        authenticate=authenticate,
+        signer=existing_external_signer,
+        challenge_id=existing_challenge_id,
+    )
+
+control = HumanControl(operator_factory, human=selected_human_id,
+    principal=existing_funding_principal, store_id=existing_journal_id,
+    runner_type=selected_existing_runner)
+app = create_app(existing_config, existing_provider, coordination_control=control)
+```
+
+The adapter binds the actual authenticated HTTP invocation into the existing
+human challenge frontend. Its authentication predicate checks exact invocation
+identity and revalidates the current web grant at the frontend boundaries;
+peer/model-shaped metadata cannot satisfy it. The factory must use that predicate,
+retain its existing trust/signing custody and provide the actual matching store.
+The budget configuration pins at most eight existing episode roots, their exact
+instructions and objective hashes. No browser value selects a path, command,
+principal, signer, journal or new account.
+
+Shared login requires the separate explicit
+`shared_auth.coordination_control_access = true`; it includes budget reading.
+An existing Companion device can receive or lose the same operation permission
+without re-enrollment using the existing command:
+`python -m dashboard.companion --config CONFIG coordination GRANT_ID --control --allow`
+(or `--deny`). Revoking its ordinary coordination read permission also revokes
+control. Monitors remain ineligible. Even a permitted device cannot control
+funding without the actual matching host operator binding. Full-owner HTTP
+access likewise requires that binding; credentials are never shown to models
+or placed in browser storage by this integration.
+
+`POST /api/interaction/coordination/control` accepts only the exact configured
+`account_id`, `expected_revision`, boolean `paused` and bounded action `nonce`.
+Existing authentication, Origin/CSRF and before/after-I/O grant checks remain.
+There is one application action slot per configured root/person, at most eight,
+inside the existing `actions` journal. Exact duplicate HTTP requests return the
+same retained result; changed reuse is rejected. A lost/uncertain commit blocks
+another action, including one carrying a new nonce. The client checks the same
+original action after a lost return; it never auto-resumes or retries model work.
+An owned write completes and retains its outcome even if the HTTP caller leaves.
+
+The canonical signed control history remains in Matrix. Terminal UI slots for
+roots removed from configuration can be retired by this adapter while uncertain
+slots remain protected; reaching the eight-slot bound requires inspecting the
+retained original operator outcome before admitting another root. No snapshot,
+per-click archive, periodic reader or background task is installed. An uncertain
+slot is not proof of a stopped process or permission to resend the control.
+Publishing/deploying these source APIs with no configured binding leaves them
+disabled. Actual selected authority, receiving operation and human device use
+must be recorded separately.
+
+
+## Funded Matrix return integration
+
+The host adapter now separates a stable human-approved purpose from the exact
+later SDK-verified original and requires the existing funded source queue for
+that explicit mode. Signed results return through the same canonical Matrix
+callback and remain passive. See [the adapter contract](interaction-matrix.md#funded-selected-original-replies--matrix-312--telecodex-532).
+I/O is another ingress/egress of this continuing integrator, never a second
+reasoning owner. Production peer activation still needs the selected authority,
+limits and enforceable inference route; source and model-free integration tests
+do not enable it.

@@ -123,6 +123,8 @@ class Coordination:
                     or account['spent'] + account['reserved'] + account['available_charge'] != account['max_charge']):
                 raise CoordinationUnavailable('invalid_balances')
             balances.append({k: account[k] for k in (*fields, 'kind', 'unit', 'account_id', 'paused')})
+            if unsigned(account.get('control_revision')):
+                balances[-1]['control_revision'] = account['control_revision']
         if (not isinstance(snapshot.get('participants'), list) or len(snapshot['participants']) > 1024
                 or not all(isinstance(v, str) and len(v) <= 200 for v in snapshot['participants'])
                 or not isinstance(snapshot.get('work'), dict)
@@ -164,3 +166,63 @@ class Coordination:
                 raise CoordinationUnavailable('episode_read_unavailable')
             await retain_io(self.assert_binding)
             return {'state': 'available', 'episodes': values, 'read_only': True}
+
+
+class ControlRejected(Exception):
+    """Rejected before a funding-control commit was attempted."""
+
+
+class HumanControl:
+    """Compose the existing human operator into an authenticated host frontend.
+
+    The embedding owner supplies its existing operator factory, stores and
+    external signer. Nothing here loads trust/key files or grants an authority.
+    The web server must be isolated from model-controlled code, just like the
+    existing human execution frontend. Ordinary create_app has no such binding.
+    """
+    def __init__(self, operator_factory, *, human, principal, store_id, runner_type):
+        if (not callable(operator_factory) or type(human) is not int or human <= 0
+                or not isinstance(principal, str) or not 0 < len(principal) <= 200
+                or runner_type not in ('codex', 'hermes')
+                or not isinstance(store_id, str) or str(uuid.UUID(store_id)) != store_id):
+            raise ValueError('Explicit existing human/operator binding required')
+        self.factory = operator_factory
+        self.human = human
+        self.principal = principal
+        self.store = store_id
+        self.runner = runner_type
+
+    def permits(self, human, selected):
+        return (selected.enabled and human == self.human
+                and selected.store == self.store and selected.principal == self.principal)
+
+    def apply(self, human, selected, body, *, reauthorize):
+        # Called only after the hosting app authenticated this actual HTTP action.
+        # Metadata from a peer/model is not an input route to this adapter.
+        if not callable(reauthorize) or not self.permits(human, selected):
+            raise ControlRejected('Funding authority is not selected for this person')
+        selected.assert_binding()
+        if body['account_id'] not in {e['account_id'] for e in selected.episodes}:
+            raise ControlRejected('Only the configured episode can be controlled')
+        from daimon_matrix.execution_instruction import ExecutionDenied
+        from daimon_matrix.human_execution_frontend import HumanTurn
+        from daimon_matrix.operator_execution import HumanExecutionOperator
+        turn = HumanTurn(self.principal, body['nonce'], 'direct-human', 'authenticated-dashboard-action')
+        # The exact authenticated invocation is the capability. The identity check
+        # cannot be satisfied by constructing another metadata-shaped HumanTurn.
+        operator = self.factory(lambda candidate: candidate is turn and reauthorize() is True)
+        if (not isinstance(operator, HumanExecutionOperator)
+                or operator.bindings[self.runner][0].store_id != self.store):
+            raise ControlRejected('Configured operator differs from the selected journal')
+        try:
+            display = operator.prepare_funding_control(
+                turn, self.runner, body['account_id'], body['expected_revision'], paused=body['paused'])
+        except ExecutionDenied:
+            raise ControlRejected('Funding control was rejected before commit') from None
+        # Any error after this point has an uncertain outcome to the web client.
+        result = operator.confirm(turn, display['challenge_id'], display)
+        account = result['account']
+        return {'state': 'confirmed', 'account_id': body['account_id'],
+                'applied_revision': result['control']['revision'],
+                'control_revision': account['control_revision'], 'paused': account['paused'],
+                'execution_started': False}

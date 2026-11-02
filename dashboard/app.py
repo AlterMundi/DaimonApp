@@ -22,7 +22,7 @@ from init_data_py import errors, validate_by_signature
 
 from .provider import Provider, ProviderUnavailable
 from .computer_health import ComputerHealth, HealthUnavailable
-from .coordination import Coordination, CoordinationUnavailable
+from .coordination import Coordination, CoordinationUnavailable, ControlRejected
 from .visual import VisualSelectionInvalid
 from .alerts import Receiver as AlertsReceiver, AlertsUnavailable
 from .traffic import Traffic
@@ -56,7 +56,7 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def create_app(config=None, provider=None, validator=validate_launch, alerts=None, traffic=None):
+def create_app(config=None, provider=None, validator=validate_launch, alerts=None, traffic=None, coordination_control=None):
     if config is None:
         config = tomllib.loads(Path(os.environ['TELECODEX_DASHBOARD_CONFIG']).read_text())
     provider = provider or Provider(config)
@@ -213,7 +213,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 grant = companions.authenticate(device.group(1))
                 if grant is None:
                     raise HTTPException(401, 'Companion access is unavailable; operator enrollment required')
-                if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False)):
+                if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False), coordination_control_access=grant.get('coordination_control_access', False)):
                     raise HTTPException(403, 'Companion access is limited to the integrating conversation')
                 return grant
             # A restricted WebView may omit cookies. Never downgrade an invalid
@@ -447,7 +447,94 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         session = await authorize_async(request)
         if dict(session).get('scope') is not None and dict(session).get('coordination_access') is not True:
             raise HTTPException(403, 'Budget read grant changed')
+        result['can_control'] = budget_control_permission(session)
         return result
+
+    def budget_control_permission(session):
+        value = dict(session)
+        if (value.get('scope') is not None and
+                (value.get('scope') != 'interaction_only' or value.get('coordination_control_access') is not True)):
+            return False
+        return (coordination_control is not None and coordination_control.permits(session['human'], coordination))
+
+    @app.post('/api/interaction/coordination/control')
+    async def coordination_action(request: Request):
+        session = await authorize_async(request)
+        if not budget_control_permission(session):
+            raise HTTPException(403, 'No human funding-control authority is selected')
+        if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), session['csrf']):
+            raise HTTPException(403, 'Action token missing')
+        try:
+            body = await request.json()
+            if (set(body) != {'nonce', 'account_id', 'expected_revision', 'paused'}
+                    or not isinstance(body['nonce'], str) or not re.fullmatch('[A-Za-z0-9_-]{16,64}', body['nonce'])
+                    or body['account_id'] not in {e['account_id'] for e in coordination.episodes}
+                    or not isinstance(body['account_id'], str)
+                    or type(body['expected_revision']) is not int or not 0 <= body['expected_revision'] < 2**53-1
+                    or type(body['paused']) is not bool):
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, 'Select an exact current episode control') from None
+        # One retained slot per configured root/person (at most8), reusing actions.
+        # The signed Matrix journal retains control history; UI receipts do not grow
+        # once per click. An unknown slot is never replaced by another action.
+        slot = 'coordination:' + digest(body['account_id'])
+        def perform():
+            current = authorize(request)
+            if not budget_control_permission(current):
+                raise HTTPException(403, 'Funding control grant changed')
+            try:
+                coordination.assert_binding()
+            except (CoordinationUnavailable, OSError, ValueError):
+                raise HTTPException(503, 'Budget binding changed; no control was submitted') from None
+            with database() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT state,result FROM actions WHERE human=? AND nonce=?', (session['human'], slot)).fetchone()
+                if row:
+                    retained = json.loads(row['result'])
+                    prior = retained['request']
+                    if prior['nonce'] == body['nonce']:
+                        if prior != body:
+                            raise HTTPException(409, 'This action identity already binds another selection')
+                        return retained['outcome']
+                    if row['state'] in ('requested', 'unconfirmed'):
+                        return {'state': 'unconfirmed', 'detail': 'Inspect the retained operator outcome before another control'}
+                    if body['expected_revision'] < prior['expected_revision']:
+                        raise HTTPException(409, 'Refresh the current control revision')
+                # Retire only this adapter's terminal UI slots for roots no longer
+                # configured. Signed history remains in the owning Matrix journal.
+                active_slots = {'coordination:' + digest(e['account_id']) for e in coordination.episodes}
+                for prior_slot in db.execute("SELECT nonce FROM actions WHERE human=? AND nonce LIKE 'coordination:%' AND state IN ('confirmed','rejected')", (session['human'],)):
+                    if prior_slot['nonce'] not in active_slots:
+                        db.execute('DELETE FROM actions WHERE human=? AND nonce=?', (session['human'], prior_slot['nonce']))
+                if row is None and db.execute("SELECT count(*) FROM actions WHERE human=? AND nonce LIKE 'coordination:%'", (session['human'],)).fetchone()[0] >= 8:
+                    raise HTTPException(409, 'Inspect retained controls before selecting another episode')
+                envelope = {'request': body, 'outcome': {'state': 'unconfirmed'}}
+                db.execute('INSERT OR REPLACE INTO actions VALUES(?,?,?,?)',
+                           (session['human'], slot, 'requested', json.dumps(envelope)))
+            try:
+                # Authenticated single request, no provider/native/model operation.
+                def reauthorize():
+                    try:
+                        return budget_control_permission(authorize(request))
+                    except HTTPException:
+                        return False
+                outcome = coordination_control.apply(session['human'], coordination, body, reauthorize=reauthorize)
+            except ControlRejected:
+                outcome = {'state': 'rejected', 'detail': 'Refresh the selected budget and its authority'}
+            except Exception:
+                outcome = {'state': 'unconfirmed', 'detail': 'Inspect the retained operator outcome; do not replay'}
+            with database() as db:
+                db.execute('UPDATE actions SET state=?,result=? WHERE human=? AND nonce=?',
+                           (outcome['state'], json.dumps({'request': body, 'outcome': outcome}), session['human'], slot))
+            return outcome
+        from .speech import retain_io
+        result = await retain_io(perform)
+        # An owned write finishes and is retained even when the HTTP caller leaves.
+        session = await authorize_async(request)
+        if not budget_control_permission(session):
+            raise HTTPException(403, 'Funding control grant changed; inspect its retained outcome')
+        return JSONResponse(result, status_code=202 if result['state'] == 'unconfirmed' else 200)
 
     @app.get('/api/state')
     def snapshot(request: Request):

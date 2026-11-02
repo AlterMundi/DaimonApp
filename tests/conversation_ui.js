@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 function boot(readOnly=false,standalone=false,options={}) {
-  const optionsForFixture=options;const streamedTransports=[];
+  const optionsForFixture=options;const streamedTransports=[];const budgetControlReceipts=new Map();
   const nodes = new Map(), requests = [], audioCalls=[], sourceOverrides=new Map();
   const copied=[],recoveryPosts=[],statusReads=[],mediaActions=new Map();const mediaSession={setActionHandler:(name,fn)=>mediaActions.set(name,fn)};
   const gaps=new Map(),documentEvents=new Map(),windowEvents=new Map();
@@ -57,6 +57,17 @@ function boot(readOnly=false,standalone=false,options={}) {
   const api = async (route, body) => {
     const url = new URL(route, "https://fixture.invalid/");
     if(url.pathname==="/interaction/coordination"){requests.push({budget:true,body});return options.budgetReport;}
+    if(url.pathname==="/interaction/coordination/control"){
+      requests.push({budgetControl:true,body});
+      if(!budgetControlReceipts.has(body.nonce)){
+        const root=options.budgetReport.episodes[0].accounts.find(a=>a.kind==="episode");
+        assert.equal(body.expected_revision,root.control_revision);
+        root.paused=body.paused;root.control_revision++;
+        budgetControlReceipts.set(body.nonce,{state:"confirmed",paused:root.paused,control_revision:root.control_revision});
+      }
+      if(options.controlLost){options.controlLost=false;throw Error("Synthetic lost control return");}
+      return budgetControlReceipts.get(body.nonce);
+    }
     if(pageFailure && url.pathname==="/interaction"){const value=typeof pageFailure==='string'?{name:pageFailure}:pageFailure;pageFailure=false;throw Object.assign(Error("Synthetic network suspension"),value);}
     if(url.pathname==='/interaction/telegram-inputs'){
       if(options.telegramDenied)throw Object.assign(Error('Telegram observation denied'),{status:403});
@@ -156,7 +167,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
-  const context = vm.createContext({Date:optionsForFixture.confirmNow===undefined?Date:class extends Date{static now(){return optionsForFixture.confirmNow;}},window:{navigator:{mediaSession,clipboard:options.copyRich?{write:async items=>{copied.push(await (await items[0].data['text/plain']).text());}}:{writeText:async text=>{if(options.copyDenied)throw Error("Clipboard permission denied");copied.push(text);}}},ClipboardItem:options.copyRich?class{constructor(data){this.data=data;}}:undefined,localStorage:options.followStorage?{getItem:key=>options.followStorage.get(key)??null,setItem:(key,value)=>options.followStorage.set(key,value)}:undefined,addEventListener(name,fn) {subscribe(windowEvents,name,fn);}}, document,
+  const context = vm.createContext({crypto:require("node:crypto").webcrypto,Date:optionsForFixture.confirmNow===undefined?Date:class extends Date{static now(){return optionsForFixture.confirmNow;}},window:{navigator:{mediaSession,clipboard:options.copyRich?{write:async items=>{copied.push(await (await items[0].data['text/plain']).text());}}:{writeText:async text=>{if(options.copyDenied)throw Error("Clipboard permission denied");copied.push(text);}}},ClipboardItem:options.copyRich?class{constructor(data){this.data=data;}}:undefined,localStorage:options.followStorage?{getItem:key=>options.followStorage.get(key)??null,setItem:(key,value)=>options.followStorage.set(key,value)}:undefined,addEventListener(name,fn) {subscribe(windowEvents,name,fn);}}, document,
     location:{href:"https://fixture.invalid/?view=conversation"}, history:{replaceState() {}},
     URL, URLSearchParams, AbortController, setTimeout:timeout, clearTimeout:cancelTimeout, TextEncoder, Blob, crypto:options.immediateHash?{...require("node:crypto"),subtle:{digest:(_algorithm,bytes)=>Promise.resolve(require("node:crypto").createHash('sha256').update(new Uint8Array(bytes)).digest())}}:options.hashHold?{...require("node:crypto"),subtle:{digest:(algorithm,bytes)=>options.hashHold.active?new Promise(resolve=>options.hashHold.releases.push(()=>resolve(require("node:crypto").createHash('sha256').update(bytes).digest()))):require("node:crypto").subtle.digest(algorithm,bytes)}}:require("node:crypto"),
     fetch:(_route, options) => {
@@ -310,6 +321,23 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(budgets.nodes.get("#conversation-coordination").hidden,true);assert.equal(budgetCards.children.length,0);
   await budgets.nodes.get("#conversation-coordination-refresh").handlers.click();
   assert.equal(budgets.requests.filter(r=>r.budget).length,2,"Revoked read permission cannot submit another read");
+  const controlOptions={budgetsGranted:true,controlLost:true,budgetReport:{...budgetOptions.budgetReport,can_control:true,episodes:[{...budgetOptions.budgetReport.episodes[0],accounts:[{...budgetOptions.budgetReport.episodes[0].accounts[0],kind:"episode",account_id:"episode",control_revision:0}]}]}};
+  const controls=boot(false,true,controlOptions);await controls.ui.refresh();
+  await controls.nodes.get("#conversation-coordination-refresh").handlers.click();
+  const controlButton=()=>controls.nodes.get("#conversation-coordination-episodes").children[0].children.find(c=>c.type==="button");
+  const pause=controlButton();assert.equal(pause.textContent,"Pause new coordination");
+  await pause.handlers.click();
+  assert.equal(pause.textContent,"Check previous control");assert.equal(pause.disabled,false);
+  await pause.handlers.click();
+  const writes=controls.requests.filter(r=>r.budgetControl);
+  assert.equal(writes.length,2);assert.equal(writes[0].body.nonce,writes[1].body.nonce,"Unknown return checks the same action instead of making a new control");
+  const budgetResume=controlButton();assert.equal(budgetResume.textContent,"Resume coordination");assert.equal(budgetResume.disabled,false);
+  await budgetResume.handlers.click();
+  assert.equal(controlOptions.budgetReport.episodes[0].accounts[0].control_revision,2);
+  assert.equal(controls.nativePosts.length,0,"Funding resume never starts native work");
+  controlOptions.budgetsGranted=false;await controls.ui.refresh();
+  const beforeRevoked=controls.requests.filter(r=>r.budgetControl).length;await budgetResume.handlers.click();
+  assert.equal(controls.requests.filter(r=>r.budgetControl).length,beforeRevoked);
   const liveOptions={responseDraft:{provisional:true,text:"Useful early answer.",observed_at:"2100-01-01T00:00:00Z"}};
   const earlyDraft=boot(false,true,liveOptions);await earlyDraft.ui.refresh();
   const draftCard=earlyDraft.nodes.get('#conversation-timeline').children.find(c=>c.id==='conversation-response-draft');
