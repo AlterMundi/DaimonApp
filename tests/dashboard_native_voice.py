@@ -31,12 +31,12 @@ class Stream:
     def __init__(self,*args,**kwargs):
         self.context=kwargs.get('context')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
-        self.tool_results=queue.Queue();self.notices=[];self.notice_seen=threading.Event();self.input_active=False;self.response_pending=False;self.opened.append(self)
+        self.start_sent=threading.Event();self.tool_results=queue.Queue();self.notices=[];self.notice_seen=threading.Event();self.input_active=False;self.response_pending=False;self.opened.append(self)
     def receive(self):
         try:return self.queue.get(timeout=.05)
         except queue.Empty:return []
     def activity_start(self):
-        self.queue.put([{'type':'voice_activity','activity':'ACTIVITY_START','audio_offset':f'{self.total/32000:g}s','source':'provider_manual_activity_ack'}])
+        self.queue.put([{'type':'voice_activity','activity':'ACTIVITY_START','audio_offset':f'{self.total/32000:g}s','source':'provider_manual_activity_ack'}]);self.start_sent.set()
     def append(self,pcm):self.total+=len(pcm)
     def activity_end(self):
         self.queue.put([{'type':'input_transcript','text':' \nExact synthetic interpretation  '},
@@ -201,6 +201,7 @@ class Mounted(unittest.TestCase):
             ws.send_bytes(b'\1\0'*1600)
             event=ws.receive_json()
             while event['type']!='capture_started':event=ws.receive_json()
+            self.assertTrue(Stream.opened[0].start_sent.wait(2),'Queue the actual start observation before injecting a later mismatch')
             Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_START',
                 'audio_offset':'3.000000001s','source':'provider_manual_activity_ack','private_text':'must not reach journal'}])
             event=ws.receive_json()
