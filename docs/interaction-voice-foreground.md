@@ -1285,3 +1285,16 @@ copy of the host's entire skill catalog would add names without callable abiliti
 Expose a new native skill only for a concrete capability missing from these
 routes, with its real tool contract and validation; do not imply that a skill name
 grants shell access, direct worker control or access to the whole private DMK pool.
+
+### Interrupted full-text reads — 2 November 2026
+
+An empty or cut JSON body while expanding a reply previously surfaced the raw
+browser parser error beside a truncated preview. The shared API now permits one
+retry only for an immutable `interaction/part` GET, retaining the exact source,
+revision, offset and original 20-second deadline. A second failure retains the
+preview and existing Retry reading control with a readable recovery message.
+Malformed authentication responses retain HTTP status; writes and other endpoints
+are never repeated by this recovery. No source audio, human input or native work
+is replayed. A receiving shutdown cancelled one pending connection near the
+reported screenshot; the retained logs do not identify that connection as the
+specific failed read, so causation remains unconfirmed.
