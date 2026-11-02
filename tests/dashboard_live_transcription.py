@@ -657,6 +657,48 @@ class LiveTranscription(unittest.TestCase):
 
 
 class VoiceInboxBounds(unittest.IsolatedAsyncioTestCase):
+    async def test_native_burst_waits_for_space_without_growing_or_losing_frames(self):
+        queue=asyncio.Queue()
+        frames=[{'type':'websocket.receive','bytes':bytes([n])*3200} for n in range(100)]
+        frames.insert(85,{'type':'websocket.receive','text':'{"type":"playback","played_bytes":2}'})
+        for frame in [*frames,{'type':'websocket.disconnect'}]:queue.put_nowait(frame)
+        inbox=VoiceInbox(queue.get,pcm=True,batch_size=50,batch_control_frames=True,wait_for_space=True)
+        try:
+            await asyncio.sleep(0)
+            self.assertEqual(inbox.bytes,256000)
+            self.assertIsNone(inbox.error)
+            received=[]
+            while not received or received[-1]['type']!='websocket.disconnect':
+                batch=await asyncio.wait_for(inbox.batch(),1)
+                received.extend(batch)
+                # A fresh authorization can run while the collector is full.
+                await asyncio.sleep(.001)
+            self.assertEqual(received,[*frames,{'type':'websocket.disconnect'}])
+            self.assertEqual(inbox.received_bytes,320000)
+            self.assertLessEqual(inbox.peak_bytes,256000)
+            self.assertLessEqual(inbox.peak_messages,128)
+        finally:await inbox.close()
+        self.assertTrue(inbox.task.done())
+
+    async def test_native_backpressure_still_expires_without_consumer_progress(self):
+        queue=asyncio.Queue()
+        for _ in range(81):queue.put_nowait({'type':'websocket.receive','bytes':b'\0'*3200})
+        inbox=VoiceInbox(queue.get,pcm=True,wait_for_space=True);inbox.space_timeout=.02
+        try:
+            await asyncio.wait_for(inbox.task,.3)
+            with self.assertRaisesRegex(ValueError,'backlog'):await inbox.batch()
+            self.assertEqual(inbox.bytes,256000)
+        finally:await inbox.close()
+
+    async def test_native_backpressure_does_not_wait_on_invalid_frames(self):
+        queue=asyncio.Queue();queue.put_nowait({'type':'websocket.receive','bytes':b'odd'})
+        inbox=VoiceInbox(queue.get,pcm=True,wait_for_space=True)
+        try:
+            await asyncio.wait_for(inbox.task,.3)
+            with self.assertRaisesRegex(ValueError,'frame bounds'):await inbox.batch()
+            self.assertEqual(inbox.received_bytes,0)
+        finally:await inbox.close()
+
     async def test_backlog_bounds_release_and_keep_original_control_order(self):
         queue=asyncio.Queue()
         inbox=VoiceInbox(queue.get,pcm=True)

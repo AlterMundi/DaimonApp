@@ -514,6 +514,48 @@ class Mounted(unittest.TestCase):
             self.assertEqual(len(stream.notices),1);self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'})
 
+    def test_shared_home_input_burst_waits_at_the_same_memory_bound(self):
+        from dashboard.live_transcription import VoiceInbox
+        self.client.__exit__(None,None,None);home='https://home.example.test'
+        self.config.update(origin=home,shared_auth={'enabled':True,'home_origin':home})
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url=home);self.client.__enter__()
+        self.client.cookies.set('__Host-home','h'*43,path='/')
+        held=threading.Event();release=threading.Event();full=threading.Event();fed=threading.Event();inboxes=[]
+        class ObservedInbox(VoiceInbox):
+            def __init__(self,receive,**kwargs):
+                async def observed():
+                    value=await receive()
+                    if self.pcm and self.bytes>=252800:full.set()
+                    return value
+                super().__init__(observed,**kwargs)
+                if self.pcm:inboxes.append(self)
+        class Quiet(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm)
+                if self.total==320000:fed.set()
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':0,'speaking':False})
+        def identity(origin,token):
+            if held.is_set() and not release.wait(2):raise OSError('Synthetic blocked identity')
+            return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
+                    'actor':{'kind':'human','ref':'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.native_voice.VoiceInbox',ObservedInbox),patch('dashboard.native_voice.Detector',Quiet):
+            self.csrf=self.client.get('/api/interaction/access').json()['csrf']
+            with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/native',headers={'origin':home}) as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                held.set()
+                try:
+                    for _ in range(100):ws.send_bytes(b'\0'*3200)
+                    self.assertTrue(full.wait(1),'The burst must actually fill the retained native input queue')
+                    self.assertIsNone(inboxes[0].error)
+                    release.set()
+                    self.assertTrue(fed.wait(2),'All captured bytes must reach the detector after fresh authorization returns')
+                    self.assertEqual(inboxes[0].received_bytes,320000)
+                    self.assertLessEqual(inboxes[0].peak_bytes,256000)
+                    self.assertEqual(self.owner.inputs,{})
+                    ws.send_json({'type':'close'})
+                finally:release.set()
+
     def test_shared_home_playback_progress_does_not_starve_captured_pcm(self):
         # Small PCM buffers can finish faster than a fresh home-identity lookup.
         # Exercise the actual cookie-auth path, not the fast Telegram fixture.
