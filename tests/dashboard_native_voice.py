@@ -376,7 +376,9 @@ class Mounted(unittest.TestCase):
                     'audio_offset':'0s','source':'provider_manual_activity_ack'}])
                 event=ws.receive_json()
                 while event['type']!='review':event=ws.receive_json()
-            result=observed.get(timeout=2)
+                # Observe actual cleanup/journal while the fixture is alive;
+                # context teardown can cancel the route before its callback.
+                result=observed.get(timeout=2)
         self.assertEqual(result['id'],self.ident)
         self.assertEqual(result['stage'],'native-output')
         self.assertEqual(result['error_type'],'ForegroundUnavailable')
@@ -402,7 +404,9 @@ class Mounted(unittest.TestCase):
                     'audio_offset':'3.000000001s','source':'provider_manual_activity_ack','private_text':'must not reach journal'}])
                 event=ws.receive_json()
                 while event['type']!='review':event=ws.receive_json()
-            result=observed.get(timeout=2)
+                # Observe actual cleanup/journal while the fixture is alive;
+                # context teardown can cancel the route before its callback.
+                result=observed.get(timeout=2)
         self.assertEqual(result['boundary_mismatch'],{'activity':'start','expected_pcm_bytes':0,
             'reported_offset_nanoseconds':3000000001,'sent_pcm_bytes':3200,'provider_input_bytes':None,
             'span_start':0,'span_end':None,'start_observed':True,'end_observed':False})
