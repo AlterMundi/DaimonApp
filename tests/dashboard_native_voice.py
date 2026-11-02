@@ -169,6 +169,80 @@ class Mounted(unittest.TestCase):
     def meta(self,**kwargs):return {'id':self.ident,'binding':self.owner.binding,'csrf':self.csrf,**kwargs}
     def open(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/native',headers={'origin':origin})
+    def select_automatic(self):
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription']['native_activity_mode']='automatic'
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+
+    def test_automatic_speech_keeps_pending_work_returns_and_late_questions_separate_from_correction(self):
+        class AutomaticStream(Stream):
+            activity_mode='automatic'
+            def append(self,pcm):
+                super().append(pcm)
+                if self.total in (3200,6400):
+                    offset='0s' if self.total==3200 else '0.15s'
+                    self.queue.put([activity('ACTIVITY_START',offset)])
+            def receive(self):
+                events=super().receive()
+                for event in events:
+                    if event['type']=='voice_activity':
+                        self.input_active=event['activity']=='ACTIVITY_START'
+                        if not self.input_active:self.response_pending=True
+                    elif event['type']=='turn_complete':self.response_pending=False
+                return events
+        def activity(kind,offset):
+            return {'type':'voice_activity','activity':kind,'audio_offset':offset,'source':'provider_automatic_activity'}
+        def received(ws,kind):
+            while True:
+                event=ws.receive_json()
+                if event['type']==kind:return event
+        with patch('dashboard.native_voice.NativeDialogue',AutomaticStream), patch.object(Detector,'open',side_effect=AssertionError('No CPU detector in automatic mode')):
+            self.select_automatic()
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(received(ws,'ready')['activity_mode'],'automatic')
+                stream=Stream.opened[0]
+                ws.send_bytes(b'\1\0'*1600)
+                # Provider events are injected, no real inference/native job.
+                first=received(ws,'capture_started')['id']
+                stream.queue.put([{'type':'input_transcript','text':'First work request.'},activity('ACTIVITY_END','0.1s'),{'type':'turn_complete'}])
+                self.assertEqual(received(ws,'original_completed')['id'],first)
+                stream.queue.put([{'type':'delegation_proposed','call_id':'work','original_ids':[first],'formulation':'First refined request.'}])
+                call,result=stream.tool_results.get(timeout=2)
+                self.assertEqual((call,result['kind']),('work','integrator_admission'))
+                self.assertEqual(len(self.owner.delegations),1)
+                ws.send_bytes(b'\2\0'*1600)
+                second=received(ws,'capture_started')['id']
+                stream.queue.put([{'type':'source_query','call_id':'old-source','before':0}])
+                call,result=stream.tool_results.get(timeout=2)
+                self.assertEqual((call,result['kind']),('old-source','not_ready'))
+                self.owner.return_ready=True
+                (self.root/'native.sqlite3').write_bytes(b'actual fixture return while second speech is active')
+                call,result=stream.tool_results.get(timeout=3)
+                self.assertEqual(call,'work');self.assertEqual(result['text'],'Canonical integrating return.')
+                self.assertTrue(stream.input_active);self.assertEqual(stream.notices,[])
+                self.owner.questions=[{'id':'c'*32,'revision':'d'*64,'capture_version':'e'*64,
+                    'kind':'question','state':'pending','actionable':True,'label':'#Beta','body':'Breve or detallada?'}]
+                (self.root/'native.sqlite3').write_bytes(b'late fixture question during second speech')
+                call,result=stream.tool_results.get(timeout=3)
+                self.assertEqual(call,'work');self.assertEqual(result['source']['id'],'request:'+'c'*32)
+                self.assertIn('Breve or detallada?',result['text'])
+                self.assertTrue(stream.input_active);self.assertEqual(stream.notices,[])
+                stream.queue.put([activity('ACTIVITY_END','0.2s'),{'type':'input_transcript','text':'A later correction.'},{'type':'turn_complete'}])
+                self.assertEqual(received(ws,'original_completed')['id'],second)
+                self.assertEqual(self.owner.inputs[second]['text'],'A later correction.')
+                self.assertEqual(self.owner.inputs[second]['capture_questions'],{},'The newly offered question cannot widen the active original')
+                stream.queue.put([{'type':'source_query','call_id':'current-source','before':0}])
+                call,result=stream.tool_results.get(timeout=2)
+                self.assertEqual(call,'current-source');self.assertEqual({v['id'] for v in result['sources']},{first,second})
+                self.assertEqual(len(self.owner.delegations),1,'Returns, question offers and later speech do not create another work request')
+                self.assertEqual(len(self.owner.inputs),2)
+                ws.send_json({'type':'close'})
+        self.assertEqual(Detector.opened,[])
+
     def test_automatic_provider_route_retains_exact_source_and_never_opens_cpu_detector(self):
         class AutomaticStream(Stream):
             activity_mode='automatic'
@@ -182,14 +256,8 @@ class Mounted(unittest.TestCase):
                         {'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':'0.2s','source':'provider_automatic_activity'},
                         {'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
                         {'type':'output_transcript','text':'Automatic response.'},{'type':'turn_complete'}])
-        self.client.__exit__(None,None,None)
-        self.config['streaming_transcription']['native_activity_mode']='automatic'
         with patch('dashboard.native_voice.NativeDialogue',AutomaticStream), patch.object(Detector,'open',side_effect=AssertionError('Automatic mode opened CPU detector')):
-            self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
-            self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
-            self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
-            self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
-            self.csrf=self.client.get('/api/state').json()['csrf']
+            self.select_automatic()
             with self.open() as ws:
                 ws.send_json(self.meta());self.assertEqual(ws.receive_json()['activity_mode'],'automatic')
                 pcm=b'\1\0'*1600+b'\0\0'*1600
