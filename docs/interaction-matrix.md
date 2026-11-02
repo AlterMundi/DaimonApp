@@ -73,6 +73,13 @@ cursor without becoming a callback or an instruction. Signatures and admission
 remain verified by the existing Matrix reader; this adapter is not a separate
 signature verifier.
 
+This importer currently accepts the existing typed `worker_result` relay with
+its exact original and execution reference. An ordinary native Matrix reply
+with plain speech is still readable through the normal Matrix tools but is not
+imported by this host path. Do not report this candidate as universal Matrix
+speech integration; that ordinary-speech/provenance gap remains with #367/#313.
+Canonical retention is never proof of task completion or native incorporation.
+
 The caller records each callback through the existing authenticated owner return
 before retaining `next_cursor`. Re-reading an inspected page is read-only; the
 canonical message UUID/digest remains the store's deduplication boundary. A full

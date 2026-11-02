@@ -92,6 +92,12 @@ pub(super) async fn tool(
                     _ = app.shared.shutdown.cancelled() => bail!("Selected Matrix inspection shutdown; no send or automatic retry"),
                     result = host_command(transport, &raw, true) => result?,
                 };
+                // The SDK wait must not let a retired native execution finish
+                // its read after the integrating entry changes owner.
+                super::observer::tool_owner(&app.shared, key, human, native)?;
+                if closed.is_cancelled() {
+                    bail!("Selected Matrix inspection closed before canonical retention");
+                }
                 let page: HostRead = serde_json::from_value(outcome)?;
                 if page.after != after
                     || page.next_cursor < after

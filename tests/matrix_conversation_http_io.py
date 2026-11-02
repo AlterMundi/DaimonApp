@@ -8,6 +8,7 @@ not qualify a real receiving model, human account, participant or funding grant.
 
 import importlib.util
 import json
+import sqlite3
 import sys
 import threading
 from dataclasses import replace
@@ -35,7 +36,8 @@ def qualify(binary, *, funded=False):
     b = None
     observed = []
     reads = []
-    mode = {"drop": False, "funded": None}
+    mode = {"drop": False, "funded": None, "hold_read": False}
+    read_entered, read_release = threading.Event(), threading.Event()
     source_author = {
         "being_ref": sdk.sender.lane.being_ref,
         "embodiment_id": sdk.sender.lane.local_embodiment_id,
@@ -53,6 +55,9 @@ def qualify(binary, *, funded=False):
                 assert "results" not in value["status"]
                 reads.append(value["status"]["request"]["id"])
                 outcome = adapter.operator_receive(value, client, timeout=1)
+                if mode["hold_read"]:
+                    read_entered.set()
+                    assert read_release.wait(timeout=8), "Selected-read fixture was not released"
                 raw = json.dumps(outcome).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(raw)))
@@ -311,6 +316,35 @@ def qualify(binary, *, funded=False):
         assert sdk.receiver.message(observed[-1][1]["submission"]["message_id"])
         duplicate = j.call("route-matrix-no-uncertain-replay", "matrix_request", args)
         assert duplicate["phase"] == "submission_uncertain" and len(observed) == 3
+        # Recheck the existing native owner after SDK I/O, before exposing or
+        # retaining its result. Only test-owned session state is changed here.
+        count_before_retirement = j.row("SELECT count(*) FROM interaction_matrix_results")
+        mode["hold_read"] = True
+        attempted = {}
+        def retired_read():
+            try:
+                attempted["result"] = j.call("route-retired-selected-matrix-read", "matrix_status", {
+                    "request_id": request["id"], "receive_after": 0,
+                }, ok=False)
+            except BaseException as error:
+                attempted["error"] = error
+        pending_read = threading.Thread(target=retired_read)
+        pending_read.start()
+        try:
+            assert read_entered.wait(timeout=8), {"boundary": "selected SDK read", "attempt": attempted}
+            with sqlite3.connect(j.root / "state.sqlite") as database:
+                database.execute("UPDATE sessions SET codex_thread_id='fixture-successor-native' WHERE chat_id=100 AND thread_id=1")
+            read_release.set()
+            pending_read.join(timeout=8)
+            assert not pending_read.is_alive() and "error" not in attempted, attempted
+            assert attempted["result"]["success"] is False
+            assert j.row("SELECT count(*) FROM interaction_matrix_results") == count_before_retirement
+        finally:
+            read_release.set()
+            pending_read.join(timeout=8)
+            mode["hold_read"] = False
+            with sqlite3.connect(j.root / "state.sqlite") as database:
+                database.execute("UPDATE sessions SET codex_thread_id=? WHERE chat_id=100 AND thread_id=1", (j.web_thread,))
         j.stop()
         j.start()
         j.wait_control_socket(j.socket)
