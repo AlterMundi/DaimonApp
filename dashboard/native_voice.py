@@ -23,6 +23,18 @@ from .provider import Provider, ProviderUnavailable
 from .turn_detection import Detector, DetectionUnavailable
 
 
+def failure_site(error):
+    """Source location only: never exception text, locals or absolute paths."""
+    site=None;trace=error.__traceback__
+    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue'}
+    while trace is not None:
+        module=trace.tb_frame.f_globals.get('__name__')
+        if module in modules:
+            site=f"{module.rsplit('.',1)[-1]}.{trace.tb_frame.f_code.co_name}:{trace.tb_lineno}"
+        trace=trace.tb_next
+    return site
+
+
 def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
     app.state.native_voice_enabled=True
@@ -35,10 +47,18 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
-        started=time.monotonic();close_stage='preflight';close_error=None
+        started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
         async def send(value):
+            nonlocal first_send_failure
             async with sending:
-                await asyncio.wait_for(socket.send_json(value),3)
+                try:await asyncio.wait_for(socket.send_json(value),3)
+                except Exception as error:
+                    if first_send_failure is None:
+                        task=asyncio.current_task();name=task.get_name() if task else None
+                        first_send_failure={'error_type':type(error).__name__,
+                            'stage':name if name in {'native-output','native-analysis','native-returns','native-transcripts','native-tool'} else 'native-input',
+                            'elapsed_ms':round((time.monotonic()-started)*1000)}
+                    raise
         async def flush_output(*,interrupted=False,closed=False,emit=True):
             nonlocal utterance,output_text,output_bytes,output_hash
             if utterance is None:return
@@ -314,10 +334,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             await asyncio.to_thread(app.state.native_history.played,owner,meta['id'],value['id'],value['played_bytes'])
                             await notice_if_idle()
         except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect) as error:
-            close_error=type(error).__name__
+            close_error=type(error).__name__;close_site=failure_site(error)
             with suppress(Exception):await send({'type':'review','message':'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.'})
         except BaseException as error:
-            close_error=type(error).__name__;raise
+            close_error=type(error).__name__;close_site=failure_site(error);raise
         finally:
             stopping=True
             if stream:
@@ -351,7 +371,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 if owner is None:return
                 # Existing bounded service journal only. No exception detail,
                 # transcript, provider payload, identity/header or raw audio.
-                summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,
+                summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,'failure_site':close_site,
+                    'first_send_failure':first_send_failure,
                     'elapsed_ms':round((time.monotonic()-started)*1000),
                     'received_pcm_bytes':inbox.received_bytes if inbox else 0,
                     'generated_pcm_bytes':getattr(stream,'output_bytes',0) if stream else 0,

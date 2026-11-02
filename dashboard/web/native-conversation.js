@@ -160,9 +160,15 @@ window.NativeConversation=(()=>{
           // Energy freezes question scope only. Muting waits for the server's
           // confirmed capture_started, so ambient noise cannot own playback.
           if(!value.pcm)return;
-          if(!(value.pcm instanceof ArrayBuffer)||value.pcm.byteLength%2||bytes+value.pcm.byteLength>300*32000||socket?.readyState!==WebSocket.OPEN||socket.bufferedAmount>256000){hold('Voice connection could not keep up.');return;}
+          if(!(value.pcm instanceof ArrayBuffer)||!value.pcm.byteLength||value.pcm.byteLength%2){hold('Voice capture returned invalid audio. Your recording is kept for review.');return;}
+          if(bytes+value.pcm.byteLength>300*32000){hold('Voice capture reached five minutes. Your recording is kept for review.');return;}
           if(current&&bytes+value.pcm.byteLength-current.start>120*32000){hold('Your phrase reached two minutes. The recording is kept for review.');return;}
-          const pcm=value.pcm;parts.push({start:bytes,end:bytes+pcm.byteLength,pcm});bytes+=pcm.byteLength;try{socket.send(pcm);}catch{hold('Voice disconnected. Your recording is kept.');return;}
+          // This valid frame is already captured, even if transport has closed.
+          // Retain it before the network guard so recovery includes that tail.
+          const pcm=value.pcm;parts.push({start:bytes,end:bytes+pcm.byteLength,pcm});bytes+=pcm.byteLength;
+          if(socket?.readyState!==WebSocket.OPEN){hold('Voice connection closed before this audio could be sent. Your recording is kept for review.');return;}
+          if(socket.bufferedAmount>256000){hold('Voice upload is delayed: more than eight seconds of audio is waiting to send. Your recording is kept for review.');return;}
+          try{socket.send(pcm);}catch{hold('Voice disconnected. Your recording is kept.');return;}
           const remaining=current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined;
           if(remaining!==lastRemaining){lastRemaining=remaining;state('Listening');}
         });
