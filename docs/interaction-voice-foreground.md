@@ -945,3 +945,53 @@ The comparison, source retention and failure behavior remain unchanged. Unit
 and mounted socket checks retain the exact mismatch while refusing interpretation
 and confirm an unrelated provider field cannot reach the journal. This is
 diagnostic delivery, not a repaired conversation or a new phone acceptance.
+
+
+## Full application bootstrap qualification — 2 November 2026
+
+The earlier rendered provider fixture excluded app.js and replaced the ordinary
+bootstrap. A separate bounded Chromium journey now loads the complete shipped
+index/modules and actual app.js, uses a synthetic shared-home cookie through the
+real HomeAuth/CSRF path, activates the avatar by a browser click, and runs three
+voice cycles through actual worklet capture, native socket/output, IndexedDB and
+SSE-driven metadata refresh. It does not replace Conversation.mount, authenticated,
+refresh or the browser API client. A synthetic 503 during the first reply is
+recovered through ordinary SSE invalidation without closing the native owner.
+
+Both the baseline and a stress case with 30 ms synthetic identity delay and 50 PCM
+output frames/second completed all three cycles with one provider/voice owner.
+Each client's retained original WAV hash matched its server-side original; all
+three became interpreted/released exactly once. Each assistant record reached
+48,000 generated / 48,000 client-reported-played bytes. Stop through the actual Back
+to conversation button closed the stream and both owned AudioContexts. These
+positions represent browser rendering, not intelligibility or physical hearing.
+
+The baseline counted 326 identity checks; the paced case counted 506, with 393 on
+the native socket path and 113 on ordinary HTTP paths. The high count reflects
+fresh checks on capture, analysis, output, playback and page reads; this observation
+does not prove an authentication bottleneck on the phone. No auth cache, lease
+or correlation relaxation was introduced. The two conditions differ in delay
+and packetization and are not a controlled product-latency comparison.
+
+Reproduce this qualification using the existing locked Python environment, Node,
+OpenSSL, Chromium and an installed Playwright module, for example:
+
+```sh
+PLAYWRIGHT_MODULE=/path/to/installed/playwright python tests/dashboard_native_bootstrap.py \
+  --runtime /absolute/selected/app-bundle --out /absolute/new/qualification-output --case baseline
+```
+
+Use --case paced for the explicit stress condition. The output directory must
+be new; retained metadata/screenshots are bounded to 4 MiB and task-owned TLS,
+browser and temporary SQLite state are closed/removed. The qualifier records its
+own/browser-driver hashes and the selected app's dashboard file hashes. It is
+an explicit manual browser qualification, not an automatically executed CI test.
+
+The identity authority, home access-client script, provider, detector and native
+owner are synthetic. No real account sign-in, microphone, provider inference,
+Sol/worker job, native routing, hearing or phone acceptance follows. Normal chat,
+Qwen and receiving code/configuration are untouched. A portable invocation against
+the actually selected immutable runtime also passed. This closes the separate
+full-shell/bootstrap coverage gap; it did not reproduce or repair the known
+real-phone activity-boundary mismatch. That failure and the complete milestone
+remain open.
