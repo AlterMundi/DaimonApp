@@ -1162,3 +1162,51 @@ audio to that tool result; its audio assertion therefore failed. This qualifies
 reader selection, not spoken-result/hearing behavior. The retained outcome was
 not replayed to repair the verifier. Existing nonblocking tool-response speech
 evidence remains reusable; actual device acceptance stays separate.
+
+
+## Detailed session questions belong to Sol — 2 November 2026
+
+A later complete seven-turn phone conversation read coarse idle/blocked states,
+but stopped at lack of detail when the human asked what a blocked session needed
+from them. All seven originals remained foreground-only: no derivative request
+was admitted. This is a verified handoff omission, not evidence that the observer
+was unavailable or a model-intelligence diagnosis. Generated text was complete;
+client-reported output positions covered all seven utterances, which does not
+establish physical hearing or useful latency. No human audio was replayed.
+
+Distinguish a coarse activity read from an integrating question. Execution state
+alone uses session_status; work contents, reasons for a blocked session, missing
+decisions and how to unblock it require an offered canonical source or a request
+to Sol. The existing recent_originals/delegate_to_integrator path carries the
+actual question and named session. The detail question already requests that
+lookup; no repetition or extra confirmation is needed. Sol decides whether any
+worker needs attention. The bounded status response also advertises that detail
+lookup route, so an absent field does not imply missing integrator access.
+
+This changes conversational/tool guidance only. No automatic session wakeup,
+worker selection, expanded observer audience, work registry, source admission,
+model account or ordinary chat/TTS change is introduced. Existing latest-original
+and pending-correction checks remain authoritative. Keep phone acceptance and
+the complete milestone open independently of source/provider qualification.
+
+A distinct bounded synthetic spoken request about a blocked Cartografía session
+exercised the actual native model with a simulated owned original and Sol. It
+read status once, fetched the current original once, proposed exactly one
+source-bound integrating request, and produced spoken text presenting both
+choices from the delayed simulated canonical return. It emitted815522PCM bytes,
+472320 after that return. No unexpected tool, real integrator/worker admission,
+physical microphone or human original replay occurred. The one provider and
+writer closed cleanly. This verifies tool choice and returned native speech for
+this case; it is not a phone hearing/latency distribution or full-flow acceptance.
+The qualifier waited past the initial NON_BLOCKING tool turnComplete until the
+post-return audio/text turn completed. Earlier selector-only evidence remains
+limited; completed model work was not repeated to repair its verifier.
+
+Human correction,2November2026: this applies beyond session details. The avatar
+must consult Sol before declining a requested action or declaring it impossible,
+unsupported or inaccessible. Its own missing information/capability triggers
+source-bound consultation, not a refusal or another confirmation requirement.
+An unconfirmed/unavailable tool reports that operational state; it does not prove
+that the human request is impossible. Previously admitted or uncertain requests
+are retained without duplicate dispatch. Only an actual attributed integrating
+return can establish the resolution, including a request that cannot be satisfied.

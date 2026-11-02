@@ -231,6 +231,8 @@ class ForegroundBridge:
                     'source':'existing_owned_observer','observed_at':snapshot.get('observed_at'),
                     'connected':snapshot.get('connected') is True,
                     'integrator_connection':'available_through_foreground_tools',
+                    'detail_lookup':{'available':True,'route':'recent_originals then delegate_to_integrator',
+                        'meaning':'To resolve requested work contents, reasons for a blocked session or a decision needed from the human, ask Sol with the retained request. Missing detail here is not lack of integrator access. Sol owns any worker routing.'},
                     'meaning':'Observed activity only, not work contents, completion or a progress percentage. Stale/missing state is unknown. No work started.',
                     'sessions':[],'truncated':snapshot.get('truncated') is True}
                 rows=snapshot.get('sources',[])
