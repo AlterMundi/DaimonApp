@@ -94,6 +94,20 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   assert.deepEqual(value.timings.filter(t=>t.id===first).map(t=>t.stage),['capture_started','phrase_end','local_retained','original_confirmed']);
   assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_handled'));assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_scheduled'));assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_retired'));
   assert.equal(value.timings.some(t=>t.id===output&&t.stage==='output_buffer_ended'),false,'A retired queued source cannot report a completed buffer');
+  // Upload backlog, a remote close and invalid capture bytes are distinct
+  // failures; none discards the valid original already captured before it.
+  for(const reason of ['backlog','closed','invalid']){
+    const failed=boot(),wire=await ready(failed),id=crypto.randomUUID();
+    failed.sources[0].emit({pcm:new Uint8Array(3200).buffer});
+    wire.push({type:'capture_started',id,start:0});await tick();
+    if(reason==='backlog')wire.bufferedAmount=256001;
+    if(reason==='closed')wire.readyState=3;
+    failed.sources[0].emit({pcm:reason==='invalid'?new Uint8Array(3200):new Uint8Array(3200).buffer});
+    await until(()=>failed.retained.length===1);
+    assert.equal(failed.engine.active,false);assert.equal(failed.engine.originals.length,1);
+    const message=failed.states.at(-1).message;
+    assert(message.startsWith({backlog:'Voice upload is delayed',closed:'Voice connection closed',invalid:'Voice capture returned invalid audio'}[reason]),message);
+  }
   const refused=boot(),pending=refused.engine.start();await until(()=>refused.sockets.length===1);refused.sockets[0].push({type:'review',message:'Listener unsupported'});assert.equal(await pending,false);assert.equal(refused.permissionCalls,0);
   const scoped=boot();scoped.questions({['a'.repeat(32)]:'b'.repeat(64)});const scopedSocket=await ready(scoped);
   scopedSocket.push({type:'question_scope',binding:'a'.repeat(64),capture_questions:{['c'.repeat(32)]:'d'.repeat(64)}});await tick();

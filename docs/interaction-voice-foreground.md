@@ -851,3 +851,30 @@ Chromium checks the running output clock under nonspeech and rendered silence af
 confirmed onset, followed by a fresh utterance. Synthetic capture, muted playback
 and fixture authorization do not establish phone acceptance or the cause of the
 reported disconnect. No provider call or human original is replayed for these checks.
+
+
+## Preserve the actual close cause — 2 November 2026
+
+The next phone trial on client46e366b5f32f still generated text without reported
+playback and showed "Voice connection could not keep up". Its server summary
+reported ForegroundUnavailable in native-output after20.911seconds, with one
+interpreted original and one retained capture awaiting interpretation. That class
+covers multiple acoustic/protocol checks and does not identify the failing check.
+The client message also combined malformed PCM, the session limit, a non-open
+socket and the eight-second upload backlog. It did not prove a slow connection.
+
+Separate those four client messages while preserving exact recovery, bounds and
+all original retention. The existing bounded close journal now includes the
+last source-owned traceback site (module/function/line only) and the first failed
+socket send (task/class/elapsed time only). Later attempts to send a review on an
+already closed socket cannot replace that first-send observation. No exception
+message, frame locals, absolute path, transcript, PCM or provider payload is logged.
+There is no new API, media archive, auth cache or background collection.
+
+Mounted tests exercise an actual protocol failure and a network failure followed
+by a send on the closed socket. Client tests distinguish backlog/remote-close/
+invalid-frame cases and verify the already captured original remains recoverable.
+These diagnostic changes do not identify the retrospective phone cause, resolve
+the protocol rejection or establish audible phone playback. The full voice goal
+remains open; a fresh trial can identify the actual failing check without replaying
+an original or rerunning a provider journey merely to repair observation.

@@ -185,8 +185,30 @@ class Mounted(unittest.TestCase):
         self.assertEqual(result['stage'],'native-output')
         self.assertEqual(result['error_type'],'ForegroundUnavailable')
         self.assertEqual(result['cleanup'],'completed')
-        self.assertEqual(set(result),{'id','stage','error_type','elapsed_ms','received_pcm_bytes','generated_pcm_bytes','cleanup'})
+        self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
+        self.assertIsNone(result['first_send_failure'])
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','elapsed_ms','received_pcm_bytes','generated_pcm_bytes','cleanup'})
         self.assertEqual(self.owner.delegations,[])
+
+    def test_first_network_send_failure_survives_later_closed_send(self):
+        from starlette.websockets import WebSocket,WebSocketState
+        observed=queue.Queue();original=WebSocket.send_json
+        def log(message,*args,**kwargs):
+            if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
+        async def send(socket,value,*args,**kwargs):
+            if value.get('type')=='audio':
+                socket.application_state=WebSocketState.DISCONNECTED
+                raise WebSocketDisconnect(1006,'PRIVATE_NETWORK_DETAIL')
+            return await original(socket,value,*args,**kwargs)
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),patch.object(WebSocket,'send_json',send),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            Stream.opened[0].queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
+            result=observed.get(timeout=2)
+        self.assertEqual(result['first_send_failure']['error_type'],'WebSocketDisconnect')
+        self.assertEqual(result['first_send_failure']['stage'],'native-output')
+        self.assertNotIn('PRIVATE_NETWORK_DETAIL',json.dumps(result))
+        self.assertNotIn(str(self.root),json.dumps(result))
+        self.assertTrue(Stream.opened[0].closed_event.wait(2))
 
     def test_missing_provider_final_closes_to_review_and_preserves_exact_original(self):
         def no_transcript(stream):
