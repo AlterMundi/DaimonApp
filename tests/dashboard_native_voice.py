@@ -141,6 +141,8 @@ class Mounted(unittest.TestCase):
                     self.assertEqual(self.owner.inputs,{})
                     self.assertEqual(self.owner.delegations,[])
                     ws.send_json({'type':'close'})
+                    self.assertEqual(ws.receive()['type'],'websocket.close',
+                                     'Wait for owner cleanup before reopening the same human voice slot')
         self.assertEqual(len(Stream.opened),2)
         self.assertEqual(Detector.opened,[],'Explicit automatic profile needs no detector')
 
