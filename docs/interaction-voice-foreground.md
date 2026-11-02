@@ -511,7 +511,10 @@ pauses output, including when playback is between chunks, but keeps the bounded
 queue recoverable. RMS energy is a freshness hint, not speech authority. If quiet
 server analysis covers that exact marker, the same output resumes unless the
 human explicitly paused or disabled audio. Earlier analysis and repeated copies
-of the same energy marker cannot release or reapply that fence. Confirmed server
+of the same energy marker cannot release or reapply that fence. Pause once per
+local energy episode; continuous noise cannot keep moving the fence ahead of the
+server. A100ms local quiet gap rearms this provisional hint. Speech that starts
+over continuous noise still interrupts on confirmed server onset. Confirmed server
 capture_started retires the latest received output ID and queued output IDs;
 late chunks still validate continuity but cannot restart them. A fresh output ID
 can play after the existing phrase-ACK boundary. This supersedes the earlier

@@ -5,7 +5,7 @@ window.NativeConversation=(()=>{
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&(!window.NativeSpeechAudio?.backgroundPlayback||nativePcm()));
   function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
-    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,energyFence=0,lastEnergy=0,userPaused=false;
+    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,energyFence=0,lastEnergy=0,energyArmed=true,userPaused=false;
     const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function position(node){return context.currentTime<=node.at?0:Math.min(node.end,node.begin+Math.floor((context.currentTime-node.at)*24000)*2);}
@@ -116,7 +116,7 @@ window.NativeConversation=(()=>{
     }
     async function start(){
       if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
-      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;energyFence=lastEnergy=0;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
+      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;energyFence=lastEnergy=0;energyArmed=true;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
       timer=setTimeout(()=>hold('Voice session reached five minutes.'),300000);
       try{
@@ -157,11 +157,14 @@ window.NativeConversation=(()=>{
             const snapshot=questionScope===undefined?getQuestions?.():questionScope;pendingScope=snapshot===undefined?{}:JSON.parse(JSON.stringify(snapshot));
             control({type:'capture_scope',audio_bytes:value.activityBytes,capture_questions:pendingScope});
           }
+          if(Number.isSafeInteger(value.activityBytes)&&Number.isSafeInteger(value.totalBytes)&&value.totalBytes-value.activityBytes>=3200)energyArmed=true;
           if(Number.isSafeInteger(value.activityBytes)&&value.activityBytes>lastEnergy&&value.activityBytes>=bytes){
-            lastEnergy=value.activityBytes;energyFence=lastEnergy;
-            // Keep the bounded queue intact until the server classifies sound.
-            // Repeated worklet reports of the same energy cannot pause it again.
-            pauseOutput();
+            lastEnergy=value.activityBytes;
+            // Pause once per local energy episode. Continuous ambient energy
+            // must not move the fence ahead of every server nonspeech verdict.
+            // A 100ms local quiet gap rearms; confirmed server speech always
+            // retires output, including speech beginning over continuous noise.
+            if(energyArmed){energyArmed=false;energyFence=lastEnergy;pauseOutput();}
           }
           if(!value.pcm)return;
           if(!(value.pcm instanceof ArrayBuffer)||value.pcm.byteLength%2||bytes+value.pcm.byteLength>300*32000||socket?.readyState!==WebSocket.OPEN||socket.bufferedAmount>256000){hold('Voice connection could not keep up.');return;}

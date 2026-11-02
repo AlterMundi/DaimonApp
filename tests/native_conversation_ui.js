@@ -50,11 +50,14 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
     noiseSocket.push({type:'turn_activity',activity:{audio_bytes:2560,speaking:false}});await tick();
     assert.equal(noise.engine.paused,true,'Earlier quiet analysis cannot release newer captured energy');
     noiseSocket.push(packet(1280));await tick();
+    noise.sources[0].emit({activityBytes:6400,totalBytes:6400,pcm:new Uint8Array(3200).buffer});
     noiseSocket.push({type:'turn_activity',activity:{audio_bytes:3200,speaking:false}});await until(()=>!noise.engine.paused);
+    assert.equal(noise.engine.paused,false,'Continuous nonspeech energy cannot move the fence ahead of every analysis result');
     assert.equal(noise.engine.hasAudio,true,'A classified nonspeech hint resumes the same queued utterance');
-    noise.sources[0].emit({activityBytes:3200});await tick();assert.equal(noise.engine.paused,false,'Repeating an already analyzed energy marker cannot pause again');
-    noise.engine.pause();noise.sources[0].emit({activityBytes:6400,pcm:new Uint8Array(3200).buffer});
-    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:6400,speaking:false}});await tick();
+    noise.sources[0].emit({activityBytes:6400,totalBytes:6400});await tick();assert.equal(noise.engine.paused,false,'Repeating an already analyzed energy marker cannot pause again');
+    noise.sources[0].emit({activityBytes:6400,totalBytes:9600});
+    noise.engine.pause();noise.sources[0].emit({activityBytes:9600,totalBytes:9600,pcm:new Uint8Array(3200).buffer});
+    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:9600,speaking:false}});await tick();
     assert.equal(noise.engine.paused,true,'Detector recovery never overrides an explicit pause');
     noise.engine.resume();noise.engine.hold();
   }
