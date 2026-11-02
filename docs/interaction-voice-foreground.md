@@ -1109,3 +1109,16 @@ with synthetic provider boundaries and an assertion that no CPU detector opens.
 Use one new bounded output directory; its ordinary4MiB cleanup contract applies.
 Source qualification and receiving selection are separate from real phone
 acceptance. Keep the full milestone open until the integrated experience works.
+
+
+A follow-up mounted automatic-owner scenario qualifies concurrent source flow:
+a first retained original admits one simulated integrating request; a second
+spoken correction stays active while that same request's watch receives a
+canonical result and a complete late question. An original read during the open
+correction returns not-ready. After its validated END/final transcript, both
+originals remain readable, the late question has not widened the correction's
+frozen scope, and no second work request or interrupting attention notice was
+created. The automatic profile opens no CPU detector. This is authenticated
+application/bridge evidence with synthetic provider/native peers, not actual
+model/worker behavior, audible playback or phone acceptance. Receiving551 remains
+selected; this added regression does not require another runtime deployment.
