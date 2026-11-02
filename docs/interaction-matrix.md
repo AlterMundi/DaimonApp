@@ -127,7 +127,7 @@ execution store or paid admission is introduced.
 
 ```toml
 [interaction.matrix_transport]
-command = ["/path/to/python", "-B", "/path/to/matrix_operator.py", "--binding", "/path/to/private/host-binding.json"]
+command = ["/usr/bin/python3", "-B", "/path/to/matrix_operator.py", "--native-connection", "/path/to/current/connection.json", "--binding", "/path/to/private/host-binding.json"]
 source = {kind = "body", being_ref = "SOURCE_BEING_REF", embodiment_id = "SOURCE_EMBODIMENT_ID"}
 timeout_seconds = 15
 ```
@@ -144,6 +144,34 @@ observation separately permits `runtime.status`. The adapter never loads the
 runtime outside its daemon or creates credentials. Its two calls share one
 absolute deadline. Do not use a combined capability: the SDK rejects mixed
 messaging and observation profiles.
+
+### Current receiving SDK context
+
+The optional owner-only `--native-connection` flag reads the current managed
+Cluster owner connection at each invocation. It uses that connection's selected
+interpreter, closed imports, code digest and code owner, then calls the SAME
+maintained `sdk_parameters`/`qualified_startup` verifier before loading the host
+adapter. Preserve the exact isolated/no-site/no-bytecode context, including its
+disabled-bytecode prefix; do not relax qualification or import installed/global
+packages to get past a rejection. The connection's arbitrary Python code string
+is never executed. Only the supported managed-owner argv layout is accepted;
+other layouts fail explicitly rather than falling back to a cached older SDK.
+Without this flag, an operator can still supply an already qualified context.
+
+The parent never reads/repackages stdin before replacing itself with that
+receiving process. The exact original, ordinary process group, deadlines,
+request journal and conservative uncertain-send behavior remain unchanged.
+Bootstrap qualification failures return only their exception class, keeping
+private paths and diagnostics out of the controller/model result. A successor
+SDK is resolved from the existing connection; this creates no credential,
+permission, runtime identity or alternative transport.
+
+Keep the host binding in an existing owner-private directory whose ancestors
+satisfy the SDK's protected-file rules. A private leaf under a group-writable
+ancestor can still be refused. Use the established protected owner location;
+do not loosen validation or change unrelated global configuration permissions.
+Both purpose clients must match the same runtime/server/socket, and the online
+source observation must still match the selected body before any send.
 
 The existing request row freezes the selected source author as `claimed_source`
 and records `submitting` atomically before the command can have an effect.
