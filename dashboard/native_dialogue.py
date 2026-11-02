@@ -66,7 +66,11 @@ class NativeDialogue:
                 'model': 'models/' + self.model,
                 'generationConfig': {'responseModalities': ['AUDIO'], 'maxOutputTokens': 512},
                 'inputAudioTranscription': {}, 'outputAudioTranscription': {},
-                'realtimeInputConfig': {'automaticActivityDetection': {'disabled': activity_mode == 'manual'}},
+                'realtimeInputConfig': {'automaticActivityDetection': (
+                    {'disabled':True} if activity_mode=='manual' else {
+                        'disabled':False,'startOfSpeechSensitivity':'START_SENSITIVITY_LOW',
+                        'endOfSpeechSensitivity':'END_SENSITIVITY_HIGH',
+                        'prefixPaddingMs':300,'silenceDurationMs':700})},
                 'systemInstruction': {'parts': [{'text':
                     'You are the fluent voice foreground of an existing integrating conversation. '
                     'Converse naturally in the human\'s language, clarify and formulate requests. '
@@ -220,7 +224,6 @@ class NativeDialogue:
         """
         with self._lock:
             self._active()
-            if self.activity_mode!='manual':raise ValueError('Select owned manual activity')
             if (self.input_active or self.response_pending or any(
                     c['state']=='pending' and c['name'] in ('await_integrator_update','delegate_to_integrator')
                     for c in self.tools.values())):return False
@@ -321,6 +324,9 @@ class NativeDialogue:
             events.append({'type': 'voice_activity', 'activity': activity['type'],
                            'audio_offset': activity['audioOffset'],
                            'source': 'provider_manual_activity_ack' if self.activity_mode == 'manual' else 'provider_automatic_activity'})
+            if self.activity_mode=='automatic':
+                self.input_active=activity['type']=='ACTIVITY_START'
+                if not self.input_active:self.response_pending=True
         if content.get('interrupted'):
             self.response_pending=False
             events.append({'type': 'interrupted'})

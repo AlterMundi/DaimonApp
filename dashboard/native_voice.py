@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from .live import changes
 from .live_transcription import VoiceInbox
-from .native_acoustic import NativeAcousticSession
+from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
 from .native_dialogue import NativeDialogue, DialogueUnavailable
 from .native_foreground import ForegroundBridge, ForegroundUnavailable
 from .provider import Provider, ProviderUnavailable
@@ -50,6 +50,7 @@ def playback_status(value):
 
 def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
+    activity_mode=selected.get('native_activity_mode','manual')
     app.state.native_voice_enabled=True
 
     @app.websocket('/api/interaction/voice/native')
@@ -139,7 +140,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             await send(event);continue
                         if kind in ('voice_activity','input_transcript'):
                             original=acoustic.provider.ident if acoustic.provider else None
-                            await acoustic.provider_event(event)
+                            owned=await acoustic.provider_event(event)
+                            if owned is not None:original=owned
                             event={**event,'id':original}
                             # Explicit transcription fragments are rendered as
                             # the acoustic owner's accumulated caption; an empty
@@ -287,9 +289,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 context={'display_name':config.get('daimon_name','Daimon'),'sources':sources,'source_data':True}
                 while len(json.dumps(context,ensure_ascii=False).encode())>32768:sources.pop()
                 await recheck()
-                worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600)
+                if activity_mode=='manual':
+                    worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600)
                 await recheck()
-                opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode='manual',context=context))
+                opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode=activity_mode,context=context))
                 stream=await asyncio.shield(opening)
                 # Provider readiness is actual setupComplete, not successful connect().
                 while True:
@@ -312,9 +315,11 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     if item.get('speaker')=='integrator' and item.get('can_read') is True:
                         bridge.integrating_source({'id':item['id'],'revision':item['revision'],
                             'kind':'result','label':'Integrator'},in_context=True)
-                acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
-                await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual','playback_status':True})
-                tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(analysis(),name='native-analysis'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
+                acoustic=(NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
+                    if activity_mode=='manual' else NativeAutomaticAcousticSession(bridge,meta.get('capture_questions'),acoustic_event))
+                await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':activity_mode,'playback_status':True})
+                tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
+                if worker:tasks.add(asyncio.create_task(analysis(),name='native-analysis'))
                 inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192,batch_control_frames=True,wait_for_space=True)
                 checked=time.monotonic()
                 while True:

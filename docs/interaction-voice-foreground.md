@@ -403,10 +403,11 @@ work admission was used. The provider transcript omitted the synthetic greeting;
 retain original audio and label its transcript as an automatic interpretation,
 never assume that transcription alone preserves the entire spoken original.
 
-The first source/capture bridge must therefore use explicit, owned acoustic
-activities for the observed manual protocol, with the existing detector and its
-actual offsets. Keep audio generation independent of final file ASR, Sol work
-and separate TTS. The automatic provider mode remains unqualified. Device end
+The first source/capture bridge selected explicit, owned acoustic activities
+for the observed manual protocol, with the existing detector and its actual
+offsets. Audio generation stays independent of final file ASR, Sol work and
+separate TTS. The automatic mode was unqualified at that point; the distinct
+2November natural-speech result below supersedes that limit. Device end
 of phrase, echo/noise, interruption and useful latency still require an integrated
 journey; successful explicit start/end cannot close those acceptance items.
 
@@ -1057,3 +1058,54 @@ the actually selected immutable runtime also passed. This closes the separate
 full-shell/bootstrap coverage gap; it did not reproduce or repair the known
 real-phone activity-boundary mismatch. That failure and the complete milestone
 remain open.
+
+
+## Automatic native activity owner — 2 November 2026
+
+A distinct bounded Developer API trial transmitted two freshly synthesized Qwen
+natural phrases on a continuous raw PCM timeline, the second mixed with
+controlled engine/pink noise at12dB SNR. Without manual activity controls or
+microphone-stop signals, one26.828second connection produced two input
+transcripts, four automatic activity events, two completed answers (“7” and
+“11”), and80,162output PCM bytes. An initial setup with `explicitVadSignal`
+closed before readiness or any PCM; the corrected connection transmitted those
+prepared bytes for the first time. The official SDK converter restricts that
+flag to Enterprise/Vertex; it must be omitted for this Developer API route.
+Earlier eSpeak failures remain recorded; they do not imply automatic activity
+is universally unavailable. This digital observation is not phone/car-noise,
+physical hearing, integrator-return or useful-latency acceptance.
+
+The explicit server configuration `streaming_transcription.native_activity_mode`
+selects `manual` (unchanged default) or `automatic` for enabled native dialogue.
+The automatic profile uses LOW start sensitivity, HIGH end sensitivity,
+300ms prefix padding and700ms silence. It sends each raw PCM frame once,
+including silence, and opens no local CPU detector. Provider START/END offsets
+must be ordered, sample aligned and within actually transmitted bytes. START
+creates an original identity with at most500ms raw preroll and the existing
+frozen question scope. END retains its exact raw span before interpretation;
+output generation/turn completion cannot close a human original.
+
+One final input transcript may precede END and is buffered until that validated
+boundary. Explicit fragments require `finished:true`. A next START before the
+previous final transcript is unambiguous enters review, keeping both the closed
+original and the new tail. The owner returns the exact event identity even when
+END finalizes and clears its provider span. The browser consequently unblocks
+that same phrase's response without dropping its first audio buffers.
+
+Tools asking for originals or proposing work while the current spoken original
+is pending receive an explicit not-ready result, rather than an older original
+or a wait inside the event reader. Completed originals and actual asynchronous
+integrator return ownership keep the existing bridge/journal. The existing
+300second raw-input,120second phrase,128original,15second final-text and bounded
+recovery limits remain; no reconnect, input replay, new work queue or background
+microphone is added. Closing preserves an open detected tail in the existing
+original store. Ordinary file ASR, Qwen speech and non-avatar input are unchanged.
+
+Focused synthetic tests cover continuous/exact PCM, early/late/fragmented text,
+ambiguous activity, malformed offsets, frozen scope, source/tool-before-END,
+mounted authenticated retention and the browser's pre-END audio queue. The
+existing full-shell qualifier supports `--activity-mode automatic --case paced`
+with synthetic provider boundaries and an assertion that no CPU detector opens.
+Use one new bounded output directory; its ordinary4MiB cleanup contract applies.
+Source qualification and receiving selection are separate from real phone
+acceptance. Keep the full milestone open until the integrated experience works.
