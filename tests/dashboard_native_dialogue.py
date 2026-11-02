@@ -82,8 +82,15 @@ class Dialogue(unittest.TestCase):
         self.assertIn('Do not falsely deny this access',setup['systemInstruction']['parts'][0]['text'])
         self.ready()
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'status','name':'session_status','args':{}}]}}),[{'type':'session_status_query','call_id':'status'}])
-        with self.assertRaises(DialogueUnavailable):
-            self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}})
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
+        self.assertEqual(self.event(self.audio())[0]['type'],'audio')
+
+    def test_pending_tool_has_bounded_cursor_and_no_work_proposal(self):
+        self.ready()
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'pending','name':'session_pending','args':{'after':41}}]}}),
+            [{'type':'session_pending_query','call_id':'pending','after':41}])
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'invalid-pending','name':'session_pending','args':{'after':True}}]}}),
+            [{'type':'tool_rejected','call_id':'invalid-pending'}])
 
     def test_first_transport_failure_survives_terminal_phase_and_close(self):
         self.ready();self.socket.fail_send=True
@@ -166,8 +173,7 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event(self.audio())[0]['type'],'audio')
     def test_source_cursor_rejects_boolean_and_out_of_range(self):
         self.ready()
-        with self.assertRaises(DialogueUnavailable):
-            self.event({'toolCall':{'functionCalls':[{'id':'read','name':'recent_originals','args':{'before':True}}]}})
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'read','name':'recent_originals','args':{'before':True}}]}}),[{'type':'tool_rejected','call_id':'read'}])
 
     def test_stopped_microphone_is_signalled_without_closing_or_reconnecting(self):
         self.ready();self.stream.append(b'\0\0');self.stream.end_input()
@@ -240,8 +246,9 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(len(self.socket.sent),1);self.assertEqual(len(self.openings),1)
     def test_work_proposals_reject_extra_tools(self):
         self.ready()
-        with self.assertRaises(DialogueUnavailable):self.event(self.proposal(name='run_shell'))
-        self.assertEqual(self.stream.tools,{})
+        self.assertEqual(self.event(self.proposal(name='run_shell')),[{'type':'tool_rejected','call_id':'call-1'}])
+        self.stream.tool_result('call-1',{'kind':'invalid_arguments','operation_started':False})
+        self.assertEqual(self.stream.phase,'ready')
     def test_input_frames_and_total_input_are_bounded(self):
         self.ready()
         for frame in (b'',b'\0',b'\0'*32002):
@@ -252,8 +259,8 @@ class Dialogue(unittest.TestCase):
     def test_invalid_source_reference_does_not_become_work(self):
         self.ready();proposal=self.proposal()
         proposal['toolCall']['functionCalls'][0]['args']['original_ids']=['invented source']
-        with self.assertRaises(DialogueUnavailable):self.event(proposal)
-        self.assertEqual(self.stream.tools,{})
+        self.assertEqual(self.event(proposal),[{'type':'tool_rejected','call_id':'call-1'}])
+        self.assertEqual(self.stream.phase,'ready')
     def test_event_and_text_bounds_close_without_retry(self):
         self.ready();self.stream.max_text_bytes=2
         with self.assertRaisesRegex(DialogueUnavailable,'text-bound'):
@@ -274,10 +281,16 @@ class Dialogue(unittest.TestCase):
         self.assertTrue(self.socket.closed);self.assertEqual(len(self.openings),1)
     def test_integrating_source_offset_cannot_be_a_boolean(self):
         self.ready()
-        with self.assertRaises(DialogueUnavailable):
-            self.event({'toolCall':{'functionCalls':[{'id':'read','name':'read_integrating_source',
-                'args':{'source':'native:123','revision':'b'*64,'offset':True}}]}})
-        self.assertNotIn('read',self.stream.tools)
+        events=self.event({'toolCall':{'functionCalls':[{'id':'read','name':'read_integrating_source',
+            'args':{'source':'native:123','revision':'b'*64,'offset':True}}]}})
+        self.assertEqual(events,[{'type':'tool_rejected','call_id':'read'}])
+        self.assertEqual(self.stream.phase,'ready')
+
+    def test_invalid_media_failure_names_validation_stage_without_payload(self):
+        self.ready()
+        with self.assertRaisesRegex(DialogueUnavailable,'invalid-provider-event-audio'):
+            self.event({'serverContent':{'modelTurn':{'parts':[{'inlineData':{'mimeType':'private'}}]}}})
+        self.assertEqual(self.stream.failure_code,'native-dialogue-invalid-provider-event-audio')
 
     def test_pending_tool_cap_does_not_block_conversation_before_limit(self):
         self.ready()

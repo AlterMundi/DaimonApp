@@ -1271,10 +1271,11 @@ covered. Full conversation and physical-device acceptance stay open.
 
 ### Avatar skills and their execution route
 
-The voice role already exposes five bounded native functions. They are its
+The voice role exposes six bounded native functions. They are its
 operational skills: `recent_originals` grounds a request in current human speech;
 `delegate_to_integrator` asks Sol to resolve work, research or missing memory;
-`session_status` reads coarse current activity; `read_integrating_source` reads
+`session_status` reads coarse current activity; `session_pending` reads the
+existing human-owned pending task/question ledger; `read_integrating_source` reads
 an offered canonical return; `await_integrator_update` resumes a missing return
 subscription only when no continued delegation/watch already owns it.
 
@@ -1300,3 +1301,33 @@ are never repeated by this recovery. No source audio, human input or native work
 is replayed. A receiving shutdown cancelled one pending connection near the
 reported screenshot; the retained logs do not identify that connection as the
 specific failed read, so causation remains unconfirmed.
+
+
+## Recoverable tool proposals and session information —2November2026
+
+A retained device dialogue reached the five-minute conversation bound before its
+last request was delegated. A separate short dialogue closed with the old generic
+invalid-provider-event code. These are distinct observations; the retained code
+does not prove which field was invalid in that second event. Do not replay either
+original to repair observation or infer delivery from transcription/Check status.
+
+Known-ID, bounded tool proposals with invalid arguments now return explicit
+invalid-arguments feedback without invoking the owner or closing voice. Unknown
+tool names are likewise rejected without execution. Duplicate IDs, malformed tool
+envelopes, pending/event/resource bounds and uncertain transport writes remain
+terminal; no request is retried. Invalid protocol diagnostics retain only a fixed
+validation stage (envelope, voice activity, transcription, audio, tool envelope or
+cancellation), never provider payloads, arguments, transcript or credentials.
+
+`session_status` now also preserves the observer's existing session identity,
+current work-start timestamp and error flag, with stale state remaining unknown.
+`session_pending(after)` reuses the existing actor-owned internal pending ledger:
+titles, previews, dates, state and revision, read-only and bounded to16KiB. It
+never approves/dismisses/answers a question or wakes a worker. Local truncation
+removes the continuation cursor rather than silently skipping omitted records.
+A pending ledger entry does not prove a currently live blocker. Sol still owns
+interpretation, work routing, complete latest results and their existing viewer
+links. The useful next extension is a source/revision-bound recent-result and
+artifact index from the existing presentation API, not another worker poller or
+an unrestricted host skill catalog. This work does not complete the full goal
+or establish a repaired physical-device journey.
