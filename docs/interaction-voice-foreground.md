@@ -1245,8 +1245,10 @@ source freshness, no-direct-worker and pending/uncertain request rules still app
 The new file selection grants no memory pooling, new tools or autonomous attention.
 
 Mounted qualification exercises an independently configured synthetic Oliva
-identity, reload after an owner update, no disclosure of the file path, and
-missing/unsafe/oversized/malformed file rejection before provider readiness.
+identity, fresh file reads after an owner update with an immutable open-dialogue
+snapshot, and no disclosure of the file path. One mounted missing-file rejection
+checks the readiness boundary; direct reader cases cover unsafe, oversized and
+malformed selections without coupling identity checks to repeated socket teardown.
 Existing identity-free clients and native/ordinary streaming checks remain.
 Synthetic identity content does not change any real Oliva/Eko profile. Phone
 identity and complete conversation acceptance remain distinct.
@@ -1264,3 +1266,22 @@ model-policy observation, not a phone hearing trial, autobiographical recall
 benchmark or evidence that the voice layer directly owns DMK.39mounted,29native
 transport and37ordinary streaming checks passed; identity-free behavior remains
 covered. Full conversation and physical-device acceptance stay open.
+
+### Avatar skills and their execution route
+
+The voice role already exposes five bounded native functions. They are its
+operational skills: `recent_originals` grounds a request in current human speech;
+`delegate_to_integrator` asks Sol to resolve work, research or missing memory;
+`session_status` reads coarse current activity; `read_integrating_source` reads
+an offered canonical return; `await_integrator_update` resumes a missing return
+subscription only when no continued delegation/watch already owns it.
+
+Conversation, clarification and faithful prompt formulation belong in the voice
+role. Sol supplies the applicable research, memory and execution skills and
+coordinates persistent sessions. The existing tool descriptions and native role
+policy teach these routes, including answers to Sol's questions, source-bound
+results and consultation before a refusal. A second generic skill registry or a
+copy of the host's entire skill catalog would add names without callable abilities.
+Expose a new native skill only for a concrete capability missing from these
+routes, with its real tool contract and validation; do not imply that a skill name
+grants shell access, direct worker control or access to the whole private DMK pool.
