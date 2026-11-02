@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from dashboard.native_acoustic import NativeAcousticSession
+from dashboard.native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
 from dashboard.native_foreground import ForegroundUnavailable
 
 
@@ -197,6 +197,79 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.session.max_backlog=2
         with self.assertRaises(ForegroundUnavailable):await self.session.feed(b'\0'*4)
         self.assertEqual(self.detector.frames,[])
+
+
+class Automatic(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bridge=Bridge();self.bridge.stream.activity_mode='automatic';self.events=[]
+        async def notify(value):self.events.append(value)
+        self.session=NativeAutomaticAcousticSession(self.bridge,{},notify)
+        self.pcm=bytes(range(256))*250
+        for offset in range(0,len(self.pcm),32000):await self.session.feed(self.pcm[offset:offset+32000])
+    async def vad(self,kind,offset):
+        return await self.session.provider_event({'type':'voice_activity','activity':kind,
+            'audio_offset':offset,'source':'provider_automatic_activity'})
+    async def test_continuous_noise_and_early_final_keep_exact_original_and_event_identity(self):
+        ident=await self.vad('ACTIVITY_START','0.75s')
+        self.assertEqual(self.bridge.pending_acoustic,ident)
+        self.assertEqual(await self.session.provider_event({'type':'input_transcript','text':'Seven'}),ident)
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(await self.vad('ACTIVITY_END','1.5s'),ident)
+        self.assertEqual(self.bridge.captures,[(ident,self.pcm[8000:48000],{})])
+        self.assertEqual(self.bridge.transcripts,[(ident,'Seven')])
+        self.assertIsNone(self.bridge.pending_acoustic)
+        self.assertEqual([v['type'] for v in self.events],['capture_started','phrase_end','input_interpreted'])
+        self.assertEqual(b''.join(v[1] for v in self.bridge.stream.events),self.pcm)
+        self.assertTrue(all(v[0]=='pcm' for v in self.bridge.stream.events),'No manual activity or duplicate PCM')
+    async def test_transcript_without_start_retains_unassigned_audio_but_never_interprets_it(self):
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'Uncorrelated speech'})
+        await self.session.close();await self.session.close()
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1],self.pcm)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_final_after_end_and_fragmentation(self):
+        ident=await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Se','finished':False})
+        await self.vad('ACTIVITY_END','1.5s')
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'turn_complete'})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'input_transcript','text':'ven','finished':True})
+        self.assertEqual(self.bridge.transcripts,[(ident,'Seven')])
+    async def test_ambiguous_next_start_retains_closed_original_and_new_tail(self):
+        first=await self.vad('ACTIVITY_START','0.75s')
+        await self.vad('ACTIVITY_END','1.2s')
+        with self.assertRaises(ForegroundUnavailable):await self.vad('ACTIVITY_START','1.75s')
+        second=self.session.local.ident
+        await self.session.close()
+        self.assertEqual(self.bridge.captures,[(first,self.pcm[8000:38400],{}),(second,self.pcm[40000:],{})])
+        self.assertEqual(self.bridge.transcripts,[])
+    async def test_invalid_offsets_and_sources_cannot_close_an_original(self):
+        await self.vad('ACTIVITY_START','0.75s')
+        for offset in ('0.75s','0.5s','2.1s','1.00001s'):
+            with self.assertRaises(ForegroundUnavailable):await self.vad('ACTIVITY_END',offset)
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'voice_activity','activity':'ACTIVITY_END',
+                'audio_offset':'1.5s','source':'provider_manual_activity_ack'})
+        self.assertEqual(self.bridge.captures,[])
+        await self.session.close()
+        self.assertEqual(self.bridge.captures[0][1],self.pcm[8000:])
+    async def test_frozen_marker_and_second_source_do_not_reuse_current_scope(self):
+        await self.session.marker(64100,{'c'*32:'d'*64})
+        await self.session.feed(bytes(32000))
+        ident=await self.vad('ACTIVITY_START','2.1s')
+        await self.vad('ACTIVITY_END','2.8s')
+        await self.session.provider_event({'type':'input_transcript','text':'Correction'})
+        self.assertEqual(self.bridge.captures[0][2],{'c'*32:'d'*64})
+        self.assertEqual(self.bridge.transcripts,[(ident,'Correction')])
+    async def test_fragmented_transcript_cannot_be_finished_by_unmarked_text(self):
+        await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Se','finished':False})
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'ven'})
+        self.assertEqual(self.bridge.transcripts,[])
 
 
 if __name__=='__main__':unittest.main()

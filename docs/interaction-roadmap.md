@@ -241,3 +241,13 @@ acceptance remain unfinished.
 - [ ] #304: interruption, heard speech and concurrent attention
 - [ ] #278: speech provider/voice qualification
 - [ ] Integrated receiving delivery and current operator guidance
+
+
+2November automatic-activity update: a distinct natural-Qwen-speech/noise native
+protocol trial produced two provider-detected phrases and their correct spoken
+answers on one continuous PCM stream. The opt-in automatic owner now preserves
+exact originals, question scope and source readiness separately from the local
+CPU/manual path. See the automatic-owner section of
+[the foreground contract](interaction-voice-foreground.md). This advances the
+noise/turn-taking repair; digital evidence does not close phone fluency, useful
+latency or the remaining milestone obligations.

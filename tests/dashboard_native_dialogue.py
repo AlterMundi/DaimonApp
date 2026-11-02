@@ -63,6 +63,19 @@ class Dialogue(unittest.TestCase):
         with self.assertRaises(DialogueUnavailable):self.stream.notify_integrator_update()
         self.assertTrue(self.socket.closed)
 
+    def test_automatic_boundaries_gate_internal_returns_without_manual_activity(self):
+        self.ready()
+        setup=self.socket.sent[0]['setup']
+        self.assertNotIn('explicitVadSignal',setup,'Enterprise-only setting is not a Developer API option')
+        self.event({'voiceActivity':{'type':'ACTIVITY_START','audioOffset':'1s'}})
+        self.assertTrue(self.stream.input_active)
+        self.assertFalse(self.stream.notify_integrator_update())
+        self.event({'voiceActivity':{'type':'ACTIVITY_END','audioOffset':'2s'}})
+        self.assertFalse(self.stream.input_active);self.assertTrue(self.stream.response_pending)
+        self.assertFalse(self.stream.notify_integrator_update())
+        self.event({'serverContent':{'turnComplete':True}})
+        self.assertTrue(self.stream.notify_integrator_update())
+
     def test_lost_attention_write_closes_without_retry(self):
         self.stream.close();self.socket=Socket()
         self.stream=NativeDialogue(self.key,activity_mode='manual',connect=lambda *a,**k:self.socket,clock=lambda:self.now)
@@ -76,7 +89,7 @@ class Dialogue(unittest.TestCase):
         setup=self.socket.sent[0]['setup']
         self.assertEqual(setup['generationConfig']['responseModalities'],['AUDIO'])
         self.assertEqual(setup['tools'][0]['functionDeclarations'][0]['behavior'],'NON_BLOCKING')
-        self.assertEqual(setup['realtimeInputConfig'],{'automaticActivityDetection':{'disabled':False}},'Explicit native detection rather than the old detector/final-ASR gate')
+        self.assertEqual(setup['realtimeInputConfig'],{'automaticActivityDetection':{'disabled':False,'startOfSpeechSensitivity':'START_SENSITIVITY_LOW','endOfSpeechSensitivity':'END_SENSITIVITY_HIGH','prefixPaddingMs':300,'silenceDurationMs':700}},'Explicit native detection rather than the old detector/final-ASR gate')
         self.assertEqual(self.openings[0][1]['redirect_limit'],0)
         self.ready();self.stream.append(b'\0\0'*320)
         proposal=self.event(self.proposal())[0]

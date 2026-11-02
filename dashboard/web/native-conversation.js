@@ -147,7 +147,7 @@ window.NativeConversation=(()=>{
             try{
               if(typeof message.data!=='string'||message.data.length>400000||pendingEvents>=128)throw Error('Native event backlog exceeded');
               const value=JSON.parse(message.data);
-              if(value.type==='ready'){if(value.id!==dialogue||value.activity_mode!=='manual')throw Error('Native mode changed');playbackReporting=value.playback_status===true;resolve();return;}
+              if(value.type==='ready'){if(value.id!==dialogue||!['manual','automatic'].includes(value.activity_mode))throw Error('Native mode changed');playbackReporting=value.playback_status===true;resolve();return;}
               if(value.type==='review'&&starting){reject(Error(value.message));return;}
               pendingEvents++;chain=chain.then(()=>event(value,owned)).catch(error=>hold(error.message)).finally(()=>pendingEvents--);
             }catch(error){reject(error);hold(error.message);}

@@ -44,8 +44,8 @@ class ForegroundBridge:
         Provider.input_id(dialogue)
         if not re.fullmatch('[a-f0-9]{64}',binding) or not callable(authorize):
             raise ValueError('Select an owned foreground conversation')
-        if stream.activity_mode != 'manual':
-            raise ValueError('Only the observed explicit acoustic protocol is selected')
+        if stream.activity_mode not in ('manual','automatic'):
+            raise ValueError('Select an owned native acoustic protocol')
         self.provider,self.stream = provider,stream
         self.dialogue,self.binding = dialogue,binding
         self.authorize = authorize
@@ -55,6 +55,7 @@ class ForegroundBridge:
         self.captures={}
         self.input_bytes=0
         self.latest=None
+        self.pending_acoustic=None
         self._reservation_tail=None
         self.closed=False
         self._owners=asyncio.Semaphore(2)
@@ -129,7 +130,7 @@ class ForegroundBridge:
     def transcript(self,ident,text):
         """Bind a noninterim transcript to an explicitly correlated closed span.
 
-        The caller must match provider manual-end acknowledgment and transcript
+        The caller must match the selected provider boundary and transcript
         to this acoustic span. Output/turnComplete is not that correlation.
         """
         capture=self.captures.get(ident)
@@ -189,7 +190,14 @@ class ForegroundBridge:
         if ident in self._tool_calls or len(self._tool_calls)>=self.stream.max_tools:
             raise ForegroundUnavailable('A foreground tool cannot be replayed')
         self._tool_calls.add(ident)
+        source_root=self.latest
         try:
+            # Automatic transcription/tool calls may precede activity END.
+            # Answer explicitly, without blocking the event reader needed to
+            # close that source or silently selecting the previous original.
+            if (event['type'] in ('source_query','delegation_proposed')
+                    and self.pending_acoustic is not None):
+                raise ForegroundUnavailable('The current spoken original is still pending')
             if event['type']=='source_query':
                 # Recognition/storage may finish while the native voice speaks.
                 capture=self.captures.get(self.latest)
@@ -201,6 +209,8 @@ class ForegroundBridge:
                     if self.closed or capture.completion is None:
                         raise ForegroundUnavailable('Foreground conversation ended')
                     await asyncio.shield(capture.completion)
+                if self.pending_acoustic is not None or self.latest!=(capture.ident if capture else None):
+                    raise ForegroundUnavailable('A newer spoken correction is pending')
                 result=await self._owner(self.provider.conversation_foreground_originals,
                                          self.dialogue,self.binding,event['before'])
                 if self.speech_context is not None:
@@ -228,6 +238,8 @@ class ForegroundBridge:
                     if (original.get('foreground_dialogue')!=self.dialogue
                             or original.get('phase') not in ('foreground','accepted','answered')):
                         raise ForegroundUnavailable('Original is not ready in this conversation')
+                if self.pending_acoustic is not None or self.latest!=root:
+                    raise ForegroundUnavailable('A newer spoken correction is pending')
                 body={'binding':self.binding,'id':root,
                       'intent_id':str(uuid.uuid5(uuid.UUID(self.dialogue),'delegate:'+ident)),
                       'formulation':event['formulation'],'source_ids':sources}
@@ -253,6 +265,10 @@ class ForegroundBridge:
             result={'kind':'not_ready','reason':str(error),'meaning':'No new work was confirmed. Resolve the stated source condition before proposing a different intent.'}
         except (ProviderUnavailable,ValueError,TimeoutError,OSError):
             result={'kind':'unconfirmed','meaning':'The operation was not confirmed. Do not repeat work or claim completion; originals and existing jobs remain retained.'}
+        if (event['type']=='source_query'
+                and (self.pending_acoustic is not None or self.latest!=source_root)):
+            result={'kind':'not_ready','reason':'A newer spoken correction is pending',
+                    'meaning':'Read the current original after its interpretation is complete.'}
         if not self.closed:
             await asyncio.to_thread(self.stream.tool_result,ident,result)
         return result

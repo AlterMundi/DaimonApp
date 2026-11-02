@@ -169,6 +169,44 @@ class Mounted(unittest.TestCase):
     def meta(self,**kwargs):return {'id':self.ident,'binding':self.owner.binding,'csrf':self.csrf,**kwargs}
     def open(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/native',headers={'origin':origin})
+    def test_automatic_provider_route_retains_exact_source_and_never_opens_cpu_detector(self):
+        class AutomaticStream(Stream):
+            activity_mode='automatic'
+            def append(self,pcm):
+                self.total+=len(pcm)
+                if self.total==3200:
+                    self.queue.put([{'type':'voice_activity','activity':'ACTIVITY_START',
+                        'audio_offset':'0.05s','source':'provider_automatic_activity'}])
+                elif self.total==6400:
+                    self.queue.put([{'type':'input_transcript','text':'Automatic exact interpretation'},
+                        {'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':'0.2s','source':'provider_automatic_activity'},
+                        {'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                        {'type':'output_transcript','text':'Automatic response.'},{'type':'turn_complete'}])
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription']['native_activity_mode']='automatic'
+        with patch('dashboard.native_voice.NativeDialogue',AutomaticStream), patch.object(Detector,'open',side_effect=AssertionError('Automatic mode opened CPU detector')):
+            self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+            self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
+            self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+            self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+            self.csrf=self.client.get('/api/state').json()['csrf']
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['activity_mode'],'automatic')
+                pcm=b'\1\0'*1600+b'\0\0'*1600
+                ws.send_bytes(pcm[:3200]);ws.send_bytes(pcm[3200:])
+                events=[]
+                while not any(v['type']=='original_completed' for v in events):events.append(ws.receive_json())
+                source=next(v['id'] for v in events if v['type']=='capture_started')
+                self.assertEqual(next(v['id'] for v in events if v['type']=='voice_activity' and v['activity']=='ACTIVITY_END'),source)
+                self.assertEqual(self.owner.inputs[source]['text'],'Automatic exact interpretation')
+                self.assertEqual(self.owner.inputs[source]['voice']['audio_sha256'],hashlib.sha256(wav_bytes(pcm)).hexdigest())
+                self.assertEqual(self.owner.delegations,[])
+                order=[v['type'] for v in events]
+                self.assertLess(order.index('phrase_end'),order.index('input_interpreted'))
+                self.assertLess(order.index('original_retained'),order.index('original_completed'))
+                ws.send_json({'type':'close'})
+        self.assertEqual(Detector.opened,[])
+
     def test_exact_original_and_assistant_history_through_the_mounted_route(self):
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')

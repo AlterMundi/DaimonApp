@@ -66,6 +66,32 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         await capture.reservation;self.owner.text=text
         await self.bridge.transcript(ident,text)
         return ident,pcm,capture
+    async def test_automatic_source_query_and_delegation_cannot_select_previous_original(self):
+        ident,_,_=await self.captured()
+        self.bridge.pending_acoustic=str(uuid.uuid4())
+        for event in ({'type':'source_query','call_id':'early-query','before':None},
+                      {'type':'delegation_proposed','call_id':'early-delegate','original_ids':[ident],'formulation':'Old request'}):
+            result=await self.bridge.tool(event)
+            self.assertEqual(result['kind'],'not_ready')
+        self.assertEqual(self.owner.delegations,[])
+        self.assertEqual(self.bridge.latest,ident)
+
+    async def test_automatic_start_during_original_read_returns_not_ready_instead_of_old_page(self):
+        ident,_,_=await self.captured()
+        entered=threading.Event();release=threading.Event()
+        reader=self.owner.conversation_foreground_originals
+        def delayed(*args):
+            entered.set();release.wait(2);return reader(*args)
+        self.owner.conversation_foreground_originals=delayed
+        task=asyncio.create_task(self.bridge.tool({'type':'source_query','call_id':'racing-read','before':None}))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait,2))
+            self.bridge.pending_acoustic=str(uuid.uuid4())
+        finally:release.set()
+        result=await task
+        self.assertEqual(result['kind'],'not_ready');self.assertNotIn('sources',result)
+        self.assertEqual(self.owner.delegations,[])
+
     async def test_slow_first_reservation_cannot_be_overtaken(self):
         entered=threading.Event();release=threading.Event();order=[]
         real=self.owner.conversation_voice_submit

@@ -237,3 +237,121 @@ class NativeAcousticSession:
                 span=self.local
                 self.bridge.capture(span.ident,bytes(self.pcm[span.start:]),span.questions)
             self.pcm.clear();self.local=None;self.spans.clear();self.provider=None
+
+
+class NativeAutomaticAcousticSession(NativeAcousticSession):
+    """Own provider-detected spans on the continuous, uncompressed PCM timeline.
+
+    Automatic boundaries identify originals, never authorize work. An ambiguous
+    transcript ends the live attempt with its exact recordings kept for review.
+    """
+    def __init__(self,bridge,questions,notify):
+        if bridge.stream.activity_mode!='automatic':
+            raise ValueError('Select automatic native activity')
+        super().__init__(bridge,None,questions,notify)
+        self.unassigned=False
+
+    async def feed(self,pcm):
+        async with self.lock:
+            if (self.closed or not isinstance(pcm,bytes) or not pcm or len(pcm)%2
+                    or len(pcm)>32000 or len(self.pcm)+len(pcm)>self.max_bytes
+                    or self.local is not None and len(self.pcm)+len(pcm)-self.local.start>120*32000):
+                raise ForegroundUnavailable('Native acoustic input exceeds its live bounds')
+            self.pcm.extend(pcm)
+            # Serialize with provider offsets; a failed write is never replayed.
+            await asyncio.to_thread(self.stream.append,pcm)
+            self.sent+=len(pcm)
+
+    async def activity(self,value):
+        raise ForegroundUnavailable('Automatic activity has no local detector authority')
+
+    async def _pump(self):
+        self.changed.set()
+        span=self.provider
+        if not self.closed and span and span.end_ack and span.text is not None:
+            self.bridge.transcript(span.ident,span.text)
+            self.spans.remove(span);self.provider=None
+            self.bridge.pending_acoustic=None
+            await self.notify({'type':'input_interpreted','id':span.ident,'text':span.text})
+
+    async def provider_event(self,event):
+        async with self.lock:
+            if self.closed:raise ForegroundUnavailable('Native acoustic conversation ended')
+            kind=event['type']
+            if kind not in ('voice_activity','input_transcript'):return
+            span=self.provider
+            if kind=='voice_activity':
+                if event.get('source')!='provider_automatic_activity':
+                    raise ForegroundUnavailable('Native activity is not the selected automatic protocol')
+                offset=self._offset(event.get('audio_offset'))
+                if offset!=offset.to_integral_value() or offset%2 or not self.boundary<=offset<=self.sent:
+                    raise ForegroundUnavailable('Automatic boundary does not match transmitted PCM')
+                offset=int(offset)
+                if event.get('activity')=='ACTIVITY_START':
+                    if self.local is not None or self.created>=self.max_spans or len(self.spans)>=4:
+                        raise ForegroundUnavailable('Automatic start needs source review')
+                    start=max(self.boundary,offset-16000)
+                    scope=next((q for n,q in self.markers if self.boundary<n<=offset),self.questions)
+                    self.markers=[(n,q) for n,q in self.markers if n>offset]
+                    new=Span(str(uuid.uuid4()),start,self.created+1,offset,
+                             questions=dict(scope),stream_start=offset,start_ack=True)
+                    self.local=new;self.spans.append(new);self.created+=1
+                    self.bridge.pending_acoustic=new.ident
+                    await self.notify({'type':'capture_started','id':new.ident,'start':start})
+                    # Retain the new tail on close even if the previous final
+                    # text is missing. Never guess which source unmarked text owns.
+                    if span is not None:
+                        raise ForegroundUnavailable('Previous automatic interpretation needs review')
+                    self.provider=new;self.changed.set()
+                    return new.ident
+                if (event.get('activity')!='ACTIVITY_END' or span is None or self.local is not span
+                        or span.end_ack or offset<=span.stream_start or offset<=span.start):
+                    raise ForegroundUnavailable('Automatic end needs source review')
+                span.end=span.stream_end=offset;span.end_ack=True
+                self.local=None;self.boundary=offset
+                self.markers=[(n,q) for n,q in self.markers if n>offset]
+                self.bridge.capture(span.ident,bytes(self.pcm[span.start:offset]),span.questions)
+                await self.notify({'type':'phrase_end','id':span.ident,'start':span.start,'end':offset})
+                span.final_deadline=asyncio.get_running_loop().time()+self.transcript_timeout
+            else:
+                text=event.get('text')
+                if span is None:
+                    # Speech text without an owned START cannot be bound to a
+                    # previous original. Keep its unassigned raw tail on close,
+                    # without interpreting or dispatching that fallback audio.
+                    self.unassigned=True
+                    raise ForegroundUnavailable('Input transcript has no owned automatic start')
+                if span.text is not None or not isinstance(text,str):
+                    raise ForegroundUnavailable('Input transcript needs source review')
+                if 'finished' in event:
+                    if type(event['finished']) is not bool:
+                        raise ForegroundUnavailable('Input transcript completion is invalid')
+                    text=span.transcript_parts+text
+                    if len(text.encode())>16000:
+                        raise ForegroundUnavailable('Input transcript exceeds its live bound')
+                    span.transcript_parts=text;span.fragmented=True
+                    if event['finished']:
+                        if not text.strip():raise ForegroundUnavailable('Input transcript is empty')
+                        span.text=text
+                    await self.notify({'type':'input_caption','id':span.ident,'text':text})
+                else:
+                    if span.fragmented or not text.strip() or len(text.encode())>16000:
+                        raise ForegroundUnavailable('Input transcript needs source review')
+                    # Observed automatic protocol sends final text just BEFORE
+                    # END. Buffer it; only a validated END can close the original.
+                    span.text=text
+            ident=span.ident
+            await self._pump()
+            return ident
+
+    async def close(self):
+        async with self.lock:
+            if not self.closed and self.unassigned and self.local is None:
+                # At most three120s chunks within the existing300s PCM bound.
+                # These are unconfirmed raw originals, not invented utterances.
+                for start in range(self.boundary,len(self.pcm),120*32000):
+                    stop=min(len(self.pcm),start+120*32000)
+                    # Without an onset, later markers cannot narrow a known
+                    # utterance start. Retain the earlier arm-time scope.
+                    self.bridge.capture(str(uuid.uuid4()),bytes(self.pcm[start:stop]),self.questions)
+        await super().close()

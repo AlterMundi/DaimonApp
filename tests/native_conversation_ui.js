@@ -35,7 +35,7 @@ function boot(android=false,pcmReady=true){
   const engine=window.NativeConversation.create(hooks);
   return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,timings,media,nativeCommands,native:window.NativeSpeechAudio,nativeEvent(value){window.DaimonAudio.onmessage({data:JSON.stringify({id:nativeCommands.find(v=>v.command==='pcm_begin').id,...value})});},get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
 }
-async function ready(value,diagnostics=false){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual',...(diagnostics?{playback_status:true}:{})});assert.equal(await pending,true);return socket;}
+async function ready(value,diagnostics=false,mode='manual'){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:mode,...(diagnostics?{playback_status:true}:{})});assert.equal(await pending,true);return socket;}
 (async()=>{
   const observed=boot(),observationSocket=await ready(observed,true),observationOutput=crypto.randomUUID();
   observationSocket.push({type:'audio',id:observationOutput,sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
@@ -81,7 +81,7 @@ async function ready(value,diagnostics=false){const pending=value.engine.start()
   // A provider may generate PCM before its manual-end ACK. Preserve the
   // beginning while waiting for that ACK instead of hearing only a late tail.
   for(const native of [false,true]){
-    const early=boot(native),earlySocket=await ready(early),input=crypto.randomUUID(),output=crypto.randomUUID();
+    const early=boot(native),earlySocket=await ready(early,false,'automatic'),input=crypto.randomUUID(),output=crypto.randomUUID();
     early.sources[0].emit({pcm:new Uint8Array(3200).buffer});
     earlySocket.push({type:'capture_started',id:input,start:0});earlySocket.push({type:'phrase_end',id:input,start:0,end:3200});
     await until(()=>early.retained.length===1);

@@ -8,6 +8,7 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out',type=Path,required=True,help='New absolute output directory, bounded to4MiB')
 parser.add_argument('--runtime',type=Path,help='Selected immutable app bundle; defaults to this checkout')
 parser.add_argument('--case',choices=('baseline','paced'),default='baseline')
+parser.add_argument('--activity-mode',choices=('manual','automatic'),default='manual')
 args=parser.parse_args();runtime=(args.runtime or repo).resolve();assert (runtime/'dashboard/app.py').is_file()
 assert args.out.is_absolute() and not args.out.exists();args.out.mkdir(parents=True,mode=0o700)
 identity_delay=.03 if args.case=='paced' else 0
@@ -34,7 +35,7 @@ def counted_install(app,config,provider,origins,bind_voice,detector_command,acti
   return session,recheck,counted_actor
  return original_install(app,config,provider,origins,bind,detector_command,active)
 op=args.out;assert not (op/'intent.json').exists()
-state={'state':'prepared','scope':'Full actual index/app.js/modules, standalone shared cookie/CSRF bootstrap, SSE refresh and native voice owner. Synthetic identity/provider/detector/MediaStream only; no real native/model/human/hardware capture.','bounds':'One isolated HTTPS listener/browser;<=75s browser/100s server,<=4MiB retained metadata/screenshots. Ephemeral key/profile/cache/SQLite removed after closure. No production selector/config changes or recurring attention.','source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'http':{},'identity_checks':0,'faults':0,'provider_opened':0,'provider_closed':0,'events':{},'actor_checks':{},'identity_paths':{},'conditions':{'identity_delay_ms':round(identity_delay*1000),'output_pcm_frame_ms':20 if args.case=='paced' else 1000}}
+state={'state':'prepared','scope':'Full actual index/app.js/modules, standalone shared cookie/CSRF bootstrap, SSE refresh and native voice owner. Synthetic identity/provider/detector/MediaStream only; no real native/model/human/hardware capture.','bounds':'One isolated HTTPS listener/browser;<=75s browser/100s server,<=4MiB retained metadata/screenshots. Ephemeral key/profile/cache/SQLite removed after closure. No production selector/config changes or recurring attention.','source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'http':{},'identity_checks':0,'faults':0,'provider_opened':0,'provider_closed':0,'events':{},'actor_checks':{},'identity_paths':{},'conditions':{'activity_mode':args.activity_mode,'identity_delay_ms':round(identity_delay*1000),'output_pcm_frame_ms':20 if args.case=='paced' else 1000}}
 state['qualifier_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 state['browser_driver_sha256']=hashlib.sha256((repo/'tests/dashboard_native_bootstrap_browser.js').read_bytes()).hexdigest()
 state['runtime_application_files']={str(p.relative_to(runtime)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (runtime/'dashboard').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
@@ -55,14 +56,30 @@ class FullOwner(Owner):
  def sonic_activity(self):return {**descriptor({}),'configured':False,'connected':True,'sources':[]}
  def conversation_foreground_delegate(self,*a):raise AssertionError('No native work permitted in this synthetic bootstrap qualification')
 class FullStream(Stream):
- def __init__(self,*a,**kw):super().__init__(*a,**kw);state['provider_opened']+=1;self.input_bytes=0
- def append(self,pcm):super().append(pcm);self.input_bytes=self.total
+ def __init__(self,*a,**kw):
+  super().__init__(*a,**kw);state['provider_opened']+=1;self.input_bytes=0
+  self.activity_mode=kw['activity_mode'];self.speaking=False;self.quiet=0
+ def append(self,pcm):
+  super().append(pcm);self.input_bytes=self.total
+  if self.activity_mode!='automatic':return
+  # Synthetic provider boundaries on the raw timeline, not a production VAD.
+  hot=max(abs(x) for x in struct.unpack('<'+'h'*(len(pcm)//2),pcm))>100
+  if hot:
+   self.quiet=0
+   if not self.speaking:
+    self.speaking=True;self.input_active=True
+    self.queue.put([{'type':'voice_activity','activity':'ACTIVITY_START',
+     'audio_offset':f'{(self.total-len(pcm))/32000:.9f}s','source':'provider_automatic_activity'}])
+  elif self.speaking:
+   self.quiet+=len(pcm)
+   if self.quiet>=22400:
+    self.speaking=False;self.activity_end()
  def activity_start(self):self.input_active=True;super().activity_start()
  def activity_end(self):
   self.input_active=False;self.response_pending=True
   pcm=b''.join(struct.pack('<h',int(3000*__import__('math').sin(i*2*__import__('math').pi*220/24000))) for i in range(24000))
   self.queue.put([{'type':'input_transcript','text':'Synthetic captured phrase.'},
-    {'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':f'{self.total/32000:.9f}s','source':'provider_manual_activity_ack'}])
+    {'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':f'{self.total/32000:.9f}s','source':'provider_manual_activity_ack' if self.activity_mode=='manual' else 'provider_automatic_activity'}])
   def produce():
    frame=960 if args.case=='paced' else len(pcm)
    for offset in range(0,len(pcm),frame):
@@ -80,7 +97,9 @@ class FullStream(Stream):
   for thread in getattr(self,"producers",[]):thread.join(timeout=2);assert not thread.is_alive()
 class FullDetector:
  @classmethod
- async def open(cls,*a,**kw):return cls()
+ async def open(cls,*a,**kw):
+  assert args.activity_mode=='manual','Automatic mode must not open the CPU detector'
+  return cls()
  def __init__(self):self.queue=asyncio.Queue();self.total=0;self.generation=0;self.speaking=False;self.quiet=0;self.closed=False
  async def feed(self,pcm):
   self.total+=len(pcm);hot=max(abs(x) for x in struct.unpack('<'+'h'*(len(pcm)//2),pcm))>100
@@ -103,7 +122,7 @@ try:
   root=Path(tmp);owner=FullOwner(root);sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1];origin=f'https://127.0.0.1:{port}';fault={'metadata':False};api_reads=[]
   config={'state_dir':str(root/'web'),'origin':origin,'prefix':'/interaction','bot_id':123,'daimon_name':'Synthetic fixture',
    'shared_auth':{'enabled':True,'home_origin':origin,'entry_path':'/interaction/'},
-   'streaming_transcription':{'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent','credential_file':str(root/'synthetic-key'),'cache_root':str(root/'prepared'),'turn_detection':{'enabled':True,'continuous':True,'command':['/synthetic/python','capture-turn']}}}
+   'streaming_transcription':{'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,'native_activity_mode':args.activity_mode,'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent','credential_file':str(root/'synthetic-key'),'cache_root':str(root/'prepared'),'turn_detection':{'enabled':True,'continuous':True,'command':['/synthetic/python','capture-turn']}}}
   with patch('dashboard.native_voice.install',side_effect=counted_install):app=create_app(config,owner,lambda raw,bot:int(raw))
   def identity(home,token):
    assert home==origin and token=='s'*43;state['identity_checks']+=1;name=identity_path.get();state['identity_paths'][name]=state['identity_paths'].get(name,0)+1;time.sleep(identity_delay)
