@@ -5,7 +5,7 @@ window.NativeConversation=(()=>{
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&(!window.NativeSpeechAudio?.backgroundPlayback||nativePcm()));
   function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
-    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput;
+    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,energyFence=0,lastEnergy=0,userPaused=false;
     const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function position(node){return context.currentTime<=node.at?0:Math.min(node.end,node.begin+Math.floor((context.currentTime-node.at)*24000)*2);}
@@ -16,6 +16,15 @@ window.NativeConversation=(()=>{
       if(retire&&latestOutput)retireOutput(latestOutput);
       for(const node of nodes){if(retire)retireOutput(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
       nodes.clear();next=context?.currentTime||0;onState({active,starting,floor,pending:false,playback:'paused'});
+    }
+    function pauseOutput(){
+      if(nativeOutput)nativeOutput.pause();
+      else if(context)void context.suspend().then(()=>{if(!stopped&&context?.state==='suspended')onState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>hold('Voice playback could not pause.'));
+    }
+    function resumeOutput(){
+      if(stopped||!audible||userPaused||energyFence)return;
+      if(nativeOutput)nativeOutput.resume();
+      else if(context)void context.resume().then(()=>{if(!stopped)onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});}).catch(()=>hold('Voice playback could not resume.'));
     }
     async function play(value){
       if(value.sample_rate!==24000||typeof value.pcm!=='string'||value.pcm.length>350000||!Number.isSafeInteger(value.end))throw Error('Invalid native audio');
@@ -35,7 +44,7 @@ window.NativeConversation=(()=>{
       const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
       source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){report(node.id,node.end);onTiming(node.id,'output_buffer_ended');}if(!nodes.size)onState({active,starting,floor,pending:false,playback:'idle'});};
-      source.start(at);onTiming(value.id,'output_scheduled');onState({active,starting,floor,pending:false,playback:'playing'});
+      source.start(at);onTiming(value.id,'output_scheduled');onState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
     }
     function slice(start,end){
       if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start||end>bytes||end-start>120*32000)throw Error('Original PCM range unavailable');
@@ -94,6 +103,12 @@ window.NativeConversation=(()=>{
         case 'interrupted':silence(true);break;
         case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded)blocked=false;break;
         case 'turn_activity':
+          // Local energy pauses immediately, but it is not speech authority.
+          // Resume only after quiet analysis has covered that exact PCM fence;
+          // confirmed speech already retires the old output at capture_started.
+          if(energyFence&&value.activity.speaking===false&&Number.isSafeInteger(value.activity.audio_bytes)&&value.activity.audio_bytes>=energyFence){
+            energyFence=0;resumeOutput();
+          }
           if(current)onHandoff({id:current.id,gate:value.activity.speaking?'speaking':'waiting_endpoint'});break;
         case 'input_interpreted':onTiming(value.id,'input_interpreted');onCaption(value.text);break;
         case 'review':case 'closing':hold(value.message||'Voice session ended.');break;
@@ -101,7 +116,7 @@ window.NativeConversation=(()=>{
     }
     async function start(){
       if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
-      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
+      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;energyFence=lastEnergy=0;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
       timer=setTimeout(()=>hold('Voice session reached five minutes.'),300000);
       try{
@@ -142,9 +157,11 @@ window.NativeConversation=(()=>{
             const snapshot=questionScope===undefined?getQuestions?.():questionScope;pendingScope=snapshot===undefined?{}:JSON.parse(JSON.stringify(snapshot));
             control({type:'capture_scope',audio_bytes:value.activityBytes,capture_questions:pendingScope});
           }
-          if(value.activityBytes>0&&value.activityBytes>=bytes){
-            if(latestOutput)retireOutput(latestOutput);
-            if(nodes.size||nativeOutput?.hasAudio){silence(true);onInterrupt();}
+          if(Number.isSafeInteger(value.activityBytes)&&value.activityBytes>lastEnergy&&value.activityBytes>=bytes){
+            lastEnergy=value.activityBytes;energyFence=lastEnergy;
+            // Keep the bounded queue intact until the server classifies sound.
+            // Repeated worklet reports of the same energy cannot pause it again.
+            pauseOutput();
           }
           if(!value.pcm)return;
           if(!(value.pcm instanceof ArrayBuffer)||value.pcm.byteLength%2||bytes+value.pcm.byteLength>300*32000||socket?.readyState!==WebSocket.OPEN||socket.bufferedAmount>256000){hold('Voice connection could not keep up.');return;}
@@ -156,9 +173,9 @@ window.NativeConversation=(()=>{
         capture.observe();capture.start();active=true;starting=false;state('Listening');return true;
       }catch(error){if(owned===epoch)hold(error.message||'Native voice unavailable.');return false;}
     }
-    return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();},
-      pause:()=>{if(nativeOutput){nativeOutput.pause();return;}if(context)void context.suspend().then(()=>onState({active,starting,floor,pending:false,playback:'paused'}));},
-      resume:()=>{if(nativeOutput){nativeOutput.resume();return;}if(context)void context.resume().then(()=>onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'}));},
+    return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();},
+      pause:()=>{userPaused=true;pauseOutput();onState({active,starting,floor,pending:false,playback:'paused'});},
+      resume:()=>{userPaused=false;resumeOutput();},
       get hasAudio(){return !!nativeOutput?.hasAudio||nodes.size>0;},get paused(){return nativeOutput?.paused||context?.state==='suspended';},
       release:id=>originals.delete(id),get active(){return active||starting;},get floor(){return floor;},get originals(){return [...originals.values()];}};
   }

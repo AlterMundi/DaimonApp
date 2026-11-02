@@ -37,6 +37,27 @@ function boot(android=false,pcmReady=true){
 }
 async function ready(value){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual'});assert.equal(await pending,true);return socket;}
 (async()=>{
+  // Local RMS energy is only a freshness hint: nonspeech must not permanently
+  // retire an utterance before the authoritative detector has classified it.
+  for(const native of [false,true]){
+    const noise=boot(native),noiseSocket=await ready(noise),out=crypto.randomUUID();
+    const packet=end=>({type:'audio',id:out,end,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});
+    noiseSocket.push(packet(640));await until(()=>noise.engine.hasAudio);
+    noise.sources[0].emit({activityBytes:3200,pcm:new Uint8Array(3200).buffer});await tick();
+    assert.equal(noise.engine.hasAudio,true,'Provisional energy keeps queued audio recoverable');
+    assert.equal(noise.engine.paused,true,'Local energy immediately pauses playback');
+    assert.equal(noise.timings.some(t=>t.id===out&&t.stage==='output_retired'),false);
+    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:2560,speaking:false}});await tick();
+    assert.equal(noise.engine.paused,true,'Earlier quiet analysis cannot release newer captured energy');
+    noiseSocket.push(packet(1280));await tick();
+    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:3200,speaking:false}});await until(()=>!noise.engine.paused);
+    assert.equal(noise.engine.hasAudio,true,'A classified nonspeech hint resumes the same queued utterance');
+    noise.sources[0].emit({activityBytes:3200});await tick();assert.equal(noise.engine.paused,false,'Repeating an already analyzed energy marker cannot pause again');
+    noise.engine.pause();noise.sources[0].emit({activityBytes:6400,pcm:new Uint8Array(3200).buffer});
+    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:6400,speaking:false}});await tick();
+    assert.equal(noise.engine.paused,true,'Detector recovery never overrides an explicit pause');
+    noise.engine.resume();noise.engine.hold();
+  }
   const value=boot(),socket=await ready(value);assert.equal(value.permissionCalls,1);
   value.questions({later:'v2'});
   const frame=()=>new Uint8Array(3200).buffer;value.sources[0].emit({pcm:frame()});value.sources[0].emit({pcm:frame()});
@@ -82,12 +103,14 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   android.nativeEvent({type:'pcm_progress',positions:[{utterance:androidOutput,played_bytes:320}]});
   assert.ok(androidSocket.sent.some(v=>v.type==='playback'&&v.id===androidOutput&&v.played_bytes===320));
   android.sources[0].emit({activityBytes:3200,pcm:frame()});
-  assert.equal(android.engine.hasAudio,false);assert.ok(android.nativeCommands.some(v=>v.command==='pcm_flush'));
+  assert.equal(android.engine.hasAudio,true);assert.equal(android.engine.paused,true);
+  const androidInput=crypto.randomUUID();androidSocket.push({type:'capture_started',id:androidInput,start:0});await until(()=>!android.engine.hasAudio);
+  assert.ok(android.nativeCommands.some(v=>v.command==='pcm_flush'));
   const chunksBefore=android.nativeCommands.filter(v=>v.command==='pcm_chunk').length;
   androidSocket.push({type:'audio',id:androidOutput,end:1280,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});await tick();
   assert.equal(android.nativeCommands.filter(v=>v.command==='pcm_chunk').length,chunksBefore,'An interrupted utterance tail cannot reacquire native focus');
-  const androidInput=crypto.randomUUID();androidSocket.push({type:'capture_started',id:androidInput,start:0});androidSocket.push({type:'phrase_end',id:androidInput,start:0,end:3200});
-  await until(()=>android.retained.length===1);androidSocket.push({type:'voice_activity',id:androidInput,activity:'ACTIVITY_END'});
+  androidSocket.push({type:'phrase_end',id:androidInput,start:0,end:3200});
+  await until(()=>android.retained.length===1);androidSocket.push({type:'voice_activity',id:androidInput,activity:'ACTIVITY_END'});androidSocket.push({type:'turn_activity',activity:{audio_bytes:3200,speaking:false}});
   const fresh=crypto.randomUUID();androidSocket.push({type:'audio',id:fresh,end:40000,pcm:Buffer.alloc(40000,3).toString('base64'),sample_rate:24000});
   await until(()=>android.nativeCommands.filter(v=>v.command==='pcm_chunk').length===chunksBefore+2);
   const sent=android.nativeCommands.filter(v=>v.command==='pcm_chunk');

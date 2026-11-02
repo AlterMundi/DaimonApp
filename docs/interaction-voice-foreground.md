@@ -506,15 +506,24 @@ questions. Missing markers retain the earlier arm-time fallback. No late Send,
 retry or transcript completion widens that scope. Unconfirmed copies remain for
 review on exit. Native PCM playback has a30second/512node queue bound, ordinary
 speaker and pause/resume controls, and matching phrase-ACK fences against an
-interrupted output restarting. The first local acoustic marker also retires the
-latest received output ID and all queued output IDs before server onset arrives,
-including when playback is between chunks. Late chunks still validate byte
-continuity but cannot restart those utterances; a fresh output ID can play.
+interrupted output restarting. A new local acoustic energy marker immediately
+pauses output, including when playback is between chunks, but keeps the bounded
+queue recoverable. RMS energy is a freshness hint, not speech authority. If quiet
+server analysis covers that exact marker, the same output resumes unless the
+human explicitly paused or disabled audio. Earlier analysis and repeated copies
+of the same energy marker cannot release or reapply that fence. Confirmed server
+capture_started retires the latest received output ID and queued output IDs;
+late chunks still validate continuity but cannot restart them. A fresh output ID
+can play after the existing phrase-ACK boundary. This supersedes the earlier
+local-energy retirement behavior, which irreversibly discarded nonspeech output.
 Retired IDs are bounded by the existing finite session/event limit and cleared
 on exit or a new session. The existing Chromium offline-audio qualification
 renders both active-playback and between-chunk interruption, plus fresh output
-afterward. It measures rendered graph silence against a synthetic local marker,
-not physical microphone-to-silence latency. Browser playback counters are
+afterward. It measures rendered graph silence at a synthetic confirmed onset,
+not physical microphone-to-silence latency. A separate actual AudioContext case
+checks immediate provisional suspension, a frozen output clock through stale
+analysis, and completion of the same utterance after classified nonspeech. The
+browser stays muted and uses a synthetic capture/socket, without a hardware mic. Browser playback counters are
 observations, not proof of physical hearing or exact word uptake. Stopping a
 queued buffer before its scheduled start reports no played bytes for that buffer;
 its cumulative begin offset must not advance the utterance playback observation.
