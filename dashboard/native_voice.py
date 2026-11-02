@@ -35,6 +35,19 @@ def failure_site(error):
     return site
 
 
+def playback_status(value):
+    """Untrusted client observations: fixed scalars only, never audio authority."""
+    counts={'handled','scheduled','ended','skipped_floor','skipped_muted','skipped_retired'}
+    flags={'audible','user_paused','floor','blocked'}
+    if (not isinstance(value,dict) or set(value)!={'type','context',*counts,*flags}
+            or value.get('type')!='playback_status'
+            or value.get('context') not in ('running','suspended','interrupted','closed','native','unavailable')
+            or any(type(value[k]) is not int or not 0<=value[k]<=16384 for k in counts)
+            or any(type(value[k]) is not bool for k in flags)):
+        raise ValueError('Invalid native playback observation')
+    return {k:value[k] for k in sorted(counts|flags|{'context'})}
+
+
 def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
     app.state.native_voice_enabled=True
@@ -48,6 +61,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
+        first_playback_status=last_playback_status=None;playback_status_count=0
         async def send(value):
             nonlocal first_send_failure
             async with sending:
@@ -299,7 +313,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         bridge.integrating_source({'id':item['id'],'revision':item['revision'],
                             'kind':'result','label':'Integrator'},in_context=True)
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
-                await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual'})
+                await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual','playback_status':True})
                 tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(analysis(),name='native-analysis'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
                 inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192,batch_control_frames=True,wait_for_space=True)
                 checked=time.monotonic()
@@ -327,6 +341,13 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             value=json.loads(message.get('text',''))
                             if value=={'type':'close'}:
                                 close_stage='client-close';return
+                            if isinstance(value,dict) and value.get('type')=='playback_status':
+                                observed=playback_status(value)
+                                if playback_status_count<32:
+                                    playback_status_count+=1
+                                    if first_playback_status is None and observed['handled']:first_playback_status=observed
+                                    last_playback_status=observed
+                                continue
                             if isinstance(value,dict) and set(value)=={'type','audio_bytes','capture_questions'} and value['type']=='capture_scope':
                                 await acoustic.marker(value['audio_bytes'],value['capture_questions']);continue
                             if (not isinstance(value,dict) or set(value)!={'type','id','played_bytes'}
@@ -373,6 +394,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # transcript, provider payload, identity/header or raw audio.
                 summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,'failure_site':close_site,
                     'first_send_failure':first_send_failure,
+                    'client_playback':{'source':'untrusted_client_observation','count':playback_status_count,
+                        'first':first_playback_status,'last':last_playback_status},
                     'boundary_mismatch':acoustic.boundary_mismatch if acoustic else None,
                     'elapsed_ms':round((time.monotonic()-started)*1000),
                     'received_pcm_bytes':inbox.received_bytes if inbox else 0,

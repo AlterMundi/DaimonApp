@@ -326,6 +326,18 @@ then verifies all320000bytes reach analysis with the original queue bound. This
 qualifies burst recovery, not proof that a burst rather than another delay caused
 that phone queue to fill, nor physical playback/continuous-experience acceptance.
 
+The native readiness frame can advertise `playback_status:true`. Only that
+explicit capability enables at most32client observations per dialogue; an old
+receiver gets no unknown control. They contain only six bounded counters
+(handled/scheduled/ended buffers and skips for floor/mute/retired output), four
+boolean gates and one fixed context-state enum. They carry no text/media/source
+IDs, cannot update playback positions or admit work, and do not change playback
+policy. The server validates exact fields/types/bounds and retains only the first
+observation with handled audio and the last accepted observation in the existing
+close summary, explicitly labelled untrusted client observations. Missing reports
+from old clients do not establish a healthy or silent player. Scheduling, a
+running context or a buffer end still does not prove physical hearing.
+
 Native manual activity uses the existing owned acoustic worker with an explicit
 1600ms silence endpoint as a fallback when the semantic score does not close a
 phrase. The event is labelled `acoustic_silence`, with measured silence duration,

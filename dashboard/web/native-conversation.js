@@ -6,8 +6,14 @@ window.NativeConversation=(()=>{
   function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
     let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
+    let playbackReporting=false,playbackReports=0,playbackCounts;
     const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
+    function diagnosePlayback(){
+      if(!playbackReporting||stopped||playbackReports>=32)return;
+      const observed=context?.state,contextState=nativeOutput?'native':['running','suspended','interrupted','closed'].includes(observed)?observed:'unavailable';
+      if(control({type:'playback_status',...playbackCounts,context:contextState,audible,user_paused:userPaused,floor,blocked}))playbackReports++;
+    }
     function position(node){return context.currentTime<=node.at?0:Math.min(node.end,node.begin+Math.floor((context.currentTime-node.at)*24000)*2);}
     function report(id,count){const previous=played.get(id)||0;if(count<=previous)return;played.set(id,count);if(previous===0)onTiming(id,'output_progress');control({type:'playback',id,played_bytes:count});}
     function retireOutput(id){if(id&&!retired.has(id)){retired.add(id);onTiming(id,'output_retired');}}
@@ -30,17 +36,22 @@ window.NativeConversation=(()=>{
       if(stopped||!audible||userPaused||floor||blocked)return;
       pendingTiming('output_release_requested');
       if(nativeOutput)nativeOutput.resume();
-      else if(context)void context.resume().then(()=>{if(!stopped)onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});}).catch(()=>hold('Voice playback could not resume.'));
+      else if(context)void context.resume().then(()=>{if(!stopped){onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});diagnosePlayback();}}).catch(()=>hold('Voice playback could not resume.'));
     }
     async function play(value){
       if(value.sample_rate!==24000||typeof value.pcm!=='string'||value.pcm.length>350000||!Number.isSafeInteger(value.end))throw Error('Invalid native audio');
       const raw=atob(value.pcm);if(!raw.length||raw.length%2)throw Error('Invalid native PCM');
       const begin=received.get(value.id)||0;if(value.end!==begin+raw.length||value.end>300*48000)throw Error('Native audio continuity changed');
       received.set(value.id,value.end);latestOutput=value.id;onTiming(value.id,'output_handled');
-      if(!audible||floor||retired.has(value.id))return;
+      playbackCounts.handled++;
+      if(!audible||floor||retired.has(value.id)){
+        playbackCounts[!audible?'skipped_muted':floor?'skipped_floor':'skipped_retired']++;
+        if(begin===0)diagnosePlayback();return;
+      }
       if(nativeOutput){
         const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
-        if(await nativeOutput.append(value.id,value.end,bytes)){if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}return;
+        if(await nativeOutput.append(value.id,value.end,bytes)){playbackCounts.scheduled++;if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}
+        if(begin===0)diagnosePlayback();return;
       }
       if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
       const samples=new Float32Array(raw.length/2);
@@ -49,8 +60,8 @@ window.NativeConversation=(()=>{
       const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
       const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
-      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){report(node.id,node.end);onTiming(node.id,'output_buffer_ended');}if(!nodes.size)onState({active,starting,floor,pending:false,playback:'idle'});};
-      source.start(at);onTiming(value.id,'output_scheduled');onState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
+      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)onState({active,starting,floor,pending:false,playback:'idle'});};
+      source.start(at);playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');onState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
     }
     function slice(start,end){
       if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start||end>bytes||end-start>120*32000)throw Error('Original PCM range unavailable');
@@ -68,7 +79,7 @@ window.NativeConversation=(()=>{
       originals.set(span.id,value);writing=promise.then(()=>{},()=>{});return promise;
     }
     function hold(message='Voice ended. Your unconfirmed originals are kept for review.'){
-      if(stopped)return;stopped=true;active=starting=floor=false;clearTimeout(timer);silence();
+      if(stopped)return;diagnosePlayback();stopped=true;active=starting=floor=false;clearTimeout(timer);silence();
       if(current&&bytes>current.start){const span={...current,end:bytes};current=undefined;try{void Promise.resolve(keep(span)).catch(()=>onReview([...originals.values()]));}catch{}}
       unsubscribe?.();unsubscribe=undefined;capture?.close();capture=undefined;
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
@@ -117,14 +128,15 @@ window.NativeConversation=(()=>{
     async function start(){
       if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
       const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
+      playbackReporting=false;playbackReports=0;playbackCounts={handled:0,scheduled:0,ended:0,skipped_floor:0,skipped_muted:0,skipped_retired:0};
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
       timer=setTimeout(()=>hold('Voice session reached five minutes.'),300000);
       try{
         if(nativePcm()){
-          nativeOutput=window.NativeSpeechAudio.openPcm({onProgress:report,onBufferEnded:id=>onTiming(id,'output_buffer_ended'),
+          nativeOutput=window.NativeSpeechAudio.openPcm({onProgress:report,onBufferEnded:id=>{if(stopped||owned!==epoch)return;playbackCounts.ended++;onTiming(id,'output_buffer_ended');diagnosePlayback();},
             onState:playback=>{if(!stopped)onState({active,starting,floor,pending:false,playback});},onUnavailable:hold});
           await nativeOutput.ready;if(stopped||owned!==epoch)return false;
-        }else{context=new (window.AudioContext||window.webkitAudioContext)();void context.resume().catch(()=>{});}
+        }else{context=new (window.AudioContext||window.webkitAudioContext)();context.onstatechange=()=>{if(owned===epoch)diagnosePlayback();};void context.resume().catch(()=>{});}
         const target=new URL('api/interaction/voice/native',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
         const opened=new Promise((resolve,reject)=>{
           socket=new WebSocket(target);
@@ -134,7 +146,7 @@ window.NativeConversation=(()=>{
             try{
               if(typeof message.data!=='string'||message.data.length>400000||pendingEvents>=128)throw Error('Native event backlog exceeded');
               const value=JSON.parse(message.data);
-              if(value.type==='ready'){if(value.id!==dialogue||value.activity_mode!=='manual')throw Error('Native mode changed');resolve();return;}
+              if(value.type==='ready'){if(value.id!==dialogue||value.activity_mode!=='manual')throw Error('Native mode changed');playbackReporting=value.playback_status===true;resolve();return;}
               if(value.type==='review'&&starting){reject(Error(value.message));return;}
               pendingEvents++;chain=chain.then(()=>event(value,owned)).catch(error=>hold(error.message)).finally(()=>pendingEvents--);
             }catch(error){reject(error);hold(error.message);}
@@ -175,8 +187,8 @@ window.NativeConversation=(()=>{
         capture.observe();capture.start();active=true;starting=false;state('Listening');return true;
       }catch(error){if(owned===epoch)hold(error.message||'Native voice unavailable.');return false;}
     }
-    return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();},
-      pause:(reason='manual')=>{userPaused=true;pauseOutput();onState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
+    return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();diagnosePlayback();},
+      pause:(reason='manual')=>{userPaused=true;pauseOutput();diagnosePlayback();onState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
       resume:()=>{userPaused=false;resumeOutput();},
       get hasAudio(){return !!nativeOutput?.hasAudio||nodes.size>0;},get paused(){return nativeOutput?.paused||context?.state==='suspended';},
       release:id=>originals.delete(id),get active(){return active||starting;},get floor(){return floor;},get originals(){return [...originals.values()];}};
