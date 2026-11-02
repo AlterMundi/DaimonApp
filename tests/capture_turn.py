@@ -15,6 +15,7 @@ class CaptureTurn(unittest.TestCase):
         value.pending = bytearray(); value.tail = bytearray()
         value.bytes = value.frames = value.generation = value.positive = value.quiet = value.analyses = 0
         value.speaking = value.speech_seen = False; value.scored_generation = value.confirmed_generation = 0
+        value.pending_onset = False
         value.max_bytes=120*32000;value.max_analyses=30;value.endpoints=[]
         value.silence_end_millis=0;value.endpoint_generation=0
         self.probability = 0
@@ -73,6 +74,53 @@ class CaptureTurn(unittest.TestCase):
         with self.assertRaises(ValueError):value.feed(b'\0'*1024)
         value.bytes=0;value.speech_seen=True;value.generation=value.confirmed_generation=100;value.analyses=30
         with self.assertRaises(TurnEndUnavailable):value.feed(b'\0'*1024)
+
+    def test_unconfirmed_noise_cannot_orphan_an_open_confirmed_phrase(self):
+        for spike_frames in (1,2):
+            with self.subTest(spike_frames=spike_frames):
+                value=self.analyzer();value.silence_end_millis=1600
+                value.turn.predict=lambda *a,**k:{'candidate_complete':False,'probability':.1}
+                self.probability=.9
+                onset=value.feed(b'\0'*(3*1024))['onset']
+                self.probability=0
+                self.assertNotIn('endpoint',value.feed(b'\0'*(7*1024)))
+                self.probability=.9
+                self.assertNotIn('onset',value.feed(b'\0'*(spike_frames*1024)))
+                self.probability=0
+                self.assertNotIn('endpoint',value.feed(b'\0'*(25*1024)))
+                result=value.feed(b'\0'*(25*1024))
+                self.assertIn('endpoint',result,'Short unconfirmed noise must not prevent the open phrase ending')
+                self.assertEqual(result['endpoint']['generation'],onset['generation'])
+                self.assertEqual(result['endpoint']['authority'],'acoustic_silence')
+                self.assertEqual(result['endpoint']['silence_millis'],1600)
+                value.boundary(onset['generation'],result['audio_bytes'])
+                self.assertNotIn('endpoint',value.feed(b'\0'*(25*1024)))
+                self.probability=.9
+                next_onset=value.feed(b'\0'*(3*1024))['onset']
+                self.assertEqual(next_onset['generation'],onset['generation']+1)
+
+    def test_confirmed_voice_after_a_noise_candidate_still_reopens_the_generation(self):
+        value=self.analyzer();value.silence_end_millis=1600
+        def incomplete(pcm,**kwargs):
+            self.scored.append(pcm)
+            return {'candidate_complete':False,'probability':.1}
+        value.turn.predict=incomplete
+        def frames(probability,count):
+            self.probability=probability
+            # Preserve the candidate across incomplete512-sample frame reads.
+            results=[]
+            for _ in range(count*2):results.append(value.feed(b'\0'*512))
+            return results
+        first=next(r['onset'] for r in frames(.9,3) if 'onset' in r)
+        frames(0,7);frames(.9,1);frames(0,3)
+        second=next(r['onset'] for r in frames(.9,3) if 'onset' in r)
+        self.assertEqual(second['generation'],first['generation']+1)
+        endpoints=[r['endpoint'] for r in frames(0,50) if 'endpoint' in r]
+        self.assertEqual(len(endpoints),1)
+        self.assertEqual(endpoints[0]['generation'],second['generation'])
+        self.assertEqual(len(self.scored),2,'Actual resumed voice receives its own completion decision')
+        value.boundary(second['generation'],endpoints[0]['audio_bytes'])
+        self.assertFalse(any('onset' in r or 'endpoint' in r for r in frames(.9,2)+frames(0,50)))
 
     def test_startup_backfill_defers_scoring_until_the_current_tail(self):
         value=self.analyzer();self.probability=.8;value.feed(b'\0'*3072,analyze=False)
