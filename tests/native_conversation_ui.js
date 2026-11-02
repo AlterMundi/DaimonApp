@@ -35,8 +35,32 @@ function boot(android=false,pcmReady=true){
   const engine=window.NativeConversation.create(hooks);
   return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,timings,media,nativeCommands,native:window.NativeSpeechAudio,nativeEvent(value){window.DaimonAudio.onmessage({data:JSON.stringify({id:nativeCommands.find(v=>v.command==='pcm_begin').id,...value})});},get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
 }
-async function ready(value){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual'});assert.equal(await pending,true);return socket;}
+async function ready(value,diagnostics=false){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual',...(diagnostics?{playback_status:true}:{})});assert.equal(await pending,true);return socket;}
 (async()=>{
+  const observed=boot(),observationSocket=await ready(observed,true),observationOutput=crypto.randomUUID();
+  observationSocket.push({type:'audio',id:observationOutput,sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
+  await until(()=>observationSocket.sent.some(v=>v.type==='playback_status'&&v.handled===1));
+  let observation=observationSocket.sent.filter(v=>v.type==='playback_status').at(-1);
+  assert.equal(observation.scheduled,1);assert.equal(observation.ended,0);assert.equal(observation.context,'running');
+  observed.contexts[0].state='interrupted';observed.contexts[0].onstatechange();
+  assert.equal(observationSocket.sent.at(-1).context,'interrupted','An OS context interruption is distinct from generated/scheduled bytes');
+  observed.engine.pause('media-session');assert.equal(observationSocket.sent.at(-1).user_paused,true);
+  observed.engine.resume();await tick();assert.equal(observationSocket.sent.at(-1).user_paused,false);
+  observed.engine.setEnabled(false);
+  observationSocket.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
+  await until(()=>observationSocket.sent.some(v=>v.type==='playback_status'&&v.skipped_muted===1));
+  observation=observationSocket.sent.filter(v=>v.type==='playback_status').at(-1);assert.equal(observation.audible,false);assert.equal(observation.scheduled,1);
+  for(let n=0;n<100;n++)observed.contexts[0].onstatechange();
+  assert.equal(observationSocket.sent.filter(v=>v.type==='playback_status').length,32,'One dialogue has a fixed observation cap');
+  observed.engine.hold();
+  const oldReceiver=boot(),oldWire=await ready(oldReceiver);
+  oldWire.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});await tick();
+  assert.equal(oldWire.sent.some(v=>v.type==='playback_status'),false,'Older receivers never receive an unknown control');oldReceiver.engine.hold();
+  const floorObservation=boot(),floorWire=await ready(floorObservation,true);floorObservation.sources[0].emit({pcm:new Uint8Array(3200).buffer});
+  floorWire.push({type:'capture_started',id:crypto.randomUUID(),start:0});
+  floorWire.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
+  await until(()=>floorWire.sent.some(v=>v.type==='playback_status'&&v.skipped_floor===1));
+  assert.equal(floorWire.sent.filter(v=>v.type==='playback_status').at(-1).floor,true);floorObservation.engine.hold();
   // Local loudness is not speech authority. Intermittent nonspeech with a
   // delayed classifier must never hold the entire response clock suspended.
   for(const native of [false,true]){

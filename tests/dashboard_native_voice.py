@@ -23,6 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 from dashboard.app import create_app
 from dashboard.provider import Provider, ProviderUnavailable
 from dashboard.live_transcription import wav_bytes
+from dashboard.native_voice import playback_status
 from dashboard_io import Receiver
 
 
@@ -119,6 +120,33 @@ class Owner(Receiver):
 
 
 class Mounted(unittest.TestCase):
+    def test_playback_observations_are_fixed_bounded_untrusted_scalars(self):
+        value={'type':'playback_status','handled':1,'scheduled':1,'ended':0,
+               'skipped_floor':0,'skipped_muted':0,'skipped_retired':0,
+               'context':'suspended','audible':True,'user_paused':True,'floor':False,'blocked':False}
+        self.assertEqual(playback_status(value),{k:v for k,v in value.items() if k!='type'})
+        for invalid in ({**value,'text':'Not allowed'}, {**value,'context':'arbitrary provider text'},
+                        {**value,'handled':True},{**value,'ended':16385},{**value,'audible':1}):
+            with self.assertRaises(ValueError):playback_status(invalid)
+
+    def test_mounted_playback_observations_reach_existing_close_summary_only(self):
+        summaries=queue.Queue()
+        def log(message,*args,**kwargs):
+            if message=='native_voice_closed %s':summaries.put(json.loads(args[0]))
+        value={'type':'playback_status','handled':1,'scheduled':0,'ended':0,
+               'skipped_floor':1,'skipped_muted':0,'skipped_retired':0,
+               'context':'suspended','audible':True,'user_paused':False,'floor':True,'blocked':True}
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
+            with self.open() as ws:
+                ws.send_json(self.meta());ready=ws.receive_json();self.assertTrue(ready['playback_status'])
+                for _ in range(40):ws.send_json(value)
+                ws.send_json({'type':'close'})
+            observed=summaries.get(timeout=2)['client_playback']
+        self.assertEqual(observed,{'source':'untrusted_client_observation','count':32,
+                                  'first':playback_status(value),'last':playback_status(value)})
+        self.assertEqual(self.app.state.native_history.page(100)['items'],[],'Observation cannot create output or prove hearing')
+        self.assertEqual(self.owner.inputs,{})
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.root.chmod(0o700)
         self.owner=Owner(self.root);Stream.opened=[];Detector.opened=[]
@@ -190,7 +218,7 @@ class Mounted(unittest.TestCase):
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback'})
         self.assertEqual(self.owner.delegations,[])
 
     def test_mismatched_boundary_close_retains_only_validated_scalar_timing(self):
