@@ -1494,3 +1494,15 @@ slot is not proof of a stopped process or permission to resend the control.
 Publishing/deploying these source APIs with no configured binding leaves them
 disabled. Actual selected authority, receiving operation and human device use
 must be recorded separately.
+
+
+## Funded Matrix return integration
+
+The host adapter now separates a stable human-approved purpose from the exact
+later SDK-verified original and requires the existing funded source queue for
+that explicit mode. Signed results return through the same canonical Matrix
+callback and remain passive. See [the adapter contract](interaction-matrix.md#funded-selected-original-replies--matrix-312--telecodex-532).
+I/O is another ingress/egress of this continuing integrator, never a second
+reasoning owner. Production peer activation still needs the selected authority,
+limits and enforceable inference route; source and model-free integration tests
+do not enable it.

@@ -99,10 +99,12 @@ def configured_client(path, source):
     return NativeOwnerClient(messaging, observation)
 
 
-def send(value, client, *, timeout=10):
+def send(value, client, *, timeout=10, coordination=None):
     """Trusted controller snapshot plus already authenticated client; no runner."""
     closed(value, ("status", "source"))
-    transport = MatrixConversationTransport(value["status"], value["source"], client)
+    transport = MatrixConversationTransport(
+        value["status"], value["source"], client, coordination=coordination
+    )
     native = transport.send(timeout=timeout)
     request = value["status"]["request"]
     # The SDK authenticates the resolved destination (including its authority
