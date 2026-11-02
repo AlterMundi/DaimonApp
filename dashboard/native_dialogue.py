@@ -58,6 +58,7 @@ class NativeDialogue:
         self.input_bytes = self.output_bytes = self.text_bytes = self.events = 0
         self.tools = {}
         self.tool_responses = 0
+        self.failure_code = None
         try:
             self._socket = connect(self.endpoint, header=['x-goog-api-key: ' + token],
                                    timeout=10, redirect_limit=0, enable_multithread=True)
@@ -87,6 +88,14 @@ class NativeDialogue:
                     'until its actual admission is confirmed; you cannot answer an integrating question on the human\'s behalf. '
                     'Delegate work requiring execution or integrating resolution to the Sol integrator asynchronously. '
                     'Continue responding to new speech while its work is pending; do not wait for a work result to converse. '
+                    'You ARE connected to the existing Sol integrating conversation through these tools. '
+                    'You can consult the current owned session observer with session_status, send source-bound requests '
+                    'with delegate_to_integrator, and receive real integrating results/questions. '
+                    'Do not falsely deny this access when asked about other sessions, the observer or integration. '
+                    'For a current session-status question, call session_status before answering; do not start a work request just to read status. '
+                    'A status snapshot is observed activity, not a work result or a progress percentage. '
+                    'Report stale, disconnected or unavailable observations as unknown, never invent current activity. '
+                    'For detailed work contents absent from offered canonical returns, ask the integrator using the retained human request. '
                     'After an observed integrator admission, briefly confirm the actual formulated request was handed over, '
                     'then remain available to converse instead of silently waiting for its result. '
                     'Describe integrator admission simply as the request being sent. A named worker receiving or starting work requires its actual canonical confirmation; do not infer that from integrator admission. '
@@ -133,6 +142,9 @@ class NativeDialogue:
                     {'name':'recent_originals','behavior':'NON_BLOCKING',
                      'description':'Read one bounded page of retained original references and recent assistant playback observations for this current foreground dialogue. Never starts work; playback does not prove hearing.',
                      'parameters':{'type':'OBJECT','properties':{'before':{'type':'INTEGER'}},'required':[]}},
+                    {'name':'session_status','behavior':'NON_BLOCKING',
+                     'description':'Read one bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
+                     'parameters':{'type':'OBJECT','properties':{}}},
                     {'name':'read_integrating_source','behavior':'NON_BLOCKING',
                      'description':'Read one additional page of a canonical integrating result/question already offered in this dialogue. Use its exact source ID, revision and next_offset. Read-only; never starts work or answers a native question.',
                      'parameters':{'type':'OBJECT','properties':{'source':{'type':'STRING'},'revision':{'type':'STRING'},'offset':{'type':'INTEGER'}},'required':['source','revision','offset']}},
@@ -145,6 +157,9 @@ class NativeDialogue:
             self._fail('native-dialogue-open-unconfirmed')
 
     def _fail(self, reason):
+        # Keep the first fixed internal code when another thread subsequently
+        # sees only a terminal phase. Never store provider payload/error text.
+        if self.failure_code is None:self.failure_code=reason
         self.phase = 'failed'
         if self._socket is not None:
             try:
@@ -382,6 +397,8 @@ class NativeDialogue:
                 if set(args)-{'before'} or type(before) is not int or not 0<=before<=2**63-1:
                     raise ValueError('Invalid source query')
                 proposal={'type':'source_query','call_id':ident,'before':before}
+            elif name=='session_status' and not args:
+                proposal={'type':'session_status_query','call_id':ident}
             elif name=='read_integrating_source':
                 if (set(args)!={'source','revision','offset'}
                         or not isinstance(args['source'],str) or not 1<=len(args['source'])<=256

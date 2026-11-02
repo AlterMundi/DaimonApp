@@ -76,6 +76,23 @@ class Dialogue(unittest.TestCase):
         self.event({'serverContent':{'turnComplete':True}})
         self.assertTrue(self.stream.notify_integrator_update())
 
+    def test_observer_tool_is_read_only_and_foreground_knows_integrator_connection(self):
+        setup=self.socket.sent[0]['setup'];tools={v['name']:v for v in setup['tools'][0]['functionDeclarations']}
+        self.assertIn('session_status',tools);self.assertEqual(tools['session_status']['behavior'],'NON_BLOCKING')
+        self.assertIn('Do not falsely deny this access',setup['systemInstruction']['parts'][0]['text'])
+        self.ready()
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'status','name':'session_status','args':{}}]}}),[{'type':'session_status_query','call_id':'status'}])
+        with self.assertRaises(DialogueUnavailable):
+            self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}})
+
+    def test_first_transport_failure_survives_terminal_phase_and_close(self):
+        self.ready();self.socket.fail_send=True
+        with self.assertRaises(DialogueUnavailable):self.stream.append(b'\0\0')
+        self.assertEqual(self.stream.failure_code,'native-dialogue-send-unconfirmed')
+        with self.assertRaises(ValueError):self.stream.append(b'\0\0')
+        self.stream.close()
+        self.assertEqual(self.stream.failure_code,'native-dialogue-send-unconfirmed')
+
     def test_lost_attention_write_closes_without_retry(self):
         self.stream.close();self.socket=Socket()
         self.stream=NativeDialogue(self.key,activity_mode='manual',connect=lambda *a,**k:self.socket,clock=lambda:self.now)

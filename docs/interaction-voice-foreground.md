@@ -1122,3 +1122,43 @@ created. The automatic profile opens no CPU detector. This is authenticated
 application/bridge evidence with synthetic provider/native peers, not actual
 model/worker behavior, audible playback or phone acceptance. Receiving551 remains
 selected; this added regression does not require another runtime deployment.
+
+
+## Spoken access to session status — 2 November 2026
+
+The human reports an approximately80percentgood avatar trial with quick responses
+and successful interruption on a more stable connection, with occasional clicks
+or short cuts. This is positive device evidence, not complete noise/latency or
+network-failure acceptance. The foreground incorrectly denied access to the
+observer/integrating conversation. Delegation and canonical returns already
+exist, but that native tool set lacked an on-demand current-status reader.
+
+`session_status` now reads the same `Provider.sonic_activity` observer used by the
+application. It inherits the current owned routing registry, audience checks,
+freshness and binding validation; it does not poll native sessions, start work,
+subscribe, control goals or introduce another store. One explicitly requested
+snapshot is limited to64sessions and16KiB. It returns observed labels/activity,
+goal state and waiting/tools/pending fields; disconnected or stale activity is
+unknown. It omits host/process/account/private-history fields and distinguishes
+observed activity from task contents, progress percentages or completion.
+
+The speech policy explains the existing integrator connection truthfully and
+uses this reader for current-status questions. Detailed work contents absent
+from actual offered canonical returns still go through the existing integrator
+with retained human originals. Prompt refinement and ordinary conversation do
+not become work merely to read status. Independent work/returns retain their
+existing ownership.
+
+The transport also retains its first fixed internal failure code for the bounded
+close diagnostic. A later input writer seeing a terminal phase must not erase
+that earlier failure class. No provider payload/error text is logged. This does
+not diagnose a previous connection cut or enable reconnect/input replay.
+
+
+A bounded actual-model natural-speech probe selected `session_status` once and
+made no delegation or unexpected tool request. Its verifier closed at the first
+turnComplete following the nonblocking tool call, before observing response
+audio to that tool result; its audio assertion therefore failed. This qualifies
+reader selection, not spoken-result/hearing behavior. The retained outcome was
+not replayed to repair the verifier. Existing nonblocking tool-response speech
+evidence remains reusable; actual device acceptance stays separate.
