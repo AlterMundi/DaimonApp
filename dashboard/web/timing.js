@@ -38,7 +38,10 @@ window.ConversationTiming=(()=>{
       }
       for(const output of [...sources.values()].filter(s=>s.native).reverse()){
         const row=element('li','');row.append(element('strong',`Voice output ${output.sequence}`));
+        row.append(element('p',`First caption received: ${point(output.caption)}`));
         row.append(element('p',`First PCM handled: ${point(output.handled)} · First buffer scheduled: ${point(output.scheduled)} · First buffer ended: ${point(output.buffer_ended)} · Output retired: ${point(output.retired)}`));
+        row.append(element('p',`Caption → first PCM: ${duration(output.caption,output.handled)} · First PCM → positive playback observation: ${duration(output.handled,output.progress)}`));
+        row.append(element('p',`First local-energy hold: ${point(output.energy_held)} · First output release requested: ${point(output.release_requested)}`));
         row.append(element('p','Page-relative browser events; no phrase attribution or proof of sound heard.'));rows.push(row);
       }
       if(!rows.length)rows.push(element('li','No recordings measured on this page.'));
@@ -79,10 +82,10 @@ window.ConversationTiming=(()=>{
       if(stage==='capture_started'){mark(id,'requested',{native:true});mark(id,'started');return;}
       const inputStage={phrase_end:'ended',local_retained:'retained',input_interpreted:'interpreted',original_confirmed:'confirmed'};
       if(Object.hasOwn(inputStage,stage)){if(recordings.get(id)?.native)mark(id,inputStage[stage]);return;}
-      const outputStage={output_handled:'handled',output_scheduled:'scheduled',output_buffer_ended:'buffer_ended',output_retired:'retired'};
+      const outputStage={output_text:'caption',output_handled:'handled',output_scheduled:'scheduled',output_buffer_ended:'buffer_ended',output_retired:'retired',output_progress:'progress',output_energy_held:'energy_held',output_release_requested:'release_requested'};
       if(!Object.hasOwn(outputStage,stage))return;
       const key='foreground:'+id;let output=sources.get(key);
-      if(!output){if(stage!=='output_handled')return;output={native:true,sequence:++outputSequence};sources.set(key,output);while(sources.size>16)sources.delete(sources.keys().next().value);}
+      if(!output){if(!['output_text','output_handled'].includes(stage))return;output={native:true,sequence:++outputSequence};sources.set(key,output);while(sources.size>16)sources.delete(sources.keys().next().value);}
       if(!output.native||output[outputStage[stage]]!==undefined)return;
       output[outputStage[stage]]=now();render();
     }

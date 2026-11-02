@@ -734,9 +734,14 @@ wording, not a guarantee for all future model outputs or a physical hearing test
 The existing closed Browser voice timing inspector also receives native-engine
 marks. Each original records browser-observed capture start, detected phrase end,
 local WAV retention, interpretation arrival and confirmed-original receipt.
-Generated outputs are separate rows with their first valid PCM-event handling,
-first buffer scheduling, first buffer completion and retirement. A pending
-worker return must never be assigned as the response to the nearest human phrase.
+Generated outputs are separate rows with their first caption, valid PCM-event
+handling, buffer scheduling, positive playback observation, local-energy hold,
+output release request, buffer completion and retirement. Caption-only output
+remains visible when PCM never arrives. First marks do not reset with later
+fragments. Caption-to-PCM and PCM-to-positive-playback intervals use that output's
+own ID. A pending worker return must never be assigned as the response to the
+nearest human phrase. A release request is not resumed sound; only actually
+queued output receives it, excluding received-but-muted or retired tails.
 These are page-relative browser marks, not final intended speech, nonzero PCM,
 first intelligible sound, physical hearing or word boundaries. Missing events
 remain not observed; retired queued buffers do not become completed playback.
@@ -784,3 +789,4 @@ utterance test alongside encoded playback, service, export and microphone checks
 Use that actual result and retain failures before describing the candidate as
 qualified. Same-key higher-versionCode delivery preserves login/app data; a
 rollback is a forward build, never uninstall/clear-data or native/history restore.
+

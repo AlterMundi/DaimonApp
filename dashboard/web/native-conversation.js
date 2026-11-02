@@ -9,7 +9,7 @@ window.NativeConversation=(()=>{
     const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function position(node){return context.currentTime<=node.at?0:Math.min(node.end,node.begin+Math.floor((context.currentTime-node.at)*24000)*2);}
-    function report(id,count){if(count<=(played.get(id)||0))return;played.set(id,count);control({type:'playback',id,played_bytes:count});}
+    function report(id,count){const previous=played.get(id)||0;if(count<=previous)return;played.set(id,count);if(previous===0)onTiming(id,'output_progress');control({type:'playback',id,played_bytes:count});}
     function retireOutput(id){if(id&&!retired.has(id)){retired.add(id);onTiming(id,'output_retired');}}
     function silence(retire=false){
       if(nativeOutput)for(const id of nativeOutput.flush())retireOutput(id);
@@ -17,12 +17,18 @@ window.NativeConversation=(()=>{
       for(const node of nodes){if(retire)retireOutput(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
       nodes.clear();next=context?.currentTime||0;onState({active,starting,floor,pending:false,playback:'paused'});
     }
+    function pendingTiming(stage){
+      // Only actually queued output: a received-but-muted tail is not pending.
+      const ids=nativeOutput?(nativeOutput.hasAudio?[...played.keys()]:[]):new Set([...nodes].map(node=>node.id));
+      for(const id of ids)if(!retired.has(id)&&(played.get(id)||0)<received.get(id))onTiming(id,stage);
+    }
     function pauseOutput(){
       if(nativeOutput)nativeOutput.pause();
       else if(context)void context.suspend().then(()=>{if(!stopped&&context?.state==='suspended')onState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>hold('Voice playback could not pause.'));
     }
     function resumeOutput(){
       if(stopped||!audible||userPaused||energyFence)return;
+      pendingTiming('output_release_requested');
       if(nativeOutput)nativeOutput.resume();
       else if(context)void context.resume().then(()=>{if(!stopped)onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});}).catch(()=>hold('Voice playback could not resume.'));
     }
@@ -32,9 +38,10 @@ window.NativeConversation=(()=>{
       const begin=received.get(value.id)||0;if(value.end!==begin+raw.length||value.end>300*48000)throw Error('Native audio continuity changed');
       received.set(value.id,value.end);latestOutput=value.id;onTiming(value.id,'output_handled');
       if(!audible||floor||blocked||retired.has(value.id))return;
+      if(energyFence)onTiming(value.id,'output_energy_held');
       if(nativeOutput){
         const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
-        if(await nativeOutput.append(value.id,value.end,bytes))onTiming(value.id,'output_scheduled');return;
+        if(await nativeOutput.append(value.id,value.end,bytes)){if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}return;
       }
       if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
       const samples=new Float32Array(raw.length/2);
@@ -99,7 +106,7 @@ window.NativeConversation=(()=>{
           onTiming(value.id,'original_confirmed');await release(original,value.sha256);originals.delete(value.id);break;
         }
         case 'input_caption':case 'input_transcript':onCaption(value.text);break;
-        case 'assistant_utterance':onUtterance(value.utterance);onCaption(value.utterance.text);break;
+        case 'assistant_utterance':if(value.utterance.text)onTiming(value.utterance.id,'output_text');onUtterance(value.utterance);onCaption(value.utterance.text);break;
         case 'interrupted':silence(true);break;
         case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded)blocked=false;break;
         case 'turn_activity':
@@ -164,7 +171,7 @@ window.NativeConversation=(()=>{
             // must not move the fence ahead of every server nonspeech verdict.
             // A 100ms local quiet gap rearms; confirmed server speech always
             // retires output, including speech beginning over continuous noise.
-            if(energyArmed){energyArmed=false;energyFence=lastEnergy;pauseOutput();}
+            if(energyArmed){energyArmed=false;energyFence=lastEnergy;pendingTiming('output_energy_held');pauseOutput();}
           }
           if(!value.pcm)return;
           if(!(value.pcm instanceof ArrayBuffer)||value.pcm.byteLength%2||bytes+value.pcm.byteLength>300*32000||socket?.readyState!==WebSocket.OPEN||socket.bufferedAmount>256000){hold('Voice connection could not keep up.');return;}
