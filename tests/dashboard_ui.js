@@ -73,6 +73,32 @@ const hung = (options) => new Promise((resolve, reject) => {
 });
 
 (async () => {
+  // Exercise the shipped API reader: cut immutable JSON may retry once;
+  // writes/auth failures must preserve once-only outcomes and HTTP status.
+  const apiSource=source.slice(source.indexOf("async function api("),source.indexOf("\nfunction metric("));
+  async function requestCase(route,body,responses){
+    const calls=[];
+    const context=vm.createContext({AbortController,setTimeout,clearTimeout,
+      csrf:"fixture",monitorOnly:false,deviceMode:false,authorizationHeaders:()=>({}),
+      fetch:async (url,options)=>{calls.push({url,options});return responses.shift();}});
+    vm.runInContext(apiSource,context);context.route=route;context.body=body;
+    try{return {calls,value:await vm.runInContext("api(route,body)",context)};}
+    catch(error){return {calls,error};}
+  }
+  const cut=(status=200)=>({ok:status===200,status,json:async()=>{throw new SyntaxError("Unexpected end of JSON input");}});
+  const complete={ok:true,status:200,json:async()=>({text:"Exact saved text",offset:0,next_offset:null})};
+  const immutableRoute="interaction/part?source=native%3A1&revision=exact-r&offset=0";
+  const recovered=await requestCase(immutableRoute,undefined,[cut(),complete]);
+  assert.equal(recovered.value.text,"Exact saved text");assert.equal(recovered.calls.length,2);
+  assert.equal(recovered.calls[0].url,recovered.calls[1].url);assert.equal(recovered.calls[1].options.method,"GET");
+  assert.equal(recovered.calls[0].options.signal,recovered.calls[1].options.signal,"One original deadline bounds both reads");
+  const exhausted=await requestCase(immutableRoute,undefined,[cut(),cut()]);
+  assert.equal(exhausted.calls.length,2);assert.match(exhausted.error.message,/Saved text.*nothing was resent/);
+  const denied=await requestCase(immutableRoute,undefined,[cut(401)]);
+  assert.equal(denied.calls.length,1);assert.equal(denied.error.status,401);
+  const write=await requestCase("interaction/inputs",{text:"Do not replay"},[cut(),complete]);
+  assert.equal(write.calls.length,1);assert.match(write.error.message,/Check current state/);
+  const ordinary=await requestCase("state",undefined,[cut(),complete]);assert.equal(ordinary.calls.length,1);
   const alertAccess=()=>Promise.resolve({ok:true,json:async()=>({csrf:'shared-csrf',label:'Human'})});
   const conversationIncident={projection:{producer_id:'fixture',incident_id:'case',phase:'pending',summary:'A safe incident',action:'Inspect the retained attempt',processing_state:'open',severity:'error'},acknowledgments:[],deliveries:[],freshness:'fresh'};
   let alertSnapshot={state:'available',observer_state:'healthy',incidents:[conversationIncident],resolved_incidents:[],

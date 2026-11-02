@@ -86,21 +86,35 @@ async function api(route, body) {
     if(monitorOnly && body)throw new Error('This monitor is read-only');
     if(deviceMode && !route.startsWith('interaction'))throw new Error('This access is limited to your conversation');
     if(route!=="session")Object.assign(headers,authorizationHeaders());
-    const response = await fetch(`api/${route}`, {
-      signal: controller.signal,
-      method: body ? "POST" : "GET",
-      credentials: "same-origin",
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const value = await response.json();
-    if (!response.ok) {
-      const error = new Error(value.detail || "Request unavailable");
-      error.status = response.status;
-      if(value.code==="visual_reselection"&&value.submission_attempted===false)error.visualReselection=true;
-      throw error;
+    // Only immutable source-text reads may repeat after a cut JSON body.
+    // Writes and other endpoints retain their original once-only outcome.
+    const sourceRead = !body && route.startsWith("interaction/part?");
+    for (let attempt=0; ; attempt++) {
+      const response = await fetch(`api/${route}`, {
+        signal: controller.signal,
+        method: body ? "POST" : "GET",
+        credentials: "same-origin",
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      let value;
+      try { value = await response.json(); }
+      catch (cause) {
+        if (sourceRead && response.ok && cause.name === "SyntaxError" && attempt === 0) continue;
+        const error = new Error(sourceRead
+          ? "Saved text could not be read. Retry reading; nothing was resent."
+          : "Server response unavailable. Check current state before retrying.");
+        error.status = response.status;
+        throw error;
+      }
+      if (!response.ok) {
+        const error = new Error(value.detail || "Request unavailable");
+        error.status = response.status;
+        if(value.code==="visual_reselection"&&value.submission_attempted===false)error.visualReselection=true;
+        throw error;
+      }
+      return value;
     }
-    return value;
   } catch (e) {
     if (controller.signal.aborted)
       throw new Error(route === "session"
