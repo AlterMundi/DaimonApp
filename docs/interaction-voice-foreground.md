@@ -1210,3 +1210,57 @@ An unconfirmed/unavailable tool reports that operational state; it does not prov
 that the human request is impossible. Previously admitted or uncertain requests
 are retained without duplicate dispatch. Only an actual attributed integrating
 return can establish the resolution, including a request that cannot be satisfied.
+
+
+## Same-being voice identity — 2 November 2026
+
+The avatar is a conversational expression of the same being as the integrating
+conversation, not a separate assistant defined by its current model. The server
+already supplied a display name and bounded conversation sources, but no selected
+SOUL identity. The native policy now expresses first-person continuity and keeps
+Sol/voice as reasoning roles; another being's history is not inherited as its own.
+
+Optional `streaming_transcription.native_identity_file` selects an absolute,
+owner-only, non-symlink regular UTF-8 file of at most8192bytes. Its selected
+identity/SOUL text is read only on an authenticated explicit avatar opening,
+before the provider or microphone is ready. Empty, malformed, oversized, unsafe
+or missing selections prevent readiness rather than silently replacing identity.
+No selection preserves the existing display-name/context path. Updates become
+available on the next opening; no background sync or memory prefetch is added.
+
+The same bounded32KiB context contains this selected identity and fewer recent
+source excerpts if necessary. Private paths are not provider context; only the
+selected text, its hash and source meaning are sent. Treat it as continuity data,
+not human speech or execution authority. Select identity/relationship/values,
+not credentials, operational bindings, the complete private memory pool or
+unrelated sessions. Identity remains in its maintained source; this is an
+explicit configuration projection, not another memory store. Refresh it when
+the owning being's selected SOUL changes. Keep each being's projection separate.
+
+Durable memory stays with the existing integrator/DMK. A personal recollection
+missing from the selected context goes to Sol with retained human originals;
+do not invent recollection or explain the missing immediate context as a
+separate amnesiac identity. Existing authorization, once-only original ownership,
+source freshness, no-direct-worker and pending/uncertain request rules still apply.
+The new file selection grants no memory pooling, new tools or autonomous attention.
+
+Mounted qualification exercises an independently configured synthetic Oliva
+identity, reload after an owner update, no disclosure of the file path, and
+missing/unsafe/oversized/malformed file rejection before provider readiness.
+Existing identity-free clients and native/ordinary streaming checks remain.
+Synthetic identity content does not change any real Oliva/Eko profile. Phone
+identity and complete conversation acceptance remain distinct.
+
+Rollback to a reader predating this option must also remove native_identity_file
+using the retained exact config preimage; older strict config readers reject it.
+Keep source originals and native journals intact. The selected identity file may
+remain private and unused, without restoring any memory/session database.
+
+One distinct synthetic spoken identity question with the actual native model
+and the selected private owner projection produced first-person CompAII identity,
+voice/Sol as forms of the same being, and memory continuity. It generated596160PCM
+bytes without tools or work. One provider/writer closed cleanly. This is one
+model-policy observation, not a phone hearing trial, autobiographical recall
+benchmark or evidence that the voice layer directly owns DMK.39mounted,29native
+transport and37ordinary streaming checks passed; identity-free behavior remains
+covered. Full conversation and physical-device acceptance stay open.
