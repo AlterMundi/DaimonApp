@@ -1271,10 +1271,11 @@ covered. Full conversation and physical-device acceptance stay open.
 
 ### Avatar skills and their execution route
 
-The voice role already exposes five bounded native functions. They are its
+The voice role exposes six bounded native functions. They are its
 operational skills: `recent_originals` grounds a request in current human speech;
 `delegate_to_integrator` asks Sol to resolve work, research or missing memory;
-`session_status` reads coarse current activity; `read_integrating_source` reads
+`session_status` reads coarse current activity; `session_pending` reads the
+existing human-owned pending task/question ledger; `read_integrating_source` reads
 an offered canonical return; `await_integrator_update` resumes a missing return
 subscription only when no continued delegation/watch already owns it.
 
