@@ -235,6 +235,19 @@ acceptance remain unfinished.
 
 ## Delivery tasks
 
+Human clarification,2November2026: the native voice model is primarily the
+conversational and prompt-formulation layer. Sol retains deliberate reasoning,
+memory lookup, routing and coordination; persistent work sessions retain their
+own goals and histories. Capture/playback/observer facts remain deterministic
+application responsibilities. A bounded read-only session-status tool gives the
+interlocutor observed facts without making it a second orchestrator. Complex
+questions and work still pass to the integrator with exact human originals.
+Durable memory remains DMK, not an ever-growing voice prompt or a duplicate
+foreground task store. The comparison with cognitive layers guides separation
+of responsibilities; it is not a literal human-brain implementation or evidence
+that changing a model would solve missing plumbing. Recover earlier research
+and scope decisions before inventing another architecture.
+
 - [ ] #302: select transport and qualify architecture
 - [ ] #271: streaming ASR, latency and retained-input recovery
 - [ ] #303: responsive foreground with persistent native work
