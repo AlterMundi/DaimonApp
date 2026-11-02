@@ -386,6 +386,13 @@ class Mounted(unittest.TestCase):
             seen=[]
             while not seen or seen[-1]['type']!='audio':seen.append(ws.receive_json())
             self.assertTrue(any(v['type']=='proposal_cancelled' for v in seen))
+            # A later receive, not another event in the cancellation batch,
+            # must still reach the same live socket.
+            stream.queue.put([{'type':'output_transcript','text':'After cancellation.'},
+                              {'type':'turn_complete'}])
+            later=[]
+            while not later or later[-1]['type']!='turn_complete':later.append(ws.receive_json())
+            self.assertTrue(any(v['type']=='assistant_utterance' and v['utterance']['text']=='After cancellation.' for v in later))
             self.assertFalse(stream.closed);self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'})
 

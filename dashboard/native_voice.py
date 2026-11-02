@@ -97,10 +97,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         if kind in ('source_query','integrating_source_query','delegation_proposed','integrator_watch'):
                             proposals[event['call_id']]=launch(bridge.tool(event));continue
                         if kind=='proposal_cancelled':
-                            pending=proposals.pop(event['call_id'],None)
-                            if pending is not None:
-                                cancelled_proposals.add(pending);pending.cancel()
-                                await asyncio.gather(pending,return_exceptions=True)
+                            proposal=proposals.pop(event['call_id'],None)
+                            if proposal is not None:
+                                cancelled_proposals.add(proposal);proposal.cancel()
+                                await asyncio.gather(proposal,return_exceptions=True)
                             await send(event);continue
                         if kind in ('voice_activity','input_transcript'):
                             original=acoustic.provider.ident if acoustic.provider else None
