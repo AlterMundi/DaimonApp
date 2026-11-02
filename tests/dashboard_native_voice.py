@@ -181,6 +181,11 @@ class Mounted(unittest.TestCase):
     def test_automatic_speech_keeps_pending_work_returns_and_late_questions_separate_from_correction(self):
         class AutomaticStream(Stream):
             activity_mode='automatic'
+            def append(self,pcm):
+                super().append(pcm)
+                if self.total in (3200,6400):
+                    offset='0s' if self.total==3200 else '0.15s'
+                    self.queue.put([activity('ACTIVITY_START',offset)])
             def receive(self):
                 events=super().receive()
                 for event in events:
@@ -202,7 +207,6 @@ class Mounted(unittest.TestCase):
                 stream=Stream.opened[0]
                 ws.send_bytes(b'\1\0'*1600)
                 # Provider events are injected, no real inference/native job.
-                stream.queue.put([activity('ACTIVITY_START','0s')])
                 first=received(ws,'capture_started')['id']
                 stream.queue.put([{'type':'input_transcript','text':'First work request.'},activity('ACTIVITY_END','0.1s'),{'type':'turn_complete'}])
                 self.assertEqual(received(ws,'original_completed')['id'],first)
@@ -211,7 +215,6 @@ class Mounted(unittest.TestCase):
                 self.assertEqual((call,result['kind']),('work','integrator_admission'))
                 self.assertEqual(len(self.owner.delegations),1)
                 ws.send_bytes(b'\2\0'*1600)
-                stream.queue.put([activity('ACTIVITY_START','0.15s')])
                 second=received(ws,'capture_started')['id']
                 stream.queue.put([{'type':'source_query','call_id':'old-source','before':0}])
                 call,result=stream.tool_results.get(timeout=2)
