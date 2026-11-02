@@ -280,8 +280,13 @@ is a controlled model-free stand-in, not an actual provider/native worker. Earli
 actual pinned-native first-use qualification is separate evidence; this fixture
 does not establish real provider spending, receiving human use or automatic
 integrator incorporation. CI runs both modes and two affected old-SDK legacy
-journeys. Known Matrix host scripts select the text/native consumer job without
-triggering unrelated optional audio/activity builds.
+journeys. Python-only changes to the four known Matrix host/test paths select the dedicated
+`matrix-host` compiled canonical consumer job and the existing SDK/legacy suite,
+without repeating unrelated native, voice or lifecycle journeys. Documentation
+may accompany that profile; Rust, dependency, unknown-file and full-text-job
+changes retain their full qualification. The actual workflow scope program is
+tested, and a change to the dedicated job exercises it. The profile adds no
+receiving deployment or model activation.
 
 Production deployment, qualified receiver execution and the selected live
 cross-body correction/renewal trial remain open in #367. One inference/token admission does not establish a global

@@ -188,3 +188,13 @@ menu selected/pending state and historical grants. Never clear a journal or
 silently re-enroll devices to bypass a mismatch. See docs/interaction-companion.md
 and the maintained Shared Resources Interaction receiving record. Loaded binary,
 health and served assets alone do not establish authenticated app continuity.
+
+
+Python-only Matrix host adapter changes use the dedicated `matrix-host` CI
+profile: the existing SDK adapter/legacy suite plus both ordinary and funded
+canonical HTTP journeys against the compiled native consumer. The profile accepts
+only its four explicit host/test paths and documentation. Rust, dependencies,
+unknown files or changed full-text qualification keep their owning full checks.
+Changes to the profile itself exercise that job; the actual embedded scope
+program is regression-tested. Reuse unchanged native qualification instead of
+repeating unrelated voice, lifecycle and multi-worker fixtures for host Python.

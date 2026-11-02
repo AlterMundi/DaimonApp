@@ -16,6 +16,7 @@ jobs:
       text: ${{ steps.scope.outputs.text }}
       audio: ${{ steps.scope.outputs.audio }}
       activity: ${{ steps.scope.outputs.activity }}
+      matrix_host: ${{ steps.scope.outputs.matrix_host }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -44,7 +45,16 @@ jobs:
           previous = subprocess.check_output(['git','show',base+':.github/workflows/ci.yml'], text=True) if base and set(base) != {'0'} else ''
           header_changed = current.split('jobs:',1)[0] != previous.split('jobs:',1)[0]
           text_ci_changed = header_changed or workflow_job(current,'text') != workflow_job(previous,'text')
-          text = common or text_ci_changed or any(p in {'scripts/matrix_execution.py','scripts/matrix_operator.py'} or p.startswith('src/') or p.startswith('tests/') and not p.startswith(('tests/activity','tests/dashboard','tests/conversation_ui.js','tests/live_speech_ui.js','tests/timing_ui.js','tests/markdown_ui.js','tests/companion_ui.js','tests/conversation_requests_ui.js','tests/microphone_ui.js','tests/voice_stream_ui.js','tests/visual_ui.js','tests/routing_graph_ui.js','tests/bot_traffic_io.py','tests/routing_eval.py','tests/speech_render.py','tests/interaction_asr.py','tests/turn_end.py','tests/capture_turn.py','tests/voice_mode_ui.js','tests/voice_session_ui.js','tests/native_conversation_ui.js','tests/presentation_io.py','tests/matrix_execution.py','tests/fixtures/routing-eval-')) for p in files)
+          text = common or text_ci_changed or any(p in {'scripts/matrix_execution.py','scripts/matrix_operator.py'} or p.startswith('src/') or p.startswith('tests/') and not p.startswith(('tests/activity','tests/dashboard','tests/conversation_ui.js','tests/live_speech_ui.js','tests/timing_ui.js','tests/markdown_ui.js','tests/companion_ui.js','tests/conversation_requests_ui.js','tests/microphone_ui.js','tests/voice_stream_ui.js','tests/visual_ui.js','tests/routing_graph_ui.js','tests/bot_traffic_io.py','tests/routing_eval.py','tests/speech_render.py','tests/interaction_asr.py','tests/turn_end.py','tests/capture_turn.py','tests/voice_mode_ui.js','tests/voice_session_ui.js','tests/native_conversation_ui.js','tests/presentation_io.py','tests/matrix_execution.py','tests/ci_matrix_host_scope.py','tests/fixtures/routing-eval-')) for p in files)
+          def matrix_host_only(paths):
+              owned = {'scripts/matrix_execution.py', 'scripts/matrix_operator.py',
+                       'tests/matrix_execution.py', 'tests/matrix_conversation_http_io.py'}
+              return any(p in owned for p in paths) and all(
+                  p in owned or p.startswith('docs/') or p in {'README.md', 'AGENTS.md'}
+                  for p in paths)
+          matrix_only = matrix_host_only(files) and not text_ci_changed
+          matrix_host = matrix_only or workflow_job(current,'matrix-host') != workflow_job(previous,'matrix-host')
+          text = text and not matrix_only
           # Python/browser voice belongs to the always-run speech/dashboard gates.
           # The optional implementation lives in transcribe.rs and consumes
           # AttachmentTranscript from models.rs. Generic voice.rs envelopes
@@ -52,7 +62,7 @@ jobs:
           audio = common or header_changed or workflow_job(current,'audio') != workflow_job(previous,'audio') or any(p in {'src/transcribe.rs','src/models.rs'} or p.startswith('tests/') and p.endswith('.rs') and 'transcrib' in p for p in files)
           activity = common or header_changed or workflow_job(current,'activity') != workflow_job(previous,'activity') or any(p.startswith(('activity/','tests/activity','scripts/activity_indicator.py')) for p in files)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              for key, value in [('text',text),('audio',audio),('activity',activity)]:
+              for key, value in [('text',text),('audio',audio),('activity',activity),('matrix_host',matrix_host)]:
                   out.write(f'{key}={str(value).lower()}\n')
           PY
   matrix-execution:
@@ -69,6 +79,7 @@ jobs:
           ref: 79be4788680a3b18f5b04571370d50f0904cd82f
           path: .matrix-sdk
       - run: python -m pip install cryptography==50.0.0 jsonschema==4.26.0 wasmtime==45.0.0 idna==3.20
+      - run: python -B tests/ci_matrix_host_scope.py
       - run: python -B tests/matrix_execution.py -v
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
@@ -81,6 +92,43 @@ jobs:
         run: python -B tests/matrix_execution.py AdapterTests.test_technical_original_without_execution_approval_has_verified_return AdapterTests.test_existing_signed_execution_store_owns_admission_and_cancellation -v
         env:
           PYTHONPATH: .matrix-sdk-legacy/src:.matrix-sdk-legacy
+  matrix-host:
+    needs: scope
+    if: needs.scope.outputs.matrix_host == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.95.0
+      # This profile admits no Rust/dependency/workflow changes. Reuse the
+      # normal qualified text cache, then compile the unchanged native consumer.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-text-rust195-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('src/**/*.rs', 'build.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-text-rust195-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+      - run: cargo build --locked --release --no-default-features
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: AlterMundi/daimon-matrix
+          ref: 79be4788680a3b18f5b04571370d50f0904cd82f
+          path: .matrix-sdk
+      - run: python -m pip install -r dashboard/requirements.lock cryptography==50.0.0 jsonschema==4.26.0 wasmtime==45.0.0 idna==3.20
+      - name: Qualify ordinary and funded canonical Matrix return journeys
+        run: |
+          python -B tests/matrix_conversation_http_io.py target/release/telecodex
+          python -B tests/matrix_conversation_http_io.py target/release/telecodex --funded
+        env:
+          PYTHONPATH: .matrix-sdk/src:.matrix-sdk
   routing-evaluation:
     runs-on: ubuntu-latest
     timeout-minutes: 2
