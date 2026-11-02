@@ -257,6 +257,7 @@ pub(super) fn tool_call(
                 | "workflow_status" | "workflow_advance" | "workflow_attention"
                 | "workflow_reported" | "workflow_finish" | "workflow_result"
                 | "attention_source" | "attention_reported" => "interaction_workflow",
+                "live_context" => "interaction_live_context",
                 "capabilities" => "controller_capabilities",
                 "inputs" => "interaction_inputs",
                 "target_inputs" => "interaction_target_inputs",
@@ -313,6 +314,7 @@ pub(super) fn tool_call(
                 capabilities["operations"]["goal_inspect"]=json!({"arguments":{"selector":"one unambiguous enrolled label or stable tID"},"description":"Read selected goal definition/revision, native activity, receiver busy state and pending counts independently. Unknown capability is not no-goal or idle; blocked cause remains unknown unless other evidence establishes it. This operation does not resume, clear, interrupt, attach or launch work."});
                 super::goal_controls::capabilities(&mut capabilities);
                 super::workflows::capabilities(&mut capabilities,true);
+                capabilities["operations"]["live_context"]=json!({"arguments":{"action":"read, part, incorporate or checkpoint","dialogue":"selected Live dialogue UUID"},"description":"Read attributed both-role Live context. read takes full:boolean and freezes its high watermark. Complete inline content is supplied; otherwise use part with revision and contiguous character offset until more=false. incorporate takes that exact revision, claims incorporation, and retires dispatch without deleting post-checkpoint text. checkpoint takes current checkpoint revision, incorporated through watermark and bounded compact text. This is internal context bookkeeping, never human/work admission, publication or proof of comprehension. Producer operations are unavailable here."});
                 super::interactions::task_capabilities(&mut capabilities);
                 capabilities["operations"]["companion_hint"]=super::presentation::companion_capability(&app)?;
                 super::matrix::capabilities(shared,&mut capabilities)?;
@@ -327,6 +329,17 @@ pub(super) fn tool_call(
             if request.tool=="interaction_workflow" {
                 let operation=request.arguments["operation"].as_str().context("Missing workflow operation")?;
                 return super::workflows::tool(&app,key,human,&request,operation,request.arguments["arguments"].clone(),&closed).await;
+            }
+            if request.tool=="interaction_live_context" {
+                let cfg=super::routing::profile(shared)?;
+                if cfg.human_id!=human || cfg.entry()!=key {bail!("Live context belongs to the integrating entry");}
+                let selected:crate::store::LiveContextCommand=serde_json::from_value(request.arguments)?;
+                if !matches!(selected,crate::store::LiveContextCommand::Read {..}
+                    |crate::store::LiveContextCommand::Part {..}
+                    |crate::store::LiveContextCommand::Incorporate {..}
+                    |crate::store::LiveContextCommand::Checkpoint {..})
+                {bail!("Native Live context cannot impersonate the voice producer");}
+                return shared.store.live_context(human,key,selected);
             }
             if request.tool=="interaction_conversation" {
                 let args:ConversationReadArgs=serde_json::from_value(request.arguments)?;

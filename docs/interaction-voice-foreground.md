@@ -1388,10 +1388,12 @@ must not duplicate a request separately delegated through exact human originals.
 Sol can use the existing memory system deliberately; receiving context is not a
 claim that every sentence has become a curated DMK record.
 
-The source setup now selects the provider's contextWindowCompression mechanism
-at102400tokens, targeting64000, leaving25600tokens below the selected128000-token
-ceiling for ongoing input/output. This uses provider token accounting, not a local
-character heuristic. Optional usageMetadata prompt/total counts are retained as
+An earlier source-only setup probe selected provider contextWindowCompression
+at102400tokens targeting64000 and was accepted. Astra high review identified that
+this automatic discard cannot wait for Sol incorporation/checkpoint. The current
+source therefore leaves it OFF; compaction will use explicit generation rollover
+from an acknowledged checkpoint and exact tail. Provider token accounting remains
+a scalar observation, not a local character heuristic. Optional usageMetadata prompt/total counts are retained as
 fixed scalar observations; unknown accounting is not an empty context or a reason
 to close voice. Existing five-minute/media/retention bounds remain until a coherent
 continuation path is qualified. This setting alone is not the full context bridge.
@@ -1427,3 +1429,11 @@ Primary API references checked2November2026:
 - https://ai.google.dev/api/live#ContextWindowCompressionConfig.SlidingWindow
 - https://ai.google.dev/api/live#UsageMetadata
 - https://ai.google.dev/gemini-api/docs/live-api/session-management
+
+
+The reviewed implementation design and decisions are in
+[Shared Live context](interaction-live-context.md). Astra high reviewed the actual
+Store/Core/producer seams before implementation. Two watermarks, semantic revisions,
+source-specific no-publication policy, canonical catch-up and explicit provider
+rollover are required; unconditionally enabling the provider sliding window is
+rejected. No full automatic continuity/device completion is claimed.

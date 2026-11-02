@@ -129,6 +129,18 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("foreground context ") {
+        let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;
+        if !matches!(
+            selected,
+            crate::store::LiveContextCommand::Open { .. }
+                | crate::store::LiveContextCommand::Append { .. }
+                | crate::store::LiveContextCommand::Close { .. }
+        ) {
+            bail!("Semantic incorporation belongs to the native integrator");
+        }
+        return app.shared.store.live_context(human, cfg.entry(), selected);
+    }
     if let Some(body) = args.strip_prefix("foreground retain ") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

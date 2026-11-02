@@ -85,12 +85,10 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
         self.assertEqual(self.event(self.audio())[0]['type'],'audio')
 
-    def test_context_compression_has_token_margin_and_fixed_provider_accounting(self):
+    def test_provider_accounting_does_not_enable_ungated_discard(self):
         setup=self.socket.sent[0]['setup']
-        self.assertEqual(setup['contextWindowCompression'],{
-            'triggerTokens':102400,'slidingWindow':{'targetTokens':64000}})
-        self.assertLess(self.stream.compression_target_tokens,self.stream.compression_trigger_tokens)
-        self.assertLess(self.stream.compression_trigger_tokens,self.stream.max_context_tokens)
+        self.assertNotIn('contextWindowCompression',setup)
+        self.assertEqual(self.stream.max_context_tokens,128000)
         self.ready()
         self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':105000,'totalTokenCount':105100,'private_payload':'not retained'}}),[])
         self.assertEqual(self.stream.context_usage,{'promptTokenCount':105000,'totalTokenCount':105100})

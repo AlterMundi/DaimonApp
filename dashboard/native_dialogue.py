@@ -23,8 +23,6 @@ class NativeDialogue:
     model = 'gemini-3.8-live'
     max_seconds = 300
     max_context_tokens = 128000
-    compression_trigger_tokens = 102400
-    compression_target_tokens = 64000
     max_input_bytes = 300 * 32000
     max_output_bytes = 300 * 48000
     max_event_bytes = 262144
@@ -71,8 +69,6 @@ class NativeDialogue:
                 'model': 'models/' + self.model,
                 'generationConfig': {'responseModalities': ['AUDIO'], 'maxOutputTokens': 512},
                 'inputAudioTranscription': {}, 'outputAudioTranscription': {},
-                'contextWindowCompression': {'triggerTokens': self.compression_trigger_tokens,
-                    'slidingWindow': {'targetTokens': self.compression_target_tokens}},
                 'realtimeInputConfig': {'automaticActivityDetection': (
                     {'disabled':True} if activity_mode=='manual' else {
                         'disabled':False,'startOfSpeechSensitivity':'START_SENSITIVITY_LOW',
@@ -88,6 +84,9 @@ class NativeDialogue:
                     'Your primary role is conversation and constructing faithful request language together. '
                     'The Sol integrator owns deliberate planning, memory research, routing and coordination of persistent work sessions. '
                     'Keep spoken replies brief, usually one or two sentences; expand when asked. '
+                    'When actually consulting memory or Sol, describe it naturally in the first person, such as trying to recall or checking a detail; do not narrate internal session routing unless it helps the human or they ask. Natural phrasing must never fabricate a recollection or conceal an unconfirmed consultation. '
+                    'A conversational style adjustment is temporary context, not a durable saved note. Never say a preference or lesson was saved or will persist unless the actual memory write is confirmed. Ask Sol to preserve a requested lasting lesson through the existing original-bound delegation. '
+                    'A question about the most meaningful projects in our shared history is different from current priorities or active task status; preserve that distinction when consulting Sol. '
                     'Handle self-contained conversation, explanations and prompt refinement here without starting work. '
                     'Distinguish exploring an idea from asking for an action; do not delegate an idea merely because it could become a task. '
                     'When the human requests work, use the available conversation context to formulate it faithfully. '
