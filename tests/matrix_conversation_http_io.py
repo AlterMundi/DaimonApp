@@ -34,6 +34,7 @@ def qualify(binary, *, funded=False):
     j = ColdEntry(str(Path(binary).resolve()))
     b = None
     observed = []
+    reads = []
     mode = {"drop": False, "funded": None}
     source_author = {
         "being_ref": sdk.sender.lane.being_ref,
@@ -48,6 +49,16 @@ def qualify(binary, *, funded=False):
             value = json.loads(self.rfile.read(int(self.headers["content-length"])))
             assert value["source"] == source_author
             client = adapter.SignedGroupClient(sdk.fixture, sdk.sender)
+            if "after" in value:
+                assert "results" not in value["status"]
+                reads.append(value["status"]["request"]["id"])
+                outcome = adapter.operator_receive(value, client, timeout=1)
+                raw = json.dumps(outcome).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
             if funded and mode["funded"] is None:
                 state = sdk.funded_original(status=value["status"])
                 mode["funded"] = state
@@ -130,6 +141,13 @@ def qualify(binary, *, funded=False):
             "host_calls": len(observed),
         }
         assert len(observed) == 1
+        for label, invalid in (
+            ("message-selector", {"message_id": request["id"], "receive_after": 0}),
+            ("oversized-cursor", {"request_id": request["id"], "receive_after": 2**53}),
+            ("boolean-cursor", {"request_id": request["id"], "receive_after": True}),
+        ):
+            j.call("route-reject-selected-read-" + label, "matrix_status", invalid, ok=False)
+        assert reads == []
         assert selected["claimed_source"] == source_author
         snapshot, outcome = observed[0]
         broker = MatrixConversationTransport(
@@ -190,6 +208,19 @@ def qualify(binary, *, funded=False):
             )
         signed_answer = sdk.sender.message(returned["message_id"])
         callback = broker.conversation_return(sent, signed_answer)
+        inspected = j.call("route-inspect-selected-matrix-reply", "matrix_status", {
+            "request_id": request["id"], "receive_after": 0,
+        })
+        assert inspected["phase"] == "reply_received"
+        assert inspected["inspection"]["canonical_replies"] == 1
+        assert inspected["inspection"]["native_input"] is False
+        cursor = inspected["inspection"]["next_cursor"]
+        empty = j.call("route-inspect-selected-matrix-after-cursor", "matrix_status", {
+            "request_id": request["id"], "receive_after": cursor,
+        })
+        assert empty["inspection"]["canonical_replies"] == 0
+        assert len(observed) == 1  # No additional authored send.
+        assert reads == [request["id"], request["id"]]
         if funded:
             assert signed_answer["payload"]["body"]["coordination"]["kind"] == "result"
             assert (
@@ -272,6 +303,11 @@ def qualify(binary, *, funded=False):
         uncertain = j.call("route-matrix-lost-host-response", "matrix_request", args)
         assert uncertain["phase"] == "submission_uncertain" and len(observed) == 3
         lost_id = uncertain["request"]["id"]
+        before_reads = len(reads)
+        j.call("route-reject-unacknowledged-reply-read", "matrix_status", {
+            "request_id": lost_id, "receive_after": 0,
+        }, ok=False)
+        assert len(reads) == before_reads
         assert sdk.receiver.message(observed[-1][1]["submission"]["message_id"])
         duplicate = j.call("route-matrix-no-uncertain-replay", "matrix_request", args)
         assert duplicate["phase"] == "submission_uncertain" and len(observed) == 3
@@ -300,7 +336,7 @@ def qualify(binary, *, funded=False):
                 ),
             )
         print(
-            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; zero provider/model calls. Funded mode uses a controlled worker stand-in; real receiving native work/automatic integrator incorporation remain unqualified."
+            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> finite authenticated selected-thread reader -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; zero provider/model calls. Funded mode uses a controlled worker stand-in; real receiving native work/automatic integrator incorporation remain unqualified."
         )
     finally:
         if b:

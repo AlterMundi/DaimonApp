@@ -1,6 +1,6 @@
 """Host adapter between approved ExecutionStore cycles and the selected Matrix SDK.
 
-No client, journal, scheduler, inbox reader or model is created by this module.
+No client, journal, scheduler, background attention or model is created here.
 A trusted host can relay an authenticated retained human original as a technical
 send. Model execution separately requires the immutable approved task and
 existing ReviewController. This object is never a model tool or
@@ -443,7 +443,7 @@ class _NativeMatrixTransport:
         # runner separately uses ExecutionStore; the SDK rechecks authority.
         return scope == self._scope
 
-    def _invoke(self, method, params, timeout):
+    def _invoke(self, method, params, timeout, *, validator=None, deadline_ns=None):
         if (
             type(timeout) not in (int, float)
             or not math.isfinite(timeout)
@@ -451,9 +451,11 @@ class _NativeMatrixTransport:
         ):
             raise MatrixExecutionError("Bounded native timeout required")
         deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+        if deadline_ns is not None:
+            deadline = min(deadline, deadline_ns)
         client = replace(self._client, timeout_seconds=timeout, deadline_ns=deadline)
         try:
-            if method in ("messaging.send", "messaging.reply"):
+            if method in ("messaging.send", "messaging.reply", "messaging.inbox"):
                 # Same authenticated client and absolute deadline for both
                 # observations. Origin is bound before any authored effect.
                 _, status = client.invoke("runtime.status", {})
@@ -470,7 +472,7 @@ class _NativeMatrixTransport:
             _, response = client.invoke(method, params)
             if not isinstance(response, dict) or response.get("ok") is not True:
                 raise MatrixExecutionError("Native response not successful")
-            return self._validate_result(response["result"])
+            return (validator or self._validate_result)(response["result"])
         except Exception:
             # Native journals retain uncertainty. An execution cycle additionally
             # keeps its charge. Never substitute a send, recipient or refund.
@@ -853,6 +855,91 @@ class MatrixConversationReceipt(_NativeMatrixTransport):
         super().__init__(task, scope, author, native_client, None)
         self._validate_submission(submission)
         self._retained_submission = strict_json(canonical(submission))
+
+    def read_replies(self, *, after=0, limit=3, timeout=1.0):
+        """One authenticated selected-thread page; no polling or native input.
+
+        Only correlated worker replies leave this host boundary. The global
+        cursor advances across other speech in that thread, never another thread.
+        The same absolute deadline covers retained send observation and page read.
+        """
+        if (
+            type(after) is not int
+            or not 0 <= after <= 2**53 - 1
+            or type(limit) is not int
+            or not 1 <= limit <= 3
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or not 0.05 <= timeout <= 60
+        ):
+            raise MatrixExecutionError("Bounded selected reply page required")
+        deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+        original = self._invoke(
+            "messaging.delivery",
+            {
+                "channel_id": self._scope.channel,
+                "send_id": self.send_id,
+            },
+            timeout,
+            deadline_ns=deadline,
+        )
+
+        def validate(page):
+            if (
+                not isinstance(page, dict)
+                or page.get("channel_id") != self._scope.channel
+                or not isinstance(page.get("items"), list)
+                or len(page["items"]) > limit
+            ):
+                raise MatrixExecutionError("Selected authenticated inbox page required")
+            cursor, results = after, []
+            wanted_parent = {
+                "message_id": original["message_id"],
+                "message_hash": original["message_hash"],
+                "sender_being_ref": self._author["being_ref"],
+                "sender_embodiment_id": self._author["embodiment_id"],
+            }
+            target = self._task["destination"]
+            for row in page["items"]:
+                sequence, message = row["inbox_sequence"], row["message"]
+                if (
+                    type(sequence) is not int
+                    or not cursor < sequence <= 2**53 - 1
+                    or message["payload"]["intent"]["thread_id"] != self._scope.thread
+                ):
+                    raise MatrixExecutionError(
+                        "Selected inbox cursor or thread changed"
+                    )
+                body = message["payload"]["body"]
+                if (
+                    body.get("response_context") == wanted_parent
+                    and message["being_ref"] == target["being_ref"]
+                    and (
+                        target["kind"] != "body"
+                        or message["origin"]["embodiment_id"] == target["embodiment_id"]
+                    )
+                ):
+                    results.append(self.conversation_return(original, message))
+                cursor = sequence
+            return {
+                "after": after,
+                "next_cursor": cursor,
+                "results": results,
+                "page_full": len(page["items"]) == limit,
+            }
+
+        return self._invoke(
+            "messaging.inbox",
+            {
+                "channel_id": self._scope.channel,
+                "thread_id": self._scope.thread,
+                "after": after,
+                "limit": limit,
+            },
+            timeout,
+            validator=validate,
+            deadline_ns=deadline,
+        )
 
     def submit(self, scope, payload, timeout):
         raise MatrixExecutionError("Receipt correlation cannot author a native message")

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """One selected technical Matrix send; private owner binding, bounded JSON stdin.
 
-No runtime is loaded outside its daemon, inbox is read, approval is signed, model
-is invoked or uncertain native send retried. The controller owns its reservation.
+No runtime is loaded outside its daemon, approval is signed, model is invoked
+or uncertain native send retried. Explicit --receive reads one selected-thread
+page; it never installs attention. The controller owns its reservation.
 """
 
 import argparse
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from matrix_execution import (
     MatrixConversationTransport,
+    MatrixConversationReceipt,
     MatrixExecutionError,
     canonical,
     closed,
@@ -48,7 +50,12 @@ class NativeOwnerClient:
     def invoke(self, method, params):
         if method == "runtime.status":
             client = self.observation
-        elif method in ("messaging.send", "messaging.delivery", "messaging.reply"):
+        elif method in (
+            "messaging.send",
+            "messaging.delivery",
+            "messaging.reply",
+            "messaging.inbox",
+        ):
             client = self.messaging
         else:
             raise MatrixExecutionError("Unsupported technical host operation")
@@ -124,7 +131,19 @@ def send(value, client, *, timeout=10, coordination=None):
     }
 
 
-def receiving_command(connection, binding):
+def receive(value, client, *, timeout=10):
+    """Explicit owner inspection only; callbacks are retained by the caller."""
+    closed(value, ("status", "source", "after", "limit"))
+    if value["source"] != value["status"].get("claimed_source"):
+        raise MatrixExecutionError("Selected reader differs from retained source")
+    return MatrixConversationReceipt(value["status"], client).read_replies(
+        after=value["after"],
+        limit=value["limit"],
+        timeout=timeout,
+    )
+
+
+def receiving_command(connection, binding, *, receive_only=False):
     """Bootstrap this host module in the existing receiving owner's SDK context.
 
     This is owner configuration, never request/model JSON. Read the current
@@ -161,7 +180,8 @@ def receiving_command(connection, binding):
     script = str(Path(__file__).resolve())
     bootstrap = (
         "import os,sys,runpy\n"
-        "venv,imports,code,code_digest,code_uid,script,binding=sys.argv[1:]\n"
+        "venv,imports,code,code_digest,code_uid,script,binding,receive_mode=sys.argv[1:]\n"
+        "receive_only=receive_mode=='receive'\n"
         "sys.prefix=sys.exec_prefix=venv\n"
         "sys.path[:0]=[code,imports]\n"
         "sys.dont_write_bytecode=True\n"
@@ -177,7 +197,7 @@ def receiving_command(connection, binding):
         " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
         " raise SystemExit(1)\n"
         "sys.path.insert(0,os.path.dirname(script))\n"
-        "sys.argv=[script,'--binding',binding]\n"
+        "sys.argv=[script,'--binding',binding]+(['--receive'] if receive_only else [])\n"
         "runpy.run_path(script,run_name='__main__')\n"
     )
     return [
@@ -192,6 +212,7 @@ def receiving_command(connection, binding):
         command[13],
         script,
         str(binding),
+        "receive" if receive_only else "send",
     ]
 
 
@@ -203,16 +224,32 @@ def main():
         type=Path,
         help="Current owner-local receiving SDK connection; no model/request selection",
     )
+    parser.add_argument(
+        "--receive",
+        action="store_true",
+        help="Inspect one retained selected reply page; never send",
+    )
     args = parser.parse_args()
     if args.native_connection is not None:
-        command = receiving_command(args.native_connection, args.binding)
+        command = receiving_command(
+            args.native_connection, args.binding, receive_only=args.receive
+        )
         os.execv(command[0], command)
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise MatrixExecutionError("Bounded controller status required")
-    value = closed(strict_json(raw), ("status", "source"))
-    result = send(value, configured_client(args.binding, value["source"]))
-    print(canonical(result))
+    value = closed(
+        strict_json(raw),
+        ("status", "source", "after", "limit")
+        if args.receive
+        else ("status", "source"),
+    )
+    operation = receive if args.receive else send
+    result = operation(value, configured_client(args.binding, value["source"]))
+    output = canonical(result)
+    if len(output.encode()) > 65536:
+        raise MatrixExecutionError("Bounded host outcome required")
+    print(output)
 
 
 if __name__ == "__main__":

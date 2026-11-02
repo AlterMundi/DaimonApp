@@ -47,6 +47,41 @@ refund or new execution. `accept_verified_reply` correlates an already verified
 selected event to the original message ID, digest, author, thread and recipient.
 It does not perform signature verification itself or read an inbox.
 
+## Explicit selected-reply inspection
+
+The existing integrator's `matrix_status` optionally accepts `receive_after`
+with one acknowledged `request_id`. That explicitly reads one selected-thread
+page through the configured host, retains valid canonical replies, and returns
+an inspection cursor to the SAME active conversation. Omit `receive_after` for
+the previous retained-state-only observation; it is invalid with `message_id`.
+No result-triggered native turn, background reader or second I/O session follows.
+
+The owner-only `matrix_operator.py --receive` mode accepts exactly
+`{status, source, after, limit}`. `status` is the existing authenticated retained
+request snapshot, `source` must equal its frozen claimed source, and the request
+must already have an acknowledged submission. Unknown/submitting sends cannot
+be inferred into replies or retransmitted by this reader.
+
+The existing `MatrixConversationReceipt.read_replies` observes that exact native
+send and reads one authenticated `messaging.inbox` page filtered by its immutable
+thread UUID. The receiver must support the additive selected-thread inbox API
+(Matrix #436); rejection never falls back to a broad scan. One absolute deadline
+covers all SDK calls. Pages contain at most three events and the host output is
+bounded to64KiB. Only exact selected-parent/recipient worker results are exposed
+as canonical callback values; other speech in that thread advances the global
+cursor without becoming a callback or an instruction. Signatures and admission
+remain verified by the existing Matrix reader; this adapter is not a separate
+signature verifier.
+
+The caller records each callback through the existing authenticated owner return
+before retaining `next_cursor`. Re-reading an inspected page is read-only; the
+canonical message UUID/digest remains the store's deduplication boundary. A full
+page indicates only that the limit was reached, not proof of another result or
+completion. Failure retains the prior cursor and uncertainty; never resend work
+to repair observation. This installs no poller, hook, model turn, new inbox/store
+or native session. Automatic return attachment, receiving native work and real
+human acceptance remain separate unfinished integration outcomes.
+
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 
 A finite approved purpose and a later received original are separate inputs.
@@ -111,9 +146,10 @@ receiver preparation already accepts it; third-party consumers may require an
 update.
 
 This removes sender-side inference admission from the technical transport. The
-normal controller's return attachment and the selected receiving native
-owner remain separate unfinished integration work; importing or constructing the
-class installs neither listener nor peer activation.
+normal controller can explicitly inspect and retain signed replies through
+`matrix_status` with `receive_after`. Result-triggered native continuation and
+the selected receiving native owner remain separate unfinished integration
+work; importing or constructing the class installs neither listener nor peer activation.
 
 ## Normal-controller technical submission
 

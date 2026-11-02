@@ -11,7 +11,7 @@ pub(super) fn capabilities(shared: &AppShared, value: &mut Value) -> Result<()> 
         return Ok(());
     }
     value["operations"]["matrix_request"] = json!({"arguments":{"input_ref":"One retained original integer Telegram reference or conversation UUID","selector":"One explicitly configured Matrix target name","relation":"new, amends or context","requests":"Selected existing Matrix request IDs for amends/context; empty for new"},"description":"Freeze the exact original and return binding for one selected Matrix recipient. Retain the original and, only with an explicitly configured host transport, submit its technical send. This never grants receiving execution approval or proves delivery. No replacement origin, model-selected text, retry, inbox polling or budget is created."});
-    value["operations"]["matrix_status"] = json!({"arguments":{"request_id":"Retained Matrix request UUID; omit when selecting message_id","message_id":"Selected Matrix reply event UUID; omit when selecting request_id"},"description":"Inspect existing request, submission and canonical replies only. Do not poll in a tool loop or reissue work."});
+    value["operations"]["matrix_status"] = json!({"arguments":{"request_id":"Retained Matrix request UUID; omit when selecting message_id","message_id":"Selected Matrix reply event UUID; omit when selecting request_id","receive_after":"Optional global inbox cursor for one explicit SDK-verified selected-thread page; request_id only, no polling"},"description":"Inspect retained state. With receive_after, read one bounded authenticated reply page for that acknowledged original and retain canonical replies in this same conversation; no send, model activation or automatic continuation. Do not poll in a tool loop or reissue work."});
     value["matrix_transport"] = json!({"configured":profile.matrix_transport.is_some(),"receiving_execution":"Independent admission required; technical send never activates a model","uncertain":"Inspect retained native send; do not repeat or select an alternate destination"});
     value["matrix_targets"] = json!(
         profile
@@ -37,6 +37,7 @@ struct Prepare {
 struct Inspect {
     request_id: Option<String>,
     message_id: Option<String>,
+    receive_after: Option<u64>,
 }
 
 pub(super) async fn tool(
@@ -54,15 +55,81 @@ pub(super) async fn tool(
     }
     if !prepare {
         let args: Inspect = serde_json::from_value(args)?;
-        return match (args.request_id, args.message_id) {
-            (Some(id), None) => app.shared.store.interaction_matrix_status(human, key, &id),
-            (None, Some(id)) => app
+        return match (args.request_id, args.message_id, args.receive_after) {
+            (Some(id), None, after) => {
+                let selected = app
+                    .shared
+                    .store
+                    .interaction_matrix_status(human, key, &id)?;
+                let Some(after) = after else {
+                    return Ok(selected);
+                };
+                if after > 9_007_199_254_740_991
+                    || !matches!(
+                        selected["phase"].as_str(),
+                        Some("submitted" | "reply_received")
+                    )
+                {
+                    bail!("Select an acknowledged Matrix request and bounded cursor");
+                }
+                let transport = profile
+                    .matrix_transport
+                    .as_ref()
+                    .context("Selected reply inspection requires the configured host")?;
+                let source: crate::store::MatrixAuthor =
+                    serde_json::from_value(selected["claimed_source"].clone())?;
+                // Prior canonical answers are not inputs to the SDK reader and
+                // must not accumulate into the bounded host request.
+                let mut snapshot = selected.clone();
+                snapshot
+                    .as_object_mut()
+                    .context("Matrix status object required")?
+                    .remove("results");
+                let raw = json!({"status":snapshot,"source":source,"after":after,"limit":3});
+                let outcome = tokio::select! {
+                    biased;
+                    _ = closed.cancelled() => bail!("Selected Matrix inspection closed; no send or automatic retry"),
+                    _ = app.shared.shutdown.cancelled() => bail!("Selected Matrix inspection shutdown; no send or automatic retry"),
+                    result = host_command(transport, &raw, true) => result?,
+                };
+                let page: HostRead = serde_json::from_value(outcome)?;
+                if page.after != after
+                    || page.next_cursor < after
+                    || page.next_cursor > 9_007_199_254_740_991
+                    || page.results.len() > 3
+                    || page.results.len() as u64 > page.next_cursor - after
+                    || page
+                        .results
+                        .iter()
+                        .any(|r| r.request != id || r.binding != selected["request"]["binding"])
+                {
+                    bail!("Selected Matrix inspection differs from retained request");
+                }
+                // Commit canonical UUID/digest callbacks before exposing a cursor.
+                // A later failure can leave earlier valid rows; repeat reads remain
+                // idempotent and never replay peer work or infer model admission.
+                for reply in &page.results {
+                    app.shared
+                        .store
+                        .interaction_matrix_return(human, key, reply)?;
+                }
+                let mut current = app
+                    .shared
+                    .store
+                    .interaction_matrix_status(human, key, &id)?;
+                current["inspection"] = json!({"after":after,"next_cursor":page.next_cursor,"page_full":page.page_full,"canonical_replies":page.results.len(),"native_input":false});
+                Ok(current)
+            }
+            (None, Some(id), None) => app
                 .shared
                 .store
                 .interaction_matrix_message_status(human, key, &id),
-            _ => bail!("Select exactly one retained Matrix request or reply message"),
+            _ => bail!(
+                "Select exactly one retained Matrix request or reply; receive_after requires request_id"
+            ),
         };
     }
+
     let args: Prepare = serde_json::from_value(args)?;
     let matches = profile
         .matrix_targets
@@ -183,6 +250,32 @@ struct HostOutcome {
     submission: crate::store::MatrixSubmission,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostRead {
+    after: u64,
+    next_cursor: u64,
+    results: Vec<crate::store::MatrixReturn>,
+    page_full: bool,
+}
+
+async fn host_send(
+    config: &crate::interaction::MatrixTransportConfig,
+    selected: &Value,
+    source: &crate::store::MatrixAuthor,
+) -> Result<crate::store::MatrixSubmission> {
+    let outcome: HostOutcome = serde_json::from_value(
+        host_command(config, &json!({"status":selected,"source":source}), false).await?,
+    )?;
+    if outcome.schema != "telecodex.matrix-transport-outcome/v1"
+        || outcome.request != selected["request"]["id"]
+        || outcome.binding != selected["request"]["binding"]
+    {
+        bail!("Matrix host outcome differs from the selected request");
+    }
+    Ok(outcome.submission)
+}
+
 #[cfg(unix)]
 struct OwnedMatrixCommand(u32);
 #[cfg(unix)]
@@ -196,22 +289,25 @@ impl Drop for OwnedMatrixCommand {
 }
 
 #[cfg(unix)]
-async fn host_send(
+async fn host_command(
     config: &crate::interaction::MatrixTransportConfig,
-    selected: &Value,
-    source: &crate::store::MatrixAuthor,
-) -> Result<crate::store::MatrixSubmission> {
+    input: &Value,
+    receive_only: bool,
+) -> Result<Value> {
     use std::{os::unix::process::CommandExt, process::Stdio, time::Duration};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         process::Command,
     };
-    let raw = serde_json::to_vec(&json!({"status":selected,"source":source}))?;
+    let raw = serde_json::to_vec(input)?;
     if raw.len() > 65536 {
         bail!("Matrix host input exceeds bound");
     }
     let mut command = Command::new(&config.command[0]);
     command.args(&config.command[1..]);
+    if receive_only {
+        command.arg("--receive");
+    }
     command.as_std_mut().process_group(0);
     command
         .stdin(Stdio::piped())
@@ -244,14 +340,7 @@ async fn host_send(
         if output.len() > 65536 || !child.wait().await?.success() {
             bail!("Matrix host outcome unconfirmed");
         }
-        let outcome: HostOutcome = serde_json::from_slice(&output)?;
-        if outcome.schema != "telecodex.matrix-transport-outcome/v1"
-            || outcome.request != selected["request"]["id"]
-            || outcome.binding != selected["request"]["binding"]
-        {
-            bail!("Matrix host outcome differs from the selected request");
-        }
-        Ok(outcome.submission)
+        Ok(serde_json::from_slice(&output)?)
     })
     .await;
     drop(group);
@@ -260,11 +349,11 @@ async fn host_send(
 }
 
 #[cfg(not(unix))]
-async fn host_send(
+async fn host_command(
     _config: &crate::interaction::MatrixTransportConfig,
-    _selected: &Value,
-    _source: &crate::store::MatrixAuthor,
-) -> Result<crate::store::MatrixSubmission> {
+    _input: &Value,
+    _receive_only: bool,
+) -> Result<Value> {
     bail!("Matrix host transport unavailable on this platform")
 }
 
