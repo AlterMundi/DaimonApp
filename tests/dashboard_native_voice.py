@@ -175,12 +175,13 @@ class Mounted(unittest.TestCase):
         observed=queue.Queue()
         def log(message,*args,**kwargs):
             if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
-        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),self.open() as ws:
-            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
-            Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',
-                'audio_offset':'0s','source':'provider_manual_activity_ack'}])
-            event=ws.receive_json()
-            while event['type']!='review':event=ws.receive_json()
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',
+                    'audio_offset':'0s','source':'provider_manual_activity_ack'}])
+                event=ws.receive_json()
+                while event['type']!='review':event=ws.receive_json()
             result=observed.get(timeout=2)
         self.assertEqual(result['id'],self.ident)
         self.assertEqual(result['stage'],'native-output')
@@ -196,16 +197,17 @@ class Mounted(unittest.TestCase):
         observed=queue.Queue()
         def log(message,*args,**kwargs):
             if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
-        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),self.open() as ws:
-            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
-            ws.send_bytes(b'\1\0'*1600)
-            event=ws.receive_json()
-            while event['type']!='capture_started':event=ws.receive_json()
-            self.assertTrue(Stream.opened[0].start_sent.wait(2),'Queue the actual start observation before injecting a later mismatch')
-            Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_START',
-                'audio_offset':'3.000000001s','source':'provider_manual_activity_ack','private_text':'must not reach journal'}])
-            event=ws.receive_json()
-            while event['type']!='review':event=ws.receive_json()
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\1\0'*1600)
+                event=ws.receive_json()
+                while event['type']!='capture_started':event=ws.receive_json()
+                self.assertTrue(Stream.opened[0].start_sent.wait(2),'Queue the actual start observation before injecting a later mismatch')
+                Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_START',
+                    'audio_offset':'3.000000001s','source':'provider_manual_activity_ack','private_text':'must not reach journal'}])
+                event=ws.receive_json()
+                while event['type']!='review':event=ws.receive_json()
             result=observed.get(timeout=2)
         self.assertEqual(result['boundary_mismatch'],{'activity':'start','expected_pcm_bytes':0,
             'reported_offset_nanoseconds':3000000001,'sent_pcm_bytes':3200,'provider_input_bytes':None,
@@ -223,9 +225,11 @@ class Mounted(unittest.TestCase):
                 socket.application_state=WebSocketState.DISCONNECTED
                 raise WebSocketDisconnect(1006,'PRIVATE_NETWORK_DETAIL')
             return await original(socket,value,*args,**kwargs)
-        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),patch.object(WebSocket,'send_json',send),self.open() as ws:
-            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
-            Stream.opened[0].queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),patch.object(WebSocket,'send_json',send):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                Stream.opened[0].queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
+                self.assertTrue(Stream.opened[0].closed_event.wait(2),'Observe the actual send failure before closing the client')
             result=observed.get(timeout=2)
         self.assertEqual(result['first_send_failure']['error_type'],'WebSocketDisconnect')
         self.assertEqual(result['first_send_failure']['stage'],'native-output')
