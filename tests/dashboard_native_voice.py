@@ -120,30 +120,35 @@ class Owner(Receiver):
 
 
 class Mounted(unittest.TestCase):
-    def test_owner_selected_identity_reaches_native_setup_and_refreshes_on_read(self):
+    def test_owner_selected_identity_reaches_native_connector_and_refreshes_on_read(self):
         selected=self.root/'selected-identity.txt'
         text='Oliva: a distinct being. The avatar and integrator share this identity.'
         selected.write_text(text);selected.chmod(0o600)
-        automatic=patch.object(Stream,'activity_mode','automatic');automatic.start();self.patches.append(automatic)
         self.config['daimon_name']='Oliva'
         self.config['streaming_transcription']['native_identity_file']=str(selected)
         self.select_automatic()
-        with self.open() as ws:
-            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
-            context=Stream.opened[-1].context
-            self.assertEqual(context['display_name'],'Oliva')
-            self.assertEqual(context['being_identity']['text'],text)
-            self.assertEqual(context['being_identity']['sha256'],hashlib.sha256(selected.read_bytes()).hexdigest())
-            self.assertNotIn(str(selected),json.dumps(context),'Private source path is not provider context')
-            updated='Oliva: updated owner-selected relationship and values.'
-            selected.write_text(updated)
-            self.assertEqual(being_identity(self.config['streaming_transcription'])['text'],updated)
-            self.assertEqual(context['being_identity']['text'],text,'An open dialogue keeps its original identity snapshot')
-            self.assertEqual(self.owner.inputs,{})
-            self.assertEqual(self.owner.delegations,[])
-            ws.send_json({'type':'close'})
-        self.assertEqual(len(Stream.opened),1)
-        self.assertEqual(Detector.opened,[],'Explicit automatic profile needs no detector')
+        contexts=[]
+        def connector(*args,**kwargs):
+            contexts.append(kwargs['context'])
+            raise ForegroundUnavailable('Synthetic provider unavailable before readiness')
+        # Inspect the authenticated connector boundary without starting unrelated
+        # output/return watchers. Existing tests qualify their socket lifecycle.
+        with patch('dashboard.native_voice.NativeDialogue',side_effect=connector):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(len(contexts),1)
+        context=contexts[0]
+        self.assertEqual(context['display_name'],'Oliva')
+        self.assertEqual(context['being_identity']['text'],text)
+        self.assertEqual(context['being_identity']['sha256'],hashlib.sha256(selected.read_bytes()).hexdigest())
+        self.assertNotIn(str(selected),json.dumps(context),'Private source path is not provider context')
+        selected.write_text('Oliva: updated owner-selected relationship and values.')
+        self.assertEqual(being_identity(self.config['streaming_transcription'])['text'],selected.read_text())
+        self.assertEqual(context['being_identity']['text'],text,'An existing context keeps its identity snapshot')
+        self.assertEqual(self.owner.inputs,{})
+        self.assertEqual(self.owner.delegations,[])
+        self.assertEqual(Stream.opened,[])
+        self.assertEqual(Detector.opened,[])
 
     def test_identity_failure_prevents_provider_and_microphone_readiness(self):
         selected=self.root/'selected-identity.txt'
@@ -936,4 +941,10 @@ class Mounted(unittest.TestCase):
         with self.assertRaises(ValueError):history.capacity()
 
 
-if __name__=='__main__':unittest.main()
+if __name__=='__main__':
+    # A stalled synthetic close previously consumed the entire CI job without
+    # naming the test. Bound this four-second suite and retain thread evidence.
+    import faulthandler
+    faulthandler.dump_traceback_later(30,exit=True)
+    try:unittest.main(verbosity=2)
+    finally:faulthandler.cancel_dump_traceback_later()
