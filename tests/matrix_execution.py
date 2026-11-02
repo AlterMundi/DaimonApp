@@ -31,7 +31,7 @@ from matrix_execution import (
     parent_from_verified_sdk,
     validate_task,
 )
-from matrix_operator import NativeOwnerClient, configured_client
+from matrix_operator import NativeOwnerClient, configured_client, receiving_command
 from matrix_operator import send as operator_send
 from tests.test_execution_instruction import request
 
@@ -345,6 +345,104 @@ class AdapterTests(unittest.TestCase):
         # The ordinary sender still requires actual current/pending admission.
         with self.assertRaisesRegex(MatrixExecutionError, "current and pending"):
             MatrixConversationTransport(status, status["claimed_source"], client)
+
+    def test_host_context_tracks_current_owner_without_executing_connection_code(self):
+        import tempfile
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "connection.json"
+            script = Path(tmp) / "matrix_operator.py"
+            script.write_text(
+                "import json,sys;print(json.dumps({'prefix':sys.prefix,'paths':sys.path[:3],'args':sys.argv[1:],'stdin':sys.stdin.buffer.read().decode(),'qualified':sys.qualified_owner}))"
+            )
+            code = Path(tmp) / "code-old"
+            package = code / "clusterctl"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("")
+            (package / "onboarding_code_successor.py").write_text(
+                "def sdk_parameters(code,uid):return {'matrix_commit':'qualified-fixture'}"
+            )
+            (package / "onboarding_sdk.py").write_text(
+                "import sys\ndef qualified_startup(venv,code,*,code_digest,code_uid,**parameters):\n assert sys.path[:2]==[str(code),'/receiving/imports-old']\n sys.qualified_owner=[code_digest,code_uid,parameters['matrix_commit']]\n"
+            )
+            value = {
+                "command": [
+                    sys.executable,
+                    "-B",
+                    "-I",
+                    "-S",
+                    "-c",
+                    "raise AssertionError('connection code must not execute')",
+                    "/receiving/sdk-old",
+                    "/receiving/imports-old",
+                    str(code),
+                    "clusterctl.onboarding_owner_client",
+                    "--code-digest",
+                    "a" * 64,
+                    "--code-owner",
+                    "0",
+                    "--binding",
+                    "/private/chat.json",
+                ]
+            }
+            path.write_text(json.dumps(value))
+            import matrix_operator
+
+            with patch.object(matrix_operator, "__file__", str(script)):
+                first = receiving_command(path, Path("/private/host.json"))
+                result = subprocess.run(
+                    first,
+                    input="exact original α",
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    timeout=5,
+                )
+                observed = json.loads(result.stdout)
+                self.assertEqual(observed["prefix"], "/receiving/sdk-old")
+                self.assertEqual(
+                    observed["paths"], [tmp, str(code), "/receiving/imports-old"]
+                )
+                self.assertEqual(
+                    observed["qualified"], ["a" * 64, 0, "qualified-fixture"]
+                )
+                self.assertEqual(observed["args"], ["--binding", "/private/host.json"])
+                self.assertEqual(observed["stdin"], "exact original α")
+                (package / "onboarding_sdk.py").write_text(
+                    "def qualified_startup(*args,**kwargs):raise RuntimeError('private diagnostic must stay local')"
+                )
+                denied = subprocess.run(
+                    first,
+                    input="retained original",
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+                self.assertEqual(denied.returncode, 1)
+                self.assertEqual(denied.stdout, "")
+                self.assertEqual(json.loads(denied.stderr), {"error": "RuntimeError"})
+                value["command"][6:9] = [
+                    "/receiving/sdk-new",
+                    "/receiving/imports-new",
+                    "/receiving/code-new",
+                ]
+                path.write_text(json.dumps(value))
+                self.assertEqual(
+                    receiving_command(path, Path("/private/host.json"))[6:9],
+                    value["command"][6:9],
+                )
+            for changed in (
+                ["/tmp/python", "-c", "untrusted code"],
+                value["command"][:9] + ["another_owner"] + value["command"][10:],
+                value["command"][:6] + ["relative-sdk"] + value["command"][7:],
+                value["command"][:10]
+                + ["--different-qualification"]
+                + value["command"][11:],
+            ):
+                path.write_text(json.dumps({"command": changed}))
+                with self.assertRaises(MatrixExecutionError):
+                    receiving_command(path, Path("/private/host.json"))
 
     def funded_original(self, *, status=None):
         import tempfile

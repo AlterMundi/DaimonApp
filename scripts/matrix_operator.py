@@ -7,6 +7,7 @@ is invoked or uncertain native send retried. The controller owns its reservation
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -123,10 +124,89 @@ def send(value, client, *, timeout=10, coordination=None):
     }
 
 
+def receiving_command(connection, binding):
+    """Bootstrap this host module in the existing receiving owner's SDK context.
+
+    This is owner configuration, never request/model JSON. Read the current
+    native connection each invocation so an SDK successor cannot leave a cached
+    host interpreter/import selection. Do not execute a connection's code string.
+    """
+    with connection.open("rb") as stream:
+        raw = stream.read(65537)
+    if len(raw) > 65536:
+        raise MatrixExecutionError("Bounded receiving connection required")
+    value = strict_json(raw)
+    command = value.get("command") if isinstance(value, dict) else None
+    if (
+        not isinstance(command, list)
+        or len(command) != 16
+        or any(
+            not isinstance(item, str) or not item or len(item) > 8192
+            for item in command
+        )
+        or command[1:5] != ["-B", "-I", "-S", "-c"]
+        or command[9] != "clusterctl.onboarding_owner_client"
+        or command[10] != "--code-digest"
+        or command[12] != "--code-owner"
+        or command[14] != "--binding"
+        or len(command[11]) != 64
+        or any(c not in "0123456789abcdef" for c in command[11])
+        or not command[13].isdigit()
+        or any(
+            not Path(item).is_absolute() or ".." in Path(item).parts
+            for item in (command[0], *command[6:9])
+        )
+    ):
+        raise MatrixExecutionError("Supported receiving owner context required")
+    script = str(Path(__file__).resolve())
+    bootstrap = (
+        "import os,sys,runpy\n"
+        "venv,imports,code,code_digest,code_uid,script,binding=sys.argv[1:]\n"
+        "sys.prefix=sys.exec_prefix=venv\n"
+        "sys.path[:0]=[code,imports]\n"
+        "sys.dont_write_bytecode=True\n"
+        "sys.pycache_prefix=imports+'/.disabled-bytecode'\n"
+        "from pathlib import Path\n"
+        "try:\n"
+        " from clusterctl import onboarding_sdk,onboarding_code_successor\n"
+        " parameters=onboarding_code_successor.sdk_parameters(Path(code),uid=int(code_uid))\n"
+        " if not parameters: raise RuntimeError('qualified receiving SDK required')\n"
+        " onboarding_sdk.qualified_startup(Path(venv),Path(code),code_digest=code_digest,code_uid=int(code_uid),**parameters)\n"
+        "except Exception as error:\n"
+        " import json\n"
+        " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
+        " raise SystemExit(1)\n"
+        "sys.path.insert(0,os.path.dirname(script))\n"
+        "sys.argv=[script,'--binding',binding]\n"
+        "runpy.run_path(script,run_name='__main__')\n"
+    )
+    return [
+        command[0],
+        "-B",
+        "-I",
+        "-S",
+        "-c",
+        bootstrap,
+        *command[6:9],
+        command[11],
+        command[13],
+        script,
+        str(binding),
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binding", type=Path, required=True)
+    parser.add_argument(
+        "--native-connection",
+        type=Path,
+        help="Current owner-local receiving SDK connection; no model/request selection",
+    )
     args = parser.parse_args()
+    if args.native_connection is not None:
+        command = receiving_command(args.native_connection, args.binding)
+        os.execv(command[0], command)
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise MatrixExecutionError("Bounded controller status required")
