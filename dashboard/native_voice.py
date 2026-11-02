@@ -147,7 +147,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await actor()
                     for event in events:
                         kind=event['type']
-                        if kind in ('source_query','session_status_query','integrating_source_query','delegation_proposed','integrator_watch'):
+                        if kind in ('tool_rejected','session_pending_query','source_query','session_status_query','integrating_source_query','delegation_proposed','integrator_watch'):
                             proposals[event['call_id']]=launch(bridge.tool(event));continue
                         if kind=='proposal_cancelled':
                             proposal=proposals.pop(event['call_id'],None)

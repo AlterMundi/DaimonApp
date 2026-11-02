@@ -159,6 +159,9 @@ class NativeDialogue:
                     {'name':'session_status','behavior':'NON_BLOCKING',
                      'description':'Read one bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. Only coarse activity: not why a session is blocked, its work contents, or the decision it needs. Resolve those questions through Sol using recent_originals and delegate_to_integrator. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
                      'parameters':{'type':'OBJECT','properties':{}}},
+                    {'name':'session_pending','behavior':'NON_BLOCKING',
+                     'description':'Read a bounded page of the human-owned pending session tasks and questions with titles, previews, dates and revisions. No execution, approval or dismissal. Use Sol to resolve missing details, latest results and viewer links.',
+                     'parameters':{'type':'OBJECT','properties':{'after':{'type':'INTEGER'}},'required':[]}},
                     {'name':'read_integrating_source','behavior':'NON_BLOCKING',
                      'description':'Read one additional page of a canonical integrating result/question already offered in this dialogue. Use its exact source ID, revision and next_offset. Read-only; never starts work or answers a native question.',
                      'parameters':{'type':'OBJECT','properties':{'source':{'type':'STRING'},'revision':{'type':'STRING'},'offset':{'type':'INTEGER'}},'required':['source','revision','offset']}},
@@ -315,6 +318,7 @@ class NativeDialogue:
                         or len(raw.encode() if isinstance(raw, str) else raw) > self.max_event_bytes):
                     self._fail('native-dialogue-event-bound')
                 try:
+                    self._validation_stage="envelope"
                     value = json.loads(raw)
                     if not isinstance(value, dict) or 'error' in value:
                         raise ValueError()
@@ -322,7 +326,7 @@ class NativeDialogue:
                 except DialogueUnavailable:
                     raise
                 except Exception:
-                    self._fail('native-dialogue-invalid-provider-event')
+                    self._fail('native-dialogue-invalid-provider-event-'+self._validation_stage)
 
     def _text(self, value):
         if not isinstance(value, str) or len(value.encode()) > 16384:
@@ -344,6 +348,7 @@ class NativeDialogue:
         cancelled = value.get('toolCallCancellation', {}).get('ids', [])
         if self.phase != 'ready' and (content or calls or cancelled or 'voiceActivity' in value):
             raise ValueError('Output before readiness')
+        self._validation_stage="voice-activity"
         if 'voiceActivity' in value:
             activity = value['voiceActivity']
             if (activity.get('type') not in ('ACTIVITY_START', 'ACTIVITY_END')
@@ -359,6 +364,7 @@ class NativeDialogue:
         if content.get('interrupted'):
             self.response_pending=False
             events.append({'type': 'interrupted'})
+        self._validation_stage="transcription"
         for field, kind in (('interimInputTranscription', 'input_caption'),
                             ('inputTranscription', 'input_transcript'),
                             ('outputTranscription', 'output_transcript')):
@@ -373,6 +379,7 @@ class NativeDialogue:
                 events.append({'type': kind, 'text': text,
                                'start_offset': item.get('startOffset'), 'end_offset': item.get('endOffset'),
                                **({'finished':item['finished']} if 'finished' in item else {})})
+        self._validation_stage="audio"
         for part in content.get('modelTurn', {}).get('parts', []):
             audio = part.get('inlineData')
             if audio is not None:
@@ -389,43 +396,24 @@ class NativeDialogue:
                 # that same event after the clear signal.
                 if not content.get('interrupted'):
                     events.append({'type': 'audio', 'pcm': pcm, 'sample_rate': 24000})
+        self._validation_stage="tool-envelope"
         for call in calls:
             ident, args, name = call['id'], call['args'], call['name']
             if (not isinstance(ident,str) or not ident or len(ident)>256
                     or ident in self.tools or len(self.tools)>=self.max_tools
                     or sum(c['state']=='pending' for c in self.tools.values())>=self.max_pending
+                    or not isinstance(name,str) or not 1<=len(name)<=128
                     or not isinstance(args,dict)):
                 raise ValueError('Invalid bounded foreground tool proposal')
-            if name=='delegate_to_integrator':
-                if (set(args)!={'request','original_ids'}
-                        or not isinstance(args['request'],str) or not args['request'].strip()
-                        or len(args['request'].encode())>8192
-                        or not isinstance(args['original_ids'],list) or not 1<=len(args['original_ids'])<=8
-                        or len(set(args['original_ids']))!=len(args['original_ids'])
-                        or any(str(uuid.UUID(i))!=i for i in args['original_ids'])):
-                    raise ValueError('Invalid bounded delegation proposal')
-                proposal={'type':'delegation_proposed','call_id':ident,
-                          'formulation':args['request'],'original_ids':list(args['original_ids'])}
-            elif name=='recent_originals':
-                before=args.get('before',0)
-                if set(args)-{'before'} or type(before) is not int or not 0<=before<=2**63-1:
-                    raise ValueError('Invalid source query')
-                proposal={'type':'source_query','call_id':ident,'before':before}
-            elif name=='session_status' and not args:
-                proposal={'type':'session_status_query','call_id':ident}
-            elif name=='read_integrating_source':
-                if (set(args)!={'source','revision','offset'}
-                        or not isinstance(args['source'],str) or not 1<=len(args['source'])<=256
-                        or not isinstance(args['revision'],str) or not re.fullmatch('[a-f0-9]{64}',args['revision'])
-                        or type(args['offset']) is not int or not 0<=args['offset']<=10**9):
-                    raise ValueError('Invalid integrating source query')
-                proposal={'type':'integrating_source_query','call_id':ident,**args}
-            elif name=='await_integrator_update' and not args:
-                proposal={'type':'integrator_watch','call_id':ident}
-            else:
-                raise ValueError('Unknown foreground tool')
+            try:
+                proposal=self._tool_proposal(ident,name,args)
+            except (ValueError,TypeError,KeyError,AttributeError):
+                # An invalid model argument is a rejected proposal, not a lost
+                # voice connection. No owner operation or original admission.
+                proposal={'type':'tool_rejected','call_id':ident}
             self.tools[ident]={'state':'pending','name':name}
             events.append(proposal)
+        self._validation_stage="tool-cancellation"
         for ident in cancelled:
             if ident not in self.tools:
                 raise ValueError('Unknown cancelled proposal')
@@ -442,6 +430,42 @@ class NativeDialogue:
             # or replay pending operations here.
             events.append({'type': 'closing'})
         return events
+
+    def _tool_proposal(self, ident, name, args):
+        if name=='delegate_to_integrator':
+            if (set(args)!={'request','original_ids'}
+                    or not isinstance(args['request'],str) or not args['request'].strip()
+                    or len(args['request'].encode())>8192
+                    or not isinstance(args['original_ids'],list) or not 1<=len(args['original_ids'])<=8
+                    or len(set(args['original_ids']))!=len(args['original_ids'])
+                    or any(str(uuid.UUID(i))!=i for i in args['original_ids'])):
+                raise ValueError('Invalid bounded delegation proposal')
+            proposal={'type':'delegation_proposed','call_id':ident,
+                      'formulation':args['request'],'original_ids':list(args['original_ids'])}
+        elif name=='recent_originals':
+            before=args.get('before',0)
+            if set(args)-{'before'} or type(before) is not int or not 0<=before<=2**63-1:
+                raise ValueError('Invalid source query')
+            proposal={'type':'source_query','call_id':ident,'before':before}
+        elif name=='session_pending':
+            after=args.get('after',0)
+            if set(args)-{'after'} or type(after) is not int or not 0<=after<=2**63-1:
+                raise ValueError('Invalid pending cursor')
+            proposal={'type':'session_pending_query','call_id':ident,'after':after}
+        elif name=='session_status' and not args:
+            proposal={'type':'session_status_query','call_id':ident}
+        elif name=='read_integrating_source':
+            if (set(args)!={'source','revision','offset'}
+                    or not isinstance(args['source'],str) or not 1<=len(args['source'])<=256
+                    or not isinstance(args['revision'],str) or not re.fullmatch('[a-f0-9]{64}',args['revision'])
+                    or type(args['offset']) is not int or not 0<=args['offset']<=10**9):
+                raise ValueError('Invalid integrating source query')
+            proposal={'type':'integrating_source_query','call_id':ident,**args}
+        elif name=='await_integrator_update' and not args:
+            proposal={'type':'integrator_watch','call_id':ident}
+        else:
+            raise ValueError('Unknown foreground tool')
+        return proposal
 
     def close(self):
         with self._lock:

@@ -66,6 +66,25 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         await capture.reservation;self.owner.text=text
         await self.bridge.transcript(ident,text)
         return ident,pcm,capture
+    async def test_invalid_proposal_returns_feedback_without_owner_operation(self):
+        result=await self.bridge.tool({'type':'tool_rejected','call_id':'invalid'})
+        self.assertEqual(result['kind'],'invalid_arguments')
+        self.assertFalse(result['operation_started'])
+        self.assertEqual(self.owner.delegations,[])
+        self.assertEqual(self.owner.inputs,{})
+        self.assertEqual(self.stream.results,[('invalid',result)])
+
+    async def test_pending_ledger_projection_is_read_only_bounded_and_keeps_dates(self):
+        self.owner.internal_pending=lambda after:{'cursor':41,'more':True,'items':[
+            {'id':'a'*32,'kind':'task','title':'Inspect result','preview':'x'*20000,
+             'created_at':'2026-11-02','revision':'b'*64,'can_dismiss':True}]*64}
+        result=await self.bridge.tool({'type':'session_pending_query','call_id':'pending','after':0})
+        self.assertTrue(result['read_only']);self.assertTrue(result['truncated'])
+        self.assertIsNone(result['cursor']);self.assertLessEqual(len(json.dumps(result).encode()),16384)
+        self.assertEqual(result['items'][0]['created_at'],'2026-11-02')
+        self.assertNotIn('can_dismiss',result['items'][0])
+        self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+
     async def test_automatic_source_query_and_delegation_cannot_select_previous_original(self):
         ident,_,_=await self.captured()
         self.bridge.pending_acoustic=str(uuid.uuid4())

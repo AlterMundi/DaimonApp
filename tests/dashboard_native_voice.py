@@ -846,6 +846,20 @@ class Mounted(unittest.TestCase):
             self.assertEqual(len(reads),1);self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
             ws.send_json({'type':'close'})
 
+    def test_rejected_tool_keeps_mounted_voice_open_for_next_read(self):
+        self.owner.sonic_activity=lambda:{'connected':True,'sources':[]}
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'tool_rejected','call_id':'bad-arguments'}])
+            call,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'bad-arguments');self.assertFalse(result['operation_started'])
+            stream.queue.put([{'type':'session_status_query','call_id':'valid-read'}])
+            call,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'valid-read');self.assertEqual(result['kind'],'session_status')
+            self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+            ws.send_json({'type':'close'})
+
     def test_idle_notice_does_not_interrupt_active_human_capture(self):
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')

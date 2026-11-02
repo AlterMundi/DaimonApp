@@ -198,7 +198,10 @@ class ForegroundBridge:
             if (event['type'] in ('source_query','delegation_proposed')
                     and self.pending_acoustic is not None):
                 raise ForegroundUnavailable('The current spoken original is still pending')
-            if event['type']=='source_query':
+            if event['type']=='tool_rejected':
+                result={'kind':'invalid_arguments','operation_started':False,
+                    'meaning':'This proposal was rejected before any operation. Use the declared tool schema and retained current originals; do not repeat an admitted or uncertain request.'}
+            elif event['type']=='source_query':
                 # Recognition/storage may finish while the native voice speaks.
                 capture=self.captures.get(self.latest)
                 if capture:
@@ -240,6 +243,9 @@ class ForegroundBridge:
                 for row in rows[:64]:
                     fresh=result['connected'] and row.get('fresh') is True
                     item={'label':str(row.get('label','Session'))[:128],
+                        'id':row.get('id'),'session':row.get('session'),
+                        'work_started_at':row.get('work_started_at') if fresh else None,
+                        'error':row.get('error') if fresh else None,
                         'observed_at':row.get('observed_at'),'fresh':fresh,
                         'execution':row.get('execution','unknown') if fresh else 'unknown',
                         'goal_state':row.get('goal_state','unknown') if fresh else 'unknown',
@@ -251,6 +257,26 @@ class ForegroundBridge:
                         result['truncated']=True;break
                     result=candidate
                 if len(result['sessions'])<len(rows):result['truncated']=True
+            elif event['type']=='session_pending_query':
+                snapshot=await self._owner(self.provider.internal_pending,event['after'])
+                result={'kind':'session_pending','source_data':True,'read_only':True,
+                    'source':'existing_owned_pending_ledger','items':[],
+                    'cursor':snapshot.get('cursor'),'more':snapshot.get('more') is True,
+                    'truncated':False,
+                    'meaning':'Retained pending tasks/questions, not proof of a live worker or current blocker. Previews can be incomplete. Ask Sol for interpretation, complete results and viewer links. No action started.'}
+                rows=snapshot.get('items',[])
+                if not isinstance(rows,list):raise ForegroundUnavailable('Pending session items unavailable')
+                for row in rows[:64]:
+                    item={key:row.get(key) for key in ('id','kind','label','state','revision','created_at','updated_at')}
+                    item.update(title=str(row.get('title',''))[:256],preview=str(row.get('preview',''))[:512])
+                    candidate={**result,'items':result['items']+[item]}
+                    if len(json.dumps(candidate,allow_nan=False).encode())>16384:
+                        result['truncated']=True;break
+                    result=candidate
+                if len(result['items'])<len(rows):result['truncated']=True
+                # If local projection truncated a page, never advertise its end
+                # cursor as a complete continuation over the omitted records.
+                if result['truncated']:result['cursor']=None
             elif event['type']=='integrating_source_query':
                 source=self._offered.get((event['source'],event['revision']))
                 if source is None:
