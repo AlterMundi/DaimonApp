@@ -22,6 +22,9 @@ class NativeDialogue:
     endpoint = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
     model = 'gemini-3.8-live'
     max_seconds = 300
+    max_context_tokens = 128000
+    compression_trigger_tokens = 102400
+    compression_target_tokens = 64000
     max_input_bytes = 300 * 32000
     max_output_bytes = 300 * 48000
     max_event_bytes = 262144
@@ -59,6 +62,7 @@ class NativeDialogue:
         self.tools = {}
         self.tool_responses = 0
         self.failure_code = None
+        self.context_usage = None
         try:
             self._socket = connect(self.endpoint, header=['x-goog-api-key: ' + token],
                                    timeout=10, redirect_limit=0, enable_multithread=True)
@@ -67,6 +71,8 @@ class NativeDialogue:
                 'model': 'models/' + self.model,
                 'generationConfig': {'responseModalities': ['AUDIO'], 'maxOutputTokens': 512},
                 'inputAudioTranscription': {}, 'outputAudioTranscription': {},
+                'contextWindowCompression': {'triggerTokens': self.compression_trigger_tokens,
+                    'slidingWindow': {'targetTokens': self.compression_target_tokens}},
                 'realtimeInputConfig': {'automaticActivityDetection': (
                     {'disabled':True} if activity_mode=='manual' else {
                         'disabled':False,'startOfSpeechSensitivity':'START_SENSITIVITY_LOW',
@@ -341,6 +347,13 @@ class NativeDialogue:
 
     def _events(self, value):
         events = []
+        usage=value.get('usageMetadata')
+        if isinstance(usage,dict):
+            # Optional provider accounting is observation, not a local tokenizer
+            # or proof of semantic retention after the provider slides context.
+            selected={k:usage[k] for k in ('promptTokenCount','totalTokenCount')
+                if type(usage.get(k)) is int and 0<=usage[k]<=2**31-1}
+            if selected:self.context_usage=selected
         if 'setupComplete' in value:
             if self.phase != 'opening' or not isinstance(value['setupComplete'], dict):
                 raise ValueError('Unexpected readiness')

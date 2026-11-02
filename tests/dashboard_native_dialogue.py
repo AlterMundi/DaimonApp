@@ -85,6 +85,19 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
         self.assertEqual(self.event(self.audio())[0]['type'],'audio')
 
+    def test_context_compression_has_token_margin_and_fixed_provider_accounting(self):
+        setup=self.socket.sent[0]['setup']
+        self.assertEqual(setup['contextWindowCompression'],{
+            'triggerTokens':102400,'slidingWindow':{'targetTokens':64000}})
+        self.assertLess(self.stream.compression_target_tokens,self.stream.compression_trigger_tokens)
+        self.assertLess(self.stream.compression_trigger_tokens,self.stream.max_context_tokens)
+        self.ready()
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':105000,'totalTokenCount':105100,'private_payload':'not retained'}}),[])
+        self.assertEqual(self.stream.context_usage,{'promptTokenCount':105000,'totalTokenCount':105100})
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':True,'totalTokenCount':-1}}),[])
+        self.assertEqual(self.stream.phase,'ready')
+        self.assertEqual(self.stream.input_bytes,0)
+
     def test_recent_results_tool_only_offers_bounded_read_cursors(self):
         self.ready()
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'results','name':'recent_results','args':{}}]}}),
