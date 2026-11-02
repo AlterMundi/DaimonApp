@@ -722,3 +722,18 @@ timer or input admission. A deterministic Spanish example can begin its useful
 the ordinary player continues from that exact offset after confirmation.
 This proves an earlier selection opportunity, not provider latency, physical
 hearing or resolution of the phone's automatic utterance-handoff failure.
+
+
+### Native foreground continuation after tool cancellation
+
+A provider tool cancellation must retire only that proposal. The mounted output
+reader keeps its own event deque across subsequent provider receives. Reusing
+that deque's variable for the cancelled task previously raised AttributeError
+on the next receive and disconnected the avatar. The regression now sends a
+separate later provider batch and verifies its transcript and turn completion
+through the same open socket, without restarting or replaying input or work.
+
+This reproduced defect is not retrospective proof of the cause of any particular
+phone disconnect. Generated captions may precede playback; interrupted output
+and playback byte positions do not establish physical hearing or word alignment.
+The reported delayed/partial speech still requires its own session evidence.
