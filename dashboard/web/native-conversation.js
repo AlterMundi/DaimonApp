@@ -41,7 +41,7 @@ window.NativeConversation=(()=>{
       if(energyFence)onTiming(value.id,'output_energy_held');
       if(nativeOutput){
         const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
-        if(await nativeOutput.append(value.id,value.end,bytes)){if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}return;
+        if(await nativeOutput.append(value.id,value.end,bytes)){if(!played.has(value.id))played.set(value.id,0);if(energyFence)onTiming(value.id,'output_energy_held');onTiming(value.id,'output_scheduled');}return;
       }
       if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
       const samples=new Float32Array(raw.length/2);
