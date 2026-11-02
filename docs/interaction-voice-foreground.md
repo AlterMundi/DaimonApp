@@ -359,6 +359,19 @@ the paid provider or requesting the browser microphone; an old worker cannot
 silently impersonate support. Receiving adoption must select the matching
 `capture_turn.py` command and completed-transcript reader with the backend.
 
+The acoustic worker commits a new voice generation only after three consecutive
+positive VAD frames. A one/two-frame candidate remains provisional. Previously,
+such a candidate advanced the generation before confirmation, so a noise spike
+following a still-open phrase could leave its generation unmatched and disable
+both completion paths even after a later quiet tail. The regression reproduces
+confirmed speech, a rejected semantic completion, a short spike and1600ms quiet;
+the existing phrase now ends exactly once. Confirmed resumed speech still opens
+the next generation across partial PCM reads, and exact source bytes, offsets,
+question scope and recovery are unchanged. This repairs that deterministic state
+failure; it does not prove arbitrary car-noise classification. Repeated positive
+spikes can still postpone silence, and sustained false positives need separate
+noise qualification. Learned VAD probabilities are not word-recognition receipts.
+
 ## Actual audio-input qualification —1November2026
 
 The synthetic audio-input journey did not establish automatic end-of-phrase:

@@ -47,6 +47,7 @@ class Activity:
         self.tail = bytearray()
         self.bytes = self.frames = self.generation = self.positive = self.quiet = self.analyses = 0
         self.speaking = self.speech_seen = False
+        self.pending_onset = False
         self.scored_generation = self.confirmed_generation = 0
         self.max_bytes = (300 if continuous else 120) * 32000
         self.max_analyses = 90 if continuous else 30
@@ -78,20 +79,25 @@ class Activity:
             self.frames += 1
             if self._probability(frame) >= .5:
                 if not self.speaking:
-                    self.generation += 1
+                    self.pending_onset = True
                 self.speaking = True
                 self.positive += 1
                 self.quiet = 0
                 if self.positive >= 3:
                     self.speech_seen = True
-                    if self.confirmed_generation != self.generation:
+                    if self.pending_onset:
+                        # A provisional noise spike cannot supersede the open
+                        # confirmed phrase and disable both endpoint paths.
+                        self.generation += 1
                         self.confirmed_generation = self.generation
+                        self.pending_onset = False
                         onset = {'generation': self.generation, 'audio_bytes': self.frames * 1024}
             else:
                 self.positive = 0
                 self.quiet += 1
                 if self.quiet >= 7:
                     self.speaking = False
+                    self.pending_onset = False
         result = {'schema': SCHEMA, 'type': 'activity', 'generation': self.generation,
                   'speaking': self.speaking, 'speech_seen': self.speech_seen, 'audio_bytes': self.bytes}
         if onset is not None:
