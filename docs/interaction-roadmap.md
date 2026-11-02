@@ -264,3 +264,13 @@ CPU/manual path. See the automatic-owner section of
 [the foreground contract](interaction-voice-foreground.md). This advances the
 noise/turn-taking repair; digital evidence does not close phone fluency, useful
 latency or the remaining milestone obligations.
+
+
+### Avatar provider and Instant comparison — 2 November 2026
+
+The [dated provider brief](interaction-avatar-services-20261102.md) continues the
+15/18/26October research. It compares native and managed speech routes, identifies
+GPT-Live client delegation as an architectural challenger to the selected Gemini
+foreground, separates Instant's text/tool capabilities from native audio, and
+retains credit/access and phone qualification gaps. This research does not switch
+providers, replace Sol, close milestones or authorize a new account/billing change.
