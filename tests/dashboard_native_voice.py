@@ -6,6 +6,7 @@ receiving configuration is used. Ordinary HTTP qualification remains separate.
 import asyncio
 import hashlib
 import json
+import logging
 from pathlib import Path
 import queue
 import sys
@@ -169,6 +170,24 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.owner.calls,[])
         self.assertTrue(Stream.opened[0].closed_event.wait(2),'Wait for actual provider cleanup, not client context exit')
         self.assertTrue(Detector.opened[0].closed_event.wait(2))
+    def test_close_journal_records_task_and_error_without_private_content(self):
+        observed=queue.Queue()
+        def log(message,*args,**kwargs):
+            if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',
+                'audio_offset':'0s','source':'provider_manual_activity_ack'}])
+            event=ws.receive_json()
+            while event['type']!='review':event=ws.receive_json()
+            result=observed.get(timeout=2)
+        self.assertEqual(result['id'],self.ident)
+        self.assertEqual(result['stage'],'native-output')
+        self.assertEqual(result['error_type'],'ForegroundUnavailable')
+        self.assertEqual(result['cleanup'],'completed')
+        self.assertEqual(set(result),{'id','stage','error_type','elapsed_ms','received_pcm_bytes','generated_pcm_bytes','cleanup'})
+        self.assertEqual(self.owner.delegations,[])
+
     def test_missing_provider_final_closes_to_review_and_preserves_exact_original(self):
         def no_transcript(stream):
             stream.queue.put([{'type':'voice_activity','activity':'ACTIVITY_END',

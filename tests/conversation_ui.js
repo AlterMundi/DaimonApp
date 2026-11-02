@@ -68,7 +68,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       if(options.controlLost){options.controlLost=false;throw Error("Synthetic lost control return");}
       return budgetControlReceipts.get(body.nonce);
     }
-    if(pageFailure && url.pathname==="/interaction"){const name=pageFailure;pageFailure=false;throw Object.assign(Error("Synthetic network suspension"),{name});}
+    if(pageFailure && url.pathname==="/interaction"){const value=typeof pageFailure==='string'?{name:pageFailure}:pageFailure;pageFailure=false;throw Object.assign(Error("Synthetic network suspension"),value);}
     if(url.pathname==='/interaction/telegram-inputs'){
       if(options.telegramDenied)throw Object.assign(Error('Telegram observation denied'),{status:403});
       const before=Number(url.searchParams.get('before')),after=url.searchParams.get('direction')==='after';
@@ -212,7 +212,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       const create=context.window.ContinuousConversation.create;
       context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession=create(hooks);}};
     }
-    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update:v=>continuousMode.updates.push(v),open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},close(){if(!this.active)return;this.active=false;hooks.onLeave();}};}};
+    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},close(){if(!this.active)return;this.active=false;hooks.onLeave();}};}};
   }
   if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
     const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};streamedTransports.push(value);return value;
@@ -223,7 +223,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     return nativeSession={active:false,floor:false,hasAudio:false,paused:false,originals:[],enabled:true,
       start(){this.active=true;continuousCalls.push(['native-start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},
       hold(){this.active=false;continuousCalls.push(['native-hold']);},setEnabled(value){this.enabled=value;},
-      pause(){this.paused=true;hooks.onState({active:true,floor:false,pending:false,playback:'paused'});},
+      pause(reason='manual'){this.paused=true;this.pauseReason=reason;hooks.onState({active:true,floor:false,pending:false,playback:'paused',pauseReason:reason});},
       resume(){this.paused=false;hooks.onState({active:true,floor:false,pending:false,playback:'playing'});},release(){}};
   }};
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
@@ -255,7 +255,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     finishCapture(){capture.onActivity(false);},
     capturedInput(value){capture.onInput(value);},
     timingCapture(id,stage){capture.onTiming(id,stage);},
-    failPage(name="TypeError"){pageFailure=name;},failAudio(n=1){audioFailures=n;},
+    failPage(name="TypeError",status){pageFailure={name,status};},failAudio(n=1){audioFailures=n;},
     closeNativeRequest(){Object.assign(nativeRequests.get('native-request'),{state:'answered',actionable:false});},
     overrideSource(n,value){sourceOverrides.set(n,value);},addReplies(n){count+=n;},audio(parts=false){renderAudio=true;multipart=parts;},
     nativeRequest(audioTrack="conversation",target={chat_id:100,thread_id:1}) {
@@ -1542,6 +1542,10 @@ function boot(readOnly=false,standalone=false,options={}) {
   nativeAvatar.audio();await nativeAvatar.ui.refresh();nativeAvatar.continuous().mode.open();
   assert.equal(nativeAvatar.native().session.active,true,'The avatar selects the mounted native mode');
   assert(!nativeAvatar.continuous().calls.some(v=>v[0]==='start'),'Native mode does not start the serial ASR/Sol/TTS coordinator');
+  nativeAvatar.failPage('TypeError');await nativeAvatar.ui.refresh();
+  assert.equal(nativeAvatar.continuous().mode.active,true,'An unrelated metadata refresh outage must not close the independently authenticated native avatar');
+  assert.equal(nativeAvatar.native().session.active,true,'Existing native socket/capture stays owned by its own actor checks');
+  assert.equal(nativeAvatar.native().session.paused,false,'A refresh outage is not human Pause');
   nativeAvatar.addReplies(1);await nativeAvatar.ui.refresh();
   assert.equal(nativeAvatar.audioCalls.length,0,'Canonical returns do not also launch ordinary TTS during native voice');
   const nativeRecord={id:'synthetic-voice-output',kind:'voice_foreground',speaker:'assistant',text:'Full generated voice text. '.repeat(200),observed_at:Date.now()/1000,closed:true,interrupted:true,cursor:1};
@@ -1552,8 +1556,16 @@ function boot(readOnly=false,standalone=false,options={}) {
   nativeAvatar.native().session.hasAudio=true;nativeAvatar.native().hooks.onState({active:true,floor:false,pending:false,playback:'playing'});
   nativeAvatar.nodes.get('#conversation-audio').beforeNodes[0].handlers.click();assert.equal(nativeAvatar.native().session.paused,true);
   nativeAvatar.nodes.get('#conversation-audio').beforeNodes[0].handlers.click();assert.equal(nativeAvatar.native().session.paused,false);
+  nativeAvatar.mediaActions.get('pause')();assert.equal(nativeAvatar.native().session.pauseReason,'media-session','Actual OS pause origin reaches the native owner');
+  nativeAvatar.failPage('AbortError');await nativeAvatar.ui.refresh();assert.equal(nativeAvatar.native().session.paused,true,'A refresh recovery does not override an explicit native Pause');
+  nativeAvatar.mediaActions.get('play')();assert.equal(nativeAvatar.native().session.paused,false);
   nativeAvatar.nodes.get('#conversation-voice-replies').handlers.click();assert.equal(nativeAvatar.native().session.enabled,false,'The existing speaker controls native speech too');
   nativeAvatar.continuous().mode.close();assert.equal(nativeAvatar.native().session.active,false);nativeAvatar.ui.stop();
+  const nativeAccess=boot(false,true,{capture:true,continuous:true,nativeVoice:true,clock:true});
+  nativeAccess.audio();await nativeAccess.ui.refresh();nativeAccess.continuous().mode.open();
+  nativeAccess.failPage('Error',403);await nativeAccess.ui.refresh();
+  assert.equal(nativeAccess.continuous().mode.active,false,'Actual access rejection still closes the avatar');
+  assert.equal(nativeAccess.native().session.active,false,'Revoked access still releases native capture');nativeAccess.ui.stop();
   const fixture = boot();
   await fixture.ui.refresh();
   fixture.arrive(); // Fifty new replies, then nine more during metadata refresh.
