@@ -346,6 +346,242 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(MatrixExecutionError, "current and pending"):
             MatrixConversationTransport(status, status["claimed_source"], client)
 
+    def funded_original(self, *, status=None):
+        import tempfile
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from daimon_matrix.execution_store import ExecutionStore
+        from tests.test_execution_instruction import proof, verifier
+
+        tmp = tempfile.TemporaryDirectory(prefix="funded-conversation-")
+        self.addCleanup(tmp.cleanup)
+        key = Ed25519PrivateKey.generate()
+        store = ExecutionStore.create(
+            Path(tmp.name) / "execution.sqlite", verifier(key), clock=lambda: 100
+        )
+        store.enable_episode_reporting()
+
+        def signed(value, event):
+            return proof(key, "approve", value, event)
+
+        status = status or self.technical_status()
+        reply_scope = Scope(
+            "tribe", status["request"]["id"], "messaging_reply", "reply"
+        )
+        purpose = (
+            "Review one eligible signed original and return a bounded useful answer."
+        )
+        instruction = Instruction.from_dict(
+            request(
+                store_id=store.store_id,
+                being=self.receiver.lane.being_ref,
+                embodiment=self.receiver.lane.local_embodiment_id,
+                mode="periodic",
+                interval=10,
+                max_cycles=2,
+                max_input_tokens=16384,
+                task_sha256=hashlib.sha256(purpose.encode()).hexdigest(),
+                scope=[
+                    {
+                        k: getattr(reply_scope, k)
+                        for k in ("channel", "thread", "tool", "action")
+                    }
+                ],
+            )
+        )
+        for kind in ("tribe", "being", "episode"):
+            account = dict(
+                schema="execution/funding-account/v1",
+                store_id=store.store_id,
+                principal="human:test",
+                account_id=kind,
+                kind=kind,
+                subject=instruction.being if kind == "being" else kind,
+                start=100,
+                end=200,
+                unit="synthetic-charge",
+                max_calls=3,
+                max_charge=100,
+                max_active=1,
+                max_bindings=3,
+            )
+            store.grant_budget(account, signed(account, "account-" + kind))
+        store.approve(instruction, signed(instruction.to_dict(), "instruction"))
+        funding = dict(
+            schema="execution/instruction-funding/v1",
+            store_id=store.store_id,
+            principal="human:test",
+            instruction_sha256=instruction.sha256,
+            accounts=["tribe", "being", "episode"],
+            route="isolated-fake",
+            max_charge=30,
+        )
+        store.fund_instruction(instruction, funding, signed(funding, "funding"))
+        policy = dict(
+            schema="execution/episode-policy/v1",
+            store_id=store.store_id,
+            principal="human:test",
+            account_id="episode",
+            participants=[self.sender.lane.being_ref],
+            instructions=[instruction.sha256],
+            threads=[reply_scope.thread],
+            max_requests=3,
+            max_pending=2,
+            max_input_bytes=16384,
+        )
+        store.configure_episode(policy, signed(policy, "policy"))
+        metadata = dict(
+            schema="execution/coordination-request/v1",
+            account_id="episode",
+            instruction_sha256=instruction.sha256,
+            kind="work",
+        )
+        # The approved purpose/funding/hash exist BEFORE the original message.
+        transport = MatrixConversationTransport(
+            status,
+            {
+                "being_ref": self.sender.lane.being_ref,
+                "embodiment_id": self.sender.lane.local_embodiment_id,
+            },
+            SignedGroupClient(self.fixture, self.sender),
+            coordination=metadata,
+        )
+        outcome = operator_send(
+            {"status": status, "source": transport._author},
+            SignedGroupClient(self.fixture, self.sender),
+            timeout=1,
+            coordination=metadata,
+        )
+        sent = transport.inspect()
+        self.assertEqual(outcome["submission"]["message_id"], sent["message_id"])
+        original = self.receiver.message(sent["message_id"])
+        broker = MatrixExecutionBroker(
+            instruction,
+            purpose,
+            SignedGroupClient(self.fixture, self.receiver),
+            received_source=original,
+        )
+        runner = runner_fixtures.BoundedFakeRunner()
+        runner.binding = instruction.binding
+        reads = []
+
+        def read(message_id):
+            reads.append(message_id)
+            return self.receiver.message(message_id)
+
+        controller = broker.controller(
+            store, runner, read_message=read, monotonic=lambda: 10
+        )
+        work = controller.enqueue_native(original["event_id"])
+        return SimpleNamespace(
+            store=store,
+            key=key,
+            instruction=instruction,
+            purpose=purpose,
+            metadata=metadata,
+            scope=reply_scope,
+            transport=transport,
+            sent=sent,
+            source=original,
+            broker=broker,
+            runner=runner,
+            controller=controller,
+            work=work,
+            reads=reads,
+            status=status,
+            outcome=outcome,
+        )
+
+    def test_funded_selected_original_returns_under_the_same_conversation_root(self):
+        state = self.funded_original()
+        context = state.controller.run_due_once(
+            state.instruction.instruction_id, 1, state.purpose, work_id=state.work
+        )
+        self.assertEqual(len(state.runner.starts), 1)
+        self.assertEqual(
+            context.selected_original()["event_id"], state.source["event_id"]
+        )
+        requests = []
+        context.inference(
+            lambda: requests.append("bounded provider request"),
+            exposure=dict(
+                route="isolated-fake",
+                max_charge=30,
+                provider=state.instruction.provider,
+                model=state.instruction.model,
+                max_input_tokens=state.instruction.max_input_tokens,
+                max_output_tokens=state.instruction.max_output_tokens,
+            ),
+        )
+        result = context.native(
+            state.scope, {"text": "The funded selected task is complete."}
+        )
+        self.assertTrue(result["semantic"]["terminal"])
+        state.store.finish(context.cycle, "completed")
+        answer = self.sender.message(result["message_id"])
+        self.assertEqual(
+            answer["payload"]["body"]["coordination"],
+            state.metadata | {"kind": "result"},
+        )
+        callback = state.transport.conversation_return(state.sent, answer)
+        self.assertEqual(callback["request"], state.status["request"]["id"])
+        self.assertEqual(callback["binding"], state.status["request"]["binding"])
+        self.assertEqual(callback["text"], "The funded selected task is complete.")
+        self.assertEqual(callback["author"]["being_ref"], self.receiver.lane.being_ref)
+        self.assertIsNone(
+            state.store.enqueue_coordination(answer["event_id"], self.sender.message)
+        )
+        self.assertEqual(requests, ["bounded provider request"])
+        self.assertEqual(set(state.reads), {state.source["event_id"]})
+        balance = state.store.funding_status("episode")
+        self.assertEqual((balance["calls"], balance["reserved"]), (1, 30))
+        self.assertEqual(
+            state.store.coordination_work(state.work)["cycle_id"],
+            context.cycle.cycle_id,
+        )
+        self.assertIsNone(
+            state.controller.run_due_once(
+                state.instruction.instruction_id, 1, state.purpose, work_id=state.work
+            )
+        )
+        self.assertEqual(len(state.runner.starts), 1)
+
+    def test_queued_broker_rejects_another_eligible_original_and_disabled_gates(self):
+        from daimon_matrix.execution_instruction import ExecutionDenied
+
+        state = self.funded_original()
+        for option in ("require_funding", "require_queued_source"):
+            with self.assertRaises(MatrixExecutionError):
+                state.broker.controller(
+                    state.store,
+                    state.runner,
+                    read_message=self.receiver.message,
+                    **{option: False},
+                )
+        with self.assertRaises(ExecutionDenied):
+            state.controller.run_due_once(
+                state.instruction.instruction_id, 1, state.purpose
+            )
+        relay = json.loads(state.source["payload"]["body"]["text"])
+        relay["input_ref"] = str(uuid.uuid4())
+        other = self.fixture.send_and_settle(
+            self.sender,
+            client_id="test",
+            send_id=str(uuid.uuid4()),
+            thread_id=state.scope.thread,
+            text=canonical(relay),
+            destination=self.target,
+            coordination=state.metadata,
+        )
+        other_work = state.controller.enqueue_native(other["message_id"])
+        self.assertNotEqual(other_work, state.work)
+        with self.assertRaisesRegex(ExecutionDenied, "pinned receiving original"):
+            state.controller.run_due_once(
+                state.instruction.instruction_id, 1, state.purpose, work_id=other_work
+            )
+        self.assertEqual(state.runner.starts, [])
+        self.assertEqual(state.store.funding_status("episode")["calls"], 0)
+        self.assertEqual(state.store.coordination_work(other_work)["state"], "queued")
+
     def test_signed_request_and_exact_parent_return_preserve_provenance(self):
         first = self.send()
         self.assertTrue(first["semantic"]["terminal"])

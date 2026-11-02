@@ -427,6 +427,7 @@ class _NativeMatrixTransport:
             )
         self._scope, self._task, self._client = scope, value, native_client
         self._author, self._execution_ref = dict(author), execution_ref
+        self._coordination = None
         # The native journal owns idempotency even across host restart. A changed
         # recipient, payload or execution reference cannot reuse this send ID.
         role = "request" if scope.tool == "messaging_send" else "result"
@@ -571,6 +572,8 @@ class _NativeMatrixTransport:
                 received_channel_id=scope.channel,
                 message_id=self._task["parent"]["message_id"],
             )
+        if self._coordination is not None:
+            params["coordination"] = dict(self._coordination)
         return self._invoke("messaging." + scope.action, params, timeout)
 
     def inspect(self, timeout=1.0):
@@ -671,24 +674,51 @@ class _NativeMatrixTransport:
 class MatrixExecutionBroker(_NativeMatrixTransport):
     """One independently approved execution cycle's fixed native broker."""
 
-    def __init__(self, instruction, task, native_client):
+    def __init__(self, instruction, task, native_client, *, received_source=None):
         if (
-            instruction.mode != "manual"
-            or instruction.max_cycles != 1
+            received_source is None
+            and (instruction.mode != "manual" or instruction.max_cycles != 1)
             or len(instruction.scope) != 1
             or hashlib.sha256(task.encode()).hexdigest() != instruction.task_sha256
         ):
             raise MatrixExecutionError(
-                "One approved manual task and exact digest required"
+                "Exact approved purpose and one native scope required; legacy tasks stay manual"
             )
         self._instruction = instruction
+        self._received_source = None
+        self._queued_metadata = None
+        route_task = task
+        if received_source is not None:
+            from daimon_matrix.execution_instruction import (
+                coordination_metadata,
+                digest,
+            )
+
+            metadata = coordination_metadata(
+                received_source["payload"]["body"].get("coordination")
+            )
+            if (
+                metadata["kind"] != "work"
+                or metadata["instruction_sha256"] != instruction.sha256
+            ):
+                raise MatrixExecutionError(
+                    "Selected original differs from the approved instruction"
+                )
+            route_task = make_received_task(received_source, instruction.scope[0])
+            self._received_source = {
+                "message_id": received_source["event_id"],
+                "source_sha256": digest(received_source),
+            }
+            self._queued_metadata = metadata
         super().__init__(
-            task,
+            route_task,
             instruction.scope[0],
             {"being_ref": instruction.being, "embodiment_id": instruction.embodiment},
             native_client,
             {"id": instruction.instruction_id, "revision": instruction.revision},
         )
+        if self._queued_metadata is not None:
+            self._coordination = self._queued_metadata | {"kind": "result"}
 
     def controller(self, store, runner, **options):
         """Create the only supported host controller, pinned to this approval.
@@ -703,9 +733,16 @@ class MatrixExecutionBroker(_NativeMatrixTransport):
         instruction = self._instruction
         if store.store_id != instruction.store_id:
             raise MatrixExecutionError("Execution store differs from approved root")
+        if self._received_source is not None:
+            for required in ("require_funding", "require_queued_source"):
+                if options.get(required, True) is not True:
+                    raise MatrixExecutionError(
+                        "Queued reply requires existing funding/source gates"
+                    )
+                options[required] = True
 
         class PinnedController(ReviewController):
-            def run_due_once(self, identity, revision, task):
+            def run_due_once(self, identity, revision, task, *, work_id=None):
                 if (
                     identity != instruction.instruction_id
                     or revision != instruction.revision
@@ -715,15 +752,37 @@ class MatrixExecutionBroker(_NativeMatrixTransport):
                     raise ExecutionDenied(
                         "Controller is pinned to another approved task"
                     )
+                if broker._received_source is not None:
+                    if work_id is None:
+                        raise ExecutionDenied(
+                            "Queued reply requires its exact selected work"
+                        )
+                    work = self.store.coordination_work(work_id)
+                    if (
+                        work["account_id"] != broker._queued_metadata["account_id"]
+                        or work["instruction_sha256"] != instruction.sha256
+                        or any(
+                            work["source"].get(k) != v
+                            for k, v in broker._received_source.items()
+                        )
+                    ):
+                        raise ExecutionDenied(
+                            "Queued work differs from the pinned receiving original"
+                        )
+                elif work_id is not None:
+                    raise ExecutionDenied(
+                        "Queued work requires the explicit selected-source broker"
+                    )
+                queued = {} if work_id is None else {"work_id": work_id}
                 try:
                     retained = self.store.get_instruction(identity, revision)
                 except ExecutionDenied:
-                    return super().run_due_once(identity, revision, task)
+                    return super().run_due_once(identity, revision, task, **queued)
                 if retained.sha256 != instruction.sha256:
                     raise ExecutionDenied(
                         "Controller instruction differs from approved root"
                     )
-                return super().run_due_once(identity, revision, task)
+                return super().run_due_once(identity, revision, task, **queued)
 
         return PinnedController(store, runner, broker, **options)
 
@@ -736,7 +795,7 @@ class MatrixConversationTransport(_NativeMatrixTransport):
     controller. No approval, funding, listener or receiving turn is created.
     """
 
-    def __init__(self, status, author, native_client):
+    def __init__(self, status, author, native_client, *, coordination=None):
         from daimon_matrix.execution_instruction import Scope
 
         scope = Scope(
@@ -744,6 +803,15 @@ class MatrixConversationTransport(_NativeMatrixTransport):
         )
         task = make_conversation_task(status, scope)
         super().__init__(task, scope, author, native_client, None)
+        if coordination is not None:
+            from daimon_matrix.execution_instruction import coordination_metadata
+
+            metadata = coordination_metadata(coordination)
+            if metadata["kind"] != "work":
+                raise MatrixExecutionError(
+                    "Technical request requires explicit work correlation"
+                )
+            self._coordination = metadata
 
     def send(self, timeout=1.0):
         return self.submit(self._scope, {"text": self._task["question"]}, timeout)
