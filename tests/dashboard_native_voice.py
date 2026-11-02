@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 from dashboard.app import create_app
 from dashboard.provider import Provider, ProviderUnavailable
 from dashboard.live_transcription import wav_bytes
-from dashboard.native_voice import playback_status
+from dashboard.native_voice import playback_status, being_identity, ForegroundUnavailable
 from dashboard_io import Receiver
 
 
@@ -120,6 +120,61 @@ class Owner(Receiver):
 
 
 class Mounted(unittest.TestCase):
+    def test_owner_selected_identity_reaches_native_setup_and_refreshes_on_read(self):
+        selected=self.root/'selected-identity.txt'
+        text='Oliva: a distinct being. The avatar and integrator share this identity.'
+        selected.write_text(text);selected.chmod(0o600)
+        automatic=patch.object(Stream,'activity_mode','automatic');automatic.start();self.patches.append(automatic)
+        self.config['daimon_name']='Oliva'
+        self.config['streaming_transcription']['native_identity_file']=str(selected)
+        self.select_automatic()
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            context=Stream.opened[-1].context
+            self.assertEqual(context['display_name'],'Oliva')
+            self.assertEqual(context['being_identity']['text'],text)
+            self.assertEqual(context['being_identity']['sha256'],hashlib.sha256(selected.read_bytes()).hexdigest())
+            self.assertNotIn(str(selected),json.dumps(context),'Private source path is not provider context')
+            updated='Oliva: updated owner-selected relationship and values.'
+            selected.write_text(updated)
+            self.assertEqual(being_identity(self.config['streaming_transcription'])['text'],updated)
+            self.assertEqual(context['being_identity']['text'],text,'An open dialogue keeps its original identity snapshot')
+            self.assertEqual(self.owner.inputs,{})
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+        self.assertEqual(len(Stream.opened),1)
+        self.assertEqual(Detector.opened,[],'Explicit automatic profile needs no detector')
+
+    def test_identity_failure_prevents_provider_and_microphone_readiness(self):
+        selected=self.root/'selected-identity.txt'
+        self.config['streaming_transcription']['native_identity_file']=str(selected)
+        self.select_automatic()
+        # One mounted rejection verifies the preflight boundary. The remaining
+        # file cases exercise that reader directly, without repeated socket teardown.
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[],'Missing identity must not open the provider')
+        self.assertEqual(Detector.opened,[])
+        self.assertEqual(self.owner.inputs,{})
+        for case in ('missing','oversized','empty','nul','invalid-utf8','readable-by-others','symlink'):
+            with self.subTest(case=case):
+                if selected.exists() or selected.is_symlink():selected.unlink()
+                if case!='missing':
+                    selected.write_bytes({'oversized':b'x'*8193,'empty':b'','nul':b'bad\0identity','invalid-utf8':b'\xff'}.get(case,b'Synthetic owner identity'))
+                    selected.chmod(0o644 if case=='readable-by-others' else 0o600)
+                    if case=='symlink':
+                        target=self.root/'identity-target';selected.rename(target);selected.symlink_to(target)
+                with self.assertRaises(ForegroundUnavailable):being_identity(self.config['streaming_transcription'])
+        self.assertIsNone(being_identity({}),'Identity-free clients retain the existing context path')
+
+    def test_native_identity_binding_requires_explicit_absolute_file_and_dialogue(self):
+        for value in (False,{},'relative-identity.txt'):
+            with self.subTest(value=value):
+                config={**self.config,'streaming_transcription':{**self.config['streaming_transcription'],'native_identity_file':value}}
+                with self.assertRaises(ValueError):create_app(config,self.owner,lambda raw,bot:int(raw))
+        config={**self.config,'streaming_transcription':{**self.config['streaming_transcription'],'native_dialogue':False,'native_identity_file':str(self.root/'identity')}}
+        with self.assertRaises(ValueError):create_app(config,self.owner,lambda raw,bot:int(raw))
+
     def test_playback_observations_are_fixed_bounded_untrusted_scalars(self):
         value={'type':'playback_status','handled':1,'scheduled':1,'ended':0,
                'skipped_floor':0,'skipped_muted':0,'skipped_retired':0,

@@ -184,7 +184,7 @@ def install(app, config, provider, authorize, origins):
     mode=selected.get('mode','prepared')
     if (mode not in ('prepared','captions')
             or selected.get('provider','qwen') not in ('qwen','gemini')
-            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode'}
+            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file'}
             or not {'enabled','endpoint','credential_file','cache_root'}<=set(selected)
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
@@ -202,6 +202,10 @@ def install(app, config, provider, authorize, origins):
     if (selected.get('native_activity_mode','manual') not in ('manual','automatic')
             or 'native_activity_mode' in selected and selected.get('native_dialogue') is not True):
         raise ValueError('Select an explicit native activity mode for enabled dialogue')
+    if 'native_identity_file' in selected and (selected.get('native_dialogue') is not True
+            or not isinstance(selected['native_identity_file'],str)
+            or not Path(selected['native_identity_file']).is_absolute()):
+        raise ValueError('Select one explicit native being-identity file')
     candidates=[selected]+([fallback] if fallback is not None else [])
     detector_command = detection_command(selected)
     root = private_directory(selected['cache_root'])

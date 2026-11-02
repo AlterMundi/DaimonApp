@@ -14,6 +14,8 @@ import uuid
 from fastapi import HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
+from scripts.speech_render import private_bytes, RenderError
+
 from .live import changes
 from .live_transcription import VoiceInbox
 from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
@@ -46,6 +48,21 @@ def playback_status(value):
             or any(type(value[k]) is not bool for k in flags)):
         raise ValueError('Invalid native playback observation')
     return {k:value[k] for k in sorted(counts|flags|{'context'})}
+
+
+def being_identity(selected):
+    """Explicit owner-selected SOUL context, not memory/authority or a browser upload."""
+    path=selected.get('native_identity_file')
+    if path is None:return None
+    try:
+        raw=private_bytes(path,8192)
+        text=raw.decode('utf-8').strip()
+        if not text or '\0' in text:raise ValueError('Empty or invalid identity')
+    except (OSError,ValueError,UnicodeError,RenderError):
+        raise ForegroundUnavailable('Selected voice identity is unavailable') from None
+    return {'source':'owner_selected_being_identity','text':text,
+            'sha256':hashlib.sha256(raw).hexdigest(),
+            'meaning':'Same-being identity and selected SOUL context; not new human speech, work authority or a complete memory corpus.'}
 
 
 def install(app,config,provider,origins,bind_voice,detector_command,active):
@@ -287,6 +304,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'played_bytes':item['played_bytes'],'generated_bytes':item['generated_bytes'],'playback_meaning':item['playback_meaning'],
                         'bounded':True,'can_delegate':False})
                 context={'display_name':config.get('daimon_name','Daimon'),'sources':sources,'source_data':True}
+                identity=await asyncio.to_thread(being_identity,selected)
+                if identity is not None:context['being_identity']=identity
                 while len(json.dumps(context,ensure_ascii=False).encode())>32768:sources.pop()
                 await recheck()
                 if activity_mode=='manual':

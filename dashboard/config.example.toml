@@ -83,10 +83,14 @@ Development = "/your-development-mount"
 # credential_file = "/private/existing-provider-key"
 # cache_root = "/private/receiving/streaming-transcripts"
 # Optional native speech foreground above the existing integrator; default off.
-# Requires provider="gemini", prepared mode, configured turn_detection, and a
-# loaded native listener advertising foreground_retention/completed-reader support.
-# Browser avatar only in this pilot; Android retains its current voice route.
+# Requires provider="gemini", prepared mode and a loaded native listener
+# advertising foreground_retention/completed-reader support. Manual activity
+# needs configured turn_detection; automatic activity uses provider boundaries.
+# Supported browser and Android PCM owners retain their own playback route.
 # native_dialogue = false
+# Optional owner-only UTF-8 identity/SOUL selection, at most8KiB. Read on explicit
+# avatar opening, before provider/microphone; no automatic memory retrieval.
+# native_identity_file = "/private/selected-being-identity.txt"
 
 # Optional shorter first spoken segment and one-ahead browser preparation.
 # Requires the ordinary selected speech binding; default is false.
