@@ -162,6 +162,8 @@ class Mounted(unittest.TestCase):
                         target=self.root/'identity-target';selected.rename(target);selected.symlink_to(target)
                 with self.open() as ws:
                     ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+                    self.assertEqual(ws.receive()['type'],'websocket.close',
+                                     'Each invalid-file case must release its own voice slot')
                 self.assertEqual(Stream.opened,[],'Unsafe identity must not open the provider')
                 self.assertEqual(Detector.opened,[])
                 self.assertEqual(self.owner.inputs,{})
