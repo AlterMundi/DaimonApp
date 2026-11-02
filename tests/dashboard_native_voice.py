@@ -376,7 +376,9 @@ class Mounted(unittest.TestCase):
                     'audio_offset':'0s','source':'provider_manual_activity_ack'}])
                 event=ws.receive_json()
                 while event['type']!='review':event=ws.receive_json()
-            result=observed.get(timeout=2)
+                # Observe actual cleanup/journal while the fixture is alive;
+                # context teardown can cancel the route before its callback.
+                result=observed.get(timeout=2)
         self.assertEqual(result['id'],self.ident)
         self.assertEqual(result['stage'],'native-output')
         self.assertEqual(result['error_type'],'ForegroundUnavailable')
@@ -402,7 +404,9 @@ class Mounted(unittest.TestCase):
                     'audio_offset':'3.000000001s','source':'provider_manual_activity_ack','private_text':'must not reach journal'}])
                 event=ws.receive_json()
                 while event['type']!='review':event=ws.receive_json()
-            result=observed.get(timeout=2)
+                # Observe actual cleanup/journal while the fixture is alive;
+                # context teardown can cancel the route before its callback.
+                result=observed.get(timeout=2)
         self.assertEqual(result['boundary_mismatch'],{'activity':'start','expected_pcm_bytes':0,
             'reported_offset_nanoseconds':3000000001,'sent_pcm_bytes':3200,'provider_input_bytes':None,
             'span_start':0,'span_end':None,'start_observed':True,'end_observed':False})
@@ -844,6 +848,24 @@ class Mounted(unittest.TestCase):
             call,result=stream.tool_results.get(timeout=2)
             self.assertEqual(call,'observer');self.assertEqual(result['sessions'][0]['label'],'Conversation')
             self.assertEqual(len(reads),1);self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+            ws.send_json({'type':'close'})
+
+    def test_mounted_recent_results_query_reuses_existing_presentation_reader(self):
+        reads=[]
+        original=self.owner.presentation_list;enabled=[]
+        def listed(*args):
+            if not enabled or len(args)<3 or args[2]!='before':return original(*args)
+            reads.append(args)
+            return {'items':[{'id':'native:123','revision':'c'*64,'kind':'integrator_answer','preview':'Useful result'}]}
+        self.owner.presentation_list=listed
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            enabled.append(True)
+            stream.queue.put([{'type':'recent_results_query','call_id':'results','delivery':0,'native':0}])
+            call,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'results');self.assertEqual(result['items'][0]['id'],'native:123')
+            self.assertEqual(reads,[(0,0,'before')]);self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'})
 
     def test_rejected_tool_keeps_mounted_voice_open_for_next_read(self):

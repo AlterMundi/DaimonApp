@@ -159,6 +159,9 @@ class NativeDialogue:
                     {'name':'session_status','behavior':'NON_BLOCKING',
                      'description':'Read one bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. Only coarse activity: not why a session is blocked, its work contents, or the decision it needs. Resolve those questions through Sol using recent_originals and delegate_to_integrator. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
                      'parameters':{'type':'OBJECT','properties':{}}},
+                    {'name':'recent_results','behavior':'NON_BLOCKING',
+                     'description':'Read one page of result references and available file names already visible in the integrating Conversation. This is not all worker history. Only current source revisions are offered; previews are incomplete. Use read_integrating_source with an offered ID/revision and offset0 for full text. Read-only; never starts work. Follow before_delivery/before_native cursors for older pages.',
+                     'parameters':{'type':'OBJECT','properties':{'before_delivery':{'type':'INTEGER'},'before_native':{'type':'INTEGER'}},'required':[]}},
                     {'name':'session_pending','behavior':'NON_BLOCKING',
                      'description':'Read a bounded page of the human-owned pending session tasks and questions with titles, previews, dates and revisions. No execution, approval or dismissal. Use Sol to resolve missing details, latest results and viewer links.',
                      'parameters':{'type':'OBJECT','properties':{'after':{'type':'INTEGER'}},'required':[]}},
@@ -447,6 +450,12 @@ class NativeDialogue:
             if set(args)-{'before'} or type(before) is not int or not 0<=before<=2**63-1:
                 raise ValueError('Invalid source query')
             proposal={'type':'source_query','call_id':ident,'before':before}
+        elif name=='recent_results':
+            delivery,native=args.get('before_delivery',0),args.get('before_native',0)
+            if (set(args)-{'before_delivery','before_native'}
+                    or any(type(v) is not int or not 0<=v<=2**63-1 for v in (delivery,native))):
+                raise ValueError('Invalid result cursors')
+            proposal={'type':'recent_results_query','call_id':ident,'delivery':delivery,'native':native}
         elif name=='session_pending':
             after=args.get('after',0)
             if set(args)-{'after'} or type(after) is not int or not 0<=after<=2**63-1:

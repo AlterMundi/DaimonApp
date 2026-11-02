@@ -1271,11 +1271,13 @@ covered. Full conversation and physical-device acceptance stay open.
 
 ### Avatar skills and their execution route
 
-The voice role exposes six bounded native functions. They are its
+The voice role exposes seven bounded native functions in the source contract. They are its
 operational skills: `recent_originals` grounds a request in current human speech;
 `delegate_to_integrator` asks Sol to resolve work, research or missing memory;
 `session_status` reads coarse current activity; `session_pending` reads the
-existing human-owned pending task/question ledger; `read_integrating_source` reads
+existing human-owned pending task/question ledger; `recent_results` indexes
+current result references already visible in the integrating Conversation;
+`read_integrating_source` reads
 an offered canonical return; `await_integrator_update` resumes a missing return
 subscription only when no continued delegation/watch already owns it.
 
@@ -1331,3 +1333,38 @@ links. The useful next extension is a source/revision-bound recent-result and
 artifact index from the existing presentation API, not another worker poller or
 an unrestricted host skill catalog. This work does not complete the full goal
 or establish a repaired physical-device journey.
+
+
+## Read-only recent result references — source follow-up to558
+
+`recent_results(before_delivery, before_native)` reuses one reverse page from
+`Provider.presentation_list`. Omitted cursors start at the newest page, exactly
+as the existing Conversation reader does. It is scoped to sources already
+visible in the human's integrating Conversation, not all direct worker history.
+It never queries a worker, creates a native turn or replaces Sol's work routing.
+The page includes only integrator answers and attributed worker results whose
+canonical source is not superseded, pending correction or bound to a replaced
+native session. Skipped progress/stale records remain reflected in the page's
+omitted count. An empty filtered page is not proof that no results exist: follow
+its exact delivery/native cursors when more is true.
+
+Each bounded item carries an ID, revision, label/date, completion declaration,
+incomplete preview and available file descriptors already attached to that
+Conversation source. File names/IDs describe the existing Conversation viewer,
+not a new publication or a download performed by the model. The declared worker
+completion field is evidence, not proof of goal completion or physical effects.
+No file bytes, private store paths or arbitrary URLs are sent to the voice model.
+
+Only references actually returned under the16KiB response bound are added to the
+existing128-offer set. Local truncation removes the continuation cursor rather
+than skipping omitted rows. `read_integrating_source` can then read an offered
+canonical worker result as attributed internal evidence through the SAME
+revision-checked Conversation reader. Every page rechecks current/correction/
+native binding; changed or unoffered references remain unreadable. Previews must
+not be represented as complete reports. Source inspection does not acknowledge,
+answer, route, publish or cancel work, and does not mark an attention item heard.
+
+Transport/bridge/mounted tests cover strict cursors, read-only ownership, stale
+and progress filtering, file availability, source-bound pagination and invalidated
+reads. Receiving558 stays selected for its existing phone trial; this new source
+contract is not a claim of deployment or device acceptance.
