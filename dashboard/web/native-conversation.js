@@ -27,7 +27,7 @@ window.NativeConversation=(()=>{
       else if(context)void context.suspend().then(()=>{if(!stopped&&context?.state==='suspended')onState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>hold('Voice playback could not pause.'));
     }
     function resumeOutput(){
-      if(stopped||!audible||userPaused||energyFence)return;
+      if(stopped||!audible||userPaused||energyFence||floor||blocked)return;
       pendingTiming('output_release_requested');
       if(nativeOutput)nativeOutput.resume();
       else if(context)void context.resume().then(()=>{if(!stopped)onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});}).catch(()=>hold('Voice playback could not resume.'));
@@ -37,7 +37,7 @@ window.NativeConversation=(()=>{
       const raw=atob(value.pcm);if(!raw.length||raw.length%2)throw Error('Invalid native PCM');
       const begin=received.get(value.id)||0;if(value.end!==begin+raw.length||value.end>300*48000)throw Error('Native audio continuity changed');
       received.set(value.id,value.end);latestOutput=value.id;onTiming(value.id,'output_handled');
-      if(!audible||floor||blocked||retired.has(value.id))return;
+      if(!audible||floor||retired.has(value.id))return;
       if(energyFence)onTiming(value.id,'output_energy_held');
       if(nativeOutput){
         const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
@@ -90,7 +90,7 @@ window.NativeConversation=(()=>{
         case 'audio':await play(value);break;
         case 'capture_started':
           if(current||typeof value.id!=='string')throw Error('Original capture changed');
-          onTiming(value.id,'capture_started');current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence(true);onInterrupt();state('Listening');
+          onTiming(value.id,'capture_started');current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence(true);pauseOutput();onInterrupt();state('Listening');
           onHandoff({id:value.id,gate:'speaking'});break;
         case 'phrase_end':{
           if(!current||current.id!==value.id||current.start!==value.start)throw Error('Phrase boundary changed');
@@ -108,7 +108,7 @@ window.NativeConversation=(()=>{
         case 'input_caption':case 'input_transcript':onCaption(value.text);break;
         case 'assistant_utterance':if(value.utterance.text)onTiming(value.utterance.id,'output_text');onUtterance(value.utterance);onCaption(value.utterance.text);break;
         case 'interrupted':silence(true);break;
-        case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded)blocked=false;break;
+        case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded){blocked=false;resumeOutput();}break;
         case 'turn_activity':
           // Local energy pauses immediately, but it is not speech authority.
           // Resume only after quiet analysis has covered that exact PCM fence;
@@ -184,7 +184,7 @@ window.NativeConversation=(()=>{
       }catch(error){if(owned===epoch)hold(error.message||'Native voice unavailable.');return false;}
     }
     return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();},
-      pause:()=>{userPaused=true;pauseOutput();onState({active,starting,floor,pending:false,playback:'paused'});},
+      pause:(reason='manual')=>{userPaused=true;pauseOutput();onState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
       resume:()=>{userPaused=false;resumeOutput();},
       get hasAudio(){return !!nativeOutput?.hasAudio||nodes.size>0;},get paused(){return nativeOutput?.paused||context?.state==='suspended';},
       release:id=>originals.delete(id),get active(){return active||starting;},get floor(){return floor;},get originals(){return [...originals.values()];}};

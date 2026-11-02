@@ -4,7 +4,7 @@ window.ConversationTiming=(()=>{
   function mount({now=()=>performance.now()}={}){
     const list=document.querySelector('#conversation-timing-records'),pause=document.querySelector('#conversation-timing-pause'),clear=document.querySelector('#conversation-timing-clear');
     if(!list || !pause || !clear)return;
-    const recordings=new Map(),sources=new Map();let binding,sequence=0,outputSequence=0,pauseMillis,origin=now();
+    const recordings=new Map(),sources=new Map();let binding,sequence=0,outputSequence=0,pauseMillis,pauseReason,pauseAt,origin=now();
     const gates={waiting_speech:'waiting for detected speech',speaking:'speech detected',waiting_endpoint:'waiting for a complete phrase',waiting_analysis:'waiting for analysis to cover captured sound',waiting_transcript:'waiting for transcript',finishing:'finishing audio',confirming:'confirming original',confirmed:'original confirmed',review:'recording needs review'};
     const positive=value=>Number.isSafeInteger(value)&&value>0;
     const duration=(start,end)=>Number.isFinite(start)&&Number.isFinite(end)&&end>=start?`${((end-start)/1000).toFixed(2)} s`:'not observed';
@@ -12,7 +12,7 @@ window.ConversationTiming=(()=>{
     const element=(tag,text)=>{const node=document.createElement(tag);node.textContent=text;return node;};
     const point=value=>Number.isFinite(value)&&value>=origin?`+${((value-origin)/1000).toFixed(2)} s`:'not observed';
     function render(){
-      pause.textContent=pauseMillis===undefined?'':`Pause applied: ${pauseMillis.toFixed(1)} ms (browser handler, not acoustic silence).`;
+      pause.textContent=[pauseMillis===undefined?'':`Pause applied: ${pauseMillis.toFixed(1)} ms (browser handler, not acoustic silence).`,pauseReason?`Last native pause requested: ${pauseReason} at ${point(pauseAt)}.`:''].filter(Boolean).join(' ');
       const rows=[];
       for(const recording of [...recordings.values()].reverse()){
         const stages=recording.stages,peers=[...recordings.values()].filter(r=>positive(recording.local)&&r.local===recording.local);
@@ -48,7 +48,7 @@ window.ConversationTiming=(()=>{
       if(!rows.length)rows.push(element('li','No recordings measured on this page.'));
       list.replaceChildren(...rows);
     }
-    function reset(){recordings.clear();sources.clear();sequence=outputSequence=0;pauseMillis=undefined;origin=now();render();}
+    function reset(){recordings.clear();sources.clear();sequence=outputSequence=0;pauseMillis=pauseReason=pauseAt=undefined;origin=now();render();}
     clear.addEventListener('click',reset);
     function bind(value){if(binding!==value){binding=value;reset();}}
     function mark(id,stage,detail){
@@ -108,8 +108,12 @@ window.ConversationTiming=(()=>{
       const field=playing?'playing':'seen';if(item[field]!==undefined)return;
       item[field]=now();render();
     }
+    function pauseRequested(reason){
+      if(!['manual','player','media-session','audio-focus','observation','access','hidden','pagehide','offline','capability','view'].includes(reason))return;
+      pauseReason=reason;pauseAt=now();render();
+    }
     function pauseApplied(start){if(!Number.isFinite(start))return;const elapsed=now()-start;if(elapsed>=0&&elapsed<60000){pauseMillis=elapsed;render();}}
-    render();return {bind,mark,native,input,source,pauseApplied};
+    render();return {bind,mark,native,input,source,pauseApplied,pauseRequested};
   }
   return {mount};
 })();

@@ -519,6 +519,11 @@ capture_started retires the latest received output ID and queued output IDs;
 late chunks still validate continuity but cannot restart them. A fresh output ID
 can play after the existing phrase-ACK boundary. This supersedes the earlier
 local-energy retirement behavior, which irreversibly discarded nonspeech output.
+Fresh response PCM after the detected phrase end but before the matching manual
+provider end-ACK stays queued in the paused owner; it must not be discarded.
+Only that matching ACK plus the existing floor, energy and explicit-pause gates
+allows release. Existing queue bounds still apply. Retired IDs and old tails
+remain fenced; no audio is replayed to repair an unknown delivery.
 Retired IDs are bounded by the existing finite session/event limit and cleared
 on exit or a new session. The existing Chromium offline-audio qualification
 renders both active-playback and between-chunk interruption, plus fresh output
@@ -752,6 +757,35 @@ credential, persistence, network request, polling or new server/provider operati
 is collected by timing. The existing engine callbacks are optional; ordinary
 chat and native speech ownership/receipts are unchanged. The inspector stays
 closed by default and does not add diagnostic text to the avatar or audio dock.
+It also retains the latest native Pause request origin from a fixed local enum
+(manual/player/media-session/focus/observation/access/lifecycle), never arbitrary
+content. Clear and binding reset remove that scalar observation too.
+
+A background HTTP metadata refresh error must not close or pause an independently
+authenticated native avatar socket. The ordinary connection indicator still
+reports the read failure. Actual401/403 access rejection closes both; the native
+socket continues its own fresh actor/binding checks. This does not reconnect or
+replay an input, and does not override an explicit human/OS Pause.
+
+Each admitted native session emits one native_voice_closed summary to the existing
+bounded web-unit journal after its cleanup finishes. Only UUID, owning task/close
+stage, exception class, elapsed milliseconds, received/generated PCM counts and
+cleanup outcome are recorded. No transcript, PCM, provider payload, exception
+message, identity, URL or credential enters it. This distinguishes a client close
+from a provider/output/analysis/transcript failure; it is not hearing evidence or
+a retrospective diagnosis of earlier phone sessions. Existing journal retention
+applies; no new file, timer, poller, provider call or input admission.
+
+The2November UI87a8a3c756f4 phone trial remained failed: three retained assistant
+outputs, two interrupted without client playback progress and one partially
+played. Three distinct interpreted human originals are retained. This does not
+identify the exact close/pause cause. A separate one-connection synthetic direct
+provider probe observed the manual end-ACK965ms after its send, before all96960
+generated PCM bytes; zero pre-ACK PCM. That probe does not attribute the phone
+failure to ACK ordering. Client regressions separately reproduce pre-ACK data
+loss and unrelated refresh closing a live avatar; those supported paths are
+corrected without replaying the human recordings. Physical acceptance remains
+open.
 
 ## Android native PCM candidate
 

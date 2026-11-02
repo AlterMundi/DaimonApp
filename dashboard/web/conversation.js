@@ -96,7 +96,7 @@ window.Conversation = (() => {
       }
     }
     const sound=window.ConversationSound?.mount({api,unauthorized:failed,getAuthority:fileCredential,onState:value=>companion?.sonic?.(value)});
-    const presentState=patch=>{companion?.update(patch);sound?.update(patch);voiceMode?.update(patch);};
+    const presentState=(patch,updateVoice=true)=>{companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
     let inspectorReturnFocus;
     if(standalone){
       const inspector=$("#conversation-diagnostics"),inspectButton=$("#conversation-inspect");
@@ -1496,7 +1496,7 @@ window.Conversation = (() => {
       $("#conversation-playing").textContent="Audio";playerStatus();
     }
     function pause(reason="manual") {
-      if(nativeEnabled&&nativeVoiceSession?.active){nativeVoiceSession.pause();return;}
+      if(nativeEnabled&&nativeVoiceSession?.active){nativeVoiceSession.pause(reason);return;}
       if(voiceEnabled && !voiceSuspended){
         const button=$("#conversation-voice-replies");
         button.dataset.lastPauseReason=reason;button.dataset.lastPauseAt=new Date().toISOString();
@@ -1539,14 +1539,18 @@ window.Conversation = (() => {
     const transientConnectionError=error=>["TypeError","AbortError"].includes(error.name) || error.status>=500;
     function failed(error) {
       showResponseDraft();
-      presentState({connected:false});
+      // A metadata refresh is not the independently authorized native socket.
+      // Only actual access rejection closes both; that socket checks its actor
+      // and binding itself while a background HTTP observation is unavailable.
+      const keepNative=nativeEnabled&&nativeVoiceSession?.active&&error.status!==401&&error.status!==403;
+      presentState({connected:false},!keepNative);
       if (error.status === 401 || error.status === 403) {
         onUnauthorized?.(error);
         clearFiles();
         pause("access");stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
         $("#conversation-answers").replaceChildren();
         $("#conversation-results").replaceChildren();
-      } else if(!(standalone && voiceEnabled && !voiceSuspended && transientConnectionError(error)))pause("observation");
+      } else if(!keepNative&&!(standalone && voiceEnabled && !voiceSuspended && transientConnectionError(error)))pause("observation");
       $("#conversation-state").textContent = error.name === "TypeError" ? "Connection unavailable. Refresh to reconnect."
         : error.message || "Replies are unavailable. Refresh to continue.";
     }
@@ -2093,7 +2097,7 @@ window.Conversation = (() => {
       onReview:originals=>{if(!voiceMode?.active)void microphone.reviewContinuous(originals);},
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onUtterance:foregroundCard,
       onHandoff:handoff=>voiceMode?.update({handoff}),onTiming:(id,stage)=>timing?.native?.(id,stage),
-      onState:value=>{if(!voiceModePrevious?.continuous)return;captureBusy=value.floor;
+      onState:value=>{if(!voiceModePrevious?.continuous)return;if(value.pauseReason)timing?.pauseRequested?.(value.pauseReason);captureBusy=value.floor;
         presentState({capture:value.floor?'recording':value.starting?'permission':'idle',...(value.playback?{playback:value.playback}:{})});
         voiceMode?.update({continuousState:value});
         if(value.playback)audioState(value.playback==='playing'?'Playing voice conversation':value.playback==='paused'?'Paused voice conversation':'Waiting for voice');

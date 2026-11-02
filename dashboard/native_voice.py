@@ -5,6 +5,7 @@ from collections import deque
 from contextlib import suppress
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import time
@@ -34,7 +35,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
-        started=time.monotonic()
+        started=time.monotonic();close_stage='preflight';close_error=None
         async def send(value):
             async with sending:
                 await asyncio.wait_for(socket.send_json(value),3)
@@ -64,7 +65,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await send({'type':'original_completed','id':capture.ident,'sha256':capture.digest,'phase':'foreground'})
                 launch(completed())
         def launch(operation):
-            task=asyncio.create_task(operation);tool_tasks.add(task)
+            task=asyncio.create_task(operation,name='native-tool');tool_tasks.add(task)
             return task
         async def notice_if_idle():
             # Existing pending tools already stream returns. A new session or
@@ -279,7 +280,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             'kind':'result','label':'Integrator'},in_context=True)
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual'})
-                tasks={asyncio.create_task(outputs()),asyncio.create_task(analysis()),asyncio.create_task(returns(cursor)),asyncio.create_task(acoustic.watch_transcripts())}
+                tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(analysis(),name='native-analysis'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
                 inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192)
                 checked=time.monotonic()
                 while True:
@@ -288,13 +289,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     for task in done-{incoming}:
                         if task in cancelled_proposals:
                             cancelled_proposals.discard(task);tool_tasks.discard(task);continue
-                        task.result()
-                        if task in tasks:return
+                        close_stage=task.get_name();task.result()
+                        if task in tasks:
+                            close_stage+='-ended';return
                         tool_tasks.remove(task)
                         proposals={key:value for key,value in proposals.items() if value is not task}
                     if incoming not in done:continue
-                    batch=await incoming;incoming=None
-                    if batch[0]['type']=='websocket.disconnect':break
+                    close_stage='client-input';batch=await incoming;incoming=None
+                    if batch[0]['type']=='websocket.disconnect':
+                        close_stage='client-disconnect';break
                     await actor()
                     if time.monotonic()-checked>=15:
                         await recheck();checked=time.monotonic()
@@ -302,15 +305,19 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         if message.get('bytes') is not None:await acoustic.feed(message['bytes'])
                         else:
                             value=json.loads(message.get('text',''))
-                            if value=={'type':'close'}:return
+                            if value=={'type':'close'}:
+                                close_stage='client-close';return
                             if isinstance(value,dict) and set(value)=={'type','audio_bytes','capture_questions'} and value['type']=='capture_scope':
                                 await acoustic.marker(value['audio_bytes'],value['capture_questions']);continue
                             if (not isinstance(value,dict) or set(value)!={'type','id','played_bytes'}
                                     or value['type']!='playback'):raise ValueError('Unsupported native voice control')
                             await asyncio.to_thread(app.state.native_history.played,owner,meta['id'],value['id'],value['played_bytes'])
                             await notice_if_idle()
-        except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect):
+        except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect) as error:
+            close_error=type(error).__name__
             with suppress(Exception):await send({'type':'review','message':'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.'})
+        except BaseException as error:
+            close_error=type(error).__name__;raise
         finally:
             stopping=True
             if stream:
@@ -340,6 +347,17 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     opening.add_done_callback(late)
                 if owner is not None and (opening is None or opening.done()):active.discard(owner)
                 with suppress(Exception):await socket.close()
+            def observe_close(task):
+                if owner is None:return
+                # Existing bounded service journal only. No exception detail,
+                # transcript, provider payload, identity/header or raw audio.
+                summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,
+                    'elapsed_ms':round((time.monotonic()-started)*1000),
+                    'received_pcm_bytes':inbox.received_bytes if inbox else 0,
+                    'generated_pcm_bytes':getattr(stream,'output_bytes',0) if stream else 0,
+                    'cleanup':'cancelled' if task.cancelled() else 'failed' if task.exception() is not None else 'completed'}
+                logging.getLogger('uvicorn.error').info('native_voice_closed %s',json.dumps(summary,separators=(',',':')))
             cleanup_task=asyncio.create_task(cleanup())
             cleanup_task.add_done_callback(ForegroundBridge._observe)
+            cleanup_task.add_done_callback(observe_close)
             await asyncio.shield(cleanup_task)

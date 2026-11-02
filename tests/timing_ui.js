@@ -70,7 +70,9 @@ assert(text().includes('First buffer ended: +3.30 s'),'A buffer end is not descr
 timing.native('unknown-clip','original_confirmed');timing.native('private transcript','__proto__');assert(!text().includes('private transcript'));
 for(let n=0;n<20;n++){timing.native('capture-'+n,'capture_started');timing.native('voice-'+n,'output_handled');}
 assert.equal(list.children.length,24,'Native paths retain at most eight inputs and sixteen outputs using existing bounded maps');
+clock=7500;timing.pauseRequested('media-session');assert(nodes.get('#conversation-timing-pause').textContent.includes('Last native pause requested: media-session'));timing.pauseRequested('private text');assert(!nodes.get('#conversation-timing-pause').textContent.includes('private text'));
 clock=8000;nodes.get('#conversation-timing-clear').handlers.click();assert(text().includes('No recordings measured'));clock=9000;timing.native('fresh','output_handled');assert(text().includes('First PCM handled: +1.00 s'),'Clear resets the page-relative observation origin');
+assert.equal(nodes.get('#conversation-timing-pause').textContent,'','Clear removes pause metadata too');
 timing.bind('third');assert(text().includes('No recordings measured'),'Binding changes clear native observations too');
 assert(!fs.readFileSync('dashboard/web/timing.js','utf8').match(/localStorage|fetch\(|setInterval|setTimeout/),'The timing reader installs no persistence, requests or poller');
 console.log('Browser timing: exact local-turn correlation, ambiguity/history exclusion, first marks, bounded retention and reset passed.');

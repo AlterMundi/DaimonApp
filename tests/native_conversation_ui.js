@@ -65,6 +65,23 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
     assert.equal(noise.engine.paused,true,'Detector recovery never overrides an explicit pause');
     noise.engine.resume();noise.engine.hold();
   }
+  // A provider may generate PCM before its manual-end ACK. Preserve the
+  // beginning while waiting for that ACK instead of hearing only a late tail.
+  for(const native of [false,true]){
+    const early=boot(native),earlySocket=await ready(early),input=crypto.randomUUID(),output=crypto.randomUUID();
+    early.sources[0].emit({pcm:new Uint8Array(3200).buffer});
+    earlySocket.push({type:'capture_started',id:input,start:0});earlySocket.push({type:'phrase_end',id:input,start:0,end:3200});
+    await until(()=>early.retained.length===1);
+    const packet=end=>({type:'audio',id:output,end,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});
+    earlySocket.push(packet(640));earlySocket.push(packet(1280));await until(()=>early.engine.hasAudio);
+    assert.equal(early.engine.paused,true,'Fresh response waits for the matching manual-end ACK');
+    assert.equal(early.timings.some(t=>t.id===output&&t.stage==='output_progress'),false);
+    earlySocket.push({type:'voice_activity',id:input,activity:'ACTIVITY_END'});await until(()=>!early.engine.paused);
+    if(native){await until(()=>early.nativeCommands.filter(v=>v.command==='pcm_chunk').length===2);early.nativeEvent({type:'pcm_progress',positions:[{utterance:output,played_bytes:1280}]});}
+    else{assert.equal(early.contexts[0].nodes.length,2,'Both pre-ACK buffers survive');for(const node of early.contexts[0].nodes)node.finish();}
+    assert(earlySocket.sent.some(v=>v.type==='playback'&&v.id===output&&v.played_bytes===1280),'Playback includes the first PCM, not only a post-ACK tail');
+    early.engine.hold();
+  }
   const value=boot(),socket=await ready(value);assert.equal(value.permissionCalls,1);
   value.questions({later:'v2'});
   const frame=()=>new Uint8Array(3200).buffer;value.sources[0].emit({pcm:frame()});value.sources[0].emit({pcm:frame()});
