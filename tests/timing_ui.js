@@ -63,7 +63,9 @@ assert(text().includes('First local-energy hold: +3.02 s · First output release
 clock=7150;timing.native('voice-one','output_progress');
 assert(text().includes('Caption → first PCM: 0.20 s · First PCM → positive playback observation: 0.15 s'));
 assert(!text().includes('heard words'),'Playback observations never become hearing or aligned words');
-clock=7250;timing.native('voice-two','output_handled');clock=7260;timing.native('voice-two','output_scheduled');clock=7300;timing.native('voice-two','output_buffer_ended');
+clock=7250;timing.native('voice-two','output_handled');clock=7260;timing.native('voice-two','output_scheduled');clock=7280;timing.native('voice-two','output_text');
+assert(text().includes('Caption → first PCM: PCM preceded caption by 0.03 s'),'Observed reversed event order is not mislabeled missing');
+clock=7300;timing.native('voice-two','output_buffer_ended');
 assert(text().includes('First buffer ended: +3.30 s'),'A buffer end is not described as whole speech completion or hearing');
 timing.native('unknown-clip','original_confirmed');timing.native('private transcript','__proto__');assert(!text().includes('private transcript'));
 for(let n=0;n<20;n++){timing.native('capture-'+n,'capture_started');timing.native('voice-'+n,'output_handled');}

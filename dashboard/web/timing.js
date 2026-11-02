@@ -8,6 +8,7 @@ window.ConversationTiming=(()=>{
     const gates={waiting_speech:'waiting for detected speech',speaking:'speech detected',waiting_endpoint:'waiting for a complete phrase',waiting_analysis:'waiting for analysis to cover captured sound',waiting_transcript:'waiting for transcript',finishing:'finishing audio',confirming:'confirming original',confirmed:'original confirmed',review:'recording needs review'};
     const positive=value=>Number.isSafeInteger(value)&&value>0;
     const duration=(start,end)=>Number.isFinite(start)&&Number.isFinite(end)&&end>=start?`${((end-start)/1000).toFixed(2)} s`:'not observed';
+    const captionGap=output=>Number.isFinite(output.caption)&&Number.isFinite(output.handled)&&output.handled<output.caption?`PCM preceded caption by ${duration(output.handled,output.caption)}`:duration(output.caption,output.handled);
     const element=(tag,text)=>{const node=document.createElement(tag);node.textContent=text;return node;};
     const point=value=>Number.isFinite(value)&&value>=origin?`+${((value-origin)/1000).toFixed(2)} s`:'not observed';
     function render(){
@@ -40,7 +41,7 @@ window.ConversationTiming=(()=>{
         const row=element('li','');row.append(element('strong',`Voice output ${output.sequence}`));
         row.append(element('p',`First caption received: ${point(output.caption)}`));
         row.append(element('p',`First PCM handled: ${point(output.handled)} · First buffer scheduled: ${point(output.scheduled)} · First buffer ended: ${point(output.buffer_ended)} · Output retired: ${point(output.retired)}`));
-        row.append(element('p',`Caption → first PCM: ${duration(output.caption,output.handled)} · First PCM → positive playback observation: ${duration(output.handled,output.progress)}`));
+        row.append(element('p',`Caption → first PCM: ${captionGap(output)} · First PCM → positive playback observation: ${duration(output.handled,output.progress)}`));
         row.append(element('p',`First local-energy hold: ${point(output.energy_held)} · First output release requested: ${point(output.release_requested)}`));
         row.append(element('p','Page-relative browser events; no phrase attribution or proof of sound heard.'));rows.push(row);
       }
