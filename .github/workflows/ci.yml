@@ -122,7 +122,7 @@ jobs:
           repository: AlterMundi/daimon-matrix
           ref: 79be4788680a3b18f5b04571370d50f0904cd82f
           path: .matrix-sdk
-      - run: python -m pip install -r dashboard/requirements.lock cryptography==50.0.0 jsonschema==4.26.0 wasmtime==45.0.0 idna==3.20
+      - run: python -m pip install -r dashboard/requirements.lock jsonschema==4.26.0 wasmtime==45.0.0
       - name: Qualify ordinary and funded canonical Matrix return journeys
         run: |
           python -B tests/matrix_conversation_http_io.py target/release/telecodex
