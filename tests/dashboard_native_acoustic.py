@@ -171,11 +171,16 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(v['type']=='review' for v in self.events))
         await self.session.close();await asyncio.wait_for(watch,.3)
         self.assertEqual(self.bridge.transcripts[0][1],'Confirmed')
+        self.assertIsNone(self.session.boundary_mismatch)
 
     async def test_wrong_audio_offset_is_not_attached_to_human_source(self):
         await self.first()
         with self.assertRaises(ForegroundUnavailable):await self.ack('ACTIVITY_END','3s')
         self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.session.boundary_mismatch,{'activity':'end',
+            'expected_pcm_bytes':6400,'reported_offset_nanoseconds':3000000000,
+            'sent_pcm_bytes':6400,'provider_input_bytes':None,'span_start':0,'span_end':6400,
+            'start_observed':True,'end_observed':False})
     async def test_analysis_cannot_send_audio_it_has_not_observed(self):
         await self.session.feed(b'\1\0'*3200)
         await self.session.activity(self.activity(3200,onset=3072))
