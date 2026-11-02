@@ -85,6 +85,13 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
         self.assertEqual(self.event(self.audio())[0]['type'],'audio')
 
+    def test_recent_results_tool_only_offers_bounded_read_cursors(self):
+        self.ready()
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'results','name':'recent_results','args':{}}]}}),
+            [{'type':'recent_results_query','call_id':'results','delivery':0,'native':0}])
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-results','name':'recent_results','args':{'before_native':True}}]}}),
+            [{'type':'tool_rejected','call_id':'bad-results'}])
+
     def test_pending_tool_has_bounded_cursor_and_no_work_proposal(self):
         self.ready()
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'pending','name':'session_pending','args':{'after':41}}]}}),

@@ -74,6 +74,42 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.owner.inputs,{})
         self.assertEqual(self.stream.results,[('invalid',result)])
 
+    async def test_result_index_reuses_canonical_page_and_revalidates_offered_worker_text(self):
+        reads=[];ident='delivery:'+str(uuid.uuid4());revision='c'*64
+        self.owner.presentation_list=lambda *args:reads.append(args) or {
+            'cursor':{'delivery':14,'native':27},'more':True,'items':[
+                {'id':ident,'revision':revision,'kind':'worker_result','current':True,
+                 'label':'Print','preview':'Short preview','completed':False,'artifacts':[
+                     {'id':str(uuid.uuid4()),'name':'part.stl','available':True,'bytes':40},
+                     {'name':'expired.stl','available':False}], 'private':'not forwarded'},
+                {'id':'native:124','revision':'a'*64,'kind':'integrator_answer','correction_pending':True},
+                {'id':'native:125','revision':'a'*64,'kind':'worker_progress'},
+                {'id':'native:126','revision':'a'*64,'kind':'worker_result','native_binding_current':False}]}
+        index=await self.bridge.tool({'type':'recent_results_query','call_id':'index','delivery':15,'native':28})
+        self.assertEqual(reads,[(15,28,'before')]);self.assertEqual(len(index['items']),1)
+        item=index['items'][0];self.assertFalse(item['preview_complete']);self.assertFalse(item['completed'])
+        self.assertEqual([f['name'] for f in item['files']],['part.stl']);self.assertNotIn('private',item)
+        self.assertEqual(index['omitted'],3);self.assertEqual(index['cursor'],{'delivery':14,'native':27})
+        self.owner.parts[ident]={'id':ident,'revision':revision,'kind':'worker_result',
+            'entry_binding':[1],'current':True,'text':'Complete source text. '*110}
+        event={'type':'integrating_source_query','call_id':'read-result','source':ident,'revision':revision,'offset':0}
+        page=await self.bridge.tool(event)
+        self.assertEqual(page['kind'],'integrating_source');self.assertEqual(page['text'],self.owner.parts[ident]['text'][:1600])
+        self.assertEqual(page['next_offset'],1600)
+        self.owner.parts[ident]['correction_pending']=True
+        stale=await self.bridge.tool({**event,'call_id':'stale-read'})
+        self.assertEqual(stale['kind'],'not_ready')
+        self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+
+    async def test_result_index_truncation_never_offers_unreturned_source_or_skips_records(self):
+        self.owner.presentation_list=lambda *args:{'cursor':{'delivery':8,'native':8},'items':[
+            {'id':'native:'+str(n+1),'revision':'c'*64,'kind':'integrator_answer',
+             'preview':'x'*256,'label':'y'*12000} for n in range(3)]}
+        result=await self.bridge.tool({'type':'recent_results_query','call_id':'large-index','delivery':0,'native':0})
+        self.assertTrue(result['truncated']);self.assertIsNone(result['cursor'])
+        self.assertLessEqual(len(json.dumps(result).encode()),16384)
+        self.assertEqual(len(self.bridge._offered),len(result['items']))
+
     async def test_pending_ledger_projection_is_read_only_bounded_and_keeps_dates(self):
         self.owner.internal_pending=lambda after:{'cursor':41,'more':True,'items':[
             {'id':'a'*32,'kind':'task','title':'Inspect result','preview':'x'*20000,

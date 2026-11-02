@@ -846,6 +846,24 @@ class Mounted(unittest.TestCase):
             self.assertEqual(len(reads),1);self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
             ws.send_json({'type':'close'})
 
+    def test_mounted_recent_results_query_reuses_existing_presentation_reader(self):
+        reads=[]
+        original=self.owner.presentation_list;enabled=[]
+        def listed(*args):
+            if not enabled or len(args)<3 or args[2]!='before':return original(*args)
+            reads.append(args)
+            return {'items':[{'id':'native:123','revision':'c'*64,'kind':'integrator_answer','preview':'Useful result'}]}
+        self.owner.presentation_list=listed
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            enabled.append(True)
+            stream.queue.put([{'type':'recent_results_query','call_id':'results','delivery':0,'native':0}])
+            call,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'results');self.assertEqual(result['items'][0]['id'],'native:123')
+            self.assertEqual(reads,[(0,0,'before')]);self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
     def test_rejected_tool_keeps_mounted_voice_open_for_next_read(self):
         self.owner.sonic_activity=lambda:{'connected':True,'sources':[]}
         with self.open() as ws:
