@@ -226,6 +226,28 @@ function boot(readOnly=false,standalone=false,options={}) {
       pause(reason='manual'){this.paused=true;this.pauseReason=reason;hooks.onState({active:true,floor:false,pending:false,playback:'paused',pauseReason:reason});},
       resume(){this.paused=false;hooks.onState({active:true,floor:false,pending:false,playback:'playing'});},release(){}};
   }};
+  if(options.nativeDriver){
+    const driver=options.nativeDriver;context.window.crypto=context.crypto;context.window.location=context.location;context.navigator=context.window.navigator;
+    context.window.navigator.mediaDevices={getUserMedia:async()=>({getTracks:()=>[{stop(){}}]})};
+    context.WebSocket=class {
+      static OPEN=1;
+      constructor(){this.readyState=1;this.bufferedAmount=0;driver.socket=this;queueMicrotask(()=>this.onopen?.());}
+      send(raw){if(typeof raw!=='string')return;const v=JSON.parse(raw);if(v.binding)queueMicrotask(()=>this.push({type:'ready',id:v.id,activity_mode:'manual'}));}
+      push(v){this.onmessage({data:JSON.stringify(v)});}close(){this.readyState=3;}
+    };
+    context.window.AudioContext=class {
+      constructor(){this.state='running';this.currentTime=0;this.destination={};driver.output=this;}
+      suspend(){this.state='suspended';return Promise.resolve();}resume(){this.state='running';return Promise.resolve();}close(){this.state='closed';return Promise.resolve();}
+      createBuffer(_channels,length,rate){return {duration:length/rate,copyToChannel(){}};}
+      createBufferSource(){return {connect(){},disconnect(){},start(){},stop(){}};}
+    };
+    context.atob=atob;
+    context.window.StreamingVoice={supported:()=>true,wav:parts=>new Blob(parts),openCapture:async()=>({subscribe(fn){driver.emit=fn;return ()=>{};},observe(){},start(){},close(){}})};
+    vm.runInContext(fs.readFileSync('dashboard/web/native-conversation.js','utf8'),context);
+    const create=context.window.NativeConversation.create;
+    context.window.NativeConversation={supported:()=>true,create(hooks){const state=hooks.onState;hooks.onState=v=>{(driver.states||=[]).push(v);state(v);};return driver.engine=create(hooks);}};
+    driver.pcm=n=>vm.runInContext(`new Uint8Array(${n}).buffer`,context);
+  }
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
   if(options.autoText)context.window.IntersectionObserver=class{
     constructor(callback){intersection=callback;}observe(){}unobserve(){}disconnect(){}
@@ -1538,6 +1560,26 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(autoQuestion.nativePosts.length,0,'Speaking a question never approves or answers it');
   autoQuestion.advanceNativeRequest();await autoQuestion.ui.refresh();await until(()=>autoQuestion.audioCalls.length===2);assert.equal(autoQuestion.audioCalls[1].revision,'native-revision-2','The next question in one native request must still be spoken');
   autoQuestion.ui.stop();
+  // Real native engine mounted through the Conversation callbacks: a caption
+  // and local energy must not leave its queued output muted by another owner.
+  const nativeDriver={},joined=boot(false,true,{capture:true,continuous:true,nativeVoice:true,nativeDriver,clock:true});
+  joined.audio();await joined.ui.refresh();joined.continuous().mode.open();
+  for(let n=0;n<20&&!nativeDriver.emit;n++)await new Promise(resolve=>setImmediate(resolve));
+  assert(nativeDriver.engine.active);
+  const joinedOutput=require('node:crypto').randomUUID();
+  nativeDriver.socket.push({type:'assistant_utterance',utterance:{id:joinedOutput,text:'Synthetic integrated answer.',observed_at:Date.now()/1000,closed:false}});
+  nativeDriver.socket.push({type:'audio',id:joinedOutput,sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert(nativeDriver.engine.hasAudio,JSON.stringify(nativeDriver.states));
+  nativeDriver.emit({activityBytes:3200,totalBytes:3200,pcm:nativeDriver.pcm(3200)});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(nativeDriver.output.state,'running','Full Conversation cannot let unconfirmed loudness suspend the response');
+  const joinedInput=require('node:crypto').randomUUID();
+  nativeDriver.socket.push({type:'capture_started',id:joinedInput,start:0});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(nativeDriver.engine.hasAudio,false,'Confirmed input still retires output through the full Conversation callback');
+  assert.equal(nativeDriver.output.state,'suspended');
+  joined.continuous().mode.close();joined.ui.stop();
   const nativeAvatar=boot(false,true,{capture:true,continuous:true,nativeVoice:true,clock:true});
   nativeAvatar.audio();await nativeAvatar.ui.refresh();nativeAvatar.continuous().mode.open();
   assert.equal(nativeAvatar.native().session.active,true,'The avatar selects the mounted native mode');

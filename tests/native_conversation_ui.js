@@ -37,32 +37,21 @@ function boot(android=false,pcmReady=true){
 }
 async function ready(value){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:'manual'});assert.equal(await pending,true);return socket;}
 (async()=>{
-  // Local RMS energy is only a freshness hint: nonspeech must not permanently
-  // retire an utterance before the authoritative detector has classified it.
+  // Local loudness is not speech authority. Intermittent nonspeech with a
+  // delayed classifier must never hold the entire response clock suspended.
   for(const native of [false,true]){
-    const noise=boot(native),noiseSocket=await ready(noise),out=crypto.randomUUID();
+    const noise=boot(native),socket=await ready(noise),out=crypto.randomUUID();
     const packet=end=>({type:'audio',id:out,end,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});
-    noiseSocket.push({type:'assistant_utterance',utterance:{id:out,text:'Synthetic response.'}});
-    noiseSocket.push(packet(640));await until(()=>noise.engine.hasAudio);
-    assert(noise.timings.some(t=>t.id===out&&t.stage==='output_text'),'Caption receive is observed independently of PCM');
-    noise.sources[0].emit({activityBytes:3200,pcm:new Uint8Array(3200).buffer});await tick();
-    assert.equal(noise.engine.hasAudio,true,'Provisional energy keeps queued audio recoverable');
-    assert.equal(noise.engine.paused,true,'Local energy immediately pauses playback');
-    assert.equal(noise.timings.some(t=>t.id===out&&t.stage==='output_retired'),false);
-    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:2560,speaking:false}});await tick();
-    assert.equal(noise.engine.paused,true,'Earlier quiet analysis cannot release newer captured energy');
-    noiseSocket.push(packet(1280));await tick();
-    noise.sources[0].emit({activityBytes:6400,totalBytes:6400,pcm:new Uint8Array(3200).buffer});
-    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:3200,speaking:false}});await until(()=>!noise.engine.paused);
-    assert.equal(noise.engine.paused,false,'Continuous nonspeech energy cannot move the fence ahead of every analysis result');
-    assert.equal(noise.engine.hasAudio,true,'A classified nonspeech hint resumes the same queued utterance');
-    assert(noise.timings.some(t=>t.id===out&&t.stage==='output_energy_held'));
-    assert(noise.timings.some(t=>t.id===out&&t.stage==='output_release_requested'));
-    noise.sources[0].emit({activityBytes:6400,totalBytes:6400});await tick();assert.equal(noise.engine.paused,false,'Repeating an already analyzed energy marker cannot pause again');
-    noise.sources[0].emit({activityBytes:6400,totalBytes:9600});
-    noise.engine.pause();noise.sources[0].emit({activityBytes:9600,totalBytes:9600,pcm:new Uint8Array(3200).buffer});
-    noiseSocket.push({type:'turn_activity',activity:{audio_bytes:9600,speaking:false}});await tick();
-    assert.equal(noise.engine.paused,true,'Detector recovery never overrides an explicit pause');
+    socket.push(packet(640));await until(()=>noise.engine.hasAudio);
+    for(let n=1;n<=5;n++){
+      noise.sources[0].emit({activityBytes:n*6400,totalBytes:n*6400,pcm:new Uint8Array(3200).buffer});
+      noise.sources[0].emit({activityBytes:n*6400,totalBytes:n*6400+3200});
+      socket.push({type:'turn_activity',activity:{audio_bytes:(n-1)*6400,speaking:false}});
+      await tick();assert.equal(noise.engine.paused,false,'Unconfirmed intermittent energy cannot mute native speech');
+    }
+    assert.equal(noise.engine.hasAudio,true);
+    noise.engine.pause();socket.push({type:'turn_activity',activity:{audio_bytes:32000,speaking:false}});await tick();
+    assert.equal(noise.engine.paused,true,'Analysis cannot override explicit Pause');
     noise.engine.resume();noise.engine.hold();
   }
   // A provider may generate PCM before its manual-end ACK. Preserve the
@@ -128,7 +117,7 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
   assert.ok(androidSocket.sent.some(v=>v.type==='playback'&&v.id===androidOutput&&v.played_bytes===320));
   assert.ok(android.timings.some(t=>t.id===androidOutput&&t.stage==='output_progress'),'Native positive progress, not queued PCM, produces the playback observation');
   android.sources[0].emit({activityBytes:3200,pcm:frame()});
-  assert.equal(android.engine.hasAudio,true);assert.equal(android.engine.paused,true);
+  assert.equal(android.engine.hasAudio,true);assert.equal(android.engine.paused,false);
   const androidInput=crypto.randomUUID();androidSocket.push({type:'capture_started',id:androidInput,start:0});await until(()=>!android.engine.hasAudio);
   assert.ok(android.nativeCommands.some(v=>v.command==='pcm_flush'));
   const chunksBefore=android.nativeCommands.filter(v=>v.command==='pcm_chunk').length;
