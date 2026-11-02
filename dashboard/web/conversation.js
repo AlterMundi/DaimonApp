@@ -2134,6 +2134,7 @@ window.Conversation = (() => {
         conversationOnly=true;stop();audioFilterChanged();enableVoice();sound?.update({conversationOnly:true});
       },
       onSpeak:()=>voiceModePrevious?.continuous?voiceSession?.start():microphone?.startConversation(),
+      onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:()=>{
         if(voiceModePrevious?.continuous){voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}

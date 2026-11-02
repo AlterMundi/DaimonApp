@@ -212,7 +212,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       const create=context.window.ContinuousConversation.create;
       context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession=create(hooks);}};
     }
-    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},close(){if(!this.active)return;this.active=false;hooks.onLeave();}};}};
+    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},resumeAudio(){hooks.onResumeAudio?.();},close(){if(!this.active)return;this.active=false;hooks.onLeave();}};}};
   }
   if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
     const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};streamedTransports.push(value);return value;
@@ -1571,6 +1571,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   nativeDriver.socket.push({type:'audio',id:joinedOutput,sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
   await new Promise(resolve=>setImmediate(resolve));
   assert(nativeDriver.engine.hasAudio,JSON.stringify(nativeDriver.states));
+  nativeDriver.engine.pause('media-session');await new Promise(resolve=>setImmediate(resolve));
+  assert(joined.continuous().mode.updates.some(v=>v.continuousState?.audioPaused===true),'The open avatar receives the explicit native pause state');
+  const ownedWire=nativeDriver.socket;joined.continuous().mode.resumeAudio();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(nativeDriver.engine.paused,false);assert.equal(nativeDriver.socket,ownedWire,'In-avatar recovery cannot open another voice connection');
+  assert(nativeDriver.engine.active);assert(joined.continuous().mode.active);
   nativeDriver.emit({activityBytes:3200,totalBytes:3200,pcm:nativeDriver.pcm(3200)});
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(nativeDriver.output.state,'running','Full Conversation cannot let unconfirmed loudness suspend the response');
