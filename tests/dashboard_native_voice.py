@@ -12,6 +12,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from unittest.mock import patch
@@ -187,7 +188,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(result['cleanup'],'completed')
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','elapsed_ms','received_pcm_bytes','generated_pcm_bytes','cleanup'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup'})
         self.assertEqual(self.owner.delegations,[])
 
     def test_first_network_send_failure_survives_later_closed_send(self):
@@ -486,6 +487,55 @@ class Mounted(unittest.TestCase):
             self.assertTrue(stream.notice_seen.wait(2))
             self.assertEqual(len(stream.notices),1);self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'})
+
+    def test_shared_home_playback_progress_does_not_starve_captured_pcm(self):
+        # Small PCM buffers can finish faster than a fresh home-identity lookup.
+        # Exercise the actual cookie-auth path, not the fast Telegram fixture.
+        self.client.__exit__(None,None,None);home='https://home.example.test'
+        self.config.update(origin=home,shared_auth={'enabled':True,'home_origin':home})
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url=home);self.client.__enter__()
+        self.client.cookies.set('__Host-home','h'*43,path='/');checks=[]
+        class Quiet(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm)
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':0,'speaking':False})
+        def identity(origin,token):
+            checks.append(time.monotonic());time.sleep(.03)
+            return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
+                    'actor':{'kind':'human','ref':'human:telegram:100'}}
+        completed=threading.Event();failures=[];positions=[];closes=[];played=self.app.state.native_history.played
+        def observe(*args):
+            value=played(*args);positions.append(args[-1])
+            if args[-1]==360:completed.set()
+            return value
+        def log(message,*args,**kwargs):
+            if message=='native_voice_closed %s':closes.append(json.loads(args[0]))
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.native_voice.Detector',Quiet),patch.object(self.app.state.native_history,'played',observe):
+            self.csrf=self.client.get('/api/interaction/access').json()['csrf']
+            with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/native',headers={'origin':home}) as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                Stream.opened[0].queue.put([{'type':'audio','pcm':b'\1\0'*16000,'sample_rate':24000}])
+                value=ws.receive_json()
+                while value['type']!='audio':value=ws.receive_json()
+                utterance=value['id'];before=len(checks)
+                def send():
+                    try:
+                        for n in range(1,181):
+                            ws.send_json({'type':'playback','id':utterance,'played_bytes':n*2})
+                            if n%12==0:ws.send_bytes(b'\0\0'*1600)
+                            time.sleep(.008)
+                    except Exception as error:failures.append(type(error).__name__)
+                producer=threading.Thread(target=send);producer.start()
+                try:self.assertTrue(completed.wait(4),'Playback controls must not fill the input queue while microphone PCM waits for authorization: '+json.dumps(closes))
+                finally:producer.join(timeout=3)
+                self.assertFalse(producer.is_alive());self.assertEqual(failures,[])
+                self.assertEqual(positions,list(range(2,361,2)))
+                self.assertLess(len(checks)-before,120,'Already queued native controls share a fresh batch check, without an auth cache')
+                ws.send_json({'type':'close'})
+        self.assertTrue(Stream.opened[0].closed_event.wait(2))
+        self.assertEqual(Quiet.opened[-1].total,48000,'All microphone frames are processed in order without loss')
+        self.assertEqual(self.owner.inputs,{});self.assertEqual(self.owner.delegations,[])
 
     def test_revoked_actor_cannot_receive_generated_audio(self):
         with self.open() as ws:

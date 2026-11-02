@@ -688,6 +688,22 @@ class VoiceInboxBounds(unittest.IsolatedAsyncioTestCase):
             finally:await inbox.close()
             self.assertTrue(inbox.task.done())
 
+    async def test_native_controls_batch_in_exact_order_and_disconnect_stays_separate(self):
+        queue=asyncio.Queue()
+        frames=[{'type':'websocket.receive','text':'{"type":"capture_scope"}'},
+                {'type':'websocket.receive','bytes':b'a'*3200},
+                {'type':'websocket.receive','text':'{"type":"playback","played_bytes":2}'},
+                {'type':'websocket.receive','text':'{"type":"playback","played_bytes":4}'},
+                {'type':'websocket.receive','bytes':b'b'*3200}]
+        for frame in [*frames,{'type':'websocket.disconnect'}]:queue.put_nowait(frame)
+        inbox=VoiceInbox(queue.get,pcm=True,batch_size=50,batch_control_frames=True)
+        try:
+            await asyncio.sleep(0)
+            self.assertEqual(await inbox.batch(),frames)
+            self.assertEqual(await inbox.batch(),[{'type':'websocket.disconnect'}])
+            self.assertEqual(inbox.received_bytes,6400)
+        finally:await inbox.close()
+
     async def test_output_backlog_never_drops_events_silently(self):
         queue=asyncio.Queue()
         for _ in range(129):queue.put_nowait({'type':'activity'})

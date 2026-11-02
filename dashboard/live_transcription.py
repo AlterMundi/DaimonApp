@@ -28,14 +28,18 @@ class VoiceInbox:
 
     No delay, dropped PCM/events, auth cache or persistence. Input is bounded to
     eight seconds pending PCM and 128 messages; output retains at most 128 worker
-    events (the worker already bounds each JSON line). Control boundaries and
-    original packet sizes survive batching, preserving detector decisions.
+    events (the worker already bounds each JSON line). Original packet sizes and
+    order survive batching. Controls remain separate by default; native PCM may
+    opt into ordered control batching. Disconnect always stays separate.
     """
-    def __init__(self, receive, *, pcm=False, batch_size=10, control_bytes=256):
+    def __init__(self, receive, *, pcm=False, batch_size=10, control_bytes=256, batch_control_frames=False):
         if type(batch_size) is not int or not 1<=batch_size<=50:
             raise ValueError('Invalid bounded voice batch size')
         if type(control_bytes) is not int or not 256<=control_bytes<=8192:
             raise ValueError('Invalid bounded voice control size')
+        if type(batch_control_frames) is not bool or batch_control_frames and not pcm:
+            raise ValueError('Control batching requires a PCM inbox')
+        self.batch_control_frames=batch_control_frames
         self.control_bytes=control_bytes
         self.batch_size=batch_size
         self.receive = receive
@@ -93,15 +97,18 @@ class VoiceInbox:
         values, size = [], 0
         while self.items and len(values) < self.batch_size:
             value, count = self.items[0]
-            # Keep a control/disconnect in its own fresh authorized batch.
-            if self.pcm and (not count or size + count > 32000):
+            # Native playback observations may share the next fresh check with
+            # queued PCM/control frames, in exact order. Disconnect stays alone.
+            terminal=value.get('type')=='websocket.disconnect'
+            control_boundary=not count and not self.batch_control_frames
+            if self.pcm and (terminal or control_boundary or size + count > 32000):
                 if values:
                     break
             self.items.popleft()
             self.bytes -= count
             size += count
             values.append(value)
-            if self.pcm and not count:
+            if self.pcm and (terminal or control_boundary):
                 break
         return values
 

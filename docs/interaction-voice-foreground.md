@@ -880,3 +880,35 @@ These diagnostic changes do not identify the retrospective phone cause, resolve
 the protocol rejection or establish audible phone playback. The full voice goal
 remains open; a fresh trial can identify the actual failing check without replaying
 an original or rerunning a provider journey merely to repair observation.
+
+
+## Drain native controls without starving capture — 2 November 2026
+
+The next phone trial on client44b1b325e14e reached partial reported playback
+but closed with a client-input ValueError at the inbox batch read after27.535s.
+The human heard the voice several times and explicitly described the experience
+as still far from working well. Playback byte positions do not establish heard
+words, continuous playback or acceptance. The older journal lacks queue peaks,
+so the precise bound reached on that phone remains unobserved.
+
+A mounted regression through the actual shared-home cookie authorization path
+reproduced the same close stage/class/site: playback progress controls forced
+separate HTTPS identity checks, delaying microphone processing until the bounded
+inbox overflowed. Synthetic30ms identity latency and180 playback updates at8ms
+intervals are stress inputs, not measurements of the phone or shared service.
+
+Native PCM now opts into batching already queued control and PCM frames in their
+original order, with one fresh identity check per batch. Each batch retains the
+existing50-frame/32000-PCM-byte limits, per-control validation and queue bounds.
+Disconnect remains separate; default ASR control boundaries are unchanged. There
+is no identity cache, new lease, enlarged queue, dropped frame or automatic retry.
+The existing close summary adds received-message and peak pending-message/PCM-byte
+counts and admits source locations from the inbox module. It logs no content.
+
+The regression failed before the change and passes afterward, preserving all180
+playback positions and48000 microphone bytes with provider cleanup and no native
+work. The complete29-test native and34-test transcription suites pass, including
+revocation and default boundary checks. These synthetic results repair the
+reproduced starvation mechanism; real conversation quality remains unaccepted.
+The human stopped resending samples; retained originals and uncertain effects
+are preserved without replay.

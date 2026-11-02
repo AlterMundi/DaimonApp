@@ -26,7 +26,7 @@ from .turn_detection import Detector, DetectionUnavailable
 def failure_site(error):
     """Source location only: never exception text, locals or absolute paths."""
     site=None;trace=error.__traceback__
-    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue'}
+    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription'}
     while trace is not None:
         module=trace.tb_frame.f_globals.get('__name__')
         if module in modules:
@@ -301,7 +301,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 acoustic=NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':'manual'})
                 tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(analysis(),name='native-analysis'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
-                inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192)
+                inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192,batch_control_frames=True)
                 checked=time.monotonic()
                 while True:
                     if incoming is None:incoming=asyncio.create_task(inbox.batch())
@@ -375,6 +375,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'first_send_failure':first_send_failure,
                     'elapsed_ms':round((time.monotonic()-started)*1000),
                     'received_pcm_bytes':inbox.received_bytes if inbox else 0,
+                    'received_messages':inbox.received_messages if inbox else 0,
+                    'peak_pending_messages':inbox.peak_messages if inbox else 0,
+                    'peak_pending_pcm_bytes':inbox.peak_bytes if inbox else 0,
                     'generated_pcm_bytes':getattr(stream,'output_bytes',0) if stream else 0,
                     'cleanup':'cancelled' if task.cancelled() else 'failed' if task.exception() is not None else 'completed'}
                 logging.getLogger('uvicorn.error').info('native_voice_closed %s',json.dumps(summary,separators=(',',':')))
