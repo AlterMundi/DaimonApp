@@ -105,6 +105,7 @@ async function ready(value){const pending=value.engine.start();await until(()=>v
     failed.sources[0].emit({pcm:reason==='invalid'?new Uint8Array(3200):new Uint8Array(3200).buffer});
     await until(()=>failed.retained.length===1);
     assert.equal(failed.engine.active,false);assert.equal(failed.engine.originals.length,1);
+    assert.equal(failed.retained[0].blob.size,reason==='invalid'?3200:6400,'Every valid frame already captured at a transport failure remains in the local original');
     const message=failed.states.at(-1).message;
     assert(message.startsWith({backlog:'Voice upload is delayed',closed:'Voice connection closed',invalid:'Voice capture returned invalid audio'}[reason]),message);
   }

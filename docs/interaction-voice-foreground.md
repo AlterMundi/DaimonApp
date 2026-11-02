@@ -863,8 +863,10 @@ covers multiple acoustic/protocol checks and does not identify the failing check
 The client message also combined malformed PCM, the session limit, a non-open
 socket and the eight-second upload backlog. It did not prove a slow connection.
 
-Separate those four client messages while preserving exact recovery, bounds and
-all original retention. The existing bounded close journal now includes the
+Separate those four client messages while preserving recovery and bounds. A valid
+frame already captured at a transport failure now joins the local original before
+the closed/backlog guard; previously that final frame was omitted. Invalid frames
+and explicit duration limits are still rejected before retention. The existing bounded close journal now includes the
 last source-owned traceback site (module/function/line only) and the first failed
 socket send (task/class/elapsed time only). Later attempts to send a review on an
 already closed socket cannot replace that first-send observation. No exception
