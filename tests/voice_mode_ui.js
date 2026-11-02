@@ -17,9 +17,9 @@ function boot({suspend=false}={}){
  const document={body,hidden:false,createElement:tag=>new Node(tag),createComment:()=>new Node('comment'),addEventListener:(name,fn)=>listeners[name]=fn};
  const window={addEventListener:(name,fn)=>listeners[name]=fn};
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document,setTimeout:(fn,ms)=>{const timer={fn,ms};timers.push(timer);return timer;},clearTimeout:t=>{if(t)t.cancelled=true;}});
- let starts=0,enters=0,leaves=0,suspends=0,canStart=true,canEnter=true;
- const mode=window.ConversationVoiceMode.mount({portrait,...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;},onSpeak:()=>starts++,canStart:()=>canStart,canEnter:()=>canEnter});
- return {mode,portrait,header,nodes,timers,document,listeners,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
+ let starts=0,enters=0,leaves=0,suspends=0,resumes=0,canStart=true,canEnter=true;
+ const mode=window.ConversationVoiceMode.mount({portrait,...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
+ return {mode,portrait,header,nodes,timers,document,listeners,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
 }
 const f=boot();f.mode.configure(false);f.portrait.events.click();assert.equal(f.counts().starts,0);
 f.mode.configure(true);f.canEnter(false);f.portrait.events.click();assert.equal(f.counts().starts,0,'An unfinished original prevents opening');
@@ -81,4 +81,17 @@ unavailable.mode.update({capture:'idle',pending:false});
 assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','Ordinary composer updates cannot hide a native stop reason');
 unavailable.mode.update({continuousState:{active:true,starting:false,pending:false,working:false,message:'Listening'}});
 assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'','Restart clears the previous stop reason');unavailable.mode.close();
-console.log('Fullscreen voice: avatar identity, explicit opt-in, response/rearm fences, review, Escape, hidden and bounded exit passed.');
+
+
+const paused=boot();paused.mode.configure(true,true);paused.portrait.events.click();paused.canStart(false);
+paused.mode.update({continuousState:{active:true,starting:false,pending:false,working:false,audioPaused:true,audioEnabled:true},playback:'paused'});
+const resume=paused.nodes.find(n=>n.tag==='button'&&n.textContent==='Resume audio');
+assert(resume&&!resume.hidden&&!resume.disabled,'A native pause must be recoverable inside the open modal without another microphone start');
+assert.equal(paused.nodes.find(n=>n.className==='voice-mode-state').textContent,'Audio paused · listening');
+resume.events.click();assert.equal(paused.resumes(),1);assert.equal(paused.counts().starts,1);assert(paused.mode.active);
+paused.mode.update({continuousState:{active:true,audioPaused:false,audioEnabled:true},playback:'idle'});assert(resume.hidden);
+paused.mode.update({continuousState:{active:true,audioPaused:false,audioEnabled:false}});assert(!resume.hidden);assert.equal(resume.textContent,'Enable audio');
+resume.events.click();assert.equal(paused.resumes(),2);assert.equal(paused.counts().starts,1);
+paused.mode.update({continuousState:{active:false,pending:true,audioPaused:true}});assert(resume.hidden);paused.mode.close();
+
+console.log('Fullscreen voice: avatar identity, explicit opt-in, response/rearm fences, review, explicit in-avatar audio recovery, Escape, hidden and bounded exit passed.');

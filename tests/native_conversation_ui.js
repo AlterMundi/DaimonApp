@@ -44,9 +44,9 @@ async function ready(value,diagnostics=false){const pending=value.engine.start()
   assert.equal(observation.scheduled,1);assert.equal(observation.ended,0);assert.equal(observation.context,'running');
   observed.contexts[0].state='interrupted';observed.contexts[0].onstatechange();
   assert.equal(observationSocket.sent.at(-1).context,'interrupted','An OS context interruption is distinct from generated/scheduled bytes');
-  observed.engine.pause('media-session');assert.equal(observationSocket.sent.at(-1).user_paused,true);
-  observed.engine.resume();await tick();assert.equal(observationSocket.sent.at(-1).user_paused,false);
-  observed.engine.setEnabled(false);
+  observed.engine.pause('media-session');assert.equal(observationSocket.sent.at(-1).user_paused,true);assert.equal(observed.states.at(-1).audioPaused,true);
+  observed.engine.resume();await tick();assert.equal(observationSocket.sent.at(-1).user_paused,false);assert.equal(observed.states.at(-1).audioPaused,false);
+  observed.engine.setEnabled(false);assert.equal(observed.states.at(-1).audioEnabled,false);
   observationSocket.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
   await until(()=>observationSocket.sent.some(v=>v.type==='playback_status'&&v.skipped_muted===1));
   observation=observationSocket.sent.filter(v=>v.type==='playback_status').at(-1);assert.equal(observation.audible,false);assert.equal(observation.scheduled,1);
@@ -60,7 +60,7 @@ async function ready(value,diagnostics=false){const pending=value.engine.start()
   floorWire.push({type:'capture_started',id:crypto.randomUUID(),start:0});
   floorWire.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
   await until(()=>floorWire.sent.some(v=>v.type==='playback_status'&&v.skipped_floor===1));
-  assert.equal(floorWire.sent.filter(v=>v.type==='playback_status').at(-1).floor,true);floorObservation.engine.hold();
+  assert.equal(floorWire.sent.filter(v=>v.type==='playback_status').at(-1).floor,true);assert.equal(floorObservation.states.at(-1).audioPaused,false,'Acoustic floor suspension is not a user pause');floorObservation.engine.hold();
   // Local loudness is not speech authority. Intermittent nonspeech with a
   // delayed classifier must never hold the entire response clock suspended.
   for(const native of [false,true]){

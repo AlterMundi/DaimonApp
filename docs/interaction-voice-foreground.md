@@ -338,6 +338,15 @@ close summary, explicitly labelled untrusted client observations. Missing report
 from old clients do not establish a healthy or silent player. Scheduling, a
 running context or a buffer end still does not prove physical hearing.
 
+The native owner exposes explicit audio pause/enable state separately from its
+acoustic floor. While capture stays active, the fullscreen avatar reuses its
+existing action as `Resume audio` or `Enable audio` when needed, and labels the
+paused/off state. The explicit gesture calls the current owner's enable/resume
+path, never microphone start, another connection or work admission. Automatic
+floor suspension does not expose this action or clear an intentional pause.
+This recovery path does not identify the cause of the reported phone silence,
+reset playback automatically or establish physical hearing acceptance.
+
 Native manual activity uses the existing owned acoustic worker with an explicit
 1600ms silence endpoint as a fallback when the semantic score does not close a
 phrase. The event is labelled `acoustic_silence`, with measured silence duration,

@@ -7,7 +7,8 @@ window.NativeConversation=(()=>{
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
     let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
     let playbackReporting=false,playbackReports=0,playbackCounts;
-    const state=message=>onState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
+    const emitState=value=>onState({...value,audioPaused:userPaused,audioEnabled:audible});
+    const state=message=>emitState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
     function diagnosePlayback(){
       if(!playbackReporting||stopped||playbackReports>=32)return;
@@ -21,7 +22,7 @@ window.NativeConversation=(()=>{
       if(nativeOutput)for(const id of nativeOutput.flush())retireOutput(id);
       if(retire&&latestOutput)retireOutput(latestOutput);
       for(const node of nodes){if(retire)retireOutput(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
-      nodes.clear();next=context?.currentTime||0;onState({active,starting,floor,pending:false,playback:'paused'});
+      nodes.clear();next=context?.currentTime||0;emitState({active,starting,floor,pending:false,playback:'paused'});
     }
     function pendingTiming(stage){
       // Only actually queued output: a received-but-muted tail is not pending.
@@ -30,13 +31,13 @@ window.NativeConversation=(()=>{
     }
     function pauseOutput(){
       if(nativeOutput)nativeOutput.pause();
-      else if(context)void context.suspend().then(()=>{if(!stopped&&context?.state==='suspended')onState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>hold('Voice playback could not pause.'));
+      else if(context)void context.suspend().then(()=>{if(!stopped&&context?.state==='suspended')emitState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>hold('Voice playback could not pause.'));
     }
     function resumeOutput(){
       if(stopped||!audible||userPaused||floor||blocked)return;
       pendingTiming('output_release_requested');
       if(nativeOutput)nativeOutput.resume();
-      else if(context)void context.resume().then(()=>{if(!stopped){onState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});diagnosePlayback();}}).catch(()=>hold('Voice playback could not resume.'));
+      else if(context)void context.resume().then(()=>{if(!stopped){emitState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});diagnosePlayback();}}).catch(()=>hold('Voice playback could not resume.'));
     }
     async function play(value){
       if(value.sample_rate!==24000||typeof value.pcm!=='string'||value.pcm.length>350000||!Number.isSafeInteger(value.end))throw Error('Invalid native audio');
@@ -60,8 +61,8 @@ window.NativeConversation=(()=>{
       const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
       const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
-      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)onState({active,starting,floor,pending:false,playback:'idle'});};
-      source.start(at);playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');onState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
+      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};
+      source.start(at);playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');emitState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
     }
     function slice(start,end){
       if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start||end>bytes||end-start>120*32000)throw Error('Original PCM range unavailable');
@@ -134,7 +135,7 @@ window.NativeConversation=(()=>{
       try{
         if(nativePcm()){
           nativeOutput=window.NativeSpeechAudio.openPcm({onProgress:report,onBufferEnded:id=>{if(stopped||owned!==epoch)return;playbackCounts.ended++;onTiming(id,'output_buffer_ended');diagnosePlayback();},
-            onState:playback=>{if(!stopped)onState({active,starting,floor,pending:false,playback});},onUnavailable:hold});
+            onState:playback=>{if(!stopped)emitState({active,starting,floor,pending:false,playback});},onUnavailable:hold});
           await nativeOutput.ready;if(stopped||owned!==epoch)return false;
         }else{context=new (window.AudioContext||window.webkitAudioContext)();context.onstatechange=()=>{if(owned===epoch)diagnosePlayback();};void context.resume().catch(()=>{});}
         const target=new URL('api/interaction/voice/native',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
@@ -188,7 +189,7 @@ window.NativeConversation=(()=>{
       }catch(error){if(owned===epoch)hold(error.message||'Native voice unavailable.');return false;}
     }
     return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();diagnosePlayback();},
-      pause:(reason='manual')=>{userPaused=true;pauseOutput();diagnosePlayback();onState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
+      pause:(reason='manual')=>{userPaused=true;pauseOutput();diagnosePlayback();emitState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
       resume:()=>{userPaused=false;resumeOutput();},
       get hasAudio(){return !!nativeOutput?.hasAudio||nodes.size>0;},get paused(){return nativeOutput?.paused||context?.state==='suspended';},
       release:id=>originals.delete(id),get active(){return active||starting;},get floor(){return floor;},get originals(){return [...originals.values()];}};
