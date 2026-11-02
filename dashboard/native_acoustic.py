@@ -49,6 +49,7 @@ class NativeAcousticSession:
         self.spans=[];self.local=None;self.provider=None;self.created=0
         self.markers=[]
         self.closed=False;self.lock=asyncio.Lock();self.changed=asyncio.Event()
+        self.boundary_mismatch=None
 
     async def marker(self,audio_bytes,questions):
         # The client emits this narrowing snapshot before the PCM containing its
@@ -184,7 +185,15 @@ class NativeAcousticSession:
                     raise ForegroundUnavailable('Native activity is not the selected manual protocol')
                 start=event.get('activity')=='ACTIVITY_START'
                 target=span.stream_start if start else span.stream_end
-                if target is None or abs(self._offset(event.get('audio_offset'))-target)>2:
+                offset=self._offset(event.get('audio_offset'))
+                if target is None or abs(offset-target)>2:
+                    # Fixed scalar timing evidence only; never provider text,
+                    # PCM, exception contents or an unvalidated event payload.
+                    self.boundary_mismatch={'activity':'start' if start else 'end',
+                        'expected_pcm_bytes':target,'reported_offset_nanoseconds':int(offset*31250),
+                        'sent_pcm_bytes':self.sent,'provider_input_bytes':getattr(self.stream,'input_bytes',None),
+                        'span_start':span.start,'span_end':span.end,
+                        'start_observed':span.start_ack,'end_observed':span.end_ack}
                     raise ForegroundUnavailable('Provider activity does not match captured audio')
                 if start:
                     if span.start_ack:raise ForegroundUnavailable('Repeated native activity start')

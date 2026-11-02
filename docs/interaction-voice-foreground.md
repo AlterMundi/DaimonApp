@@ -912,3 +912,36 @@ revocation and default boundary checks. These synthetic results repair the
 reproduced starvation mechanism; real conversation quality remains unaccepted.
 The human stopped resending samples; retained originals and uncertain effects
 are preserved without replay.
+
+
+## Distinguish a provider boundary mismatch — 2 November 2026
+
+A subsequent receiving543 phone session closed after67.504s at the exact
+manual-boundary offset comparison in NativeAcousticSession.provider_event.
+The input queue peaked at24messages/64000PCM bytes, below its existing limits.
+Thus this close is a distinct protocol/correlation failure, not another observed
+input queue overflow. The generated audio count is not a hearing receipt.
+
+The existing failure-site record does not contain the event kind, expected
+position or observed offset. It cannot distinguish a missing local end target,
+a delayed/repeated observation or an actual offset discrepancy. Do not loosen
+the correlation guard or assign another phrase's text to an original on that
+evidence. The provider reference describes audioOffset as time relative to the
+audio stream, not a request identifier: [Live API reference](https://ai.google.dev/api/live#VoiceActivity).
+
+One distinct synthetic precision check used three manual activities with19216,
+17040 and25632zero-PCM bytes, including non-millisecond-aligned positions. All
+three observed start/end pairs matched exact cumulative input offsets, completing
+in1.581s. This disproves that synthetic precision hypothesis for that case; it
+does not reproduce the phone failure or establish sound/hearing acceptance.
+No transcript, audio, human original or native work was retained/replayed, and
+that terminal probe must not be rerun.
+
+On a mismatch only, the existing bounded close record now includes validated
+scalar timing: start/end kind, expected PCM bytes, reported nanoseconds, total
+sent/provider-input bytes, local span boundaries and prior boundary flags.
+There is no provider text, PCM, arbitrary event object or exception content.
+The comparison, source retention and failure behavior remain unchanged. Unit
+and mounted socket checks retain the exact mismatch while refusing interpretation
+and confirm an unrelated provider field cannot reach the journal. This is
+diagnostic delivery, not a repaired conversation or a new phone acceptance.

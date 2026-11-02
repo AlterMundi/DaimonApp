@@ -373,6 +373,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # transcript, provider payload, identity/header or raw audio.
                 summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,'failure_site':close_site,
                     'first_send_failure':first_send_failure,
+                    'boundary_mismatch':acoustic.boundary_mismatch if acoustic else None,
                     'elapsed_ms':round((time.monotonic()-started)*1000),
                     'received_pcm_bytes':inbox.received_bytes if inbox else 0,
                     'received_messages':inbox.received_messages if inbox else 0,

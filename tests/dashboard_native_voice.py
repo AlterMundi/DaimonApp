@@ -188,7 +188,28 @@ class Mounted(unittest.TestCase):
         self.assertEqual(result['cleanup'],'completed')
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup'})
+        self.assertIsNone(result['boundary_mismatch'])
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup'})
+        self.assertEqual(self.owner.delegations,[])
+
+    def test_mismatched_boundary_close_retains_only_validated_scalar_timing(self):
+        observed=queue.Queue()
+        def log(message,*args,**kwargs):
+            if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
+        with patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\1\0'*1600)
+            event=ws.receive_json()
+            while event['type']!='capture_started':event=ws.receive_json()
+            Stream.opened[0].queue.put([{'type':'voice_activity','activity':'ACTIVITY_START',
+                'audio_offset':'3.000000001s','source':'provider_manual_activity_ack','private_text':'must not reach journal'}])
+            event=ws.receive_json()
+            while event['type']!='review':event=ws.receive_json()
+            result=observed.get(timeout=2)
+        self.assertEqual(result['boundary_mismatch'],{'activity':'start','expected_pcm_bytes':0,
+            'reported_offset_nanoseconds':3000000001,'sent_pcm_bytes':3200,'provider_input_bytes':None,
+            'span_start':0,'span_end':None,'start_observed':True,'end_observed':False})
+        self.assertNotIn('private_text',json.dumps(result));self.assertNotIn('must not reach journal',json.dumps(result))
         self.assertEqual(self.owner.delegations,[])
 
     def test_first_network_send_failure_survives_later_closed_send(self):
