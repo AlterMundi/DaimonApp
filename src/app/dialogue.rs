@@ -339,7 +339,10 @@ pub(super) fn tool_call(
                     |crate::store::LiveContextCommand::Incorporate {..}
                     |crate::store::LiveContextCommand::Checkpoint {..})
                 {bail!("Native Live context cannot impersonate the voice producer");}
-                return shared.store.live_context(human,key,selected);
+                let incorporated=match &selected {crate::store::LiveContextCommand::Incorporate {dialogue,..}=>Some(dialogue.clone()),_=>None};
+                let result=shared.store.live_context(human,key,selected)?;
+                if let Some(dialogue)=incorporated {super::workflows::foreground(&app,human,&dialogue).await?;}
+                return Ok(result);
             }
             if request.tool=="interaction_conversation" {
                 let args:ConversationReadArgs=serde_json::from_value(request.arguments)?;

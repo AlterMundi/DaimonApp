@@ -219,15 +219,44 @@ order distinct from arrival sequence, frozen exact readers, contiguous-page
 incorporation and separate checkpoint retirement. Ordinary batches are supplied
 inline. Prefix source receipts survive text retirement to deduplicate catch-up.
 Existing owner-local producer and integrating controller operations expose these
-primitives without submitting work. Bounds:64dialogues,2MiB serialized per
+primitives without submitting work. Producer `sync` catches up finalized human
+originals from the selected native canonical journal, with source receipts rather
+than a row cursor that could miss slow finalization. It does not re-run ASR, touch
+media or change work admission. Bounds:64dialogues,2MiB serialized per
 dialogue,64MiB globally,4096source receipts per dialogue,16KiB/event and64KiB
 checkpoint; saturation stops writes transactionally while retaining old context.
 These are storage bounds, not tokenizer accounting or a raised pilot duration.
 
-Still required before receiving selection: canonical producer catch-up/outbox,
-native context-return delivery/publication handling, guidance, semantic provider
-rollover, retirement of completed source/transport metadata and the coherent
-actual-native/provider qualification. The five-minute pilot limit stays in place.
+The native internal-return dispatcher now has a foreground source, sharing its
+existing worker, empty-human-input `toolOutput`, exact native acknowledgments,
+known-unsent recovery, uncertain retention and collection ownership. One frozen
+range is outstanding; later complete sources coalesce until incorporation. The
+integrating controller's incorporation starts the next pending range, rather
+than waiting for another human utterance.
+
+Foreground returns never contribute a publication grant or a negative fence
+against independent human/work sources. Completed context bindings consolidate
+within a physical turn while its internal-only lifetime bit remains; retiring
+batch IDs cannot silently widen publication. This passed40sequential batches in
+one physical turn. After incorporation, duplicate full-text transport envelopes
+retire while the exact post-checkpoint event tail remains readable. All retained
+transport receipts share the projection's quota; saturation retains existing
+sources and stops new writes.
+
+Qualification:238Store tests passed, including8projection/transport tests. A
+new actual-wrapper/socket/controller/SQLite journey with a synthetic Core proves
+human canonical catch-up plus assistant context, active and idle delivery,
+incorporation, native producer-operation denial, pure-context silence and the
+independent human reply's presentation. Existing workflow and routed-return
+journeys also pass, including known-unsent recovery, completion-race collection
+and late canonical results. These tests use zero models; they do not establish
+actual Core/model incorporation, Gemini delivery or device acceptance.
+
+Still required before receiving selection: mounted voice-producer registration,
+assistant canonical catch-up/outbox across the app/native database boundary,
+guidance, semantic provider rollover, retirement of completed source/transport
+metadata and coherent actual-native/provider qualification. The five-minute
+pilot limit stays in place.
 
 ## Qualification and delivery
 

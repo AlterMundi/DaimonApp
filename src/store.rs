@@ -168,6 +168,7 @@ impl Store {
         store.init_conversation_inputs()?;
         store.init_conversation_entry()?;
         store.init_live_context()?;
+        store.init_native_foreground_returns()?;
         store.init_conversation_requests()?;
         store.init_native_routed_returns()?;
         store.init_matrix()?;

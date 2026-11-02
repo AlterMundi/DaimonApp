@@ -136,10 +136,23 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             crate::store::LiveContextCommand::Open { .. }
                 | crate::store::LiveContextCommand::Append { .. }
                 | crate::store::LiveContextCommand::Close { .. }
+                | crate::store::LiveContextCommand::Sync { .. }
         ) {
             bail!("Semantic incorporation belongs to the native integrator");
         }
-        return app.shared.store.live_context(human, cfg.entry(), selected);
+        let dialogue = match &selected {
+            crate::store::LiveContextCommand::Open { dialogue, .. }
+            | crate::store::LiveContextCommand::Append { dialogue, .. }
+            | crate::store::LiveContextCommand::Close { dialogue, .. }
+            | crate::store::LiveContextCommand::Sync { dialogue, .. } => dialogue.clone(),
+            _ => unreachable!(),
+        };
+        let result = app
+            .shared
+            .store
+            .live_context(human, cfg.entry(), selected)?;
+        super::workflows::foreground(app, human, &dialogue).await?;
+        return Ok(result);
     }
     if let Some(body) = args.strip_prefix("foreground retain ") {
         #[derive(Deserialize)]

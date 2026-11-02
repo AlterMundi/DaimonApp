@@ -34,6 +34,10 @@ pub(crate) enum LiveContextCommand {
         dialogue: String,
         generation: String,
     },
+    Sync {
+        dialogue: String,
+        generation: String,
+    },
     Read {
         dialogue: String,
         full: bool,
@@ -103,6 +107,8 @@ struct Projection {
     sources: BTreeMap<String, (u64, String)>,
     events: Vec<Event>,
     range: Option<Frozen>,
+    #[serde(default)]
+    native_returns: Vec<super::workflows::WorkflowReturn>,
 }
 
 fn hash(value: &impl Serialize) -> Result<String> {
@@ -119,6 +125,37 @@ fn bounded(text: &str, max: usize) -> Result<()> {
         bail!("Live language exceeds its retained bound");
     }
     Ok(())
+}
+fn retain_event(
+    p: &mut Projection,
+    source: String,
+    role: String,
+    text: String,
+    interrupted: bool,
+    capture_order: Option<i64>,
+) -> Result<Value> {
+    let revision = hash(&json!([source, role, text, interrupted, capture_order]))?;
+    if let Some((sequence, old)) = p.sources.get(&source) {
+        if *old != revision {
+            bail!("Finalized Live source cannot be rewritten");
+        }
+        return Ok(json!({"sequence":sequence,"revision":revision,"fresh":false}));
+    }
+    if p.closed || p.sources.len() >= MAX_SOURCES {
+        bail!("Live producer closed or source bound reached");
+    }
+    p.high += 1;
+    p.sources.insert(source.clone(), (p.high, revision.clone()));
+    p.events.push(Event {
+        sequence: p.high,
+        source,
+        role,
+        text,
+        interrupted,
+        capture_order,
+        revision: revision.clone(),
+    });
+    Ok(json!({"sequence":p.high,"revision":revision,"fresh":true}))
 }
 fn load(conn: &Connection, dialogue: &str, human: i64, entry: SessionKey) -> Result<Projection> {
     uuid(dialogue)?;
@@ -190,6 +227,40 @@ fn view(p: &Projection) -> Value {
         "checkpoint_revision":p.checkpoint.revision,"closed":p.closed,
         "work_admission":"not_requested"})
 }
+fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
+    if p.range.as_ref().is_some_and(|r| r.full != full) {
+        bail!("Finish the selected frozen Live range first");
+    }
+    if p.range.is_none() {
+        let from = if full {
+            p.checkpoint.through + 1
+        } else {
+            p.incorporated + 1
+        };
+        let body = snapshot(p, full)?;
+        let revision = hash(&body)?;
+        p.range = Some(Frozen {
+            from,
+            through: p.high,
+            revision,
+            body,
+            supplied: 0,
+            full,
+        });
+    }
+    let mut result = view(p);
+    let r = p.range.as_mut().unwrap();
+    result["range"] = if r.body.len() <= INLINE {
+        r.supplied = r.body.chars().count();
+        json!({"from":r.from,"through":r.through,"revision":r.revision,"full":r.full,
+                        "content":serde_json::from_str::<Value>(&r.body)?,"complete":true})
+    } else {
+        json!({"from":r.from,"through":r.through,"revision":r.revision,"full":r.full,
+                    "complete":false,"characters":r.body.chars().count(),"offset":0})
+    };
+    Ok(result)
+}
+
 fn page(p: &mut Projection, revision: &str, offset: usize) -> Result<Value> {
     let mut result = view(p);
     let r = p.range.as_mut().context("No frozen Live range")?;
@@ -282,6 +353,7 @@ impl Store {
                 sources: BTreeMap::new(),
                 events: vec![],
                 range: None,
+                native_returns: vec![],
             };
             save(&tx, &p)?;
             tx.commit()?;
@@ -291,6 +363,7 @@ impl Store {
             LiveContextCommand::Open { .. } => unreachable!(),
             LiveContextCommand::Append { dialogue, .. }
             | LiveContextCommand::Close { dialogue, .. }
+            | LiveContextCommand::Sync { dialogue, .. }
             | LiveContextCommand::Read { dialogue, .. }
             | LiveContextCommand::Part { dialogue, .. }
             | LiveContextCommand::Incorporate { dialogue, .. }
@@ -332,29 +405,53 @@ impl Store {
                 } else {
                     bail!("Invalid Live context role");
                 };
-                let revision = hash(&json!([source, role, text, interrupted, capture_order]))?;
-                if let Some((sequence, old)) = p.sources.get(&source) {
-                    if *old != revision {
-                        bail!("Finalized Live source cannot be rewritten");
-                    }
-                    json!({"sequence":sequence,"revision":revision,"fresh":false})
-                } else {
-                    if p.closed || p.sources.len() >= MAX_SOURCES {
-                        bail!("Live producer closed or source bound reached");
-                    }
-                    p.high += 1;
-                    p.sources.insert(source.clone(), (p.high, revision.clone()));
-                    p.events.push(Event {
-                        sequence: p.high,
-                        source,
-                        role,
-                        text,
-                        interrupted,
-                        capture_order,
-                        revision: revision.clone(),
-                    });
-                    json!({"sequence":p.high,"revision":revision,"fresh":true})
+                retain_event(&mut p, source, role, text, interrupted, capture_order)?
+            }
+            LiveContextCommand::Sync { generation, .. } => {
+                if p.generation != generation {
+                    bail!("Live producer generation differs");
                 }
+                // Read only this selected dialogue's canonical finalized text.
+                // No media/status helper, ASR, work admission or native replay.
+                // Source receipts deduplicate earlier rows even after checkpoint
+                // retirement; a cursor alone could miss slow finalization.
+                let rows = {
+                    let mut q=tx.prepare("SELECT c.id,c.doc,o.id FROM conversation_inputs c JOIN original_ingress_order o ON o.channel='conversation' AND o.event_id=c.id WHERE c.human_id=?1 AND c.session_id=?2 AND c.native_thread=?3 AND c.retired=0 AND json_extract(c.doc,'$.foreground_dialogue')=?4 AND length(json_extract(c.doc,'$.text'))>0 ORDER BY o.id LIMIT 4097")?;
+                    q.query_map(params![human, p.session, p.native, p.dialogue], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, i64>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                if rows.len() > MAX_SOURCES {
+                    bail!("Live canonical catch-up exceeds its source bound");
+                }
+                let mut fresh = 0;
+                for (id, raw, order) in rows {
+                    let original: super::conversation_inputs::ConversationInput =
+                        serde_json::from_str(&raw)?;
+                    if original.epoch != p.epoch {
+                        bail!("Canonical Live original epoch changed");
+                    }
+                    bounded(&original.text, 16384)?;
+                    fresh += usize::from(
+                        retain_event(
+                            &mut p,
+                            id,
+                            "human".into(),
+                            original.text,
+                            false,
+                            Some(order),
+                        )?["fresh"]
+                            == true,
+                    );
+                }
+                let mut value = view(&p);
+                value["new_sources"] = json!(fresh);
+                value
             }
             LiveContextCommand::Close { generation, .. } => {
                 if generation != p.generation {
@@ -363,39 +460,7 @@ impl Store {
                 p.closed = true;
                 view(&p)
             }
-            LiveContextCommand::Read { full, .. } => {
-                if p.range.as_ref().is_some_and(|r| r.full != full) {
-                    bail!("Finish the selected frozen Live range first");
-                }
-                if p.range.is_none() {
-                    let from = if full {
-                        p.checkpoint.through + 1
-                    } else {
-                        p.incorporated + 1
-                    };
-                    let body = snapshot(&p, full)?;
-                    let revision = hash(&body)?;
-                    p.range = Some(Frozen {
-                        from,
-                        through: p.high,
-                        revision,
-                        body,
-                        supplied: 0,
-                        full,
-                    });
-                }
-                let mut result = view(&p);
-                let r = p.range.as_mut().unwrap();
-                result["range"] = if r.body.len() <= INLINE {
-                    r.supplied = r.body.chars().count();
-                    json!({"from":r.from,"through":r.through,"revision":r.revision,"full":r.full,
-                        "content":serde_json::from_str::<Value>(&r.body)?,"complete":true})
-                } else {
-                    json!({"from":r.from,"through":r.through,"revision":r.revision,"full":r.full,
-                    "complete":false,"characters":r.body.chars().count(),"offset":0})
-                };
-                result
-            }
+            LiveContextCommand::Read { full, .. } => freeze(&mut p, full)?,
             LiveContextCommand::Part {
                 revision, offset, ..
             } => page(&mut p, &revision, offset)?,
@@ -409,6 +474,18 @@ impl Store {
                     bail!("Live incorporation requires the complete contiguous frozen range");
                 }
                 p.incorporated = r.through;
+                for receipt in &mut p.native_returns {
+                    if receipt.envelope["revision"] == revision {
+                        receipt.reported_revision = Some(revision.clone());
+                        // The exact text stays in events until checkpointing;
+                        // completed transport metadata must not retain a second
+                        // full copy of every historical batch indefinitely.
+                        if let Some(envelope) = receipt.envelope.as_object_mut() {
+                            envelope.remove("content");
+                            envelope.insert("incorporated".into(), json!(true));
+                        }
+                    }
+                }
                 p.range = None;
                 view(&p)
             }
@@ -451,6 +528,60 @@ impl Store {
         tx.commit()?;
         Ok(result)
     }
+}
+
+/// Reserve one coalesced context range through the existing native dispatcher.
+/// No new source is discovered by transport recovery.
+pub(in crate::store) fn reserve_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    dialogue: &str,
+    instance: &str,
+) -> Result<Option<Value>> {
+    let mut p = load(conn, dialogue, human, entry)?;
+    if p.incorporated >= p.high || p.range.as_ref().is_some_and(|r| r.full) {
+        return Ok(None);
+    }
+    let evidence = freeze(&mut p, false)?;
+    let revision = evidence["range"]["revision"]
+        .as_str()
+        .context("Missing frozen revision")?;
+    let id = format!("foreground:{}:{}", p.dialogue, revision);
+    if p.native_returns.iter().any(|r| r.id == id) {
+        return Ok(None);
+    }
+    p.native_returns.push(super::workflows::WorkflowReturn {
+        id,
+        workflow: String::new(),
+        reported_revision: None,
+        envelope: evidence["range"].clone(),
+        phase: "reserved".into(),
+        local: None,
+        collection_local: None,
+        native_turn: None,
+        instance: instance.into(),
+        attempts: 1,
+        retry_after: None,
+    });
+    save(conn, &p)?;
+    Ok(Some(serde_json::to_value(&p)?))
+}
+pub(in crate::store) fn save_returns_on(
+    conn: &Connection,
+    dialogue: &str,
+    returns: &[super::workflows::WorkflowReturn],
+) -> Result<()> {
+    let raw: String = conn.query_row(
+        "SELECT doc FROM live_context WHERE dialogue=?1",
+        [dialogue],
+        |r| r.get(0),
+    )?;
+    let mut p: Projection = serde_json::from_str(&raw)?;
+    // Change transport fields only; appends/checkpoints committed since the
+    // native offer must not be overwritten by a copied parent document.
+    p.native_returns = returns.to_vec();
+    save(conn, &p)
 }
 
 #[cfg(test)]
@@ -695,5 +826,178 @@ mod tests {
         let full = f.read(true);
         assert_eq!(full["high"], 1);
         assert_eq!(full["range"]["content"]["events"][0]["source"], source);
+    }
+
+    fn local(f: &Fixture, prompt: &str) -> i64 {
+        f.store
+            .record_turn_started(
+                f.store.get_session(f.entry).unwrap().unwrap().id,
+                &crate::models::TurnRequest {
+                    session_key: f.entry,
+                    from_user_id: 100,
+                    prompt: prompt.into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap()
+    }
+    fn linked(f: &Fixture, r: &super::super::ReturnDispatch, local: i64) {
+        f.store.workflow_native_link(&r.id, local).unwrap();
+        f.store.workflow_native_submitting(&r.id).unwrap();
+        f.store
+            .workflow_native_outcome(&r.id, "accepted", Some("physical-context-turn"))
+            .unwrap();
+    }
+    #[test]
+    fn native_context_coalesces_and_never_contributes_chat_publication() {
+        let f = Fixture::new();
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "Assistant context, not a work result.",
+        )
+        .unwrap();
+        let r = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let output: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(r.name, "foreground_context");
+        assert_eq!(output["evidence"]["complete"], true);
+        let l = local(&f, "");
+        linked(&f, &r, l);
+        assert!(!f.store.workflow_native_visible(l).unwrap());
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "A later semantic turn while Sol incorporates.",
+        )
+        .unwrap();
+        assert!(
+            f.store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .unwrap()
+                .is_none()
+        );
+        f.call(output["after_incorporation"]["arguments"].clone())
+            .unwrap();
+        assert!(!f.store.workflow_native_visible(l).unwrap());
+        let next = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let next: Value = serde_json::from_str(&next.output).unwrap();
+        assert_eq!(next["evidence"]["from"], 2);
+        assert_eq!(next["evidence"]["through"], 2);
+        // The coalesced transport released its duplicate text, not the exact
+        // post-checkpoint projection needed by an explicit full-context reader.
+        let conn = f.store.conn.lock().unwrap();
+        let p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
+        assert_eq!(p.events.len(), 2);
+        assert!(p.native_returns[0].envelope.get("content").is_none());
+    }
+    #[test]
+    fn native_context_does_not_suppress_real_human_lifetime_or_exhaust_32_batches() {
+        let f = Fixture::new();
+        let internal = local(&f, "");
+        for n in 0..40 {
+            f.append(&Uuid::now_v7().to_string(), &format!("Context turn {n}."))
+                .unwrap();
+            let r = f
+                .store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .unwrap()
+                .unwrap();
+            let output: Value = serde_json::from_str(&r.output).unwrap();
+            linked(&f, &r, internal);
+            f.call(output["after_incorporation"]["arguments"].clone())
+                .unwrap();
+            assert!(!f.store.workflow_native_visible(internal).unwrap());
+        }
+        let human = local(&f, "An actual independent human question.");
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "Context arriving during the real question.",
+        )
+        .unwrap();
+        let r = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        linked(&f, &r, human);
+        assert!(f.store.workflow_native_visible(human).unwrap());
+        let conn = f.store.conn.lock().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [format!("workflow_return_local:{internal}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Vec<String>>(&raw).unwrap().len(), 1);
+        // Even after transport-binding consolidation, a pure internal lifetime
+        // remains internal. Retiring IDs never silently widens publication.
+        conn.execute(
+            "DELETE FROM bot_state WHERE key=?1",
+            [format!("workflow_return_local:{internal}")],
+        )
+        .unwrap();
+        assert!(!super::super::workflows::native_visible_on(&conn, internal).unwrap());
+    }
+    #[test]
+    fn restart_distinguishes_unsent_from_uncertain_and_never_reauthors_a_range() {
+        let mut f = Fixture::new();
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "Retained before native boundary.",
+        )
+        .unwrap();
+        let r = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        drop(f.store);
+        f.store = Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        {
+            let conn = f.store.conn.lock().unwrap();
+            let mut p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
+            assert_eq!(p.native_returns[0].id, r.id);
+            assert_eq!(p.native_returns[0].phase, "retained_unsent");
+            p.native_returns[0].retry_after = Some(0);
+            save(&conn, &p).unwrap();
+        }
+        let retry = f
+            .store
+            .native_returns_recover_unsent(100, f.entry, false, false)
+            .unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].id, r.id);
+        assert_eq!(retry[0].attempts, 2);
+        let l = local(&f, "");
+        f.store.workflow_native_link(&r.id, l).unwrap();
+        f.store.workflow_native_submitting(&r.id).unwrap();
+        drop(f.store);
+        f.store = Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(
+            f.store
+                .native_returns_recover_unsent(100, f.entry, false, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            f.store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .unwrap()
+                .is_none()
+        );
+        let conn = f.store.conn.lock().unwrap();
+        let p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
+        assert_eq!(p.native_returns[0].phase, "uncertain");
+        assert_eq!(p.native_returns.len(), 1);
     }
 }

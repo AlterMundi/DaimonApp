@@ -411,6 +411,25 @@ fn deliver_retained(
         Ok(())
     })
 }
+/// The selected server-owned Live producer coalesces complete semantic sources.
+/// It reuses native internal admission; no synthetic workflow or human input.
+pub(super) async fn foreground(app: &App, human: i64, dialogue: &str) -> Result<()> {
+    let cfg = super::routing::profile(&app.shared)?;
+    if cfg.human_id != human {
+        bail!("Live context owner mismatch");
+    }
+    if let Some(selected) =
+        app.shared
+            .store
+            .native_foreground_reserve(human, cfg.entry(), dialogue)?
+    {
+        let owned = app.clone();
+        tokio::spawn(async move {
+            let _ = deliver_retained(&owned, selected).await;
+        });
+    }
+    Ok(())
+}
 async fn deliver(app: &App, selected: crate::store::ReturnDispatch) -> Result<()> {
     let worker = app.worker_for(selected.entry).await?;
     let active = worker.steer.lock().expect("steer mutex poisoned").clone();
