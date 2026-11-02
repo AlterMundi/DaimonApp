@@ -81,15 +81,20 @@
   try{
    if(!await engine.start())throw Error('Realtime output did not start');
    socket.push(packet(9600));await wait(40);if(device.state!=='running')throw Error('Output did not run');
-   listener({activityBytes:640});await wait(30);const at=device.currentTime;
-   if(device.state!=='suspended'||!engine.hasAudio)throw Error('Energy discarded or failed to pause queued output');
-   socket.push(packet(19200));socket.push({type:'turn_activity',activity:{audio_bytes:320,speaking:false}});await wait(40);
-   if(device.state!=='suspended'||device.currentTime!==at)throw Error('Stale quiet analysis resumed the capture fence');
-   socket.push({type:'turn_activity',activity:{audio_bytes:640,speaking:false}});await wait(60);
-   if(device.state!=='running'||device.currentTime<=at)throw Error('Confirmed nonspeech did not resume the output clock');
+   const at=device.currentTime;
+   // Intermittent loudness and delayed nonspeech verdicts cannot suspend audio.
+   for(let n=1;n<=4;n++){
+    listener({activityBytes:n*640,totalBytes:n*640});
+    listener({activityBytes:n*640,totalBytes:n*640+3200});
+    socket.push({type:'turn_activity',activity:{audio_bytes:(n-1)*640,speaking:false}});
+    await wait(30);
+    if(device.state!=='running')throw Error('Unconfirmed noise suspended the output clock');
+   }
+   socket.push(packet(19200));await wait(60);
+   if(device.currentTime<=at)throw Error('Output clock stopped during nonspeech');
    await wait(500);
    if(!socket.sent.some(v=>v.type==='playback'&&v.id===id&&v.played_bytes===19200))throw Error('Same utterance did not finish after nonspeech recovery');
-   return {actualAudioContext:true,physicalPlayback:false,microphoneOpened:false,energyPauseRecovered:true,sameUtterancePlayedBytes:19200};
+   return {actualAudioContext:true,physicalPlayback:false,microphoneOpened:false,unconfirmedNoiseCannotPause:true,sameUtterancePlayedBytes:19200};
   }finally{engine.hold();}
  }
  return {nativeOfflineAudio:true,physicalPlayback:false,microphoneOpened:false,cases:[await render(false),await render(true)],provisional:await provisional()};

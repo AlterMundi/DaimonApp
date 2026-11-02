@@ -824,3 +824,30 @@ Use that actual result and retain failures before describing the candidate as
 qualified. Same-key higher-versionCode delivery preserves login/app data; a
 rollback is a forward build, never uninstall/clear-data or native/history restore.
 
+
+
+## Confirmed speech owns interruption — 2 November 2026
+
+A subsequent phone trial on client3deb032e4a50 still displayed text before
+sound, played only a fragment and ended in retained review. Its bounded server
+summary reported a native-analysis WebSocketDisconnected after41.667seconds;
+three retained assistant utterances had generated PCM and zero reported playback.
+The send-after-close exception is not evidence that the acoustic worker caused
+the original disconnect. Exact physical cause remains unresolved.
+
+Remove provisional loudness-based output suspension. Local RMS markers still
+freeze the question scope before captured PCM; they are not speech authority and
+cannot mute or retire output. Only confirmed capture_started retires the old
+utterance and pauses its output owner. Matching manual-end acknowledgment releases
+the fresh response; explicit Pause/mute, generation retirement and bounded queues
+remain unchanged. This trades speculative local-energy interruption for the
+existing confirmed detector event, whose real-device delay remains to measure.
+
+The regression first fails on the prior client because intermittent unconfirmed
+energy suspends output. It then checks browser/native adapters, delayed nonspeech
+verdicts and explicit Pause. The Conversation fixture also loads the actual native
+engine through the shipped callbacks rather than replacing it with a passive stub.
+Chromium checks the running output clock under nonspeech and rendered silence after
+confirmed onset, followed by a fresh utterance. Synthetic capture, muted playback
+and fixture authorization do not establish phone acceptance or the cause of the
+reported disconnect. No provider call or human original is replayed for these checks.
