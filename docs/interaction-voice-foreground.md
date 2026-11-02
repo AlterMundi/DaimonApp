@@ -1245,8 +1245,10 @@ source freshness, no-direct-worker and pending/uncertain request rules still app
 The new file selection grants no memory pooling, new tools or autonomous attention.
 
 Mounted qualification exercises an independently configured synthetic Oliva
-identity, fresh file reads after an owner update with an immutable open-dialogue
-snapshot, and no disclosure of the file path. One mounted missing-file rejection
+identity at the authenticated connector boundary before provider readiness, fresh
+file reads after an owner update with an immutable context snapshot, and no
+disclosure of the file path. The connector stops synthetically before background
+output/return watchers; existing tests cover their lifecycle. One missing-file rejection
 checks the readiness boundary; direct reader cases cover unsafe, oversized and
 malformed selections without coupling identity checks to repeated socket teardown.
 Existing identity-free clients and native/ordinary streaming checks remain.
