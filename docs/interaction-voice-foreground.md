@@ -310,6 +310,22 @@ not automatic replay. Synthetic socket regressions cover concurrent speech while
 a tool is pending, interruption, once-only uncertain returns and resource bounds;
 they establish no real audio-input, native admission, avatar or phone acceptance.
 
+Native input applies bounded backpressure at the existing256000queued PCM-byte
+or128message bound. It retains the next validated frame (at most32000bytes)
+without reading further network frames while waiting up to3seconds for consumer
+space. Failure to drain still closes to retained review; malformed frames are
+rejected before waiting. Every batch still requires fresh authorization and
+keeps exact PCM/control ordering. Default prepared/file-ASR and provider/detector
+event inboxes retain their previous immediate overflow behavior.
+
+A2November phone trial on544 filled that PCM queue and closed at the collector
+after34.587seconds, with no activity-offset mismatch. A deterministic queued
+burst reproduced the same80frame/256000byte rejection before the consumer could
+drain. The new mounted shared-cookie fixture holds authorization during a burst,
+then verifies all320000bytes reach analysis with the original queue bound. This
+qualifies burst recovery, not proof that a burst rather than another delay caused
+that phone queue to fill, nor physical playback/continuous-experience acceptance.
+
 Native manual activity uses the existing owned acoustic worker with an explicit
 1600ms silence endpoint as a fallback when the semantic score does not close a
 phrase. The event is labelled `acoustic_silence`, with measured silence duration,

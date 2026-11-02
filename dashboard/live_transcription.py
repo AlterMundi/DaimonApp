@@ -26,19 +26,26 @@ from scripts.speech_render import lock, RenderError
 class VoiceInbox:
     """Collect already-arrived frames while fresh authorization is in flight.
 
-    No delay, dropped PCM/events, auth cache or persistence. Input is bounded to
+    No batching timer, dropped PCM/events, auth cache or persistence. Input is bounded to
     eight seconds pending PCM and 128 messages; output retains at most 128 worker
     events (the worker already bounds each JSON line). Original packet sizes and
     order survive batching. Controls remain separate by default; native PCM may
-    opt into ordered control batching. Disconnect always stays separate.
+    opt into ordered control batching and a finite wait for consumer space.
+    Disconnect always stays separate.
     """
-    def __init__(self, receive, *, pcm=False, batch_size=10, control_bytes=256, batch_control_frames=False):
+    space_timeout = 3
+
+    def __init__(self, receive, *, pcm=False, batch_size=10, control_bytes=256, batch_control_frames=False, wait_for_space=False):
         if type(batch_size) is not int or not 1<=batch_size<=50:
             raise ValueError('Invalid bounded voice batch size')
         if type(control_bytes) is not int or not 256<=control_bytes<=8192:
             raise ValueError('Invalid bounded voice control size')
         if type(batch_control_frames) is not bool or batch_control_frames and not pcm:
             raise ValueError('Control batching requires a PCM inbox')
+        if type(wait_for_space) is not bool or wait_for_space and not pcm:
+            raise ValueError('Backpressure requires a PCM inbox')
+        self.wait_for_space=wait_for_space
+        self.space=asyncio.Event()
         self.batch_control_frames=batch_control_frames
         self.control_bytes=control_bytes
         self.batch_size=batch_size
@@ -65,8 +72,18 @@ class VoiceInbox:
                             raise ValueError('Foreground PCM exceeds frame bounds')
                     elif len(value.get('text', '').encode()) > self.control_bytes:
                         raise ValueError('Foreground control exceeds bound')
-                if len(self.items) >= 128 or self.bytes + size > 256000:
-                    raise ValueError('Voice processing backlog exceeds bound')
+                deadline=asyncio.get_running_loop().time()+self.space_timeout
+                while len(self.items) >= 128 or self.bytes + size > 256000:
+                    if not self.wait_for_space:
+                        raise ValueError('Voice processing backlog exceeds bound')
+                    # Pause network reads at the existing memory bound, retaining
+                    # this one validated frame. A burst is not a stalled consumer.
+                    # The fixed deadline cannot be extended by control-only drains.
+                    self.space.clear()
+                    try:
+                        await asyncio.wait_for(self.space.wait(),max(0,deadline-asyncio.get_running_loop().time()))
+                    except TimeoutError:
+                        raise ValueError('Voice processing backlog exceeds bound') from None
                 self.items.append((value, size))
                 self.bytes += size
                 self.received_bytes += size
@@ -110,6 +127,7 @@ class VoiceInbox:
             values.append(value)
             if self.pcm and (terminal or control_boundary):
                 break
+        self.space.set()
         return values
 
     async def close(self):
