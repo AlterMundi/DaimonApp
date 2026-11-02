@@ -130,7 +130,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await actor()
                     for event in events:
                         kind=event['type']
-                        if kind in ('source_query','integrating_source_query','delegation_proposed','integrator_watch'):
+                        if kind in ('source_query','session_status_query','integrating_source_query','delegation_proposed','integrator_watch'):
                             proposals[event['call_id']]=launch(bridge.tool(event));continue
                         if kind=='proposal_cancelled':
                             proposal=proposals.pop(event['call_id'],None)
@@ -398,6 +398,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # Existing bounded service journal only. No exception detail,
                 # transcript, provider payload, identity/header or raw audio.
                 summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,'failure_site':close_site,
+                    'provider_failure_code':getattr(stream,'failure_code',None),
                     'first_send_failure':first_send_failure,
                     'client_playback':{'source':'untrusted_client_observation','count':playback_status_count,
                         'first':first_playback_status,'last':last_playback_status},

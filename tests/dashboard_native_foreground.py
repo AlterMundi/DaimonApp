@@ -92,6 +92,27 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['kind'],'not_ready');self.assertNotIn('sources',result)
         self.assertEqual(self.owner.delegations,[])
 
+    async def test_session_status_reuses_observer_and_redacts_stale_state_without_work(self):
+        calls=[]
+        def observed():
+            calls.append(True)
+            return {'connected':True,'observed_at':123,'sources':[
+                {'label':'Conversation','fresh':True,'observed_at':122,'execution':'running','goal_state':'active','private_field':'not forwarded'},
+                {'label':'Beta','fresh':False,'observed_at':1,'execution':'running','goal_state':'complete','pending':True}]}
+        self.owner.sonic_activity=observed
+        result=await self.bridge.tool({'type':'session_status_query','call_id':'status'})
+        self.assertEqual(len(calls),1);self.assertEqual(result['kind'],'session_status')
+        self.assertEqual(result['sessions'][0]['execution'],'running');self.assertNotIn('private_field',result['sessions'][0])
+        self.assertEqual(result['sessions'][1]['execution'],'unknown');self.assertEqual(result['sessions'][1]['goal_state'],'unknown');self.assertIsNone(result['sessions'][1]['pending'])
+        self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+        self.assertEqual(result['integrator_connection'],'available_through_foreground_tools')
+    async def test_disconnected_observer_and_large_status_have_explicit_limits(self):
+        self.owner.sonic_activity=lambda:{'connected':False,'sources':[{'label':'Beta','fresh':True,'execution':'running','goal_state':'complete'}]*65}
+        result=await self.bridge.tool({'type':'session_status_query','call_id':'disconnected'})
+        self.assertTrue(result['truncated']);self.assertLessEqual(len(json.dumps(result).encode()),16384)
+        self.assertTrue(all(not v['fresh'] and v['execution']=='unknown' for v in result['sessions']))
+        self.assertEqual(self.owner.delegations,[])
+
     async def test_slow_first_reservation_cannot_be_overtaken(self):
         entered=threading.Event();release=threading.Event();order=[]
         real=self.owner.conversation_voice_submit

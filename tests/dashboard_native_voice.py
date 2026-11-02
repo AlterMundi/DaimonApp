@@ -324,7 +324,7 @@ class Mounted(unittest.TestCase):
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback'})
         self.assertEqual(self.owner.delegations,[])
 
     def test_mismatched_boundary_close_retains_only_validated_scalar_timing(self):
@@ -771,6 +771,20 @@ class Mounted(unittest.TestCase):
         app=create_app(disabled,self.owner,lambda raw,bot:int(raw))
         self.assertNotIn('/api/interaction/voice/native',[r.path for r in app.routes])
         self.assertFalse(getattr(app.state,'native_voice_enabled',False))
+
+    def test_observer_status_is_available_in_native_voice_without_delegating_work(self):
+        reads=[]
+        def status():
+            reads.append(True)
+            return {'connected':True,'observed_at':123,'sources':[{'label':'Conversation','fresh':True,'observed_at':122,'execution':'running','goal_state':'active'}]}
+        self.owner.sonic_activity=status
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0];stream.queue.put([{'type':'session_status_query','call_id':'observer'}])
+            call,result=stream.tool_results.get(timeout=2)
+            self.assertEqual(call,'observer');self.assertEqual(result['sessions'][0]['label'],'Conversation')
+            self.assertEqual(len(reads),1);self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+            ws.send_json({'type':'close'})
 
     def test_idle_notice_does_not_interrupt_active_human_capture(self):
         with self.open() as ws:

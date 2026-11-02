@@ -222,6 +222,33 @@ class ForegroundBridge:
                         candidate={**result,'assistant_speech':result.get('assistant_speech',[])+[item]}
                         if len(json.dumps(candidate,allow_nan=False).encode())>16384:break
                         result=candidate
+            elif event['type']=='session_status_query':
+                # Reuse the same audience-checked, freshness-aware observer as
+                # the application. No native session poll, second registry or
+                # model-driven background attention is introduced.
+                snapshot=await self._owner(self.provider.sonic_activity)
+                result={'kind':'session_status','source_data':True,
+                    'source':'existing_owned_observer','observed_at':snapshot.get('observed_at'),
+                    'connected':snapshot.get('connected') is True,
+                    'integrator_connection':'available_through_foreground_tools',
+                    'meaning':'Observed activity only, not work contents, completion or a progress percentage. Stale/missing state is unknown. No work started.',
+                    'sessions':[],'truncated':snapshot.get('truncated') is True}
+                rows=snapshot.get('sources',[])
+                if not isinstance(rows,list):raise ForegroundUnavailable('Session observation is unavailable')
+                for row in rows[:64]:
+                    fresh=result['connected'] and row.get('fresh') is True
+                    item={'label':str(row.get('label','Session'))[:128],
+                        'observed_at':row.get('observed_at'),'fresh':fresh,
+                        'execution':row.get('execution','unknown') if fresh else 'unknown',
+                        'goal_state':row.get('goal_state','unknown') if fresh else 'unknown',
+                        'waiting_for_human':row.get('waiting_for_human') if fresh else None,
+                        'tools_running':row.get('tools_running') if fresh else None,
+                        'pending':row.get('pending') if fresh else None}
+                    candidate={**result,'sessions':result['sessions']+[item]}
+                    if len(json.dumps(candidate,allow_nan=False).encode())>16384:
+                        result['truncated']=True;break
+                    result=candidate
+                if len(result['sessions'])<len(rows):result['truncated']=True
             elif event['type']=='integrating_source_query':
                 source=self._offered.get((event['source'],event['revision']))
                 if source is None:
