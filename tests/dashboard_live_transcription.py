@@ -2,6 +2,7 @@
 import hashlib
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import queue
@@ -390,16 +391,21 @@ class LiveTranscription(unittest.TestCase):
 
     def test_foreground_summary_separates_received_fed_analyzed_and_sent_without_payloads(self):
         warm=self.analysis();receive=warm.receive
+        closed=threading.Event();logger=logging.getLogger('uvicorn.error');info=logger.info
+        def observe(message,*args,**kwargs):
+            info(message,*args,**kwargs)
+            if message=='voice_activity_closed %s':closed.set()
         async def annotated(worker):
             value=await receive(worker)
             return {**value,'text':'PRIVATE_PROVIDER_TRANSCRIPT','authorization':'PRIVATE_PROVIDER_CREDENTIAL'}
         warm.receive=annotated
-        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.live_transcription.Detector',warm):
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.live_transcription.Detector',warm),patch.object(logger,'info',side_effect=observe):
             with self.open_activity() as ws:
                 ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
                 for _ in range(3):
                     ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'turn_activity')
                 ws.send_json({'type':'close'})
+                self.assertTrue(closed.wait(2),'Observe the retained close summary before client teardown adds a disconnect')
         lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
         self.assertLess(len(lines[0]),2048)
         value=json.loads(lines[0].split('voice_activity_closed ',1)[1])

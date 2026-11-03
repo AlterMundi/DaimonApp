@@ -18,7 +18,7 @@ class Stream:
 
 class Bridge:
     def __init__(self):self.stream=Stream();self.captures=[];self.transcripts=[]
-    def capture(self,*args):self.captures.append(args)
+    def capture(self,*args,**kwargs):self.captures.append(args)
     def transcript(self,*args):self.transcripts.append(args)
 
 
@@ -54,6 +54,43 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         await self.first()
         self.assertEqual(self.bridge.captures[0][2],{'c'*32:'d'*64})
         with self.assertRaises(ForegroundUnavailable):await self.session.marker(640,{})
+
+    async def test_manual_failure_before_onset_retains_exact_audio_once(self):
+        pcm=b'\1\0'*1600
+        await self.session.feed(pcm)
+        await self.session.close(recover_unassigned=True)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1:],(pcm,{'a'*32:'b'*64}))
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.bridge.stream.events,[])
+
+    async def test_manual_explicit_close_without_onset_does_not_invent_a_phrase(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.close()
+        self.assertEqual(self.bridge.captures,[])
+
+    async def test_manual_unknown_tail_uses_three_bounded_chunks_and_earlier_scope(self):
+        await self.session.marker(640,{'c'*32:'d'*64})
+        for _ in range(300):
+            await self.session.feed(bytes(32000))
+            self.session.analyzed=self.session.captured
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual([len(c[1]) for c in self.bridge.captures],
+                         [120*32000,120*32000,60*32000])
+        self.assertTrue(all(c[2]=={'a'*32:'b'*64} for c in self.bridge.captures))
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_manual_failure_retains_only_unassigned_tail_after_completed_span(self):
+        await self.first()
+        await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        tail=b'\2\0'*1600
+        await self.session.feed(tail)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual([c[1] for c in self.bridge.captures],
+                         [b'\1\0'*1600+b'\0\0'*1600,tail])
+        self.assertEqual(len(self.bridge.transcripts),1)
 
     async def test_endpoint_ends_native_audio_before_transcript_or_integrator(self):
         await self.first()
