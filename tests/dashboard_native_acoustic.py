@@ -151,12 +151,19 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.transcripts,[])
     async def test_next_phrase_is_retained_in_order_while_prior_transcript_is_pending(self):
         await self.first()
+        # Hold the provider's first final interpretation while local analysis
+        # and the next phrase continue. These are separate queue boundaries.
+        self.session.provider.ended_at-=2
         await self.session.feed(b'\2\0'*1600)
         await self.session.activity(self.activity(9600,2,onset=9472))
         await self.session.feed(b'\0\0'*1600)
         await self.session.activity(self.activity(12800,2,endpoint=True))
         self.assertEqual(len(self.bridge.captures),2)
         self.assertEqual(sum(v[0]=='start' for v in self.bridge.stream.events),1)
+        observed=self.session.diagnostics()
+        self.assertEqual(observed['peak_analysis_audio_ms'],100)
+        self.assertEqual(observed['peak_unsent_span_audio_ms'],200)
+        self.assertGreaterEqual(observed['peak_input_confirmation_wait_ms'],2000)
         await self.ack('ACTIVITY_END','0.2s')
         await self.session.provider_event({'type':'input_transcript','text':'First'})
         self.assertEqual(sum(v[0]=='start' for v in self.bridge.stream.events),2)
@@ -165,6 +172,9 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         await self.ack('ACTIVITY_END','0.4s')
         self.assertEqual([v[1] for v in self.bridge.transcripts],['First','Second'])
         self.assertEqual(self.bridge.captures[1][1],b'\2\0'*1600+b'\0\0'*1600)
+        await self.session.close()
+        self.assertEqual(self.session.diagnostics()['peak_unsent_span_audio_ms'],200,
+                         'Cleanup must retain scalar peaks after retiring PCM/spans')
     async def test_caption_and_output_completion_do_not_finalize_a_source(self):
         await self.first()
         for kind in ('input_caption','output_transcript','generation_complete','turn_complete'):

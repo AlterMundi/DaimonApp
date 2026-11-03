@@ -31,6 +31,7 @@ class Span:
     transcript_parts: str = ''
     fragmented: bool = False
     final_deadline: float | None = None
+    ended_at: float | None = None
 
 
 class NativeAcousticSession:
@@ -51,6 +52,26 @@ class NativeAcousticSession:
         self.closed=False;self.lock=asyncio.Lock();self.changed=asyncio.Event()
         self.boundary_mismatch=None
         self.provider_offset_base=0
+        self.peak_analysis_bytes=0;self.peak_unsent_span_bytes=0
+        self.peak_confirmation_seconds=0
+
+    def _observe_queues(self):
+        # Fixed scalar observations only; no frame log, PCM or transcript copy.
+        # Audio duration waiting for analysis differs from wall-clock waiting
+        # for the provider's final transcript AND matching activity-end ACK.
+        self.peak_analysis_bytes=max(self.peak_analysis_bytes,self.captured-self.analyzed)
+        unsent=sum(max(0,(s.end if s.end is not None else s.analyzed)-s.sent) for s in self.spans)
+        self.peak_unsent_span_bytes=max(self.peak_unsent_span_bytes,unsent)
+        span=self.provider
+        if span is not None and span.ended_at is not None:
+            self.peak_confirmation_seconds=max(self.peak_confirmation_seconds,
+                asyncio.get_running_loop().time()-span.ended_at)
+
+    def diagnostics(self):
+        if self.stream.activity_mode!='manual':return None
+        return {'peak_analysis_audio_ms':self.peak_analysis_bytes*1000//32000,
+                'peak_unsent_span_audio_ms':self.peak_unsent_span_bytes*1000//32000,
+                'peak_input_confirmation_wait_ms':round(self.peak_confirmation_seconds*1000)}
 
     @property
     def captured(self):
@@ -103,6 +124,7 @@ class NativeAcousticSession:
                     or self.captured+len(pcm)-self.analyzed>self.max_backlog):
                 raise ForegroundUnavailable('Native acoustic input exceeds its live bounds')
             self.pcm.extend(pcm)
+            self._observe_queues()
         # Detector writes do not hold the state lock needed by its event reader.
         await self.detector.feed(pcm)
 
@@ -155,6 +177,7 @@ class NativeAcousticSession:
     async def _pump(self):
         self.changed.set()
         if self.closed:return
+        self._observe_queues()
         if self.provider is None and self.spans:
             self.provider=self.spans[0];self.provider.stream_start=self.sent
             await asyncio.to_thread(self.stream.activity_start)
@@ -170,7 +193,8 @@ class NativeAcousticSession:
         if span.end is not None and span.stream_end is None:
             span.stream_end=self.sent
             await asyncio.to_thread(self.stream.activity_end)
-            span.final_deadline=asyncio.get_running_loop().time()+self.transcript_timeout
+            span.ended_at=asyncio.get_running_loop().time()
+            span.final_deadline=span.ended_at+self.transcript_timeout
         if span.end_ack and span.text is not None:
             # One finalized input transcript plus its exact manual-end ACK.
             # Output completion/generation does not finalize a human original.
@@ -262,6 +286,7 @@ class NativeAcousticSession:
     async def close(self):
         async with self.lock:
             if self.closed:return
+            if self.stream.activity_mode=='manual':self._observe_queues()
             self.closed=True;self.changed.set()
             # A disconnect does not throw away an unfinished, analyzed original.
             # It remains foreground_captured, never automatically delegated.

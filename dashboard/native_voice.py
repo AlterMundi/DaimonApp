@@ -621,6 +621,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'peak_pending_pcm_bytes':inbox.peak_bytes if inbox else 0,
                     'peak_input_queue_wait_ms':round(inbox.peak_wait_seconds*1000) if inbox else 0,
                     'actor_checks':actor.snapshot() if actor is not None else None,
+                    'acoustic_queues':acoustic.diagnostics() if acoustic is not None else None,
                     'generated_pcm_bytes':retired_output_bytes+(getattr(stream,'output_bytes',0) if stream else 0),
                     'provider_rollovers':rollover_count,
                     'candidate_setup_failures':candidate_setup_failures,
