@@ -4,6 +4,17 @@ Status: Astra high reviewed; accepted implementation decisions,2November2026. Ow
 PR560; not receiving adoption. Native speech remains above Sol; the full roadmap
 and unfinished device/Android/Beacon/iOS/base requirements remain unchanged.
 
+## Selected continuation after actual provider qualification
+
+The existing manual-activity route now has an actual mounted continuous-input
+qualification with two checkpoint-seeded Gemini successors. The local CPU
+speech/turn detector owns explicit spans; quiet capture remains local, and only
+never-sent backlog enters a successor. The selected next candidate uses this
+route for NEW dialogues, not an in-place conversion of an automatic connection.
+In-session contextUpdate and append-anchor sliding remain unqualified and OFF.
+Receiving558 is still automatic and unchanged; this is not adoption or device
+acceptance. Exact evidence and limits are recorded at the end of this document.
+
 ## Human outcome and ownership
 
 Nicolás's instructions15907154/166edb59/fe543d9a/74ae68c5 require:
@@ -1136,3 +1147,91 @@ readable checkpoint facts and uninterrupted source identity. Source durations,
 retention and final input ownership still require actual checks. The full goal,
 ordinary Sol/Qwen chat, runtime558, source-host hold and disabled provider
 pinning/sliding remain unchanged.
+
+
+## Actual continuous manual-route qualification,3November2026
+
+A mounted authenticated ASGI journey used the existing actual local CPU detector,
+Gemini3.8Live and continuously arriving16kHz mono PCM. Four natural Spanish Qwen
+phrases introduced lapacho, asked for recall, corrected the word to sauce and
+asked again. Three physical provider sockets completed TWO committed successors;
+both later questions returned the current word with generated24kHz PCM. Output
+was191044bytes across the logical conversation; received capture was1131830bytes.
+The complete finite run took37.437seconds, including preparation; this is not a
+speech-latency distribution or a physical-hearing measurement. All seven
+detector-segmented originals reached foreground completion. The detector split
+some spoken sentences, so four test phrases do not imply four endpoint events.
+No provider error, boundary mismatch or candidate setup failure was reported.
+
+The checkpoint owner was synthetic and seeded successors only from actual
+retained input captions and assistant language, including the correction. It
+exercised the production owner/bridge/generation shape without another Sol
+inference or worker journey. The separate actual Sol idle/active incorporation,
+semantic-checkpoint and mounted useful-return evidence remains valid; this test
+does not alone prove the complete actual Sol+provider rollover composition.
+Pressure was deliberately raised to exercise both transitions; actual128000token
+admission under a full context, long/noisy speech, barge-in during handover and
+receiving/device acceptance remain separate unfinished requirements.
+
+The first attempt proved one successor and correct recalled speech but its
+verifier incorrectly required a literal sauce acknowledgment instead of allowing
+an ordinary acknowledgment followed by semantic recall. Its close observation
+also stopped at the owner's early close event; fixture shutdown then cancelled
+remaining cleanup. The corrected fixture reused verified completed synthesis
+cache without new requests and waited for actual owned cleanup completion.
+An intermediate cache-shape assertion failed before any provider opened and was
+corrected against the real cache contract. Neither fixture failure is evidence
+of a provider capability failure. The final run reported context_producer closed,
+cleanup completed and stopped threads; its disposable media fixture was removed.
+Earlier failed originals and outcomes stay retained without replay.
+
+Reusable lessons were published in Skills PR233, daimon-matrix-contributions
+2.0.16, and installed through the existing selective updater on this body. The
+isolated install qualification, installed readback and surface check passed.
+That source publication/local adoption does not claim another body's adoption.
+
+Continue with the complete integrating/receiving qualification and remaining
+input ownership, pending-work, interruption and device obligations. Do not repeat
+accepted provider probes or switch the selected receiving dialogue in place.
+
+
+## Actual Sol and continuous provider rollover composition
+
+The next mounted journey replaced the synthetic checkpoint owner with the actual
+Core Sol6.1/openai/medium integrating session and production Store/controller.
+Only internal attributed context was submitted, with empty native human input;
+no worker request, ordinary message publication or new speech synthesis was
+needed. Four cached natural Spanish phrases exercised selection, recall,
+correction and later recall while input capture continued throughout both
+checkpoint preparations and socket replacements. Two real Sol-written semantic
+checkpoints seeded two committed Gemini3.8Live successors. The final answer
+retained sauce, superseding lapacho. The owner and app finished closed, projection
+high11/incorporated11/range empty, native busy0 and actual Core status idle.
+
+Nine internal admissions shared three actual physical Sol turns;15controller
+calls were all live_context. Three Gemini sockets generated177122PCMbytes;
+continuous input received2184630bytes. The voice interval was69.677seconds and
+the whole bounded fixture83.460seconds. These durations include deliberately
+waiting for checkpoint/replacement between phrases; they are not a conversational
+latency benchmark. Cleanup completed without provider error, boundary mismatch,
+failed send or candidate setup failure. The successful disposable fixture was
+removed while native conversation history and bounded evidence remain retained.
+
+The first composition attempt also proved one actual Sol checkpoint and correct
+spoken recall after its successor, then its diagnostic recorder exhausted its
+128KiB cap by retaining every acoustic activity frame. That assertion affected
+fixture callbacks and cleanup, so it cannot diagnose a product failure. The
+actual native session was subsequently read back idle with both turns completed;
+no uncertain input was replayed. The corrected recorder aggregates acoustic
+activity and observes terminal native state before teardown. Keep diagnostic
+capacity independent from provider/control callbacks. This lesson is included
+in the shared contribution skill2.0.16.
+
+CI41588065499 passed for source d16930d0, including the actual Python3.11 dashboard
+job and text/native/lifecycle/presentation qualifications. Subsequent edits here
+only record the evidence and selected continuation; no Rust or Python behavior
+changed after that source. Receiving558 remains selected until the owning
+writer-preserving adoption route is executed. The complete token-limit, active
+speech/pending effects during handover, noise, device and remaining roadmap
+requirements still need their applicable evidence; do not replace them with a
+claim that two successful checkpoints complete the milestone.
