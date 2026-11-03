@@ -377,11 +377,15 @@ class NativeAutomaticAcousticSession(NativeAcousticSession):
             await self._pump()
             return ident
 
-    async def close(self):
+    async def close(self,*,recover_unassigned=False):
+        if type(recover_unassigned) is not bool:
+            raise ValueError('Select explicit unassigned-tail recovery')
         async with self.lock:
-            if not self.closed and self.unassigned and self.local is None:
+            if not self.closed and (self.unassigned or recover_unassigned) and self.local is None:
                 # At most three120s chunks within the existing300s PCM bound.
                 # These are unconfirmed raw originals, not invented utterances.
+                # A failed connection may have received speech before START or
+                # its transcript. Absence of either is not proof of silence.
                 for start in range(self.boundary,self.captured,120*32000):
                     stop=min(self.captured,start+120*32000)
                     # Without an onset, later markers cannot narrow a known

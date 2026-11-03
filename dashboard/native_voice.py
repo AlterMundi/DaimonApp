@@ -578,7 +578,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 for task in audio_tasks:
                     with suppress(asyncio.CancelledError,Exception):await task
                 if acoustic:
-                    with suppress(Exception):await acoustic.close()
+                    with suppress(Exception):
+                        if isinstance(acoustic,NativeAutomaticAcousticSession):
+                            await acoustic.close(recover_unassigned=(close_error is not None or close_stage!='client-close'))
+                        else:await acoustic.close()
                 if bridge:
                     with suppress(Exception):await bridge.close()
                 for task in list(tool_tasks):task.cancel()

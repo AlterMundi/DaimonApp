@@ -90,10 +90,11 @@ class ForegroundBridge:
         return await self._run(self._owners,function,*args,**kwargs)
 
     def capture(self,ident,pcm,questions):
-        """Retain a complete acoustic span before its provider transcript arrives.
+        """Retain authorized captured PCM before its interpretation is confirmed.
 
-        Caller has already authorized and stopped that acoustic activity. No
-        provider/native work is replayed, and no partial caption is an original.
+        The caller supplies a closed acoustic span or uncorrelated recovery
+        bytes. Recovery does not assert speech, a phrase boundary or a complete
+        transcript. No provider/native work is replayed by raw retention.
         """
         Provider.input_id(ident);Provider.check_capture_questions(questions)
         if (self.closed or ident in self.capture_ids or len(self.capture_ids)>=self.max_captures
@@ -115,7 +116,12 @@ class ForegroundBridge:
                 # An uncertain earlier reservation is retained, not overtaken.
                 if previous is not None:
                     await asyncio.shield(previous)
-                result=await self._owner(self.provider.conversation_voice_submit,
+                # Finish this already captured original even after close has
+                # disabled new live tools. Recheck the actor/binding and use the
+                # same bounded owner slots; deferred retention is not work or
+                # permission to restart a provider/native operation.
+                await self.authorize()
+                result=await self._run(self._owners,self.provider.conversation_voice_submit,
                     {'id':ident,'binding':self.binding,'audio_sha256':value.digest,
                      'mime':'audio/wav','capture_questions':value.questions},data,
                     foreground_dialogue=self.dialogue,defer_foreground=True)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Committed browser audio through actual HTTP/owner/SQLite/decoder/native; no models."""
+import asyncio
 import hashlib
 import io
 import json
@@ -15,6 +16,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 from dashboard.app import create_app
 from dashboard.provider import Provider
+from dashboard.live_transcription import wav_bytes
 from conversation_requests_http_io import Requests
 
 def audio(frequency=440,silence=False):
@@ -216,7 +218,32 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         assert body['audio_sha256'] in text
         assert not provider.conversation_foreground_delegate(delegated)['new_input']
         assert len(j.packets)==1
-        print('PASS native foreground WAV/proof through existing decoder/owner: completed reader only, no ASR or work before delegation; one sourced native admission; zero models.')
+        # An already captured original must finish its deferred retention even
+        # when close happens before its first file/owner await. This uses the
+        # actual owner command/SQLite, without interpreting or replaying audio.
+        from dashboard.native_foreground import ForegroundBridge
+        class ClosedStream:
+            activity_mode='automatic';model='gemini-3.8-live'
+        with wave.open(io.BytesIO(audio(990)),'rb') as wav:tail=wav.readframes(wav.getnframes())
+        recovered=str(uuid.uuid4());recovery_dialogue=str(uuid.uuid4());checks=[]
+        async def close_with_capture():
+            async def authorize():
+                caps=await asyncio.to_thread(provider.presentation,'input voice capabilities')
+                assert caps['binding']==binding
+                checks.append(True)
+            bridge=ForegroundBridge(provider,ClosedStream(),j.root/'close-prepared',recovery_dialogue,binding,authorize)
+            capture=bridge.capture(recovered,tail,{})
+            await bridge.close()
+            return await capture.reservation
+        result=asyncio.run(close_with_capture())
+        assert checks==[True] and result['phase']=='foreground_captured'
+        saved=provider.conversation_input_status(recovered)
+        assert saved['foreground_dialogue']==recovery_dialogue and saved['native_acceptance']=='not_requested'
+        assert not saved.get('text') and not (j.root/'unexpected-asr').exists()
+        assert Path(str(provider.receiver['db_path'])+'.voice',recovered).read_bytes()==wav_bytes(tail)
+        assert (j.root/'completed-calls').read_text().splitlines()==['read']
+        assert len(j.packets)==1,'Close recovery must not submit another native turn'
+        print('PASS native foreground WAV/proof and immediate-close deferred retention through actual owner/SQLite: actor/binding rechecked, exact unconfirmed WAV retained, no ASR/work/replay on close; one sourced native admission; zero models.')
     finally:j.close()
 
 if __name__=='__main__':

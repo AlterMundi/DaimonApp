@@ -974,3 +974,46 @@ Primary sources inspected:
 - https://raw.githubusercontent.com/googleapis/python-genai/main/google/genai/_api_client.py
 - https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api/start-manage-session
 - https://aistudio.google.com/api-reference/live
+
+
+## Unexpected-close audio recovery —3November2026
+
+Automatic voice previously kept an uncorrelated PCM tail only after receiving a
+transcript without START. A provider send failure or connection loss before any
+onset/transcript could therefore discard bytes already present in the acoustic
+buffer. Unexpected close now preserves that buffer's post-boundary tail through
+the existing private WAV/original-retention route. It does not require text to
+prove that received PCM might contain speech. A completed original's prefix is
+not captured again; an open owned span still uses its existing source identity.
+At most three120second chunks fit the existing300second acoustic bound. Earlier
+arm-time question narrowing remains frozen for an uncorrelated tail. These are
+unconfirmed recordings for explicit review, never invented complete utterances,
+automatic ASR, provider audio replay, work admission or Sol language context.
+
+The mounted regression exposed a second concrete race: close set the bridge's
+live-tools flag before a newly scheduled capture reservation reached its owner
+write. The private WAV survived but its native input reference was not retained.
+Already captured deferred retention now finishes through the same bounded owner
+slots, with fresh actor/binding validation, independently of the live-tools flag.
+New captures, interpretation completion and tool effects remain closed. If that
+validation is revoked, native retention is rejected and the exact private bytes
+remain unconfirmed; no fallback work authority is inferred.
+
+Validation:29acoustic,28bridge and50mounted voice tests pass. Coverage includes
+missing START/text, a completed original plus new tail, chunk/scope bounds,
+idempotent close, a provider write with unknown outcome, immediate-close
+retention and revoked actor rejection. The existing actual owner/SQLite/decoder
+journey now also closes immediately after capture: the exact WAV and
+foreground_captured journal entry survive, binding is rechecked, and no extra
+ASR, interpretation or native work occurs. The first added verifier run reached
+those owner assertions but had a missing helper import before its final WAV
+comparison; the corrected zero-model fixture passes. No human/provider work was
+replayed to fix the verifier.
+
+This is an unexpected-close recovery repair, NOT continuous handover acceptance.
+Ordinary explicit close does not manufacture a new recovery recording merely
+from trailing PCM. Missing-onset audio on that normal-close path, frames still
+waiting in the receive inbox/current batch, and automatic old-generation tail
+ownership remain open. No additional VAD, namespace/store, pilot duration,
+provider endpoint selection or receiving deployment is introduced. The five-minute
+pilot, disabled pinning/sliding and full unfinished product scope remain.

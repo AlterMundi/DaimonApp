@@ -276,6 +276,31 @@ class Automatic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.captures[0][1],self.pcm)
         self.assertEqual(self.bridge.transcripts,[])
 
+    async def test_failed_connection_keeps_pcm_before_any_provider_onset_or_transcript(self):
+        await self.session.close(recover_unassigned=True)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1],self.pcm)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_failed_connection_keeps_only_tail_after_completed_original(self):
+        first=await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        await self.vad('ACTIVITY_END','1.5s')
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(self.bridge.captures[0],(first,self.pcm[8000:48000],{}))
+        self.assertEqual(self.bridge.captures[1][1],self.pcm[48000:])
+        self.assertEqual(self.bridge.transcripts,[(first,'Confirmed')])
+
+    async def test_unassigned_recovery_keeps_existing_chunk_bound_and_question_scope(self):
+        original=self.pcm
+        for _ in range(120):await self.session.feed(bytes(32000))
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertTrue(all(len(c[1])<=120*32000 and c[2]=={} for c in self.bridge.captures))
+        self.assertEqual(b''.join(c[1] for c in self.bridge.captures),original+bytes(120*32000))
+        self.assertEqual(self.bridge.transcripts,[])
+
     async def test_final_after_end_and_fragmentation(self):
         ident=await self.vad('ACTIVITY_START','0.75s')
         await self.session.provider_event({'type':'input_transcript','text':'Se','finished':False})

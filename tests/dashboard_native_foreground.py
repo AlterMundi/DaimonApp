@@ -435,6 +435,30 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ForegroundUnavailable):await task
         self.assertEqual(seen,[pcm]);self.assertTrue((self.root/'prepared'/f'{ident}.json').exists())
 
+    async def test_immediate_close_finishes_already_captured_retention_only(self):
+        ident=str(uuid.uuid4());pcm=b'\3\0'*160
+        capture=self.bridge.capture(ident,pcm,{})
+        await self.bridge.close()
+        self.assertEqual((await capture.reservation)['phase'],'foreground_captured')
+        self.assertEqual(self.auth,1,'Close does not bypass actor/binding validation')
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.inputs[ident]['foreground_dialogue'],self.dialogue)
+        self.assertEqual(self.owner.delegations,[])
+        self.assertIsNone(capture.completion)
+        with self.assertRaises(ForegroundUnavailable):self.bridge.capture(str(uuid.uuid4()),pcm,{})
+
+    async def test_close_retention_still_rejects_revoked_actor_without_dispatch(self):
+        async def revoked():raise ForegroundUnavailable('Synthetic actor grant changed')
+        self.bridge.authorize=revoked
+        ident=str(uuid.uuid4());pcm=b'\4\0'*160
+        capture=self.bridge.capture(ident,pcm,{})
+        await self.bridge.close()
+        with self.assertRaises(ForegroundUnavailable):await capture.reservation
+        self.assertEqual(capture.phase,'unconfirmed')
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.inputs,{})
+        self.assertEqual(self.owner.delegations,[])
+
 
 class OriginalPages(unittest.TestCase):
     def test_original_lookup_preserves_owner_cursor_without_starting_work(self):

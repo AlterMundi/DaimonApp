@@ -701,6 +701,33 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.owner.delegations,[])
         self.assertFalse(self.owner.completed.is_set())
 
+    def test_automatic_send_failure_before_onset_keeps_unconfirmed_exact_tail(self):
+        class FailedBeforeOnset(Stream):
+            activity_mode='automatic'
+            def append(self,pcm):
+                super().append(pcm)
+                raise DialogueUnavailable('Synthetic provider send outcome is unknown')
+        self.select_automatic();observed=queue.Queue()
+        def log(message,*args,**kwargs):
+            if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
+        pcm=b'\3\0'*1600
+        with patch('dashboard.native_voice.NativeDialogue',FailedBeforeOnset),patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(pcm)
+                event=ws.receive_json()
+                while event['type']!='review':event=ws.receive_json()
+                result=observed.get(timeout=30)
+        self.assertEqual(result['error_type'],'DialogueUnavailable')
+        self.assertEqual(len(self.owner.inputs),1)
+        ident,original=next(iter(self.owner.inputs.items()))
+        self.assertEqual(original['phase'],'foreground_captured')
+        self.assertNotIn('text',original)
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.delegations,[])
+        self.assertFalse(self.owner.completed.is_set())
+        self.assertEqual(FailedBeforeOnset.opened[-1].total,len(pcm),'Unknown provider audio is never resent')
+
     def test_reopened_voice_context_uses_current_binding_without_removing_history(self):
         history=self.app.state.native_history
         current=str(uuid.uuid4());earlier=str(uuid.uuid4())
