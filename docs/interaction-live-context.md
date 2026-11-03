@@ -944,7 +944,11 @@ its baseline spoke the two initial synthetic values correctly, but the response
 after `contextUpdate.systemInstruction` still spoke the old values. A corrected
 minimal probe using `context_update.system_instruction`, as spelled in Google's
 WebSockets guide, likewise spoke its baseline correctly and retained the old
-values after the update. Both completed their responses without a protocol error.
+values after the update. Both completed their responses without a protocol error. A third minimal
+input-path discriminator used `realtimeInput.text` instead of `clientContent`: its
+baseline again spoke the initial values and the post-update response retained
+them. The missing uptake is therefore also observed on that text input path;
+this does not establish the behavior of captured speech or another endpoint.
 One intervening verifier had an inconsistent initial expectation and never reached
 its update; that setup error is retained separately and is NOT provider evidence.
 Every connection is closed. No media, human input, native work, recovery replay,
