@@ -66,6 +66,33 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.transcripts,[])
         await self.ack('ACTIVITY_END','0.2s')
         self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'Hello')])
+
+    async def test_handover_retires_only_completed_prefix_and_keeps_logical_tail_offsets(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'First'})
+        await self.ack('ACTIVITY_END','0.2s')
+        tail=b'\2\0'*1600
+        await self.session.feed(tail);await self.session.activity(self.activity(9600))
+        successor=Stream()
+        async with self.session.lock:self.session.replace_stream(successor)
+        self.assertEqual(self.session.pcm_base,6400)
+        self.assertEqual(self.session.pcm,tail)
+        self.assertEqual(self.session.captured,9600)
+        await self.session.feed(b'\3\0'*1600)
+        await self.session.activity(self.activity(12800,2,onset=12800))
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(16000,2,endpoint=True))
+        await self.session.provider_event({'type':'input_transcript','text':'Second'})
+        await self.ack('ACTIVITY_END','0.3s')
+        self.assertEqual(self.bridge.captures[-1][1],tail+b'\3\0'*1600+b'\0\0'*1600)
+        self.assertEqual(self.session.sent,16000)
+        async with self.session.lock:self.session.replace_stream(Stream())
+        self.assertEqual(self.session.pcm,b'')
+        self.assertEqual(self.session.captured,16000)
+        # The logical pilot bound cannot be reset by freeing a buffer.
+        self.session.max_bytes=16000
+        with self.assertRaises(ForegroundUnavailable):await self.session.feed(b'\0\0')
     async def test_early_noninterim_text_is_not_committed_as_a_whole_original(self):
         await self.session.feed(b'\1\0'*1600)
         await self.session.activity(self.activity(3200,onset=3072))
@@ -217,6 +244,8 @@ class Automatic(unittest.IsolatedAsyncioTestCase):
         await self.session.provider_event({'type':'input_transcript','text':'Previous'})
         await self.vad('ACTIVITY_END','2s')
         async with self.session.lock:self.session.replace_stream(successor)
+        self.assertEqual(self.session.pcm,b'')
+        self.assertEqual(self.session.pcm_base,64000)
         pcm=b'\3\0'*16000
         await self.session.feed(pcm)
         await self.vad('ACTIVITY_START','0.25s');await self.vad('ACTIVITY_END','1s')
@@ -225,6 +254,8 @@ class Automatic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(successor.events,[('pcm',pcm)])
         self.assertEqual(self.session.provider_offset_base,64000)
         self.assertEqual(self.session.boundary,96000)
+        await self.session.close()
+        self.assertEqual(self.session.captured,96000)
     async def test_continuous_noise_and_early_final_keep_exact_original_and_event_identity(self):
         ident=await self.vad('ACTIVITY_START','0.75s')
         self.assertEqual(self.bridge.pending_acoustic,ident)

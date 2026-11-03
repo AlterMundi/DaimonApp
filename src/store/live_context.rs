@@ -5,7 +5,7 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_DOCUMENT: usize = 2 * 1024 * 1024;
 const MAX_TOTAL: usize = 64 * 1024 * 1024;
@@ -178,6 +178,15 @@ struct Guidance {
     supersedes: Option<String>,
     phase: String,
     sender_instance: Option<String>,
+    #[serde(default)]
+    incorporated_revision: Option<String>,
+    #[serde(default)]
+    checkpointed_text_hash: Option<String>,
+}
+
+fn guidance_context(g: &Guidance) -> Value {
+    json!({"id":g.id,"generation":g.generation,"basis":g.basis,"mode":g.mode,
+        "text":g.text,"phase":g.phase})
 }
 
 #[derive(Serialize, Deserialize)]
@@ -213,6 +222,8 @@ struct Projection {
     sources: BTreeMap<String, (u64, String)>,
     events: Vec<Event>,
     range: Option<Frozen>,
+    #[serde(default)]
+    full_incorporated_revision: Option<String>,
     #[serde(default)]
     native_returns: Vec<super::workflows::WorkflowReturn>,
     #[serde(default)]
@@ -329,9 +340,13 @@ fn snapshot(p: &Projection, full: bool) -> Result<String> {
         p.incorporated + 1
     };
     let events: Vec<_> = p.events.iter().filter(|e| e.sequence >= from).collect();
-    let guidance=full.then(||p.guidance.iter().map(|g|json!({"id":g.id,"generation":g.generation,
-        "basis":g.basis,"mode":g.mode,"text":g.text,"phase":g.phase,
-        "meaning":"Attributed Sol control context, not human speech or a work request; sent is not provider application or hearing."})).collect::<Vec<_>>());
+    let guidance = full.then(|| {
+        p.guidance
+            .iter()
+            .filter(|g| g.checkpointed_text_hash.is_none())
+            .map(guidance_context)
+            .collect::<Vec<_>>()
+    });
     Ok(serde_json::to_string(
         &json!({"dialogue":p.dialogue,"from":from,"through":p.high,
         "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,"guidance":guidance,
@@ -372,7 +387,7 @@ fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     }
     let content = json!({"kind":"internal_integrator_checkpoint","dialogue":p.dialogue,
         "generation":p.generation,"checkpoint":p.checkpoint,
-        "guidance":p.guidance.iter().map(|g|json!({"id":g.id,"basis":g.basis,
+        "guidance":p.guidance.iter().filter(|g|g.checkpointed_text_hash.is_none()).map(|g|json!({"id":g.id,"basis":g.basis,
             "text":g.text,"mode":g.mode,"phase":g.phase})).collect::<Vec<_>>(),
         "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."});
     if serde_json::to_vec(&content)?.len() > 24576 {
@@ -413,7 +428,22 @@ fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
                     "complete":false,"characters":r.body.chars().count(),"offset":0})
     };
     result["range"]["checkpoint_generation"] = json!(r.checkpoint_generation);
+    reader_actions(&mut result, r)?;
     Ok(result)
+}
+
+fn reader_actions(result: &mut Value, r: &Frozen) -> Result<()> {
+    result["after_incorporation"] = json!({"operation":"live_context","arguments":{
+        "action":"incorporate","dialogue":result["dialogue"],"revision":r.revision}});
+    if r.full && r.supplied == r.body.chars().count() {
+        let frozen: Value = serde_json::from_str(&r.body)?;
+        result["checkpoint_writer"] = json!({"operation":"live_context","arguments":{
+            "action":"checkpoint","dialogue":result["dialogue"],
+            "revision":frozen["checkpoint"]["revision"],"through":r.through},
+            "required_text_field":"text",
+            "meaning":"After invoking after_incorporation, add your compact semantic checkpoint in arguments.text and call this exact template. Keep arguments.revision and through unchanged. This is semantic continuity, not work admission or a memory-write receipt."});
+    }
+    Ok(())
 }
 
 fn page(p: &mut Projection, revision: &str, offset: usize) -> Result<Value> {
@@ -435,6 +465,7 @@ fn page(p: &mut Projection, revision: &str, offset: usize) -> Result<Value> {
         "full":r.full,"offset":offset,"text":text,"next":next,"more":next<size,
         "checkpoint_generation":r.checkpoint_generation,
         "encoding":"JSON; concatenate exact pages before interpreting"});
+    reader_actions(&mut result, r)?;
     Ok(result)
 }
 
@@ -530,6 +561,7 @@ impl Store {
                 sources: BTreeMap::new(),
                 events: vec![],
                 range: None,
+                full_incorporated_revision: None,
                 native_returns: vec![],
                 guidance: vec![],
                 rollover: None,
@@ -848,7 +880,10 @@ impl Store {
                     if old.generation != generation
                         || old.basis != basis
                         || old.mode != mode
-                        || old.text != text
+                        || old.checkpointed_text_hash.as_ref().map_or_else(
+                            || Ok(old.text != text),
+                            |digest| hash(&text).map(|candidate| &candidate != digest),
+                        )?
                         || old.supersedes != supersedes
                     {
                         bail!("Live guidance identity cannot be rewritten");
@@ -878,6 +913,8 @@ impl Store {
                     supersedes,
                     phase: "pending".into(),
                     sender_instance: None,
+                    incorporated_revision: None,
+                    checkpointed_text_hash: None,
                 };
                 let result = json!({"dialogue":p.dialogue,"guidance":guide});
                 p.guidance.push(guide);
@@ -980,6 +1017,24 @@ impl Store {
                     bail!("Live incorporation requires the complete contiguous frozen range");
                 }
                 p.incorporated = r.through;
+                if r.full {
+                    p.full_incorporated_revision = Some(r.revision.clone());
+                    // Only an exact full-read ACK observes guidance. Language
+                    // incorporation alone cannot retire control context that
+                    // arrived later or changed send disposition during reading.
+                    let content: Value = serde_json::from_str(&r.body)?;
+                    if let Some(guides) = content["guidance"].as_array() {
+                        for supplied in guides {
+                            if let Some(g) = p.guidance.iter_mut().find(|g| supplied["id"] == g.id)
+                            {
+                                let current = guidance_context(g);
+                                if *supplied == current {
+                                    g.incorporated_revision = Some(hash(&current)?);
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(request) = p.checkpoint_request.as_mut()
                     && r.checkpoint_generation.as_ref() == Some(&request.generation)
                 {
@@ -1030,6 +1085,34 @@ impl Store {
                     revision: next,
                 };
                 p.events.retain(|e| e.sequence > through);
+                if p.range.as_ref().is_some_and(|r| {
+                    r.full
+                        && r.through <= through
+                        && r.supplied == r.body.chars().count()
+                        && p.full_incorporated_revision.as_ref() == Some(&r.revision)
+                }) {
+                    // Re-reading an IDENTICAL already-incorporated snapshot
+                    // does not resurrect a reader after semantic retirement.
+                    // A new/changed/unread range keeps its existing ACK gate.
+                    p.range = None;
+                }
+                for g in &mut p.guidance {
+                    if g.basis <= through
+                        && g.checkpointed_text_hash.is_none()
+                        && matches!(
+                            g.phase.as_str(),
+                            "sent" | "uncertain" | "retired_unsent" | "superseded"
+                        )
+                        && g.incorporated_revision.as_ref() == Some(&hash(&guidance_context(g))?)
+                    {
+                        // The compact receipt remains immutable/idempotent.
+                        // Text already represented by this semantic checkpoint
+                        // must not inflate every future seed or be sent again.
+                        g.checkpointed_text_hash = Some(hash(&g.text)?);
+                        g.text.clear();
+                        g.incorporated_revision = None;
+                    }
+                }
                 // Frozen readers keep their exact snapshot even when a newly
                 // committed checkpoint retires the represented mutable projection.
                 view(&p)
@@ -1051,11 +1134,7 @@ pub(in crate::store) fn reserve_on(
     instance: &str,
 ) -> Result<Option<Value>> {
     let mut p = load(conn, dialogue, human, entry)?;
-    if (p.incorporated >= p.high
-        && p
-            .checkpoint_request
-            .as_ref()
-            .is_none_or(|q| q.acknowledged))
+    if (p.incorporated >= p.high && p.checkpoint_request.as_ref().is_none_or(|q| q.acknowledged))
         || p.range.as_ref().is_some_and(|r| r.full)
     {
         return Ok(None);
@@ -1098,6 +1177,26 @@ pub(in crate::store) fn save_returns_on(
     // Change transport fields only; appends/checkpoints committed since the
     // native offer must not be overwritten by a copied parent document.
     p.native_returns = returns.to_vec();
+    // Binding consolidation has already retained the context-only lifetime
+    // fence. Release only accepted, incorporated transport records with NO
+    // remaining collector binding. Never retire uncertainty or an active
+    // observation merely because its language has been checkpointed.
+    if p.native_returns.iter().any(|r| {
+        r.reported_revision.is_some()
+            && matches!(r.phase.as_str(), "accepted" | "accepted_reconciled")
+    }) {
+        let mut q = conn.prepare("SELECT DISTINCT j.value FROM bot_state b JOIN json_each(CASE WHEN json_valid(b.value) THEN b.value ELSE '[]' END) j WHERE b.key GLOB 'workflow_return_local:*' AND j.type='text' AND j.value GLOB ?1")?;
+        let bound = q
+            .query_map([format!("foreground:{}:*", p.dialogue)], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+        p.native_returns.retain(|r| {
+            r.reported_revision.is_none()
+                || !matches!(r.phase.as_str(), "accepted" | "accepted_reconciled")
+                || bound.contains(&r.id)
+        });
+    }
     save(conn, &p)
 }
 
@@ -1237,6 +1336,44 @@ mod tests {
         let ack = f.ack(&full).unwrap();
         f.checkpoint(&ack, 0);
         assert_eq!(f.call(read).unwrap()["rollover_basis"]["through"], 0);
+    }
+
+    #[test]
+    fn exact_checkpoint_template_and_repeated_full_reader_do_not_block_handover() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Exact continuity word: ceibo")
+            .unwrap();
+        let full = f.read(true);
+        assert_eq!(
+            full["checkpoint_writer"]["arguments"]["revision"],
+            full["checkpoint_revision"]
+        );
+        f.call(full["after_incorporation"]["arguments"].clone())
+            .unwrap();
+        let repeated = f.read(true);
+        assert_eq!(repeated["range"]["revision"], full["range"]["revision"]);
+        let mut writer = repeated["checkpoint_writer"]["arguments"].clone();
+        writer["text"] =
+            json!("Keep the exact continuity word ceibo; no work or memory write was requested.");
+        f.call(writer).unwrap();
+        assert!(
+            f.call(
+                json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation})
+            )
+            .is_ok()
+        );
+        f.append(&Uuid::now_v7().to_string(), "Later unincorporated language")
+            .unwrap();
+        let unseen = f.read(true);
+        let current = f
+            .call(json!({"action":"read","dialogue":f.dialogue,"full":true}))
+            .unwrap();
+        f.checkpoint(&current, 1);
+        assert_eq!(
+            f.read(true)["range"]["revision"],
+            unseen["range"]["revision"],
+            "A changed full range cannot borrow the old incorporation receipt"
+        );
     }
 
     #[test]
@@ -1744,6 +1881,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(serde_json::from_str::<Vec<String>>(&raw).unwrap().len(), 1);
+        let p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
+        assert_eq!(
+            p.native_returns.len(),
+            2,
+            "Only the currently bound return in each physical lifetime remains; incorporated unbound transport is retired"
+        );
         // Even after transport-binding consolidation, a pure internal lifetime
         // remains internal. Retiring IDs never silently widens publication.
         conn.execute(
@@ -1752,6 +1895,51 @@ mod tests {
         )
         .unwrap();
         assert!(!super::super::workflows::native_visible_on(&conn, internal).unwrap());
+    }
+    #[test]
+    fn incorporated_language_does_not_retire_unknown_native_submission() {
+        let f = Fixture::new();
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "Context whose native ACK is lost",
+        )
+        .unwrap();
+        let first = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let l = local(&f, "");
+        f.store.workflow_native_link(&first.id, l).unwrap();
+        f.store.workflow_native_submitting(&first.id).unwrap();
+        // Sol incorporated it, but the submission ACK remains unobserved.
+        let packet: Value = serde_json::from_str(&first.output).unwrap();
+        f.call(packet["after_incorporation"]["arguments"].clone())
+            .unwrap();
+        f.store
+            .workflow_native_outcome(&first.id, "uncertain", None)
+            .unwrap();
+        f.append(&Uuid::now_v7().to_string(), "Later context")
+            .unwrap();
+        let next = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        linked(&f, &next, l);
+        let packet: Value = serde_json::from_str(&next.output).unwrap();
+        f.call(packet["after_incorporation"]["arguments"].clone())
+            .unwrap();
+        let ack = f.ack(&f.read(true)).unwrap();
+        f.checkpoint(&ack, 2);
+        let conn = f.store.conn.lock().unwrap();
+        let p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
+        assert!(
+            p.native_returns
+                .iter()
+                .any(|r| r.id == first.id && r.phase == "uncertain")
+        );
+        assert!(!super::super::workflows::native_visible_on(&conn, l).unwrap());
     }
     #[test]
     fn restart_distinguishes_unsent_from_uncertain_and_never_reauthors_a_range() {
@@ -1813,6 +2001,85 @@ mod tests {
     fn guide_operation(f: &Fixture, action: &str, id: &str) -> Value {
         json!({"action":action,"dialogue":f.dialogue,"generation":f.generation,"id":id})
     }
+    #[test]
+    fn checkpoint_retires_only_exact_full_read_guidance_and_keeps_receipts() {
+        let mut f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Current conversation basis")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        let first = Uuid::now_v7().to_string();
+        let original = guide(&f, &first, 1);
+        f.call(original.clone()).unwrap();
+        f.call(guide_operation(&f, "guidance_begin", &first))
+            .unwrap();
+        f.call(
+            json!({"action":"guidance_outcome","dialogue":f.dialogue,"generation":f.generation,
+            "id":first,"outcome":"sent"}),
+        )
+        .unwrap();
+        let cp = f.checkpoint(&ack, 1);
+        assert!(
+            !f.call(json!({"action":"guide_status","dialogue":f.dialogue,"id":first}))
+                .unwrap()["guidance"]["text"]
+                .as_str()
+                .unwrap()
+                .is_empty(),
+            "A language-only ACK did not incorporate the guide"
+        );
+        let second = Uuid::now_v7().to_string();
+        f.call(guide(&f, &second, 1)).unwrap();
+        let full = f.read(true);
+        // A send disposition changing after freeze was not seen by that ACK.
+        f.call(guide_operation(&f, "guidance_begin", &second))
+            .unwrap();
+        f.call(
+            json!({"action":"guidance_outcome","dialogue":f.dialogue,"generation":f.generation,
+            "id":second,"outcome":"uncertain"}),
+        )
+        .unwrap();
+        f.ack(&full).unwrap();
+        f.checkpoint(&cp, 1);
+        let status = f
+            .call(json!({"action":"guide_status","dialogue":f.dialogue,"id":first}))
+            .unwrap();
+        assert_eq!(status["guidance"]["text"], "");
+        assert_eq!(status["guidance"]["phase"], "sent");
+        assert!(status["guidance"]["checkpointed_text_hash"].is_string());
+        let full = f.read(true);
+        assert_eq!(
+            full["range"]["content"]["guidance"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(full["range"]["content"]["guidance"][0]["id"], second);
+        assert_eq!(
+            full["range"]["content"]["guidance"][0]["phase"],
+            "uncertain"
+        );
+        let ack = f.ack(&full).unwrap();
+        f.checkpoint(&ack, 1);
+        drop(f.store);
+        f.store = Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert_eq!(
+            f.call(original.clone()).unwrap()["guidance"]["phase"],
+            "sent"
+        );
+        let mut changed = original;
+        changed["text"] = json!("Changed original control text");
+        assert!(f.call(changed).is_err());
+        let basis = f
+            .call(json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        assert_eq!(basis["rollover_basis"]["content"]["guidance"], json!([]));
+        assert_eq!(
+            f.call(json!({"action":"guide_status","dialogue":f.dialogue,"id":second}))
+                .unwrap()["guidance"]["phase"],
+            "uncertain"
+        );
+    }
+
     #[test]
     fn guidance_basis_survives_later_speech_and_receipts_never_claim_application() {
         let f = Fixture::new();

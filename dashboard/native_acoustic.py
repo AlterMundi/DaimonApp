@@ -45,12 +45,22 @@ class NativeAcousticSession:
         # marker cannot be observed before confirmed speech.
         self.questions=dict(questions or {})
         self.notify=notify
-        self.pcm=bytearray();self.analyzed=0;self.boundary=0;self.sent=0
+        self.pcm=bytearray();self.pcm_base=0;self.analyzed=0;self.boundary=0;self.sent=0
         self.spans=[];self.local=None;self.provider=None;self.created=0
         self.markers=[]
         self.closed=False;self.lock=asyncio.Lock();self.changed=asyncio.Event()
         self.boundary_mismatch=None
         self.provider_offset_base=0
+
+    @property
+    def captured(self):
+        return self.pcm_base+len(self.pcm)
+
+    def _slice(self,start,stop=None):
+        if stop is None:stop=self.captured
+        if not self.pcm_base<=start<=stop<=self.captured:
+            raise ForegroundUnavailable('Acoustic source is outside its retained PCM')
+        return bytes(self.pcm[start-self.pcm_base:stop-self.pcm_base])
 
     def replace_stream(self,stream):
         """Caller holds the idle acoustic lock; logical PCM/detector offsets stay.
@@ -64,6 +74,13 @@ class NativeAcousticSession:
             raise ForegroundUnavailable('Acoustic handover changed activity ownership')
         if self.stream.activity_mode=='automatic' and (self.boundary!=self.sent or self.unassigned):
             raise ForegroundUnavailable('Automatic handover needs its complete acknowledged input boundary')
+        # Only the completed original prefix is retired. Unassigned/trailing
+        # PCM stays available for its later exact source or close-time recovery.
+        # All capture/detector/provider clocks remain logical and monotonic.
+        if not self.pcm_base<=self.boundary<=self.captured:
+            raise ForegroundUnavailable('Acoustic retirement boundary changed')
+        del self.pcm[:self.boundary-self.pcm_base]
+        self.pcm_base=self.boundary
         self.provider_offset_base=self.sent;self.stream=stream
 
     async def marker(self,audio_bytes,questions):
@@ -73,7 +90,7 @@ class NativeAcousticSession:
         Provider.check_capture_questions(questions)
         async with self.lock:
             if (self.closed or type(audio_bytes) is not int or audio_bytes%2
-                    or not len(self.pcm)<audio_bytes<=len(self.pcm)+32000
+                    or not self.captured<audio_bytes<=self.captured+32000
                     or len(self.markers)>=4 or self.markers and audio_bytes<=self.markers[-1][0]):
                 raise ForegroundUnavailable('Capture scope marker does not precede its PCM')
             self.markers.append((audio_bytes,dict(questions or {})))
@@ -81,9 +98,9 @@ class NativeAcousticSession:
     async def feed(self,pcm):
         async with self.lock:
             if (self.closed or not isinstance(pcm,bytes) or not pcm or len(pcm)%2
-                    or len(pcm)>32000 or len(self.pcm)+len(pcm)>self.max_bytes
-                    or self.local is not None and len(self.pcm)+len(pcm)-self.local.start>120*32000
-                    or len(self.pcm)+len(pcm)-self.analyzed>self.max_backlog):
+                    or len(pcm)>32000 or self.captured+len(pcm)>self.max_bytes
+                    or self.local is not None and self.captured+len(pcm)-self.local.start>120*32000
+                    or self.captured+len(pcm)-self.analyzed>self.max_backlog):
                 raise ForegroundUnavailable('Native acoustic input exceeds its live bounds')
             self.pcm.extend(pcm)
         # Detector writes do not hold the state lock needed by its event reader.
@@ -93,7 +110,7 @@ class NativeAcousticSession:
         async with self.lock:
             end=value.get('audio_bytes');generation=value.get('generation')
             if (self.closed or value.get('type')!='activity' or type(end) is not int
-                    or end%2 or not self.analyzed<=end<=len(self.pcm)
+                    or end%2 or not self.analyzed<=end<=self.captured
                     or type(generation) is not int or generation<0):
                 raise ForegroundUnavailable('Acoustic activity does not match captured PCM')
             self.analyzed=end
@@ -130,7 +147,7 @@ class NativeAcousticSession:
                     raise ForegroundUnavailable('Captured phrase exceeds its live bound')
                 span.end=end;self.local=None;self.boundary=end
                 self.markers=[(n,q) for n,q in self.markers if n>end]
-                self.bridge.capture(span.ident,bytes(self.pcm[span.start:end]),span.questions)
+                self.bridge.capture(span.ident,self._slice(span.start,end),span.questions)
                 await self.detector.boundary({'generation':endpoint['generation'],'audio_bytes':end})
                 await self.notify({'type':'phrase_end','id':span.ident,'start':span.start,'end':end})
             await self._pump()
@@ -148,7 +165,7 @@ class NativeAcousticSession:
             raise ForegroundUnavailable('Captured phrase exceeds its live bound')
         while span.sent<end:
             stop=min(end,span.sent+32000)
-            await asyncio.to_thread(self.stream.append,bytes(self.pcm[span.sent:stop]))
+            await asyncio.to_thread(self.stream.append,self._slice(span.sent,stop))
             self.sent+=stop-span.sent;span.sent=stop
         if span.end is not None and span.stream_end is None:
             span.stream_end=self.sent
@@ -248,9 +265,10 @@ class NativeAcousticSession:
             self.closed=True;self.changed.set()
             # A disconnect does not throw away an unfinished, analyzed original.
             # It remains foreground_captured, never automatically delegated.
-            if self.local and len(self.pcm)>self.local.start:
+            if self.local and self.captured>self.local.start:
                 span=self.local
-                self.bridge.capture(span.ident,bytes(self.pcm[span.start:]),span.questions)
+                self.bridge.capture(span.ident,self._slice(span.start),span.questions)
+            self.pcm_base=self.captured
             self.pcm.clear();self.local=None;self.spans.clear();self.provider=None
 
 
@@ -269,8 +287,8 @@ class NativeAutomaticAcousticSession(NativeAcousticSession):
     async def feed(self,pcm):
         async with self.lock:
             if (self.closed or not isinstance(pcm,bytes) or not pcm or len(pcm)%2
-                    or len(pcm)>32000 or len(self.pcm)+len(pcm)>self.max_bytes
-                    or self.local is not None and len(self.pcm)+len(pcm)-self.local.start>120*32000):
+                    or len(pcm)>32000 or self.captured+len(pcm)>self.max_bytes
+                    or self.local is not None and self.captured+len(pcm)-self.local.start>120*32000):
                 raise ForegroundUnavailable('Native acoustic input exceeds its live bounds')
             self.pcm.extend(pcm)
             # Serialize with provider offsets; a failed write is never replayed.
@@ -325,7 +343,7 @@ class NativeAutomaticAcousticSession(NativeAcousticSession):
                 span.end=span.stream_end=offset;span.end_ack=True
                 self.local=None;self.boundary=offset
                 self.markers=[(n,q) for n,q in self.markers if n>offset]
-                self.bridge.capture(span.ident,bytes(self.pcm[span.start:offset]),span.questions)
+                self.bridge.capture(span.ident,self._slice(span.start,offset),span.questions)
                 await self.notify({'type':'phrase_end','id':span.ident,'start':span.start,'end':offset})
                 span.final_deadline=asyncio.get_running_loop().time()+self.transcript_timeout
             else:
@@ -364,9 +382,9 @@ class NativeAutomaticAcousticSession(NativeAcousticSession):
             if not self.closed and self.unassigned and self.local is None:
                 # At most three120s chunks within the existing300s PCM bound.
                 # These are unconfirmed raw originals, not invented utterances.
-                for start in range(self.boundary,len(self.pcm),120*32000):
-                    stop=min(len(self.pcm),start+120*32000)
+                for start in range(self.boundary,self.captured,120*32000):
+                    stop=min(self.captured,start+120*32000)
                     # Without an onset, later markers cannot narrow a known
                     # utterance start. Retain the earlier arm-time scope.
-                    self.bridge.capture(str(uuid.uuid4()),bytes(self.pcm[start:stop]),self.questions)
+                    self.bridge.capture(str(uuid.uuid4()),self._slice(start,stop),self.questions)
         await super().close()

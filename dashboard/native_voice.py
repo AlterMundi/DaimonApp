@@ -86,6 +86,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         candidate_setup_failures=0
         attempted_rollover_basis=None;retiring=None
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
+        completion_notifications={}
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
         first_playback_status=last_playback_status=None;playback_status_count=0
@@ -126,7 +127,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await actor()
                     await send({'type':'original_completed','id':capture.ident,'sha256':capture.digest,'phase':'foreground'})
                     if context_producer is not None:context_producer.notify()
-                launch(completed())
+                completion_notifications[capture.ident]=launch(completed())
         def launch(operation):
             task=asyncio.create_task(operation,name='native-tool');tool_tasks.add(task)
             return task
@@ -187,7 +188,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     or bridge.pending_acoustic is not None or output_queue is None):return False
             if output_pending or output_queue.items:return False
             if stream.activity_mode=='manual':
-                if acoustic.analyzed!=len(acoustic.pcm):return False
+                if acoustic.analyzed!=acoustic.captured:return False
             elif acoustic.boundary!=acoustic.sent or acoustic.unassigned:return False
             if any(c.phase!='foreground' or c.completion is None or not c.completion.done()
                 or c.completion.cancelled() or c.completion.exception() is not None for c in bridge.captures.values()):return False
@@ -249,6 +250,13 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         if not await context_producer.commit_rollover(intent):return False
                         bridge.replace_stream(candidate,intent['next'])
                         acoustic.replace_stream(candidate)
+                        notified=[ident for ident,t in completion_notifications.items()
+                            if t.done() and not t.cancelled() and t.exception() is None
+                            and raw_notifications[ident].done() and not raw_notifications[ident].cancelled()
+                            and raw_notifications[ident].exception() is None]
+                        bridge.retire_captures(notified)
+                        for ident in notified:
+                            del completion_notifications[ident];del raw_notifications[ident]
                         retiring=old
                         stream=candidate;installed=True;rollover_count+=1
                         retired_output_bytes+=getattr(old,'output_bytes',0)

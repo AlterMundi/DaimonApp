@@ -1446,8 +1446,10 @@ admission references are implemented. Early pressure now requests one semantic
 checkpoint per physical generation, including quiet/fully incorporated context.
 Input admission keeps a conservative local reserve anchored upward to optional
 provider usage; this estimate is not an exact Live tokenizer or actual-provider
-qualification. Provider peers/Core reasoning remain synthetic; complete metadata
-retirement, actual provider accounting/continuity/performance and receiving
-acceptance remain unfinished.
+qualification. Completed acoustic/capture copies, checkpointed guidance text and
+unbound acknowledged native transport now retire selectively. Real Gemini
+successor/spoken-continuity and real Sol context/checkpoint cases pass separately;
+the mounted journey with both actual providers, active-turn integration, longer
+retention/continuation and receiving/device acceptance remain unfinished.
 See the single maintained design/qualification record above. Receiving558 and
 the five-minute logical pilot remain unchanged; PR560 is draft.

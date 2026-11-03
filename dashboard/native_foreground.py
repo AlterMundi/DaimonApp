@@ -53,6 +53,7 @@ class ForegroundBridge:
         self.cache_root=private_directory(cache_root)
         self.originals=private_directory(Path(str(provider.receiver['db_path'])+'.voice'))
         self.captures={}
+        self.capture_ids=set()
         self.input_bytes=0
         self.latest=None
         self.pending_acoustic=None
@@ -95,14 +96,14 @@ class ForegroundBridge:
         provider/native work is replayed, and no partial caption is an original.
         """
         Provider.input_id(ident);Provider.check_capture_questions(questions)
-        if (self.closed or ident in self.captures or len(self.captures)>=self.max_captures
+        if (self.closed or ident in self.capture_ids or len(self.capture_ids)>=self.max_captures
                 or sum(c.phase not in ('foreground','unconfirmed') for c in self.captures.values())>=self.max_pending
                 or not isinstance(pcm,bytes) or not pcm or len(pcm)%2
                 or len(pcm)>120*32000 or self.input_bytes+len(pcm)>self.max_pcm_bytes):
             raise ForegroundUnavailable('Foreground capture exceeds its live bounds')
         data=wav_bytes(pcm)
         value=Capture(ident,pcm,hashlib.sha256(data).hexdigest(),dict(questions or {}))
-        self.captures[ident]=value;self.latest=ident;self.input_bytes+=len(pcm)
+        self.captures[ident]=value;self.capture_ids.add(ident);self.latest=ident;self.input_bytes+=len(pcm)
         previous=self._reservation_tail
         async def retain():
             try:
@@ -466,6 +467,20 @@ class ForegroundBridge:
         # Unoffered canonical references remain queued. A future/current return
         # can nudge the replacement without repeating the old delegation call.
         if self._queued:self.noticed_generation=-1
+
+    def retire_captures(self,identifiers):
+        """Release completed live copies, never canonical originals or receipts.
+
+        The owner supplies only captures whose UI notification tasks finished.
+        Keep the latest capture for current-original tool correlation and every
+        seen ID for replay rejection under the unchanged logical capture bound.
+        """
+        for ident in identifiers:
+            c=self.captures.get(ident)
+            if (c is not None and ident!=self.latest and c.phase=='foreground'
+                    and all(t is not None and t.done() and not t.cancelled() and t.exception() is None
+                        for t in (c.reservation,c.completion))):
+                del self.captures[ident]
 
     def integrating_source(self,source,*,in_context=False):
         """Register an authenticated canonical reference, in setup or for an offer.

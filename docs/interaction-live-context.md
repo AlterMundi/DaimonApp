@@ -582,10 +582,66 @@ and internal bookkeeping stays unpublished. Core reasoning, provider audio and
 detector remain synthetic. Actual-provider token accounting and continuity are
 still unqualified; these results do not establish hearing or receiving adoption.
 
-Remaining before adoption: actual-provider token/accounting qualification,
-completed transport/media/guidance metadata retirement, actual Core/provider
-continuity/performance and receiving/device acceptance. PR560 stays draft,
+Remaining before adoption: joined actual Core/provider continuity/performance,
+active-turn integration, long-pilot retention/continuation and receiving/device
+acceptance. PR560 stays draft,
 receiving558 is unchanged and the five-minute pilot is not lifted.
+
+### Completed-copy retirement and actual provider/Core evidence
+
+At an installed idle handover, the acoustic buffer releases only the completed
+original prefix through its validated boundary. Unassigned/trailing PCM stays
+available for later source correlation or close recovery. A base offset keeps
+capture/detector/provider positions monotonic; releasing bytes does not reset the
+logical duration/input allowance. Completed capture objects and notification
+references retire after their actual reservation/completion/notification tasks
+finish. The latest capture stays available for tool correlation; seen source IDs,
+originals, admission references and uncertainty survive under the existing bounds.
+
+Guidance text retires only when Sol has acknowledged an exact full snapshot
+including its current disposition and committed a checkpoint covering its basis.
+A newer guide or a send disposition changing after freeze cannot borrow that ACK.
+The semantic checkpoint then carries the meaning; compact ID/text-digest/send
+receipts keep duplicate rejection and unknown outcomes, without repeating retired
+text in future setup seeds. Accepted incorporated native-return metadata retires
+only after binding consolidation leaves no collector referencing it. Active,
+uncollected or uncertain receipts and the context-only publication lifetime fence
+remain. These are selective live-copy retirements, not original/history deletion.
+
+A finite real Gemini qualification opened one initial and two successor sockets.
+Each returned digital audio and the correct synthetic continuity word; successor
+checkpoints changed that word twice. No tools were proposed, old sockets remained
+open during preparation and all three closed afterward. First PCM arrived
+0.634/0.626/0.671seconds after a spoken internal guide. These are three provider
+observations, not end-of-human-speech latency, intelligibility or device hearing.
+The local estimate19727–20392 exceeded observed total usage4287–4464 in these
+small cases; this is not proof of an exact universal token bound.
+
+The first real Sol test exposed a schema/usability fault: it guessed two wrong
+CAS field names before writing the correct checkpoint, then re-read an identical
+already-incorporated snapshot without another ACK, leaving handover blocked.
+Full readers now supply an exact `checkpoint_writer` template: add only
+`arguments.text`, retaining the supplied `revision` and `through`. A checkpoint
+can release a fully supplied identical re-read only when its exact revision has
+an existing full-incorporation receipt; changed or unread ranges retain their
+ACK gate. No alias parameters or guessed incorporation are accepted.
+
+A distinct new actual Sol6.1/openai/medium case using that contract completed
+two internal native admissions with empty human input and five controller calls:
+range incorporation, pressure-range incorporation, full read, full incorporation
+and one semantic checkpoint. Both attributed roles and the exact temporary word
+survived; no work, memory write or ordinary chat publication occurred. The full
+test took25.9seconds, not a speech-latency measurement. Previous native work and
+its failed verifier outcome were retained without replay. Native Core and Gemini
+have now been exercised separately at these changed seams; the mounted journey
+with both real providers, active-turn steering and device acceptance remains open.
+
+Qualification:250Store tests/20focused projection tests,26acoustic and26bridge
+tests,49mounted voice tests, joined actual owner/controller/SQLite voice journeys,
+mixed human/context publication and clippy all targets with warnings denied.
+CI41568933929 failed its formatting check on the final reserve predicate; the
+actual job diff was inspected and formatting corrected. Final-tree formatting is
+checked separately. No runtime or audio diagnosis follows from that CI failure.
 
 ## Astra high review — accepted decisions
 

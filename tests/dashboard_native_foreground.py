@@ -74,6 +74,24 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.owner.inputs,{})
         self.assertEqual(self.stream.results,[('invalid',result)])
 
+    async def test_capture_retirement_keeps_originals_latest_correlation_and_replay_bound(self):
+        first,pcm,_=await self.captured('First')
+        second,_,_=await self.captured('Second')
+        third,_,latest=await self.captured('Third')
+        before=self.bridge.input_bytes
+        self.bridge.retire_captures([first,second,third])
+        self.assertEqual(set(self.bridge.captures),{third})
+        self.assertEqual(self.bridge.capture_ids,{first,second,third})
+        self.assertEqual(self.bridge.latest,third)
+        self.assertEqual(self.bridge.input_bytes,before)
+        self.assertEqual(set(self.owner.inputs),{first,second,third})
+        self.assertEqual(latest.phase,'foreground')
+        with self.assertRaises(ForegroundUnavailable):self.bridge.capture(first,pcm,{})
+        self.bridge.max_captures=3
+        with self.assertRaises(ForegroundUnavailable):self.bridge.capture(str(uuid.uuid4()),pcm,{})
+        result=await self.bridge.tool({'type':'source_query','call_id':'current','before':0})
+        self.assertEqual({v['id'] for v in result['sources']},{first,second,third})
+
     async def test_result_index_reuses_canonical_page_and_revalidates_offered_worker_text(self):
         reads=[];ident='delivery:'+str(uuid.uuid4());revision='c'*64
         self.owner.presentation_list=lambda *args:reads.append(args) or {
