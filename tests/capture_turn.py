@@ -4,12 +4,60 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+import io
+import json
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.capture_turn import Activity, TurnEndUnavailable
-from dashboard.turn_detection import analyze_capture, DetectionUnavailable
+from scripts.capture_turn import Activity, TurnEndUnavailable, analysis_budget, main, SCHEMA, VAD_SHA256, MODEL_SHA256
+from dashboard.turn_detection import analyze_capture, DetectionUnavailable, Detector
 
 
 class CaptureTurn(unittest.TestCase):
+    def test_default_and_extended_analysis_budgets_are_finite_and_strict(self):
+        self.assertEqual(analysis_budget(),(120,30,60,145))
+        self.assertEqual(analysis_budget(continuous=True),(300,90,150,305))
+        self.assertEqual(analysis_budget(continuous=True,session_seconds=300),(300,90,150,305))
+        self.assertEqual(analysis_budget(continuous=True,session_seconds=600),(600,180,300,635))
+        self.assertEqual(analysis_budget(continuous=True,session_seconds=1800),(1800,540,900,1835))
+        for seconds in (True,300.0,'600',299,1801):
+            with self.subTest(seconds=seconds),self.assertRaises(ValueError):
+                Activity('/missing-vad','/missing-turn',continuous=True,session_seconds=seconds)
+        with self.assertRaises(ValueError):analysis_budget(session_seconds=600)
+
+    def test_cli_acknowledges_extended_budget_and_preserves_default_ready(self):
+        for seconds in (None,300,600,1800):
+            argv=['capture_turn','--vad-model','unused','--turn-model','unused','--continuous']
+            if seconds is not None:argv+=['--session-seconds',str(seconds)]
+            output=io.StringIO()
+            with patch('sys.argv',argv),patch('scripts.capture_turn.Activity') as activity,\
+                    patch('scripts.capture_turn.resource.setrlimit') as cpu,\
+                    patch('scripts.capture_turn.signal.alarm') as alarm,\
+                    patch('sys.stdin',type('Input',(),{'buffer':io.BytesIO()})()),patch('sys.stdout',output):
+                self.assertEqual(main(),0)
+            expected={'schema':SCHEMA,'type':'ready','vad_sha256':VAD_SHA256,
+                      'turn_sha256':MODEL_SHA256,'continuous':True}
+            if seconds and seconds>300:expected['session_seconds']=seconds
+            self.assertEqual(json.loads(output.getvalue()),expected)
+            budget=analysis_budget(continuous=True,session_seconds=seconds)
+            cpu.assert_called_once_with(__import__('resource').RLIMIT_CPU,(budget[2],budget[2]+5))
+            alarm.assert_called_once_with(budget[3])
+            self.assertEqual(activity.call_args.kwargs['session_seconds'],seconds)
+
+    def test_six_hundred_seconds_keeps_only_eight_second_tail_and_stops_at_bound(self):
+        value=self.analyzer()
+        seconds,value.max_analyses,_,_=analysis_budget(continuous=True,session_seconds=600)
+        value.max_bytes=seconds*32000
+        for _ in range(seconds):
+            value.feed(bytes(32000))
+            self.assertLessEqual(len(value.tail),256000)
+            self.assertLess(len(value.pending),1024)
+        self.assertEqual(value.bytes,600*32000)
+        with self.assertRaises(ValueError):value.feed(b'\0\0')
+        self.assertEqual(self.scored,[],'Quiet capture cannot consume semantic analyses')
+        value.bytes=0;value.speech_seen=True
+        value.generation=value.confirmed_generation=1;value.analyses=180
+        with self.assertRaises(TurnEndUnavailable):value.feed(bytes(1024))
+
     def analyzer(self):
         value = object.__new__(Activity)
         value.pending = bytearray(); value.tail = bytearray()
@@ -273,5 +321,43 @@ class CaptureAnalysisLifecycle(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(DetectionUnavailable,'fell behind'):
             await task
         self.assertTrue(worker.closed);self.assertEqual(worker.feeds,[(1024,False)])
+
+class DetectorBudget(unittest.IsolatedAsyncioTestCase):
+    async def worker(self,seconds,*,acknowledge=True):
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        root=Path(temp.name);script=root/'worker.py';args=root/'args.json'
+        ready={'schema':SCHEMA,'type':'ready','vad_sha256':VAD_SHA256,
+               'turn_sha256':MODEL_SHA256,'continuous':True}
+        if acknowledge and seconds and seconds>300:ready['session_seconds']=seconds
+        script.write_text('import json,sys\nfrom pathlib import Path\n'
+                          f'Path({str(args)!r}).write_text(json.dumps(sys.argv[1:]))\n'
+                          f'print({json.dumps(ready)!r},flush=True)\n'
+                          'sys.stdin.buffer.read()\n')
+        return [sys.executable,str(script)],args
+
+    async def test_selected_extended_worker_acknowledges_budget_and_reaps(self):
+        argv,args=await self.worker(600)
+        value=await Detector.open(argv,continuous=True,session_seconds=600)
+        self.assertEqual(json.loads(args.read_text()),['--continuous','--session-seconds','600'])
+        await value.close();self.assertEqual(value.process.returncode,0)
+
+    async def test_legacy_worker_keeps_default_wire_and_cannot_accept_extension(self):
+        argv,args=await self.worker(None)
+        value=await Detector.open(argv,continuous=True)
+        self.assertEqual(json.loads(args.read_text()),['--continuous'])
+        await value.close()
+        ended=[];close=Detector.close
+        async def observed(value):
+            await close(value);ended.append(value.process.returncode)
+        with patch.object(Detector,'close',observed):
+            with self.assertRaisesRegex(DetectionUnavailable,'Unexpected analysis worker'):
+                await Detector.open(argv,continuous=True,session_seconds=600)
+        self.assertEqual(ended,[0],'Incompatible worker exits before any PCM or provider is opened')
+
+    async def test_invalid_duration_rejected_before_spawning(self):
+        for seconds in (True,299,1801):
+            with self.assertRaises(ValueError):
+                await Detector.open(['/does-not-exist'],continuous=True,session_seconds=seconds)
+
 
 if __name__ == '__main__':unittest.main()
