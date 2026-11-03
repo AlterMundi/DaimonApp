@@ -274,6 +274,33 @@ session. A real subsequent human original retains its own ordinary presentation
 lifetime; context cannot suppress it. Incorporation is internal bookkeeping, not
 an instruction to narrate a status update to the human.
 
+## Pressure checkpoint capacity — development correction,3November2026
+
+A reproduced local case committed a13,000byte quoted summary, retired its exact
+source tail, and could not produce a rollover seed: JSON escaping alone exceeds
+the24,576byte seed envelope. Active pressure checkpoint admission now validates
+the irreducible canonical UTF-8 envelope before committing. A known rejection
+leaves the checkpoint, exact sources, reader and revision unchanged, so Sol can
+shorten only its text and retry the same still-current writer template. The
+writer exposes `pressure_seed_max_bytes` and the recovery instruction.
+
+The guard applies to complete active pressure checkpoints. Partial, unpressured
+and closed-producer semantic storage keeps its existing65,536byte language bound.
+Pending guidance has its own incorporation/settlement gates and is not silently
+clipped to make a checkpoint fit. Full identity/pending-effect setup validation
+and the128,000TOKEN guard remain separate; fitting this envelope is not a proof
+of universal token occupancy or provider continuity.
+
+Native and Python successor validation now measure the same compact canonical
+UTF-8 seed rather than disagreeing because Python adds formatting spaces. The
+exact24,576byte Unicode boundary is preserved, one further byte is refused before
+opening a provider socket, and full setup/identity capacity still applies.
+Two zero-model Store pressure/checkpoint/rollover cycles verify rejection without
+source retirement, followed by a shorter checkpoint and normal continuation.
+Large unpressured/closed checkpoints remain supported. This is development
+qualification, not another deployment or phone/long-session acceptance; the
+selected569/UI190c23fb1a14 human trial stays unchanged.
+
 ## Sol-to-Live guidance
 
 A guarded native controller operation records bounded assistant-authored guidance

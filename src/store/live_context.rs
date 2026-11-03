@@ -14,6 +14,7 @@ const MAX_SOURCES: usize = 4096;
 const PAGE: usize = 8000;
 const INLINE: usize = 16000;
 const MAX_PIN: usize = 49152;
+const MAX_ROLLOVER_SEED: usize = 24576;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -467,6 +468,14 @@ fn view(p: &Projection) -> Value {
         "work_admission":"not_requested"})
 }
 
+fn rollover_content(p: &Projection) -> Value {
+    json!({"kind":"internal_integrator_checkpoint","dialogue":p.dialogue,
+        "generation":p.generation,"checkpoint":p.checkpoint,
+        "guidance":p.guidance.iter().filter(|g|g.checkpointed_text_hash.is_none()).map(|g|json!({"id":g.id,"basis":g.basis,
+            "text":g.text,"mode":g.mode,"phase":g.phase})).collect::<Vec<_>>(),
+        "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."})
+}
+
 fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     if p.closed
         || p.checkpoint.text.is_empty()
@@ -485,12 +494,8 @@ fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     if human_context_missing(conn, p)? {
         bail!("Live rollover must catch up canonical human context first");
     }
-    let content = json!({"kind":"internal_integrator_checkpoint","dialogue":p.dialogue,
-        "generation":p.generation,"checkpoint":p.checkpoint,
-        "guidance":p.guidance.iter().filter(|g|g.checkpointed_text_hash.is_none()).map(|g|json!({"id":g.id,"basis":g.basis,
-            "text":g.text,"mode":g.mode,"phase":g.phase})).collect::<Vec<_>>(),
-        "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."});
-    if serde_json::to_vec(&content)?.len() > 24576 {
+    let content = rollover_content(p);
+    if serde_json::to_vec(&content)?.len() > MAX_ROLLOVER_SEED {
         bail!("Live rollover continuity exceeds its provider setup reserve");
     }
     Ok(json!({"revision":hash(&content)?,"through":p.high,"content":content}))
@@ -545,7 +550,8 @@ fn reader_actions(result: &mut Value, r: &Frozen) -> Result<()> {
             "action":"checkpoint","dialogue":result["dialogue"],
             "revision":frozen["checkpoint"]["revision"],"through":r.through},
             "required_text_field":"text",
-            "meaning":"After invoking after_incorporation, add your compact semantic checkpoint in arguments.text and call this exact template. Keep arguments.revision and through unchanged. This is semantic continuity, not work admission or a memory-write receipt."});
+            "pressure_seed_max_bytes":MAX_ROLLOVER_SEED,
+            "meaning":"After invoking after_incorporation, add your compact semantic checkpoint in arguments.text and call this exact template. Keep arguments.revision and through unchanged. For a complete active pressure checkpoint, the serialized checkpoint envelope must fit pressure_seed_max_bytes, including JSON escaping and metadata. If rejected for capacity, shorten text and retry this unchanged revision; exact context has not been retired. Guidance and complete provider setup have separate readiness/capacity gates. This is semantic continuity, not work admission or a memory-write receipt."});
     }
     Ok(())
 }
@@ -1286,6 +1292,20 @@ impl Store {
                         g.incorporated_revision = None;
                     }
                 }
+                if !p.closed && p.checkpoint.through == p.high && p.checkpoint_request.is_some() {
+                    // A pressure checkpoint must fit its irreducible provider
+                    // envelope BEFORE exact source text is retired. Guidance
+                    // has separate incorporation/settlement gates; do not reject
+                    // the checkpoint because unrelated guidance is still pending.
+                    let mut seed = rollover_content(&p);
+                    seed["guidance"] = json!([]);
+                    let bytes = serde_json::to_vec(&seed)?.len();
+                    if bytes > MAX_ROLLOVER_SEED {
+                        bail!(
+                            "Live pressure checkpoint needs {bytes} serialized continuity bytes (limit {MAX_ROLLOVER_SEED}); shorten its text before committing. Exact context remains retained"
+                        );
+                    }
+                }
                 // Frozen readers keep their exact snapshot even when a newly
                 // committed checkpoint retires the represented mutable projection.
                 view(&p)
@@ -1638,6 +1658,119 @@ mod tests {
         f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
             .unwrap();
         assert!(f.call(request).is_err());
+    }
+
+    #[test]
+    fn pressure_checkpoint_rejects_unseedable_escaped_text_without_retiring_sources() {
+        let f = Fixture::new();
+        let mut generation = f.generation.clone();
+        for through in 1..=2 {
+            let source = Uuid::now_v7().to_string();
+            f.call(json!({"action":"append","dialogue":f.dialogue,"generation":generation,
+                "source":source,"role":"assistant","text":format!("Exact correction {through}: información, not a work request."),"interrupted":true})).unwrap();
+            f.call(
+                json!({"action":"checkpoint_needed","dialogue":f.dialogue,"generation":generation,
+                "reason":"tokens","tokens":105000,"usage_kind":"observed"}),
+            )
+            .unwrap();
+            let full = f.read(true);
+            assert_eq!(
+                full["checkpoint_writer"]["pressure_seed_max_bytes"],
+                MAX_ROLLOVER_SEED
+            );
+            let ack = f.ack(&full).unwrap();
+            let before: String = f
+                .store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT doc FROM live_context WHERE dialogue=?1",
+                    [&f.dialogue],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // The text fits its language limit, but JSON escaping makes the
+            // complete continuity seed exceed the selected provider envelope.
+            let result = f.call(json!({"action":"checkpoint","dialogue":f.dialogue,
+                "revision":ack["checkpoint_revision"],"through":through,"text":"\"".repeat(13000)}));
+            if result.is_ok() {
+                assert!(f.call(json!({"action":"rollover_read","dialogue":f.dialogue,"generation":generation})).is_err());
+            }
+            assert!(
+                result.is_err(),
+                "An unseedable pressure checkpoint must not retire exact context"
+            );
+            let after: String = f
+                .store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT doc FROM live_context WHERE dialogue=?1",
+                    [&f.dialogue],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                before, after,
+                "Known rejection keeps the reader, source and prior checkpoint unchanged"
+            );
+            let compact = f.checkpoint(&ack, through);
+            assert_eq!(compact["checkpointed"], through);
+            let basis = f
+                .call(
+                    json!({"action":"rollover_read","dialogue":f.dialogue,"generation":generation}),
+                )
+                .unwrap();
+            let next = Uuid::now_v7().to_string();
+            let settled = f.call(json!({"action":"rollover_commit","dialogue":f.dialogue,
+                "generation":generation,"next_generation":next,"revision":basis["rollover_basis"]["revision"]})).unwrap();
+            assert_eq!(settled["generation"], next);
+            assert_eq!(settled["high"], through);
+            assert!(settled["checkpoint_request"].is_null());
+            generation = next;
+        }
+        let conn = f.store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_instructions", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM conversation_inputs", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn stored_checkpoints_outside_active_pressure_keep_their_existing_language_bound() {
+        for closed in [false, true] {
+            let f = Fixture::new();
+            f.append(&Uuid::now_v7().to_string(), "Retained source, no new work")
+                .unwrap();
+            if closed {
+                f.call(json!({"action":"checkpoint_needed","dialogue":f.dialogue,
+                    "generation":f.generation,"reason":"lifetime","tokens":1000,"usage_kind":"conservative"})).unwrap();
+            }
+            let full = f.read(true);
+            let ack = f.ack(&full).unwrap();
+            if closed {
+                f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+                    .unwrap();
+            }
+            let saved = f
+                .call(json!({"action":"checkpoint","dialogue":f.dialogue,
+                "revision":ack["checkpoint_revision"],"through":1,"text":"a".repeat(60000)}))
+                .unwrap();
+            assert_eq!(saved["checkpointed"], 1);
+            assert_eq!(saved["closed"], closed);
+        }
     }
 
     #[test]
