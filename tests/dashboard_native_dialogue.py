@@ -24,6 +24,34 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def guidance(self,mode='context_only'):
+        return {'id':str(uuid.uuid4()),'dialogue':str(uuid.uuid4()),'generation':str(uuid.uuid4()),
+                'basis':1,'mode':mode,'text':'A confirmed fact from Sol; not a new human request.'}
+
+    def test_guidance_waits_for_provider_floor_and_only_spoken_offer_completes_turn(self):
+        self.ready();value=self.guidance()
+        self.event({'voiceActivity':{'type':'ACTIVITY_START','audioOffset':'0s'}})
+        count=len(self.socket.sent);self.assertFalse(self.stream.guide(value));self.assertEqual(len(self.socket.sent),count)
+        self.event({'voiceActivity':{'type':'ACTIVITY_END','audioOffset':'1s'}})
+        self.assertFalse(self.stream.guide(value))
+        self.event({'serverContent':{'turnComplete':True}})
+        self.assertTrue(self.stream.guide(value));frame=self.socket.sent[-1]['clientContent']
+        self.assertFalse(frame['turnComplete']);self.assertFalse(self.stream.response_pending)
+        content=json.loads(frame['turns'][0]['parts'][0]['text'])
+        self.assertEqual(content['kind'],'internal_integrator_guidance');self.assertFalse(content['human_speech'])
+        self.assertEqual(content['id'],value['id'])
+        with self.assertRaises(ValueError):self.stream.guide(value)
+        spoken=self.guidance('spoken_offer');self.assertTrue(self.stream.guide(spoken))
+        self.assertTrue(self.socket.sent[-1]['clientContent']['turnComplete']);self.assertTrue(self.stream.response_pending)
+
+    def test_guidance_failed_send_is_not_replayed_or_reported_applied(self):
+        self.ready();value=self.guidance();self.socket.fail_send=True
+        with self.assertRaises(DialogueUnavailable):self.stream.guide(value)
+        self.assertIn(value['id'],self.stream.guidance_attempts)
+        self.assertEqual(self.stream.failure_code,'native-dialogue-send-unconfirmed')
+        with self.assertRaises(ValueError):self.stream.guide(value)
+        self.assertEqual(len(self.socket.sent),1)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.key=Path(self.tmp.name)/'key'
         self.key.write_text('synthetic-secret');self.key.chmod(0o600)

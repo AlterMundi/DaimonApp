@@ -59,6 +59,35 @@ pub(crate) enum LiveContextCommand {
         through: u64,
         text: String,
     },
+    Guide {
+        dialogue: String,
+        generation: String,
+        id: String,
+        basis: u64,
+        mode: String,
+        text: String,
+        #[serde(default)]
+        supersedes: Option<String>,
+    },
+    GuideStatus {
+        dialogue: String,
+        id: String,
+    },
+    Guidance {
+        dialogue: String,
+        generation: String,
+    },
+    GuidanceBegin {
+        dialogue: String,
+        generation: String,
+        id: String,
+    },
+    GuidanceOutcome {
+        dialogue: String,
+        generation: String,
+        id: String,
+        outcome: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +127,18 @@ struct Frozen {
     full: bool,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct Guidance {
+    id: String,
+    generation: String,
+    basis: u64,
+    mode: String,
+    text: String,
+    supersedes: Option<String>,
+    phase: String,
+    sender_instance: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Projection {
     dialogue: String,
@@ -119,6 +160,8 @@ struct Projection {
     range: Option<Frozen>,
     #[serde(default)]
     native_returns: Vec<super::workflows::WorkflowReturn>,
+    #[serde(default)]
+    guidance: Vec<Guidance>,
 }
 
 fn hash(value: &impl Serialize) -> Result<String> {
@@ -224,9 +267,12 @@ fn snapshot(p: &Projection, full: bool) -> Result<String> {
         p.incorporated + 1
     };
     let events: Vec<_> = p.events.iter().filter(|e| e.sequence >= from).collect();
+    let guidance=full.then(||p.guidance.iter().map(|g|json!({"id":g.id,"generation":g.generation,
+        "basis":g.basis,"mode":g.mode,"text":g.text,"phase":g.phase,
+        "meaning":"Attributed Sol control context, not human speech or a work request; sent is not provider application or hearing."})).collect::<Vec<_>>());
     Ok(serde_json::to_string(
         &json!({"dialogue":p.dialogue,"from":from,"through":p.high,
-        "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,
+        "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,"guidance":guidance,
         "policy":"Attributed language context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid."}),
     )?)
 }
@@ -303,6 +349,27 @@ impl Store {
              reserved_bytes INTEGER NOT NULL);
              CREATE INDEX IF NOT EXISTS live_context_owner ON live_context(human,chat,topic);",
             )?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let rows = {
+            let mut q = conn.prepare("SELECT doc FROM live_context ORDER BY rowid LIMIT 64")?;
+            q.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for raw in rows {
+            let mut p: Projection = serde_json::from_str(&raw)?;
+            let mut changed = false;
+            for guide in &mut p.guidance {
+                if guide.phase == "submitting"
+                    && guide.sender_instance.as_deref() != Some(&self.instance_id)
+                {
+                    guide.phase = "uncertain".into();
+                    changed = true;
+                }
+            }
+            if changed {
+                save(&conn, &p)?;
+            }
+        }
         Ok(())
     }
 
@@ -364,6 +431,7 @@ impl Store {
                 events: vec![],
                 range: None,
                 native_returns: vec![],
+                guidance: vec![],
             };
             save(&tx, &p)?;
             tx.commit()?;
@@ -378,6 +446,11 @@ impl Store {
             | LiveContextCommand::Part { dialogue, .. }
             | LiveContextCommand::Incorporate { dialogue, .. }
             | LiveContextCommand::Checkpoint { dialogue, .. } => dialogue,
+            LiveContextCommand::Guide { dialogue, .. }
+            | LiveContextCommand::GuideStatus { dialogue, .. }
+            | LiveContextCommand::Guidance { dialogue, .. }
+            | LiveContextCommand::GuidanceBegin { dialogue, .. }
+            | LiveContextCommand::GuidanceOutcome { dialogue, .. } => dialogue,
         };
         let mut p = load(&tx, dialogue, human, entry)?;
         let result = match command {
@@ -495,7 +568,153 @@ impl Store {
                     bail!("Live producer generation differs");
                 }
                 p.closed = true;
+                for g in &mut p.guidance {
+                    if g.phase == "pending" {
+                        g.phase = "retired_unsent".into();
+                    } else if g.phase == "submitting" {
+                        g.phase = "uncertain".into();
+                    }
+                }
                 view(&p)
+            }
+            LiveContextCommand::Guide {
+                generation,
+                id,
+                basis,
+                mode,
+                text,
+                supersedes,
+                ..
+            } => {
+                uuid(&id)?;
+                bounded(&text, 8192)?;
+                if generation != p.generation
+                    || basis > p.incorporated
+                    || !matches!(mode.as_str(), "context_only" | "spoken_offer")
+                {
+                    bail!("Live guidance needs the selected generation and an incorporated basis");
+                }
+                if let Some(old) = p.guidance.iter().find(|g| g.id == id) {
+                    if old.generation != generation
+                        || old.basis != basis
+                        || old.mode != mode
+                        || old.text != text
+                        || old.supersedes != supersedes
+                    {
+                        bail!("Live guidance identity cannot be rewritten");
+                    }
+                    return Ok(json!({"dialogue":p.dialogue,"guidance":old}));
+                }
+                if p.closed || p.guidance.len() >= 64 {
+                    bail!("Live guidance closed or retained bound reached");
+                }
+                if let Some(old) = supersedes.as_ref() {
+                    let previous = p
+                        .guidance
+                        .iter_mut()
+                        .find(|g| &g.id == old)
+                        .context("Superseded guidance missing")?;
+                    if previous.phase != "pending" {
+                        bail!("Only known-unsent guidance can be superseded");
+                    }
+                    previous.phase = "superseded".into();
+                }
+                let guide = Guidance {
+                    id,
+                    generation,
+                    basis,
+                    mode,
+                    text,
+                    supersedes,
+                    phase: "pending".into(),
+                    sender_instance: None,
+                };
+                let result = json!({"dialogue":p.dialogue,"guidance":guide});
+                p.guidance.push(guide);
+                result
+            }
+            LiveContextCommand::GuideStatus { id, .. } => {
+                let guide = p
+                    .guidance
+                    .iter()
+                    .find(|g| g.id == id)
+                    .context("Live guidance missing")?;
+                return Ok(
+                    json!({"dialogue":p.dialogue,"guidance":guide,"meaning":"sent is a socket-write receipt; application and physical hearing are not established"}),
+                );
+            }
+            LiveContextCommand::Guidance { generation, .. } => {
+                if generation != p.generation {
+                    bail!("Live producer generation differs");
+                }
+                let mut result = view(&p);
+                result["guidance"] = if p.closed {
+                    Value::Null
+                } else {
+                    json!(
+                        p.guidance
+                            .iter()
+                            .find(|g| g.phase == "pending" && g.generation == p.generation)
+                    )
+                };
+                // Polling a pending source is a read, not another DB-change
+                // event that would recursively wake the source watcher.
+                return Ok(result);
+            }
+            LiveContextCommand::GuidanceBegin { generation, id, .. } => {
+                if p.closed || generation != p.generation {
+                    bail!("Live guidance producer retired");
+                }
+                let g = p
+                    .guidance
+                    .iter_mut()
+                    .find(|g| g.id == id)
+                    .context("Live guidance missing")?;
+                if g.phase != "pending" || g.generation != generation {
+                    bail!("Live guidance is not known-unsent");
+                }
+                g.phase = "submitting".into();
+                g.sender_instance = Some(self.instance_id.clone());
+                let mut result = view(&p);
+                result["guidance"] = json!(p.guidance.iter().find(|g| g.id == id));
+                result
+            }
+            LiveContextCommand::GuidanceOutcome {
+                generation,
+                id,
+                outcome,
+                ..
+            } => {
+                if generation != p.generation {
+                    bail!("Live producer generation differs");
+                }
+                let next = match outcome.as_str() {
+                    "sent" => "sent",
+                    "unsent" => "pending",
+                    "uncertain" => "uncertain",
+                    _ => bail!("No provider-applied receipt is available"),
+                };
+                let g = p
+                    .guidance
+                    .iter_mut()
+                    .find(|g| g.id == id)
+                    .context("Live guidance missing")?;
+                if g.generation != generation {
+                    bail!("Live guidance belongs to another provider generation");
+                }
+                if g.phase != next {
+                    if !matches!(g.phase.as_str(), "submitting" | "uncertain") {
+                        bail!("Live guidance outcome cannot overwrite a settled receipt");
+                    }
+                    if p.closed && next == "pending" {
+                        g.phase = "retired_unsent".into();
+                    } else {
+                        g.phase = next.into();
+                    }
+                }
+                let mut result = view(&p);
+                result["guidance"] = json!(p.guidance.iter().find(|g| g.id == id));
+                result
             }
             LiveContextCommand::Read { full, .. } => freeze(&mut p, full)?,
             LiveContextCommand::Part {
@@ -1036,5 +1255,133 @@ mod tests {
         let p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
         assert_eq!(p.native_returns[0].phase, "uncertain");
         assert_eq!(p.native_returns.len(), 1);
+    }
+
+    fn guide(f: &Fixture, id: &str, basis: u64) -> Value {
+        json!({"action":"guide","dialogue":f.dialogue,"generation":f.generation,
+            "id":id,"basis":basis,"mode":"context_only","text":"Use the confirmed shared memory; do not invent a saved note."})
+    }
+    fn guide_operation(f: &Fixture, action: &str, id: &str) -> Value {
+        json!({"action":action,"dialogue":f.dialogue,"generation":f.generation,"id":id})
+    }
+    #[test]
+    fn guidance_basis_survives_later_speech_and_receipts_never_claim_application() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Basis.").unwrap();
+        let batch = f.read(false);
+        f.ack(&batch).unwrap();
+        let id = Uuid::now_v7().to_string();
+        let request = guide(&f, &id, 1);
+        let mut wrong_generation = request.clone();
+        wrong_generation["generation"] = json!(Uuid::now_v7().to_string());
+        assert!(f.call(wrong_generation).is_err());
+        assert_eq!(
+            f.call(request.clone()).unwrap()["guidance"]["phase"],
+            "pending"
+        );
+        assert_eq!(
+            f.call(request.clone()).unwrap()["guidance"]["phase"],
+            "pending"
+        );
+        let mut changed = request.clone();
+        changed["text"] = json!("Rewritten same identity");
+        assert!(f.call(changed).is_err());
+        assert!(f.call(guide(&f, &Uuid::now_v7().to_string(), 2)).is_err());
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "Later speech does not itself supersede useful guidance.",
+        )
+        .unwrap();
+        let next = Uuid::now_v7().to_string();
+        let mut replacement = guide(&f, &next, 1);
+        replacement["supersedes"] = json!(id);
+        f.call(replacement).unwrap();
+        assert_eq!(
+            f.call(json!({"action":"guide_status","dialogue":f.dialogue,"id":id}))
+                .unwrap()["guidance"]["phase"],
+            "superseded"
+        );
+        let before = f.store.conn.lock().unwrap().total_changes();
+        let peek = f
+            .call(json!({"action":"guidance","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        assert_eq!(peek["guidance"]["id"], next);
+        assert_eq!(
+            f.store.conn.lock().unwrap().total_changes(),
+            before,
+            "A guidance peek must not wake its own DB watcher"
+        );
+        f.call(guide_operation(&f, "guidance_begin", &next))
+            .unwrap();
+        let mut refused = guide(&f, &Uuid::now_v7().to_string(), 1);
+        refused["supersedes"] = json!(next);
+        assert!(f.call(refused).is_err());
+        let mut outcome = guide_operation(&f, "guidance_outcome", &next);
+        outcome["outcome"] = json!("unsent");
+        assert_eq!(
+            f.call(outcome.clone()).unwrap()["guidance"]["phase"],
+            "pending"
+        );
+        f.call(guide_operation(&f, "guidance_begin", &next))
+            .unwrap();
+        outcome["outcome"] = json!("sent");
+        assert_eq!(
+            f.call(outcome.clone()).unwrap()["guidance"]["phase"],
+            "sent"
+        );
+        assert_eq!(
+            f.call(outcome.clone()).unwrap()["guidance"]["phase"],
+            "sent"
+        );
+        outcome["outcome"] = json!("applied");
+        assert!(f.call(outcome).is_err());
+        let full = f.read(true);
+        assert_eq!(full["range"]["content"]["guidance"][1]["phase"], "sent");
+        assert_eq!(
+            full["range"]["content"]["events"].as_array().unwrap().len(),
+            2
+        );
+        let conn = f.store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM turns", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn guidance_restart_close_and_generation_changes_preserve_uncertainty() {
+        let mut f = Fixture::new();
+        let id = Uuid::now_v7().to_string();
+        f.call(guide(&f, &id, 0)).unwrap();
+        f.call(guide_operation(&f, "guidance_begin", &id)).unwrap();
+        drop(f.store);
+        f.store = Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert_eq!(
+            f.call(json!({"action":"guide_status","dialogue":f.dialogue,"id":id}))
+                .unwrap()["guidance"]["phase"],
+            "uncertain"
+        );
+        assert!(f.call(guide_operation(&f, "guidance_begin", &id)).is_err());
+        let pending = Uuid::now_v7().to_string();
+        f.call(guide(&f, &pending, 0)).unwrap();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        assert_eq!(
+            f.call(json!({"action":"guide_status","dialogue":f.dialogue,"id":pending}))
+                .unwrap()["guidance"]["phase"],
+            "retired_unsent"
+        );
+        assert_eq!(
+            f.call(json!({"action":"guide_status","dialogue":f.dialogue,"id":id}))
+                .unwrap()["guidance"]["phase"],
+            "uncertain"
+        );
+        assert!(f.call(guide(&f, &Uuid::now_v7().to_string(), 0)).is_err());
+        assert_eq!(
+            f.call(json!({"action":"guidance","dialogue":f.dialogue,"generation":f.generation}))
+                .unwrap()["guidance"],
+            Value::Null
+        );
     }
 }

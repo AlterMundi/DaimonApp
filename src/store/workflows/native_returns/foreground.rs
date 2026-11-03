@@ -10,6 +10,7 @@ pub(super) struct ForegroundParent {
     pub binding: String,
     pub epoch: String,
     pub incorporated: u64,
+    pub generation: String,
     pub range: Option<Value>,
     #[serde(default)]
     pub native_returns: Vec<WorkflowReturn>,

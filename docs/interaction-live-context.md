@@ -343,6 +343,52 @@ Stop, goal/accounting reset or Source revival. Publish the owning runbook/contex
 record source/CI/deployment and actual human hearing/fluency acceptance separately.
 
 
+## Source implementation: same-dialogue guidance
+
+Sol's native `live_context` control now accepts `guide` and `guide_status` for
+the current logical dialogue and producer generation. Each guide has a stable
+UUID, an incorporated basis watermark, mode `context_only` or `spoken_offer`,
+and at most8192UTF-8 bytes. Later speech does not invalidate an older useful
+basis. Only pending known-unsent guidance can be superseded. The projection
+retains at most64guides within its existing byte quota; full context reads expose
+their content, attribution and delivery phase alongside language events.
+
+The authenticated owner producer peeks without writing, claims once, then records
+`sent`, known `unsent`, or `uncertain`. Restart converts an in-flight claim to
+uncertain; closing retires pending guides. Neither path replays an unknown write.
+Guidance creates no native human input, work admission or publication grant.
+
+One coalesced task on the existing event-driven return watcher handles guidance
+and canonical-return notices. Owner control reads never block the provider audio
+receive loop. Generation and captured-speech state must be idle; spoken offers
+also wait for queued client playback. The final send shares the acoustic lock
+and provider socket lock, with a fresh actor check. Known busy state waits before
+claiming, avoiding claim/defer writes that wake their own watcher repeatedly.
+
+The provider receives explicitly attributed internal Sol context through
+`clientContent`, without replacing system instructions or impersonating human
+speech. Context-only uses `turnComplete:false`; an intentional spoken offer uses
+`true`. The [official Live protocol](https://aistudio.google.com/api-reference/live)
+says client content interrupts active generation and mixing it with realtime
+input has no ordering guarantee. Local serialization therefore does not prove
+provider application or predict future speech. A socket send receipt never means
+applied, spoken or heard; it must not prompt reauthoring under another ID.
+
+Qualification includes240native Store tests,35provider transport tests,5producer
+tests,45mounted voice tests and a separate held-control regression proving audio
+arrives while the owner read remains blocked. The joined mounted journey crosses
+both real SQLite stores, the actual owner/control/native controller and returns
+one Sol guide to the same Live socket. Audio, detector and Core reasoning remain
+synthetic; actual Core/provider continuity and device acceptance are pending.
+The earlier CI joined fixture failed fetching CSRF through the unrelated full
+dashboard state endpoint; it now uses the existing shared-browser authentication
+fixture and access endpoint, with an exact matching WebSocket host. This is a
+fixture correction, not an audio improvement.
+
+Receiving558 remains selected. Semantic provider rollover, repeat compaction,
+completed metadata retirement and the complete receiving journey remain pending;
+PR560 stays draft.
+
 ## Astra high review — accepted decisions
 
 The human-requested Astra high agent reviewed this complete plan and actual

@@ -78,6 +78,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
         context_producer=None
+        control_task=None;control_dirty=False
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
@@ -123,7 +124,27 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         def launch(operation):
             task=asyncio.create_task(operation,name='native-tool');tool_tasks.add(task)
             return task
-        async def notice_if_idle():
+        def guidance_floor():
+            return (acoustic is not None and not stopping and not acoustic.closed
+                and acoustic.local is None and acoustic.provider is None and not acoustic.spans
+                and not stream.input_active and not stream.response_pending)
+        async def guide_if_idle():
+            if context_producer is None or not guidance_floor():return
+            async def ready(frame):
+                if not guidance_floor():return False
+                if frame['mode']=='spoken_offer' and await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return False
+                return guidance_floor()
+            async def deliver(frame):
+                await actor()
+                if not await ready(frame):return False
+                # The control claim happens outside this floor lock. Only the
+                # final send is serialized with captured PCM/provider offsets.
+                async with acoustic.lock:
+                    if not guidance_floor():return False
+                    return await asyncio.to_thread(stream.guide,frame)
+            await context_producer.offer_guidance(deliver,ready)
+        async def control_if_idle():
+            await guide_if_idle()
             # Existing pending tools already stream returns. A new session or
             # cancelled watch needs one event-driven, attributed control notice.
             def available():
@@ -137,6 +158,20 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             generation=bridge.offer_generation
             if await asyncio.to_thread(stream.notify_integrator_update):
                 bridge.noticed_generation=generation
+        async def notice_if_idle():
+            # Native control can wait on its owner socket. It must never hold
+            # the provider receive loop or prevent an arriving speech boundary.
+            # Coalesce changes while preserving a notice arriving during send.
+            nonlocal control_task,control_dirty
+            if stopping:return
+            control_dirty=True
+            if control_task is not None and not control_task.done():return
+            async def controls():
+                nonlocal control_dirty
+                while control_dirty and not stopping:
+                    control_dirty=False
+                    await control_if_idle()
+            control_task=launch(controls())
 
         async def outputs():
             nonlocal utterance,output_text,output_bytes,output_hash
@@ -208,6 +243,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             async for changed in changes([Path(provider.receiver['db_path'])]):
                 await actor()
                 if not changed:continue
+                await notice_if_idle()
                 # A source can acquire currentness/publication metadata without
                 # a new row ID. Re-read this session's bounded window instead
                 # of advancing permanently past an as-yet-unoffered source.
@@ -272,7 +308,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 capabilities=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                 if (capabilities.get('binding')!=meta['binding'] or capabilities.get('foreground_retention')!='v1'
                         or capabilities.get('foreground_completed_reader') is not True
-                        or capabilities.get('foreground_context')!='v1'):
+                        or capabilities.get('foreground_context')!='v1'
+                        or capabilities.get('foreground_guidance')!='v1'):
                     raise ForegroundUnavailable('Selected listener does not support native foreground originals')
                 await asyncio.to_thread(app.state.native_history.capacity)
                 initial=await asyncio.to_thread(provider.presentation_list,0,0,'before')

@@ -29,6 +29,13 @@ class Journal:
         else:p=self.producers[ident]
         assert p['generation']==body['generation']
         receipts=[]
+        guide=p.get('guidance')
+        if body['action']=='guidance':
+            return {k:p[k] for k in ('dialogue','generation','closed')}|{'guidance':guide if guide and guide['phase']=='pending' else None}
+        if body['action']=='guidance_begin':
+            assert guide['phase']=='pending' and guide['id']==body['id'];guide['phase']='submitting'
+        elif body['action']=='guidance_outcome':
+            assert guide['id']==body['id'];guide['phase']='pending' if body['outcome']=='unsent' else body['outcome']
         if body['action']=='sync':
             for source in body['assistant']:
                 old=p['sources'].get(source['source'])
@@ -42,7 +49,7 @@ class Journal:
                 self.lose_next=False
                 raise ProviderUnavailable('Synthetic lost receipt AFTER native retention')
         elif body['action']=='close':p['closed']=True
-        return {k:p[k] for k in ('dialogue','generation','closed')}|{'assistant_receipts':receipts}
+        return {k:p[k] for k in ('dialogue','generation','closed')}|{'assistant_receipts':receipts,'guidance':guide}
 
 
 class Context(unittest.IsolatedAsyncioTestCase):
@@ -139,6 +146,25 @@ class Context(unittest.IsolatedAsyncioTestCase):
         with patch.object(NativeContext,'max_producers',1):
             with self.assertRaises(ValueError):self.history.context_register(100,str(uuid.uuid4()),self.binding)
         self.assertEqual(len(self.provider.fresh),9)
+        await p.close()
+
+    async def test_guidance_known_unsent_can_wait_but_unknown_send_never_replays(self):
+        p=self.producer();await p.open()
+        def guide():
+            value={'id':str(uuid.uuid4()),'generation':p.record['generation'],'basis':0,
+                'mode':'context_only','text':'Confirmed internal fact.','phase':'pending'}
+            self.provider.producers[self.dialogue]['guidance']=value;return value
+        value=guide();calls=[]
+        async def busy(frame):return False
+        self.assertFalse(await p.offer_guidance(busy));self.assertEqual(value['phase'],'pending')
+        async def send(frame):calls.append(frame);return True
+        self.assertTrue(await p.offer_guidance(send));self.assertEqual(value['phase'],'sent')
+        self.assertFalse(await p.offer_guidance(send));self.assertEqual(len(calls),1)
+        unknown=guide()
+        async def lost(frame):calls.append(frame);raise OSError('Unknown provider socket write')
+        with self.assertRaises(OSError):await p.offer_guidance(lost)
+        self.assertEqual(unknown['phase'],'uncertain')
+        self.assertFalse(await p.offer_guidance(send));self.assertEqual(len(calls),2)
         await p.close()
 
 

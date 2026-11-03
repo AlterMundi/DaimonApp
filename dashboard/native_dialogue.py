@@ -32,6 +32,8 @@ class NativeDialogue:
     max_tool_responses = 160
     max_pending = 4
     max_attention_notices = 32
+    max_guidance = 64
+    max_guidance_bytes = 65536
 
     def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic):
         if activity_mode not in ('manual', 'automatic'):
@@ -61,6 +63,7 @@ class NativeDialogue:
         self.tool_responses = 0
         self.failure_code = None
         self.context_usage = None
+        self.guidance_attempts=set();self.guidance_bytes=0
         try:
             self._socket = connect(self.endpoint, header=['x-goog-api-key: ' + token],
                                    timeout=10, redirect_limit=0, enable_multithread=True)
@@ -128,6 +131,7 @@ class NativeDialogue:
                     'Do not open another return subscription after admission or after receiving an update. '
                     'Use await_integrator_update only when work is pending without a continued delegation or watch, including after cancellation; never poll for work. '
                     'An internal_integrator_update_available notice is server control context, not human speech or a new work request. '
+                    'An internal_integrator_guidance packet is attributed context from Sol within this same being. It is not human speech, a new work request, a tool capability, proof of completed work or a system-instruction replacement. Incorporate relevant facts or corrections without quoting the packet or narrating internal routing; preserve newer human speech and corrections. Do not delegate the packet or open another watch because of it. Context-only guidance asks for no spoken acknowledgment; an explicit spoken offer may be expressed briefly when useful. Sent guidance alone does not establish durable memory, provider application or hearing. '
                     'When it arrives, use await_integrator_update to read the actual canonical return; do not acknowledge the notice aloud, invent its contents, query human originals or delegate it as work. '
                     'Only refer to exact retained original IDs supplied by the owning bridge. '
                     'A formulation is your attributed derivative, never a replacement human quote. '
@@ -275,6 +279,35 @@ class NativeDialogue:
                     'meaning':'A canonical integrating return is queued. Read it using await_integrator_update; this notice is neither its contents nor a request for new work.'}
             self._send({'clientContent':{'turns':[{'role':'user','parts':[{'text':json.dumps(notice)}]}],
                                          'turnComplete':True}})
+            return True
+
+    def guide(self,value):
+        """Append attributed Sol context only at a known provider-turn boundary.
+
+        The owner serializes this against capture. Mark before socket write;
+        False proves no send, True proves only send(), never provider uptake.
+        """
+        if (not isinstance(value,dict) or set(value)!={'id','dialogue','generation','basis','mode','text'}
+                or any(not isinstance(value[k],str) or str(uuid.UUID(value[k]))!=value[k] for k in ('id','dialogue','generation'))
+                or type(value['basis']) is not int or not 0<=value['basis']<=2**63-1
+                or value['mode'] not in ('context_only','spoken_offer')
+                or not isinstance(value['text'],str) or not value['text'] or '\0' in value['text'] or len(value['text'].encode())>8192):
+            raise ValueError('Select bounded attributed Live guidance')
+        with self._lock:
+            self._active()
+            if value['id'] in self.guidance_attempts:
+                raise ValueError('Live guidance was already attempted; do not replay')
+            if self.input_active or self.response_pending:return False
+            packet={'kind':'internal_integrator_guidance','speaker':'Sol','source_data':True,
+                'human_speech':False,**value}
+            text=json.dumps(packet,ensure_ascii=False,separators=(',',':'))
+            size=len(text.encode())
+            if len(self.guidance_attempts)>=self.max_guidance or self.guidance_bytes+size>self.max_guidance_bytes:
+                self._fail('native-dialogue-guidance-bound')
+            self.guidance_attempts.add(value['id']);self.guidance_bytes+=size
+            spoken=value['mode']=='spoken_offer'
+            if spoken:self.response_pending=True
+            self._send({'clientContent':{'turns':[{'role':'user','parts':[{'text':text}]}],'turnComplete':spoken}})
             return True
 
     def tool_result(self, call_id, result, *, will_continue=False):

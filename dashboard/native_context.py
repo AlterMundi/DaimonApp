@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import re
+from .provider import ProviderUnavailable
 
 
 class NativeContext:
@@ -18,6 +19,7 @@ class NativeContext:
         self.dialogue,self.binding,self.owner=dialogue,binding,owner
         self.dirty=asyncio.Event();self.record=None
         self.runner=None;self.stopping=False;self.failed=False;self.status='not_started'
+        self.guidance_lock=asyncio.Lock();self.guidance_attempts=set()
 
     async def open(self):
         # Called only for an authenticated explicit avatar open, after the
@@ -85,6 +87,38 @@ class NativeContext:
         result=await self._call(record,'close')
         if result.get('closed') is not True:raise ValueError('Live producer close unconfirmed')
         await asyncio.to_thread(self.history.context_phase,record,'closed')
+
+    async def offer_guidance(self,deliver,ready=None):
+        if self.record is None or self.stopping or self.failed or self.guidance_lock.locked():return False
+        async with self.guidance_lock:
+            try:result=await self._call(self.record,'guidance')
+            except ProviderUnavailable:return False
+            guide=result.get('guidance')
+            if guide is None:return False
+            if guide.get('generation')!=self.record['generation'] or guide.get('phase')!='pending':
+                raise ValueError('Live guidance generation or pending state changed')
+            ident=guide.get('id')
+            if ident in self.guidance_attempts:return False
+            if len(self.guidance_attempts)>=64:raise ValueError('Live guidance attempt bound reached')
+            frame={k:guide[k] for k in ('id','generation','basis','mode','text')}
+            frame['dialogue']=self.dialogue
+            if ready is not None and not await ready(frame):return False
+            self.guidance_attempts.add(ident)
+            try:claim=await self._call(self.record,'guidance_begin',id=ident)
+            except ProviderUnavailable:return False
+            if claim.get('guidance',{}).get('phase')!='submitting':
+                raise ValueError('Live guidance claim was not confirmed')
+            try:
+                sent=await deliver(frame)
+                if type(sent) is not bool:raise ValueError('Live guidance send outcome unavailable')
+            except BaseException:
+                try:await asyncio.shield(self._call(self.record,'guidance_outcome',id=ident,outcome='uncertain'))
+                except (ProviderUnavailable,ValueError):pass
+                raise
+            if not sent:self.guidance_attempts.discard(ident)
+            try:await self._call(self.record,'guidance_outcome',id=ident,outcome='sent' if sent else 'unsent')
+            except ProviderUnavailable:pass
+            return sent
 
     async def close(self):
         if self.record is None:return

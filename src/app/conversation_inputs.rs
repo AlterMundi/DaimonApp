@@ -137,6 +137,9 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 | crate::store::LiveContextCommand::Append { .. }
                 | crate::store::LiveContextCommand::Close { .. }
                 | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::Guidance { .. }
+                | crate::store::LiveContextCommand::GuidanceBegin { .. }
+                | crate::store::LiveContextCommand::GuidanceOutcome { .. }
         ) {
             bail!("Semantic incorporation belongs to the native integrator");
         }
@@ -144,14 +147,28 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             crate::store::LiveContextCommand::Open { dialogue, .. }
             | crate::store::LiveContextCommand::Append { dialogue, .. }
             | crate::store::LiveContextCommand::Close { dialogue, .. }
-            | crate::store::LiveContextCommand::Sync { dialogue, .. } => dialogue.clone(),
+            | crate::store::LiveContextCommand::Sync { dialogue, .. }
+            | crate::store::LiveContextCommand::Guidance { dialogue, .. }
+            | crate::store::LiveContextCommand::GuidanceBegin { dialogue, .. }
+            | crate::store::LiveContextCommand::GuidanceOutcome { dialogue, .. } => {
+                dialogue.clone()
+            }
             _ => unreachable!(),
         };
+        let publishes_context = matches!(
+            selected,
+            crate::store::LiveContextCommand::Open { .. }
+                | crate::store::LiveContextCommand::Append { .. }
+                | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::Close { .. }
+        );
         let result = app
             .shared
             .store
             .live_context(human, cfg.entry(), selected)?;
-        super::workflows::foreground(app, human, &dialogue).await?;
+        if publishes_context {
+            super::workflows::foreground(app, human, &dialogue).await?;
+        }
         return Ok(result);
     }
     if let Some(body) = args.strip_prefix("foreground retain ") {
@@ -221,6 +238,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         result["voice_available"] = json!(app.shared.config.voice.is_some());
         result["foreground_retention"] = json!("v1");
         result["foreground_context"] = json!("v1");
+        result["foreground_guidance"] = json!("v1");
         result["foreground_completed_reader"] = json!(
             app.shared
                 .config

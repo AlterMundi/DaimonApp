@@ -12,6 +12,7 @@ from pathlib import Path
 import queue
 import sys
 import struct
+import time
 import uuid
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ from conversation_routing_io import CanonicalRouting
 class VoiceContext(Returning):
     def __init__(self,binary):
         self.context_roles=set();self.context_outputs={}
+        self.guide_id=None
         super().__init__(binary)
 
     def handle_extra_rpc(self,message,send):
@@ -49,6 +51,20 @@ class VoiceContext(Returning):
             return True
         if method is None and str(ident).startswith('route-voice-context-'):
             assert message['result']['success'],message
+            output=self.context_outputs[ident]
+            if self.context_roles=={'human','assistant'} and output['evidence']['through']>=2 and self.guide_id is None:
+                self.guide_id=str(uuid.uuid4())
+                send({'id':'route-voice-guide','method':'item/tool/call','params':{
+                    'threadId':self.web_thread,'turnId':self.web_turn,'callId':'route-voice-guide',
+                    'tool':'interaction_controller','arguments':{'operation':'live_context','arguments':{
+                        'action':'guide','dialogue':output['dialogue'],'generation':output['generation'],
+                        'basis':output['evidence']['through'],'id':self.guide_id,'mode':'context_only',
+                        'text':'Use the confirmed shared memory without claiming an unconfirmed saved note.'}}}})
+            return True
+        if method is None and ident=='route-voice-guide':
+            assert message['result']['success'],message
+            receipt=json.loads(message['result']['contentItems'][0]['text'])
+            assert receipt['guidance']['phase']=='pending'
             if self.context_roles=={'human','assistant'}:
                 self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
                     'id':'private-context-bookkeeping','type':'agentMessage','phase':'final_answer',
@@ -75,7 +91,8 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         j.start();j.wait_control_socket(j.socket);j.messages.clear()
         journal=j.row('SELECT count(*) FROM incoming_updates')
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),
-            'origin':'https://example.test','bot_id':123,'streaming_transcription':{
+            'origin':'https://example.test','bot_id':123,
+            'shared_auth':{'enabled':True,'home_origin':'https://example.test'},'streaming_transcription':{
                 'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,
                 'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent',
                 'credential_file':str(j.root/'synthetic-key'),'cache_root':str(j.root/'prepared'),
@@ -84,21 +101,29 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         dialogue=str(uuid.uuid4());closed=queue.Queue()
         def log(message,*args,**kwargs):
             if message=='native_voice_closed %s':closed.put(json.loads(args[0]))
-        with patch('dashboard.native_voice.NativeDialogue',Stream),patch('dashboard.native_voice.Detector',Detector),patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
+        identity={'contract':'dm.home-session/v1','origin':config['origin'],
+            'expires':int(time.time())+3600,'actor':{'kind':'human','ref':'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity),patch('dashboard.native_voice.NativeDialogue',Stream),patch('dashboard.native_voice.Detector',Detector),patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
             with TestClient(app,base_url=config['origin']) as client:
-                client.post('/api/session',json={'init_data':'100'},headers={'origin':config['origin']})
-                client.cookies.set('telecodex_dashboard',client.cookies.get('telecodex_dashboard'),path='/')
-                csrf=client.get('/api/state').json()['csrf']
+                client.cookies.set('__Host-home','h'*43,path='/')
+                access=client.get('/api/interaction/access')
+                assert access.status_code==200,access.text
+                csrf=access.json()['csrf']
                 binding=provider.presentation_list(0,0)['binding']
-                with client.websocket_connect('/api/interaction/voice/native',headers={'origin':config['origin']}) as ws:
+                with client.websocket_connect('wss://example.test/api/interaction/voice/native',headers={'origin':config['origin']}) as ws:
                     ws.send_json({'id':dialogue,'binding':binding,'csrf':csrf})
-                    assert ws.receive_json()['type']=='ready'
+                    ready=ws.receive_json()
+                    assert ready['type']=='ready',ready
                     # The actual decoder rejects inaudible amplitude-one PCM;
                     # use a bounded synthetic tone, never a hardware microphone.
                     tone=b''.join(struct.pack('<h',int(5000*math.sin(2*math.pi*440*i/16000))) for i in range(1600))
                     ws.send_bytes(tone);ws.send_bytes(b'\0\0'*1600)
                     j.wait(lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(2,)])
                     assert j.context_roles=={'human','assistant'}
+                    j.wait(lambda:j.row("SELECT json_extract(doc,'$.guidance[0].phase') FROM live_context WHERE dialogue=?",(dialogue,))==[('sent',)])
+                    stream=Stream.opened[0]
+                    assert len(stream.guidance)==1 and stream.guidance[0]['id']==j.guide_id
+                    assert stream.guidance[0]['dialogue']==dialogue and stream.guidance[0]['mode']=='context_only'
                     ws.send_json({'type':'close'})
                     summary=closed.get(timeout=5)
                     assert summary['context_producer']=='closed',summary
@@ -116,7 +141,7 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         with app.state.native_history.database() as db:
             assert db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='pending'").fetchone()[0]==0
             assert db.execute('SELECT count(*) FROM foreground_utterances').fetchone()[0]==1
-        print('PASS mounted voice + completed-only original + assistant transactional outbox → actual owner/native-controller/SQLite context incorporation; clean producer close, no work/ASR/audio replay or private bookkeeping publication; synthetic audio/detector/Core, zero models')
+        print('PASS mounted voice + completed-only original + assistant outbox → actual owner/native-controller context incorporation → source-bound Sol guidance to the same Live; sent is not applied/heard, clean close, no work/ASR/audio replay or private bookkeeping publication; synthetic audio/detector/Core, zero models')
     finally:j.close()
 
 

@@ -33,6 +33,7 @@ class Stream:
         self.context=kwargs.get('context')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
         self.start_sent=threading.Event();self.tool_results=queue.Queue();self.notices=[];self.notice_seen=threading.Event();self.input_active=False;self.response_pending=False;self.opened.append(self)
+        self.guidance=[];self.guidance_seen=threading.Event()
     def receive(self):
         try:return self.queue.get(timeout=.05)
         except queue.Empty:return []
@@ -50,6 +51,11 @@ class Stream:
     def notify_integrator_update(self):
         if self.input_active or self.response_pending:return False
         self.notices.append('internal_integrator_update_available');self.notice_seen.set();return True
+    def guide(self,value):
+        if self.input_active or self.response_pending:return False
+        self.guidance.append(value);self.guidance_seen.set()
+        if value['mode']=='spoken_offer':self.response_pending=True
+        return True
 
 
 class Detector:
@@ -77,9 +83,9 @@ class Owner(Receiver):
         self.return_kind='integrator_answer';self.native_returns=[]
         self.return_current=True;self.return_seen=threading.Event()
         self.input_id=Provider.input_id
-        self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event()
+        self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event();self.guidance_done=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1'}
+        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_guidance':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -128,6 +134,14 @@ class Owner(Receiver):
         else:context=self.contexts[dialogue]
         assert context['generation']==generation
         receipts=[]
+        guide=context.get('guidance')
+        if body['action']=='guidance':
+            return {k:context[k] for k in ('dialogue','generation','closed')}|{'guidance':guide if guide and guide['phase']=='pending' else None}
+        if body['action']=='guidance_begin':
+            assert guide['id']==body['id'] and guide['phase']=='pending';guide['phase']='submitting'
+        elif body['action']=='guidance_outcome':
+            assert guide['id']==body['id'];guide['phase']='pending' if body['outcome']=='unsent' else body['outcome']
+            if body['outcome']=='sent':self.guidance_done.set()
         if body['action']=='sync':
             for ident,value in self.inputs.items():
                 if value.get('foreground_dialogue')==dialogue and value.get('text'):
@@ -141,13 +155,73 @@ class Owner(Receiver):
             if any(s['role']=='human' for s in context['sources'].values()) and any(s['role']=='assistant' for s in context['sources'].values()):
                 self.context_retained.set()
         elif body['action']=='close':context['closed']=True;self.context_closed.set()
-        return {k:context[k] for k in ('dialogue','generation','closed')}|{'assistant_receipts':receipts}
+        return {k:context[k] for k in ('dialogue','generation','closed')}|{'assistant_receipts':receipts,'guidance':guide}
 
     def assert_context_binding(self,binding):
         assert binding==self.binding
 
 
 class Mounted(unittest.TestCase):
+    def test_slow_guidance_control_does_not_block_provider_audio(self):
+        held=threading.Event();release=threading.Event();finished=threading.Event()
+        original=self.owner.conversation_live_context
+        def delayed(body):
+            if body['action']=='guidance':
+                held.set()
+                if not release.wait(5):raise TimeoutError('Synthetic held control')
+                finished.set()
+            return original(body)
+        with patch.object(self.owner,'conversation_live_context',side_effect=delayed),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            try:
+                (self.root/'native.sqlite3').write_bytes(b'control notification')
+                self.assertTrue(held.wait(2))
+                Stream.opened[0].queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
+                while ws.receive_json()['type']!='audio':pass
+                self.assertFalse(finished.is_set(),'Provider audio must arrive while the owner control read is still held')
+            finally:release.set()
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def queue_guidance(self,mode='context_only'):
+        context=self.owner.contexts[self.ident]
+        value={'id':str(uuid.uuid4()),'generation':context['generation'],'basis':0,
+            'mode':mode,'text':'Use the confirmed memory and keep current human corrections.','phase':'pending'}
+        context['guidance']=value
+        (self.root/'native.sqlite3').write_bytes(b'new source-bound guidance')
+        return value
+
+    def test_guidance_targets_same_live_and_waits_for_generation(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0];stream.response_pending=True
+            guide=self.queue_guidance()
+            self.assertFalse(stream.guidance_seen.wait(.05))
+            self.assertEqual(guide['phase'],'pending')
+            stream.response_pending=False;stream.queue.put([{'type':'turn_complete'}])
+            self.assertTrue(self.owner.guidance_done.wait(2))
+            self.assertEqual(len(stream.guidance),1);self.assertEqual(stream.guidance[0]['dialogue'],self.ident)
+            self.assertEqual(stream.guidance[0]['id'],guide['id']);self.assertEqual(guide['phase'],'sent')
+            self.assertEqual(self.owner.inputs,{});self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_spoken_guidance_waits_for_playback_without_claim_write_loop(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                {'type':'output_transcript','text':'Earlier serialized reply.'},{'type':'turn_complete'}])
+            while True:
+                value=ws.receive_json()
+                if value['type']=='assistant_utterance' and value['utterance']['closed']:
+                    utterance=value['utterance'];break
+            guide=self.queue_guidance('spoken_offer')
+            self.assertFalse(stream.guidance_seen.wait(.1))
+            self.assertEqual(guide['phase'],'pending')
+            self.assertFalse(any(c['action']=='guidance_begin' for c in self.owner.context_calls),'Known pending playback must not cause a claim/defer DB-write wakeup loop')
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertTrue(self.owner.guidance_done.wait(2));self.assertEqual(len(stream.guidance),1)
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
     def test_context_incompatible_listener_is_refused_before_provider_opening(self):
         presentation=self.owner.presentation
         def without_context(command):

@@ -314,7 +314,7 @@ pub(super) fn tool_call(
                 capabilities["operations"]["goal_inspect"]=json!({"arguments":{"selector":"one unambiguous enrolled label or stable tID"},"description":"Read selected goal definition/revision, native activity, receiver busy state and pending counts independently. Unknown capability is not no-goal or idle; blocked cause remains unknown unless other evidence establishes it. This operation does not resume, clear, interrupt, attach or launch work."});
                 super::goal_controls::capabilities(&mut capabilities);
                 super::workflows::capabilities(&mut capabilities,true);
-                capabilities["operations"]["live_context"]=json!({"arguments":{"action":"read, part, incorporate or checkpoint","dialogue":"selected Live dialogue UUID"},"description":"Read attributed both-role Live context. read takes full:boolean and freezes its high watermark. Complete inline content is supplied; otherwise use part with revision and contiguous character offset until more=false. incorporate takes that exact revision, claims incorporation, and retires dispatch without deleting post-checkpoint text. checkpoint takes current checkpoint revision, incorporated through watermark and bounded compact text. This is internal context bookkeeping, never human/work admission, publication or proof of comprehension. Producer operations are unavailable here."});
+                capabilities["operations"]["live_context"]=json!({"arguments":{"action":"read, part, incorporate, checkpoint, guide or guide_status","dialogue":"selected Live dialogue UUID"},"description":"Read attributed both-role Live context. read takes full:boolean and freezes its high watermark. Complete inline content is supplied; otherwise use part with revision and contiguous character offset until more=false. incorporate takes that exact revision, claims incorporation, and retires dispatch without deleting post-checkpoint text. checkpoint takes current checkpoint revision, incorporated through watermark and bounded compact text. This is internal context bookkeeping, never human/work admission, publication or proof of comprehension. guide takes generation, a stable UUID id, an incorporated basis watermark, mode context_only or spoken_offer, bounded text and optional pending supersedes id. Later speech does not itself invalidate the basis. Use only relevant corrections/facts/offers, not routine acknowledgment. guide_status takes id and exposes actual pending/submitting/sent/uncertain outcomes; sent is not applied or heard. Never reauthor a sent/uncertain guide just to obtain an application/hearing receipt; only pending known-unsent guidance can be superseded. Producer operations are unavailable here."});
                 super::interactions::task_capabilities(&mut capabilities);
                 capabilities["operations"]["companion_hint"]=super::presentation::companion_capability(&app)?;
                 super::matrix::capabilities(shared,&mut capabilities)?;
@@ -337,7 +337,9 @@ pub(super) fn tool_call(
                 if !matches!(selected,crate::store::LiveContextCommand::Read {..}
                     |crate::store::LiveContextCommand::Part {..}
                     |crate::store::LiveContextCommand::Incorporate {..}
-                    |crate::store::LiveContextCommand::Checkpoint {..})
+                    |crate::store::LiveContextCommand::Checkpoint {..}
+                    |crate::store::LiveContextCommand::Guide {..}
+                    |crate::store::LiveContextCommand::GuideStatus {..})
                 {bail!("Native Live context cannot impersonate the voice producer");}
                 let incorporated=match &selected {crate::store::LiveContextCommand::Incorporate {dialogue,..}=>Some(dialogue.clone()),_=>None};
                 let result=shared.store.live_context(human,key,selected)?;
