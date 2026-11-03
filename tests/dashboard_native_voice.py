@@ -16,7 +16,10 @@ import time
 import unittest
 import uuid
 from unittest.mock import patch
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+# When imported as a synthetic peer, keep the caller's selected application
+# runtime. Replacing its namespace path could qualify checkout scripts instead.
+if 'dashboard' not in sys.modules:
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect

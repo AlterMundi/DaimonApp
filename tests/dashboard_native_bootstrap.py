@@ -129,6 +129,12 @@ try:
    'streaming_transcription':{'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,'native_activity_mode':args.activity_mode,'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent','credential_file':str(root/'synthetic-key'),'cache_root':str(root/'prepared'),'turn_detection':{'enabled':True,'continuous':True,'command':['/synthetic/python','capture-turn']}}}
   if args.session_seconds>300:config['streaming_transcription']['native_session_seconds']=args.session_seconds
   with patch('dashboard.native_voice.install',side_effect=counted_install):app=create_app(config,owner,lambda raw,bot:int(raw))
+  state['runtime_imports']={}
+  for name,module in sorted(sys.modules.items()):
+   if name.startswith(('dashboard.','scripts.')) and getattr(module,'__file__',None):
+    path=Path(module.__file__).resolve()
+    assert path.is_relative_to(runtime),f'Qualifier loaded a different application runtime: {name}'
+    state['runtime_imports'][name]={'path':str(path.relative_to(runtime)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
   def identity(home,token):
    assert home==origin and token=='s'*43;state['identity_checks']+=1;name=identity_path.get();state['identity_paths'][name]=state['identity_paths'].get(name,0)+1;time.sleep(identity_delay)
    return {'contract':'dm.home-session/v1','origin':origin,'actor':{'kind':'human','ref':'human:telegram:100','name':'Synthetic operator'},'expires':int(time.time())+300}
