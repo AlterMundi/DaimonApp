@@ -3,11 +3,11 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const {execFileSync}=require('node:child_process');
 const uuid='10000000-0000-4000-8000-000000000001',binding='a'.repeat(64);
 const pcm=(...samples)=>{const bytes=new ArrayBuffer(samples.length*2),view=new DataView(bytes);samples.forEach((v,i)=>view.setInt16(i*2,v,true));return bytes;};
-function worklet(rate){
+function worklet(rate,seconds){
  let Processor;const messages=[];
  class Base{constructor(){this.port={postMessage:value=>messages.push(value)};}}
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-pcm.js','utf8'),{AudioWorkletProcessor:Base,sampleRate:rate,registerProcessor:(name,type)=>{assert.equal(name,'interaction-pcm');Processor=type;},ArrayBuffer,DataView});
- return {processor:new Processor(),messages};
+ return {processor:new Processor(seconds===undefined?undefined:{processorOptions:{sessionSeconds:seconds}}),messages};
 }
 function boot(fail){
  const contexts=[],sockets=[],worklets=[],timers=[];
@@ -20,7 +20,7 @@ function boot(fail){
   async close(){this.closed=true;}async resume(){if(fail==='resume')throw Error('Preview resume unavailable');this.resumed=true;}
  }
  class Worklet extends Node{
-  constructor(context,name){super();assert.equal(name,'interaction-pcm');this.controls=[];this.port={postMessage:value=>this.controls.push(value)};worklets.push(this);}
+  constructor(context,name,options){super();this.options=options;assert.equal(name,'interaction-pcm');this.controls=[];this.port={postMessage:value=>this.controls.push(value)};worklets.push(this);}
   emit(value){this.port.onmessage({data:value});}
  }
  class Socket{
@@ -64,6 +64,11 @@ function boot(fail){
  assert.equal(capped.processor.process([[Float32Array.of(.1,.2)]]),false);
  assert.equal(capped.processor.total,300*16000);assert.equal(capped.messages.at(-1).captureError,'session_limit');
  assert.equal(capped.processor.process([[new Float32Array(128)]]),false,'The audio thread enforces the cap without a main-thread timer');
+ const extended=worklet(16000,600);extended.processor.total=600*16000-1;
+ assert.equal(extended.processor.process([[Float32Array.of(.1,.2)]]),false);
+ assert.equal(extended.processor.total,600*16000);
+ assert.equal(extended.messages.at(-1).captureError,'session_limit');
+ for(const invalid of [true,299,1801,300.5])assert.throws(()=>worklet(16000,invalid),/Invalid capture duration/);
  const clamp=worklet(16000);clamp.processor.process([[Float32Array.of(-2,-1,0,1,2)]]);clamp.processor.port.onmessage({data:'finish'});assert.deepEqual([...new Int16Array(clamp.messages[0].pcm)],[-32767,-32767,0,32767,32767]);
  const canonical=boot(),samples=pcm(0,-32767,15000,32767);
  const wav=Buffer.from(await canonical.window.StreamingVoice.wav([samples]).arrayBuffer());
@@ -130,6 +135,9 @@ function boot(fail){
  // Two independent ASR finalizations share one still-running PCM graph.
  // A permanent coordinator tap sees the between-turn samples too; it owns
  // bounded pre-speech retention rather than either individual utterance.
+ const longer=boot(),longGraph=await longer.window.StreamingVoice.openCapture({kind:'synthetic-media'},{sessionSeconds:600});
+ assert.equal(longer.worklets[0].options.processorOptions.sessionSeconds,600);
+ longGraph.start();assert(longer.timers.some(t=>t.ms===600000&&!t.cleared));longGraph.close();
  const shared=boot(),source=await shared.window.StreamingVoice.openCapture({kind:'synthetic-media'}),observed=[];
  const untap=source.subscribe(value=>observed.push(value));
  const first=await shared.create(undefined,{captureSource:source}),secondId='20000000-0000-4000-8000-000000000002';

@@ -20,7 +20,7 @@ function boot(android=false,pcmReady=true){
   }
   const track={readyState:'live',addEventListener(){},stop(){media.stopped=true;this.readyState='ended';}},media={stopped:false,getTracks(){return [track];}};
   const window={dispatchEvent(){return true;},crypto,AudioContext:Context,navigator:{mediaDevices:{getUserMedia:async()=>{permissionCalls++;return media;}}},StreamingVoice:{supported:()=>true,
-    wav:parts=>new Blob(parts,{type:'audio/wav'}),openCapture:async()=>{const source={subscribe(fn){listener=fn;return ()=>listener=undefined;},observe(){},start(){},close(){this.closed=true;},emit(value){listener?.(value);}};sources.push(source);return source;}}};
+    wav:parts=>new Blob(parts,{type:'audio/wav'}),openCapture:async(_media,options)=>{const source={options,subscribe(fn){listener=fn;return ()=>listener=undefined;},observe(){},start(){},close(){this.closed=true;},emit(value){listener?.(value);}};sources.push(source);return source;}}};
   const nativeCommands=[];
   if(android)window.DaimonAudio={postMessage(raw){const value=JSON.parse(raw);nativeCommands.push(value);if(value.command==='pcm_begin'&&pcmReady)queueMicrotask(()=>window.DaimonAudio.onmessage({data:JSON.stringify({id:value.id,type:'pcm_ready'})}));}};
   const context=vm.createContext({window,navigator:window.navigator,document:{hidden:false},crypto,WebSocket:Socket,URL,Blob,ArrayBuffer,Float32Array,Uint8Array,atob,btoa,Event,EventTarget,DOMException,
@@ -35,8 +35,37 @@ function boot(android=false,pcmReady=true){
   const engine=window.NativeConversation.create(hooks);
   return {engine,sockets,contexts,sources,retained,released,reviews,states,handoffs,timers,timings,media,nativeCommands,native:window.NativeSpeechAudio,nativeEvent(value){window.DaimonAudio.onmessage({data:JSON.stringify({id:nativeCommands.find(v=>v.command==='pcm_begin').id,...value})});},get permissionCalls(){return permissionCalls;},questions:value=>questions=value};
 }
-async function ready(value,diagnostics=false,mode='manual'){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:mode,...(diagnostics?{playback_status:true}:{})});assert.equal(await pending,true);return socket;}
+async function ready(value,diagnostics=false,mode='manual',seconds){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:mode,...(seconds===undefined?{}:{session_seconds:seconds}),...(diagnostics?{playback_status:true}:{})});assert.equal(await pending,true);return socket;}
 (async()=>{
+  const long=boot(),longSocket=await ready(long,false,'manual',600);
+  assert.equal(longSocket.sent[0].session_seconds,1800);
+  assert.equal(long.sources[0].options.sessionSeconds,600);
+  assert(long.timers.some(t=>t.ms===600000&&!t.cleared));
+  let logical=0;
+  for(let cycle=0;cycle<3;cycle++){
+    for(let n=0;n<198;n++){long.sources[0].emit({pcm:new ArrayBuffer(32000)});logical+=32000;}
+    const id=crypto.randomUUID(),start=logical;
+    longSocket.push({type:'capture_started',id,start});await tick();
+    for(let n=0;n<2;n++){long.sources[0].emit({pcm:new ArrayBuffer(32000)});logical+=32000;}
+    longSocket.push({type:'phrase_end',id,start,end:logical});await until(()=>long.retained.length===cycle+1);
+    assert.equal(long.retained[cycle].blob.size,64000,'Absolute PCM slices survive confirmed-prefix retirement');
+    longSocket.push({type:'original_completed',id,sha256:long.retained[cycle].audio_sha256,phase:'foreground'});
+    await until(()=>long.engine.originals.length===0);
+    assert.equal(long.engine.active,true,'Confirmed prefix must retire before the next200second span');
+  }
+  assert.equal(logical,600*32000);long.engine.hold();
+  const narrow=boot(true),narrowSocket=await ready(narrow);
+  assert.equal(narrowSocket.sent[0].session_seconds,300,'Current native audio client narrows before provider setup');
+  assert.equal(narrow.sources[0].options.sessionSeconds,300);narrow.engine.hold();
+  const widened=boot(true),widening=widened.engine.start();
+  await until(()=>widened.sockets[0]?.sent.length);
+  widened.sockets[0].push({type:'ready',id:widened.sockets[0].sent[0].id,activity_mode:'manual',session_seconds:600});
+  assert.equal(await widening,false);assert.equal(widened.permissionCalls,0,'Server cannot widen a native client cap before microphone acquisition');
+
+  const quiet=boot(),quietWire=await ready(quiet,false,'manual',600);
+  for(let n=0;n<299;n++)quiet.sources[0].emit({pcm:new ArrayBuffer(32000)});
+  assert.equal(quiet.engine.active,false,'Unconfirmed resident tail ends before its300second hard bound');
+  assert(quietWire.sent.some(v=>v.type==='close'&&v.recover_unassigned===true));
   const observed=boot(),observationSocket=await ready(observed,true),observationOutput=crypto.randomUUID();
   observationSocket.push({type:'audio',id:observationOutput,sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
   await until(()=>observationSocket.sent.some(v=>v.type==='playback_status'&&v.handled===1));

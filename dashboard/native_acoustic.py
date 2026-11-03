@@ -125,6 +125,15 @@ class NativeAcousticSession:
                 raise ForegroundUnavailable('Native acoustic input exceeds its live bounds')
             self.pcm.extend(pcm)
             self._observe_queues()
+            if self.max_bytes>300*32000:
+                # One maximum1s frame of close reserve inside each hard bound.
+                # Stop after owning this frame so cleanup can retain it, even
+                # when onset/analysis or provider confirmation is still late.
+                unsent=self.captured-self.analyzed+sum(max(0,
+                    (s.end if s.end is not None else s.analyzed)-s.sent) for s in self.spans)
+                if (len(self.pcm)>=299*32000 or unsent>=7*32000
+                        or self.local is not None and self.captured-self.local.start>=119*32000):
+                    raise ForegroundUnavailable('Native voice capacity reached; captured audio needs review')
         # Detector writes do not hold the state lock needed by its event reader.
         await self.detector.feed(pcm)
 

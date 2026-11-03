@@ -215,6 +215,15 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.bridge.transcript(ident,self.owner.text),capture.completion)
         with self.assertRaises(ForegroundUnavailable):self.bridge.transcript(ident,'changed text')
 
+    async def test_admission_capacity_is_explicit_and_never_resets_or_admits_more_work(self):
+        ident,_,_=await self.captured()
+        self.bridge._admissions={str(uuid.uuid4()):{} for _ in range(32)}
+        result=await self.bridge.tool({'type':'delegation_proposed','call_id':'capacity',
+                                      'original_ids':[ident],'formulation':'Distinct request at capacity'})
+        self.assertEqual(result['kind'],'not_ready')
+        self.assertEqual(self.bridge.capacity_reached,'integrating admission references')
+        self.assertEqual(self.owner.delegations,[])
+
     async def test_close_reserve_keeps_exact_audio_when_normal_count_and_pending_are_full(self):
         normal=[self.bridge.capture(str(uuid.uuid4()),b'\1\0'*160,{}) for _ in range(4)]
         self.bridge.capture_ids.update(str(uuid.uuid4()) for _ in range(124))

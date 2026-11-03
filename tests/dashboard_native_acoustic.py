@@ -81,6 +81,37 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(c[2]=={'a'*32:'b'*64} for c in self.bridge.captures))
         self.assertEqual(self.bridge.transcripts,[])
 
+    async def test_extended_session_stops_at_resident_bound_and_retains_unknown_tail(self):
+        self.session.max_bytes=600*32000
+        for _ in range(298):
+            await self.session.feed(bytes(32000));self.session.analyzed=self.session.captured
+        with self.assertRaisesRegex(ForegroundUnavailable,'capacity reached'):
+            await self.session.feed(bytes(32000))
+        self.assertEqual(len(self.session.pcm),299*32000)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(sum(len(c[1]) for c in self.bridge.captures),299*32000)
+        self.assertEqual(len(self.bridge.captures),3)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_extended_unsent_spans_are_bounded_independently_from_analysis(self):
+        self.session.max_bytes=600*32000
+        await self.first()  # Keep the previous provider confirmation pending.
+        await self.session.feed(b'\2\0'*16000)
+        await self.session.activity(self.activity(self.session.captured,2,onset=self.session.captured))
+        start=self.session.local.start
+        for _ in range(8):
+            try:await self.session.feed(b'\3\0'*16000)
+            except ForegroundUnavailable:break
+            await self.session.activity(self.activity(self.session.captured,2))
+        else:self.fail('Unsent speech must not accumulate behind an earlier confirmation')
+        captured=self.session.captured
+        self.assertLessEqual(captured-start,8*32000)
+        self.assertLessEqual(captured-self.session.analyzed,32000)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertEqual(len(self.bridge.captures[-1][1]),captured-start)
+        self.assertEqual(self.bridge.transcripts,[])
+
     async def test_manual_failure_retains_only_unassigned_tail_after_completed_span(self):
         await self.first()
         await self.ack('ACTIVITY_END','0.2s')

@@ -628,6 +628,117 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
         self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
         self.csrf=self.client.get('/api/state').json()['csrf']
 
+    def configure_duration(self,seconds):
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription']['native_session_seconds']=seconds
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+
+    def test_duration_is_strict_operator_selection_and_client_can_only_narrow(self):
+        for invalid in (True,299,1801,600.0):
+            self.config['streaming_transcription']['native_session_seconds']=invalid
+            with self.assertRaises(ValueError):create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.configure_duration(600)
+        calls=[]
+        class Budget(Detector):
+            @classmethod
+            async def open(cls,*args,**kwargs):
+                calls.append(kwargs)
+                return await super().open(*args,**kwargs)
+        with patch('dashboard.native_voice.Detector',Budget):
+            for requested,effective in ((None,300),(300,300),(1800,600)):
+                self.ident=str(uuid.uuid4());self.owner.context_closed.clear()
+                with self.open() as ws:
+                    ws.send_json(self.meta(**({} if requested is None else {'session_seconds':requested})))
+                    ready=ws.receive_json();self.assertEqual(ready['type'],'ready')
+                    self.assertEqual(ready['session_seconds'],effective)
+                    self.assertEqual(calls[-1].get('session_seconds',300),effective)
+                    ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+                    self.assertTrue(Budget.opened[-1].closed_event.wait(2))
+        self.assertEqual(self.owner.inputs,{})
+
+    def test_invalid_client_duration_and_automatic_extension_do_not_open_providers(self):
+        for invalid in (True,299,1801,'600'):
+            with self.open() as ws:
+                ws.send_json(self.meta(session_seconds=invalid))
+                self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[]);self.assertEqual(Detector.opened,[])
+        self.config['streaming_transcription'].update(native_activity_mode='automatic',native_session_seconds=600)
+        with self.assertRaises(ValueError):create_app(self.config,self.owner,lambda raw,bot:int(raw))
+
+    def test_explicit_capacity_close_keeps_manual_audio_without_an_onset(self):
+        class Quiet(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm)
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':0,'speaking':False})
+        with patch('dashboard.native_voice.Detector',Quiet),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            pcm=b'\3\0'*1600;ws.send_bytes(pcm)
+            while ws.receive_json()['type']!='turn_activity':pass
+            ws.send_json({'type':'close','recover_unassigned':True})
+            self.assertTrue(self.owner.context_closed.wait(2))
+            self.assertTrue(Quiet.opened[-1].closed_event.wait(2))
+        ident,original=next(iter(self.owner.inputs.items()))
+        self.assertEqual(original['phase'],'foreground_captured')
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertNotIn('text',original);self.assertEqual(self.owner.delegations,[])
+
+    def test_six_hundred_second_pcm_through_two_successors_keeps_one_work_and_return(self):
+        self.configure_duration(600)
+        class LongDetector(Detector):
+            async def feed(self,pcm):
+                previous=self.total;self.total+=len(pcm)
+                generation=getattr(self,'generation',0);speaking=getattr(self,'speaking',False)
+                value={'type':'activity','audio_bytes':self.total,'generation':generation,'speaking':False}
+                if pcm[0]==1:
+                    self.generation=generation+1;self.speaking=True
+                    value.update(generation=self.generation,speaking=True,
+                        onset={'audio_bytes':previous+3072,'generation':self.generation})
+                elif speaking:
+                    self.speaking=False
+                    value['endpoint']={'audio_bytes':self.total,'generation':generation,'authority':'analysis_only','probability':.9}
+                await self.queue.put(value)
+        with patch('dashboard.native_voice.Detector',LongDetector),self.open() as ws:
+            ws.send_json(self.meta(session_seconds=600));ready=ws.receive_json()
+            self.assertEqual(ready['session_seconds'],600)
+            for cycle in range(3):
+                old=Stream.opened[-1]
+                for _ in range(198):
+                    ws.send_bytes(bytes(32000))
+                    while True:
+                        value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                        if value['type']=='turn_activity':break
+                ws.send_bytes(b'\1\0'*16000);ws.send_bytes(bytes(32000))
+                utterance=original=None
+                while utterance is None or original is None:
+                    value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                    if value['type']=='original_completed':original=value['id']
+                    if value['type']=='assistant_utterance' and value['utterance']['closed']:utterance=value['utterance']
+                if cycle==0:
+                    old.queue.put([{'type':'delegation_proposed','call_id':'admit-work',
+                        'original_ids':[original],'formulation':'A synthetic long task stays with Sol.'}])
+                    self.assertEqual(old.tool_results.get(timeout=2)[1]['kind'],'integrator_admission')
+                if cycle<2:
+                    old.rollover_due=True
+                    ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+                    self.assertTrue(old.closed_event.wait(3))
+                    self.assertEqual(len(Stream.opened),cycle+2)
+                else:
+                    ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertEqual(LongDetector.opened[-1].total,600*32000)
+            self.assertEqual(len(self.owner.inputs),3);self.assertEqual(len(self.owner.delegations),1)
+            successor=Stream.opened[-1];self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'late canonical result after600seconds of PCM')
+            self.assertTrue(successor.notice_seen.wait(2))
+            successor.queue.put([{'type':'integrator_watch','call_id':'admit-work'}])
+            self.assertEqual(successor.tool_results.get(timeout=2)[1]['text'],'Canonical integrating return.')
+            self.assertTrue(all(s.total<3*32000 for s in Stream.opened),'Only current phrase PCM, no quiet prefix or old replay')
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+            self.assertTrue(LongDetector.opened[-1].closed_event.wait(2))
+
     def test_automatic_speech_keeps_pending_work_returns_and_late_questions_separate_from_correction(self):
         class AutomaticStream(Stream):
             activity_mode='automatic'

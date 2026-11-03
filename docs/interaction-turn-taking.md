@@ -391,14 +391,52 @@ existing150CPU/305wall-second contract. Resident analysis remains an eight-secon
 tail, one partial1024byte frame, two endpoint receipts and fixed recurrent state.
 No model/provider or microphone is opened by this API alone.
 
-This is an implemented analysis prerequisite, not an enabled longer avatar
-session. The server still selects300seconds. Before exposing a longer session,
-the same client-narrowed budget must govern server wall/input/output counters,
-capture source limits, browser capture/helper/worklet, and caption totals.
-Resident unresolved PCM and unsent queues need independent bounds, and native
-checkpointed provider succession must preserve source/admission/offer identities.
-The reviewed first extended pilot is600seconds; no duration, hearing or physical
-device acceptance follows from the worker's synthetic600second qualification.
+The server option `streaming_transcription.native_session_seconds` now selects
+one finite300..1800second manual-activity session; omitted configuration remains
+300seconds. Automatic mode rejects this option. The browser requests its supported
+maximum, current Android PCM clients request300, and legacy clients omitting
+`session_seconds` retain300. The server takes the smaller client/operator bound
+before opening analysis or the provider, advertises it in `ready`, and the browser
+starts no microphone before validating that response. Extended time starts at
+readiness with five seconds of server cleanup reserve; worker startup has its
+separate bounded reserve. Existing default timeout behavior remains unchanged.
+
+The negotiated duration governs cumulative server input and both output counters,
+caption totals, browser timer/capture helper and AudioWorklet sample limit. An
+extended session retains at most1024capture IDs (default128); the existing four
+pending captures, three close-only reserve slots, one file writer/two owner slots,
+original-cache quotas, eight caption recovery admissions and120second ASR clips
+stay independent. Provider sockets retain their existing physical lifetime and
+checkpoint-seeded idle replacement; no source, admission, offer or generation
+counter resets with a successor.
+
+Resident acoustic/client PCM is independently bounded to300seconds. Only a
+completed original prefix retires on server handover; the browser retires that
+prefix after its matching canonical confirmation and local release. A quiet
+unassigned suffix or delayed integrator checkpoint can therefore end the session
+earlier. Extended input stops at the299second resident, seven-second unsent-span
+or119second phrase threshold, leaving one maximum1second captured-frame reserve
+within the hard300/8/120second bounds. Analysis backlog and speech waiting for an
+earlier provider confirmation are accounted separately; background noise alone
+does not become queued provider speech. Capacity close retains acoustic-owned
+unassigned bytes through the existing private original path, with no invented
+transcript or automatic delegation. Unread socket/inbox bytes remain outside
+that recovery guarantee.
+
+Reference capacity is also finite:32integrator admissions,128offered result
+revisions,65provider generations and the existing canonical context/cache limits.
+An extended tool path reaching admission/result-reference capacity closes visibly
+instead of merely returning a truncated result or resetting the lifetime fence.
+Other canonical failures retain their existing visible review path. No silent
+source eviction or automatic re-admission makes room.
+
+The reviewed first extended pilot is600seconds and remains unselected. Mounted
+synthetic600second PCM crosses two checkpointed provider successors, retains three
+originals and one pending work admission, then reads its one canonical return.
+Browser/helper/worklet, quiet resident/unsent-span close retention, legacy-client
+narrowing and incompatible-worker cleanup have separate bounded checks. This is
+logical audio-duration qualification, not ten minutes of actual provider wall
+time, physical hearing, latency or full product/device acceptance.
 Raw original recovery and existing ASR/TTS retention remain separately owned.
 
 One real pinned-model child qualified ready/PCM/close with a silent100ms chunk:

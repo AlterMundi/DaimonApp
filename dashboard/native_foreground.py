@@ -74,6 +74,7 @@ class ForegroundBridge:
         self.noticed_generation=0
         self._tool_calls=set()
         self._admissions={}
+        self.capacity_reached=None
         self._watch_task=None;self._watch_idle=False;self._watch_ident=None
         self.generation=dialogue
         self.idle_notify=None
@@ -331,6 +332,7 @@ class ForegroundBridge:
                     if not self.closed:await asyncio.to_thread(self.stream.tool_result,ident,result)
                     return result
                 if len(self._admissions)>=32:
+                    self.capacity_reached='integrating admission references'
                     raise ForegroundUnavailable('Integrating admission references reached the live bound')
                 body={'binding':self.binding,'id':root,
                       'intent_id':str(uuid.uuid5(uuid.UUID(self.dialogue),self.generation+':delegate:'+ident)),
@@ -389,6 +391,7 @@ class ForegroundBridge:
                 result['omitted']+=1;continue
             key=(ident,revision)
             if key not in self._offered and len(self._offered)>=128:
+                self.capacity_reached='integrating result references'
                 result['truncated']=True;break
             item={k:row.get(k) for k in ('id','revision','kind','label','observed_at','completed')}
             item.update(preview=str(row.get('preview',''))[:256],preview_complete=False,files=[],files_truncated=False)
