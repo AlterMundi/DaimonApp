@@ -1,23 +1,26 @@
 # Shared context between Live voice and Sol
 
-Current receiving status,3November2026: PR560 merged as6dd658af; qualified source
-6ce4b40f is selected on ITACA for the compatible native writer and composed web
-runtime. Web receipt verification completed at07:11:05.816089Z. New dialogues
-use the local CPU detector with manual provider activity; the human remains
-hands-free, without Send. Existing automatic dialogues were not converted.
-The client assets remain92a44cdc7ead. Two unrelated selected Matrix modules
-retain their exact previous bytes; the runtime is not claimed to be a pristine
-single-commit checkout. Current deployment, health and compatible-writer rollback:
-[receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md).
+Current receiving status,3November2026: compatible native receiverPR566/source
+22ed3856 is selected on CompAII ITACA after full CI41609604965.40session bindings,
+13goal definitions/budgets/monotonic accounting and4exact physical collector
+receipts passed; Core/configuration and the web process were preserved.
+The web remainsPR563/source6a5e4d8f, UI92a44cdc7ead, Charon/manualCPU. Its actual
+selected Python app passed the joined context/handover fixtures against the new
+release. The paired566web candidate is prepared but NOT selected: current old
+web does not yet emit the new typed missing-caption observation. No current
+human browser trial was interrupted or newly repeated.
 
-The dated preparation and qualification sections below preserve their original
-status; references to receiving558 describe those earlier observations. Actual
-Sol/Gemini/CPU two-successor continuity is digitally qualified. Device hearing,
-useful latency, full128000token admission, long/noisy speech and broader pending
-effect/barge-in-at-handover acceptance remain unfinished. One late-result case
-across a physical successor is now qualified below. The five-minute pilot is retained. Native speech
-remains above Sol; the full roadmap and unfinished Android/Beacon/iOS/base
-requirements remain unchanged.
+The dated preparation/qualification sections below preserve their original
+status. Actual Sol/Gemini/CPU two-successor continuity and one late pending-work
+return across a successor are digitally qualified. Actual Sol full-reader and
+semantic checkpoint retained a missing-caption observation as unknown language,
+without human originals/work/memory/publication. Automatic recovery of unknown
+words, device hearing/useful latency, full128k admission, long/noisy speech,
+broader concurrent effects and unfinished roadmap/Android/Beacon/iOS remain open.
+The five-minute pilot is retained. Rollback keeps the compatible native writer
+and current journals; a caption-aware web reader is required while typed unknown
+observations remain pending. Exact current receiving/health/operator guidance:
+[receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md).
 
 ## Selected continuation after actual provider qualification
 
@@ -1324,8 +1327,9 @@ select the compatible native writer before this web candidate. Keep that
 writer/current journals on rollback, and retain a caption-aware web reader until
 any pending typed observation has been retained by native context. An older web
 reader cannot drain its new empty-text outbox payload; never restore an old
-journal or silently discard it to make rollback appear compatible. No receiving process has been replaced;
-PR563 remains selected during the current human browser trial.
+journal or silently discard it to make rollback appear compatible. The compatible native receiver is now selected as recorded above; the paired
+web candidate remains prepared. PR563web continues during the current browser
+trial, with unchanged Core/configuration/voice/UI and ordinary chat.
 
 Qualification includes the actual mounted web/history/owner/native-controller/
 SQLite journey: two source-preserving provider handovers, followed by an
@@ -1346,3 +1350,14 @@ recovery can reuse the selected pure file-ASR helper, with explicit assistant
 provenance and draft status; it must not rewrite a finalized source, replay a
 work admission or treat generated audio as human speech. Automatic recovery and
 its bounded transient-audio retention are still unfinished.
+
+
+Actual Sol semantic qualification on the prepared typed observation completed
+in29.955s with two internal admissions/five controller operations. Sol6.1/openai/
+medium incorporated the exact source, read all full context and wrote a semantic
+checkpoint explicitly preserving unknown words, language, intelligibility,
+silence and physical hearing. No human original, task/worker, memory write or
+ordinary publication occurred. This proves this semantic handling only. Native
+history remains retained; the successful disposable fixture was removed. Both
+the new caption-aware fixture and the actual old selected563Python app passed
+the joined owner/controller/SQLite handover tests on the exact new release.
