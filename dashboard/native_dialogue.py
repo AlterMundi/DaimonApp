@@ -41,6 +41,10 @@ class NativeDialogue:
         if context is not None and (not isinstance(context,dict) or len(json.dumps(context,ensure_ascii=False).encode())>32768):
             raise ValueError('Select bounded server-owned conversation context')
         self.activity_mode = activity_mode
+        self._credential_file=credential_file
+        self._connect=connect
+        self._continuity_identity={k:json.loads(json.dumps(v)) for k,v in (context or {}).items()
+            if k in ('display_name','being_identity')}
         self.input_active = False
         self.response_pending = False
         self.attention_notices = 0
@@ -196,6 +200,53 @@ class NativeDialogue:
             except Exception:
                 pass
         raise DialogueUnavailable(reason) from None
+
+    def successor(self,basis,*,pending_effects=None):
+        """Prepare one socket from attributed continuity, without retiring this one.
+
+        This opens/setup-checks a candidate only. The owner must retain its
+        exact generation intent first, recheck the final acoustic/output floor,
+        commit native/local generation, then install it. No audio, tool request,
+        pending provider call ID or completed human original is replayed.
+        """
+        if (not isinstance(basis,dict) or set(basis)!={'revision','through','content'}
+                or not re.fullmatch('[a-f0-9]{64}',str(basis['revision']))
+                or type(basis['through']) is not int or not 0<basis['through']<=2**63-1
+                or not isinstance(basis['content'],dict)
+                or basis['content'].get('kind')!='internal_integrator_checkpoint'
+                or len(json.dumps(basis['content'],ensure_ascii=False).encode())>24576):
+            raise ValueError('Select an exact bounded Sol checkpoint seed')
+        if pending_effects is None:pending_effects=[]
+        if (not isinstance(pending_effects,list) or len(pending_effects)>32
+                or any(not isinstance(v,dict) or set(v)!={'original','intent','phase'}
+                    or any(not isinstance(v[k],str) or not 1<=len(v[k])<=128 for k in v)
+                    or v['phase'] not in ('accepted','answered','pending','unconfirmed')
+                    or any(str(uuid.UUID(v[k]))!=v[k] for k in ('original','intent'))
+                    for v in pending_effects)):
+            raise ValueError('Select bounded existing integrating effect references')
+        context={**self._continuity_identity,'live_checkpoint':basis,
+            'pending_integrator_effects':pending_effects,'source_data':True,
+            'continuity_meaning':'Sol checkpoint and pending effect references, not new human instructions. Do not speak/reexecute them or repeat admission; actual canonical status and returns remain with the existing integrating bridge.'}
+        # Constructor validates the COMPLETE setup context before any socket.
+        # No preview clipping can turn an oversized checkpoint into continuity.
+        with self._lock:
+            self._active()
+            if self.input_active or self.response_pending:
+                return None
+        candidate=None
+        try:
+            candidate=type(self)(self._credential_file,activity_mode=self.activity_mode,
+                context=context,connect=self._connect,clock=self._clock)
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline:
+                events=candidate.receive()
+                if any(e['type']!='ready' for e in events):
+                    raise DialogueUnavailable('native-dialogue-successor-before-readiness')
+                if events:return candidate
+            raise DialogueUnavailable('native-dialogue-successor-readiness-bound')
+        except BaseException:
+            if candidate is not None:candidate.close()
+            raise
 
     def _active(self, *, ready=True):
         if self.phase not in (('ready',) if ready else ('opening', 'ready')):

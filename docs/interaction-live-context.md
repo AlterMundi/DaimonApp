@@ -433,6 +433,51 @@ tests do not establish socket rollover, repeat provider compaction, token
 admission, pending-tool handover or receiving acceptance. The five-minute runtime
 pilot and receiving558 remain unchanged.
 
+### Local journal recovery and prepared provider successor
+
+The app's existing producer table now holds one small pending transition intent
+(`previous`, `next`, exact seed revision). `NativeContext` serializes context
+sync, guidance and generation mutation through one operation lock. It records
+the intent before a caller opens its candidate, checks the unchanged basis again,
+and advances the local producer generation only after an exact native receipt.
+Completed assistant outbox/source identities remain unchanged. The new nullable
+column requires a compatible app writer on future adoption/rollback; it is not
+yet in receiving production.
+
+A lost commit acknowledgment cannot be resolved by a read-only status=false:
+the commit might still be queued. Owner-local `rollover_abort` atomically either
+observes that exact committed transition or retires the candidate UUID, fencing
+any delayed commit. It never reverses an actual commit. Its result distinguishes
+`rollover_committed` from `rollover_fenced`; status is read-only. Fenced/committed
+candidate IDs share the existing65-ID bound. If even that outcome is unavailable,
+retain the one local intent and stop claiming a known generation. The next
+explicit avatar opening resolves it, seals/catches up and closes the prior
+logical dialogue without reopening its old socket or replaying any operation.
+
+`NativeDialogue.successor` prepares one replacement socket from the exact Sol
+checkpoint, owner identity and bounded canonical pending-effect references. It
+checks the complete32KiB context before opening and waits for actual setupComplete.
+Only setup is sent: no captured audio, completed original, provider tool call ID,
+function response or generation request is replayed. A failed candidate closes
+itself while the original transport remains available. Preparing a candidate is
+not installing it or evidence that its checkpoint was understood.
+
+Qualification now includes38transport tests,9local producer/recovery tests,
+46mounted voice tests and245Store tests, with15focused final kernel checks.
+The joined real-owner/control/native-controller/SQLite journey also runs two
+incorporation/checkpoint/generation cycles, deliberately loses the ACK after
+actual native commits, and verifies that a delayed native commit is rejected
+after its candidate was fenced. Synthetic Core reasoning and transport peers
+are explicit; these fixtures use zero model/hardware calls. The prior joined
+voice/context/guidance journey still passes.
+
+Remaining integration is in the active voice loop: idle reader/capture/playback
+handover, pending watch/effect continuity, provider-offset rebasing and complete
+counter/media retirement. Then wire token/headroom-triggered checkpoint requests,
+qualify repeated actual provider continuity and adopt the coherent receiving
+version. No automatic rollover or128k-token admission is claimed by these
+prepared methods. PR560 remains draft and the five-minute runtime pilot remains.
+
 ## Astra high review — accepted decisions
 
 The human-requested Astra high agent reviewed this complete plan and actual

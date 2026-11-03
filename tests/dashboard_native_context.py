@@ -20,6 +20,7 @@ from dashboard.provider import ProviderUnavailable
 class Journal:
     def __init__(self):
         self.producers={};self.calls=[];self.fresh=[];self.lose_next=False
+        self.rollover_failure=None;self.fenced=set()
 
     def conversation_live_context(self,body):
         self.calls.append(body)
@@ -27,6 +28,24 @@ class Journal:
         if body['action']=='open':
             p=self.producers.setdefault(ident,{'dialogue':ident,'generation':body['generation'],'closed':False,'sources':{}})
         else:p=self.producers[ident]
+        if body['action']=='rollover_read':
+            assert p['generation']==body['generation']
+            content={'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Confirmed conversation purpose and pending effect references.'}}
+            revision=hashlib.sha256(json.dumps([p['generation'],p['sources']],sort_keys=True).encode()).hexdigest()
+            return {k:p[k] for k in ('dialogue','generation','closed')}|{'rollover_basis':{'revision':revision,'through':len(p['sources']),'content':content}}
+        if body['action']=='rollover_commit':
+            assert p['generation']==body['generation'] and body['next_generation'] not in self.fenced
+            if self.rollover_failure=='before':raise ProviderUnavailable('Synthetic commit still queued')
+            p['generation']=body['next_generation']
+            p['rollover']={'previous':body['generation'],'next':body['next_generation'],'revision':body['revision'],'committed':True}
+            if self.rollover_failure in ('after','abort_unknown'):raise ProviderUnavailable('Synthetic lost commit ACK')
+            return {k:p[k] for k in ('dialogue','generation','closed','rollover')}
+        if body['action']=='rollover_abort':
+            if self.rollover_failure=='abort_unknown':raise ProviderUnavailable('Synthetic outcome unavailable')
+            committed=p['generation']==body['next_generation'] and p.get('rollover',{}).get('revision')==body['revision']
+            if not committed:
+                assert p['generation']==body['generation'];self.fenced.add(body['next_generation'])
+            return {k:p[k] for k in ('dialogue','generation','closed')}|{'rollover':p.get('rollover'),'rollover_committed':committed,'rollover_fenced':not committed}
         assert p['generation']==body['generation']
         receipts=[]
         guide=p.get('guidance')
@@ -74,6 +93,66 @@ class Context(unittest.IsolatedAsyncioTestCase):
 
     def retain(self,text='Terminal language α.',*,closed=True,source=None):
         return self.history.retain(100,self.dialogue,self.binding,source or str(uuid.uuid4()),text,'b'*64,640,closed=closed)
+
+    async def test_two_generation_transitions_keep_outbox_sources_and_local_owner(self):
+        p=self.producer();await p.open();generations=[p.record['generation']]
+        for cycle in range(2):
+            self.retain(f'Canonical cycle {cycle}')
+            basis=await p.prepare_rollover();next_generation=str(uuid.uuid4())
+            intent=await p.begin_rollover(basis,next_generation)
+            self.assertEqual(p.record['generation'],generations[-1])
+            self.assertIsNotNone(p.record['rollover'])
+            self.assertTrue(await p.commit_rollover(intent))
+            generations.append(next_generation)
+            self.assertEqual(p.record['generation'],next_generation)
+            self.assertIsNone(p.record['rollover'])
+        self.assertEqual(len(set(generations)),3)
+        self.assertEqual(len(self.provider.fresh),2)
+        await p.close()
+
+    async def test_lost_commit_ack_observes_commit_or_fences_the_attempt_once(self):
+        for failure in ('before','after'):
+            p=self.producer(str(uuid.uuid4()));await p.open()
+            old=p.record['generation'];basis=await p.prepare_rollover()
+            intent=await p.begin_rollover(basis,str(uuid.uuid4()))
+            self.provider.rollover_failure=failure
+            committed=await p.commit_rollover(intent)
+            self.assertEqual(committed,failure=='after')
+            self.assertEqual(p.record['generation'],intent['next'] if committed else old)
+            self.assertIsNone(p.record['rollover'])
+            if not committed:self.assertIn(intent['next'],self.provider.fenced)
+            self.provider.rollover_failure=None;await p.close()
+        self.assertEqual(len([c for c in self.provider.calls if c['action']=='rollover_commit']),2)
+
+    async def test_unresolved_transition_recovers_on_explicit_open_without_reopening_a_socket(self):
+        p=self.producer();await p.open();source=self.retain()
+        basis=await p.prepare_rollover();intent=await p.begin_rollover(basis,str(uuid.uuid4()))
+        self.provider.rollover_failure='abort_unknown'
+        with self.assertRaises(ProviderUnavailable):await p.commit_rollover(intent)
+        self.assertTrue(p.failed);self.assertIsNotNone(p.record['rollover'])
+        await p.close();self.provider.rollover_failure=None
+        self.history=NativeHistory(self.database,'selected-scope')
+        successor=self.producer(str(uuid.uuid4()));await successor.open()
+        with self.database() as db:
+            row=db.execute('SELECT generation,phase,rollover FROM foreground_context_producers WHERE dialogue=?',(self.dialogue,)).fetchone()
+        self.assertEqual(tuple(row),(intent['next'],'closed',None))
+        self.assertEqual(len([c for c in self.provider.calls if c['action']=='rollover_commit']),1)
+        self.assertEqual([s['source'] for s in self.provider.fresh],[source['id']])
+        await successor.close()
+
+    async def test_unfenced_negative_status_cannot_clear_transition_uncertainty(self):
+        p=self.producer();await p.open();basis=await p.prepare_rollover()
+        intent=await p.begin_rollover(basis,str(uuid.uuid4()))
+        original=self.provider.conversation_live_context
+        def unfenced(body):
+            if body['action']=='rollover_abort':
+                return {'dialogue':self.dialogue,'generation':intent['previous'],
+                    'rollover_committed':False,'rollover_fenced':False}
+            return original(body)
+        with patch.object(self.provider,'conversation_live_context',side_effect=unfenced):
+            with self.assertRaises(ValueError):await p.abort_rollover(intent)
+        self.assertIsNotNone(p.record['rollover']);self.assertTrue(p.failed)
+        await p.close()
 
     async def test_terminal_transaction_and_playback_use_one_semantic_source(self):
         p=self.producer();await p.open()

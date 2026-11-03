@@ -142,6 +142,8 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 | crate::store::LiveContextCommand::GuidanceOutcome { .. }
                 | crate::store::LiveContextCommand::RolloverRead { .. }
                 | crate::store::LiveContextCommand::RolloverCommit { .. }
+                | crate::store::LiveContextCommand::RolloverStatus { .. }
+                | crate::store::LiveContextCommand::RolloverAbort { .. }
         ) {
             bail!("Semantic incorporation belongs to the native integrator");
         }
@@ -154,7 +156,9 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             | crate::store::LiveContextCommand::GuidanceBegin { dialogue, .. }
             | crate::store::LiveContextCommand::GuidanceOutcome { dialogue, .. }
             | crate::store::LiveContextCommand::RolloverRead { dialogue, .. }
-            | crate::store::LiveContextCommand::RolloverCommit { dialogue, .. } => dialogue.clone(),
+            | crate::store::LiveContextCommand::RolloverCommit { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverStatus { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverAbort { dialogue, .. } => dialogue.clone(),
             _ => unreachable!(),
         };
         let publishes_context = matches!(

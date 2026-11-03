@@ -102,7 +102,7 @@ class NativeHistory:
             if row is None:
                 if db.execute('SELECT count(*) FROM foreground_context_producers').fetchone()[0]>=NativeContext.max_producers:
                     raise ValueError('Live context producer retention reached its bound')
-                db.execute("INSERT INTO foreground_context_producers VALUES(?,?,?,?,?,'open')",
+                db.execute("INSERT INTO foreground_context_producers(dialogue,human,scope,binding,generation,phase) VALUES(?,?,?,?,?,'open')",
                     (dialogue,human,self.scope,binding,str(uuid.uuid4())))
                 row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(dialogue,)).fetchone()
             record=dict(row)
@@ -118,6 +118,35 @@ class NativeHistory:
         with self.database() as db:
             return [dict(r) for r in db.execute("SELECT * FROM foreground_context_producers WHERE human=? AND scope=? AND binding=? AND dialogue!=? AND phase!='closed' ORDER BY rowid LIMIT 64",
                 (human,self.scope,binding,excluding)).fetchall()]
+
+    def context_rollover_intent(self,record,next_generation,revision):
+        """One retained local transition intent, never provider/audio replay."""
+        self.ident(next_generation)
+        if not re.fullmatch('[a-f0-9]{64}',revision) or next_generation==record['generation']:
+            raise ValueError('Select a distinct exact Live generation transition')
+        intent={'previous':record['generation'],'next':next_generation,'revision':revision}
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE');self._context_owned(db,record)
+            row=db.execute('SELECT phase,rollover FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone()
+            if row['phase']!='open':raise ValueError('Live producer is closing')
+            if row['rollover'] is not None and json.loads(row['rollover'])!=intent:
+                raise ValueError('Inspect the retained Live generation transition first')
+            db.execute('UPDATE foreground_context_producers SET rollover=? WHERE dialogue=?',
+                (json.dumps(intent,separators=(',',':')),record['dialogue']))
+        return intent
+
+    def context_rollover_settle(self,record,intent,*,committed):
+        """Observe native generation before clearing a local transition intent."""
+        if type(committed) is not bool:raise ValueError('Select an observed generation outcome')
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE');self._context_owned(db,record)
+            row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone()
+            if row['rollover'] is None or json.loads(row['rollover'])!=intent or intent['previous']!=record['generation']:
+                raise ValueError('Live generation transition changed')
+            generation=intent['next'] if committed else intent['previous']
+            db.execute('UPDATE foreground_context_producers SET generation=?,rollover=NULL WHERE dialogue=?',
+                (generation,record['dialogue']))
+            return dict(db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone())
 
     def _context_owned(self,db,record):
         row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone()

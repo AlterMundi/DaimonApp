@@ -98,6 +98,18 @@ pub(crate) enum LiveContextCommand {
         next_generation: String,
         revision: String,
     },
+    RolloverStatus {
+        dialogue: String,
+        generation: String,
+        next_generation: String,
+        revision: String,
+    },
+    RolloverAbort {
+        dialogue: String,
+        generation: String,
+        next_generation: String,
+        revision: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +167,12 @@ struct RolloverReceipt {
     next: String,
     revision: String,
     through: u64,
+    #[serde(default = "yes")]
+    committed: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -506,11 +524,73 @@ impl Store {
             | LiveContextCommand::GuidanceBegin { dialogue, .. }
             | LiveContextCommand::GuidanceOutcome { dialogue, .. }
             | LiveContextCommand::RolloverRead { dialogue, .. }
-            | LiveContextCommand::RolloverCommit { dialogue, .. } => dialogue,
+            | LiveContextCommand::RolloverCommit { dialogue, .. }
+            | LiveContextCommand::RolloverStatus { dialogue, .. }
+            | LiveContextCommand::RolloverAbort { dialogue, .. } => dialogue,
         };
         let mut p = load(&tx, dialogue, human, entry)?;
+        let abort = matches!(&command, LiveContextCommand::RolloverAbort { .. });
         let result = match command {
             LiveContextCommand::Open { .. } => unreachable!(),
+            LiveContextCommand::RolloverStatus {
+                generation,
+                next_generation,
+                revision,
+                ..
+            }
+            | LiveContextCommand::RolloverAbort {
+                generation,
+                next_generation,
+                revision,
+                ..
+            } => {
+                uuid(&generation)?;
+                uuid(&next_generation)?;
+                let target = next_generation.clone();
+                if generation == next_generation
+                    || revision.len() != 64
+                    || !revision
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
+                    bail!("Select an exact distinct Live rollover attempt");
+                }
+                let committed = p.rollover.as_ref().is_some_and(|r| {
+                    r.committed
+                        && r.previous == generation
+                        && r.next == next_generation
+                        && r.revision == revision
+                        && p.generation == next_generation
+                });
+                if !committed && p.generation != generation {
+                    bail!("Live rollover generation differs");
+                }
+                if abort
+                    && !committed
+                    && !p.generations.contains(&next_generation)
+                    && p.generations.len() < 65
+                {
+                    if p.generations.is_empty() {
+                        p.generations.push(generation.clone());
+                    }
+                    p.generations.push(next_generation.clone());
+                    p.rollover = Some(RolloverReceipt {
+                        previous: generation,
+                        next: next_generation,
+                        revision,
+                        through: p.high,
+                        committed: false,
+                    });
+                    save(&tx, &p)?;
+                    tx.commit()?;
+                }
+                let mut result = view(&p);
+                result["rollover_committed"] = json!(committed);
+                result["rollover_fenced"] = json!(
+                    !committed && (p.generations.contains(&target) || p.generations.len() >= 65)
+                );
+                return Ok(result);
+            }
             LiveContextCommand::RolloverRead { generation, .. } => {
                 if generation != p.generation {
                     bail!("Live producer generation differs");
@@ -528,6 +608,7 @@ impl Store {
             } => {
                 uuid(&next_generation)?;
                 if let Some(old) = &p.rollover
+                    && old.committed
                     && old.previous == generation
                     && old.next == next_generation
                     && old.revision == revision
@@ -553,6 +634,7 @@ impl Store {
                     next: next_generation.clone(),
                     revision,
                     through: p.high,
+                    committed: true,
                 });
                 p.generation = next_generation;
                 p.generations.push(p.generation.clone());
@@ -1103,6 +1185,51 @@ mod tests {
         )
         .unwrap();
         assert!(f.call(commit).is_err());
+    }
+
+    #[test]
+    fn rollover_abort_fences_a_late_commit_without_undoing_a_committed_transition() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Known continuity")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        f.checkpoint(&ack, 1);
+        let basis = f
+            .call(json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let mut attempt = json!({"action":"rollover_status","dialogue":f.dialogue,"generation":f.generation,
+            "next_generation":Uuid::now_v7().to_string(),"revision":basis["rollover_basis"]["revision"]});
+        let changes = f.store.conn.lock().unwrap().total_changes();
+        assert_eq!(
+            f.call(attempt.clone()).unwrap()["rollover_committed"],
+            false
+        );
+        assert_eq!(f.store.conn.lock().unwrap().total_changes(), changes);
+        attempt["action"] = json!("rollover_abort");
+        assert_eq!(
+            f.call(attempt.clone()).unwrap()["rollover_committed"],
+            false
+        );
+        let after = f.store.conn.lock().unwrap().total_changes();
+        assert_eq!(
+            f.call(attempt.clone()).unwrap()["rollover_committed"],
+            false
+        );
+        assert_eq!(f.store.conn.lock().unwrap().total_changes(), after);
+        attempt["action"] = json!("rollover_commit");
+        assert!(
+            f.call(attempt.clone()).is_err(),
+            "An abort observation must fence even a queued later commit"
+        );
+        attempt["next_generation"] = json!(Uuid::now_v7().to_string());
+        let committed = f.call(attempt.clone()).unwrap();
+        attempt["action"] = json!("rollover_abort");
+        let observed = f.call(attempt).unwrap();
+        assert_eq!(observed["rollover_committed"], true);
+        assert_eq!(
+            observed["generation"], committed["generation"],
+            "Abort never reverses an actual commit"
+        );
     }
 
     #[test]

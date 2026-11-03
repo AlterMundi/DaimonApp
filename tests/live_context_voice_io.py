@@ -6,12 +6,15 @@ retention, completed interpretation, both SQLite stores, owner socket, native
 transport/controller and presentation are real. No models or hardware capture.
 """
 import json
+import asyncio
+from contextlib import contextmanager
 import logging
 import math
 from pathlib import Path
 import queue
 import sys
 import struct
+import sqlite3
 import time
 import uuid
 from unittest.mock import patch
@@ -20,6 +23,9 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 from dashboard.app import create_app
 from dashboard.provider import Provider
+from dashboard.provider import ProviderUnavailable
+from dashboard.native_context import NativeContext
+from dashboard.native_history import NativeHistory
 from dashboard_native_voice import Stream, Detector
 from workflow_native_returns_io import Returning
 from conversation_routing_io import CanonicalRouting
@@ -145,4 +151,98 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
     finally:j.close()
 
 
-if __name__=='__main__':qualify(str(Path(sys.argv[1]).resolve()))
+class CheckpointContext(Returning):
+    """Actual native incorporation/checkpoint controls; synthetic reasoning."""
+    def handle_extra_rpc(self,message,send):
+        method=message.get('method');p=message.get('params',{});ident=message.get('id')
+        if method=='turn/start' and 'toolOutput' in p:
+            output=json.loads(p['toolOutput']['output']);assert p['input']==[]
+            self.internal_packets.append(p);self.web_thread=p['threadId']
+            self.web_turn='checkpoint-native-'+str(len(self.internal_packets))
+            self.pending_context=output
+            send({'id':ident,'result':{'turn':{'id':self.web_turn}}})
+            self.broadcast(self.web_thread,'turn/started',{'turn':{'id':self.web_turn,'status':'inProgress'}})
+            send({'id':'route-incorporate','method':'item/tool/call','params':{
+                'threadId':self.web_thread,'turnId':self.web_turn,'callId':'route-incorporate',
+                'tool':'interaction_controller','arguments':output['after_incorporation']}})
+            return True
+        if method is None and ident=='route-incorporate':
+            assert message['result']['success'],message
+            view=json.loads(message['result']['contentItems'][0]['text'])
+            send({'id':'route-checkpoint','method':'item/tool/call','params':{
+                'threadId':self.web_thread,'turnId':self.web_turn,'callId':'route-checkpoint',
+                'tool':'interaction_controller','arguments':{'operation':'live_context','arguments':{
+                    'action':'checkpoint','dialogue':view['dialogue'],'revision':view['checkpoint_revision'],
+                    'through':view['incorporated'],'text':'Keep our current conversation purpose, the human correction and unresolved effect references. No effects are replayed from this semantic checkpoint.'}}}})
+            return True
+        if method is None and ident=='route-checkpoint':
+            assert message['result']['success'],message
+            self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
+                'id':'internal-checkpoint','type':'agentMessage','phase':'final_answer','text':'PRIVATE_CHECKPOINT_BOOKKEEPING'}})
+            self.broadcast(self.web_thread,'turn/completed',{'turn':{'id':self.web_turn,'status':'completed'}})
+            return True
+        return CanonicalRouting.handle_extra_rpc(self,message,send)
+
+
+def qualify_rollover(binary):
+    j=CheckpointContext(binary)
+    try:
+        j.start();j.admit('Seed synthetic checkpoint continuity.',topic=1)
+        j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.messages.clear()
+        config={'receiver_config':str(j.config),'state_dir':str(j.root/'checkpoint-dashboard'),'bot_id':123}
+        provider=Provider(config)
+        @contextmanager
+        def database():
+            db=sqlite3.connect(j.root/'context.sqlite3',timeout=3);db.row_factory=sqlite3.Row
+            try:
+                with db:yield db
+            finally:db.close()
+        history=NativeHistory(database,'checkpoint-scope')
+        binding=provider.presentation_list(0,0)['binding'];dialogue=str(uuid.uuid4())
+        async def owner(function,*args):return await asyncio.to_thread(function,*args)
+        async def scenario():
+            p=NativeContext(history,provider,100,dialogue,binding,owner);await p.open()
+            first_generation=p.record['generation']
+            for cycle in range(2):
+                source=str(uuid.uuid4())
+                history.retain(100,dialogue,binding,source,f'Exact language for cycle {cycle}.','b'*64,0,closed=True)
+                await p._sync(p.record)
+                await asyncio.to_thread(j.wait,lambda:j.row("SELECT json_extract(doc,'$.checkpoint.through') FROM live_context WHERE dialogue=?",(dialogue,))==[(cycle+1,)])
+                await asyncio.to_thread(j.wait,lambda:j.row('SELECT busy FROM sessions WHERE thread_id=1')==[(0,)])
+                basis=await p.prepare_rollover();assert basis is not None
+                intent=await p.begin_rollover(basis,str(uuid.uuid4()));assert intent is not None
+                actual=provider.conversation_live_context
+                if cycle==0:
+                    def queued_commit(body):
+                        if body['action']=='rollover_commit':raise ProviderUnavailable('Synthetic still-queued commit')
+                        return actual(body)
+                    with patch.object(provider,'conversation_live_context',side_effect=queued_commit):
+                        assert not await p.commit_rollover(intent)
+                    try:
+                        actual({'action':'rollover_commit','dialogue':dialogue,'generation':intent['previous'],
+                            'next_generation':intent['next'],'revision':intent['revision']})
+                    except ProviderUnavailable:pass
+                    else:raise AssertionError('An actual delayed commit must be fenced after abort')
+                    intent=await p.begin_rollover(basis,str(uuid.uuid4()));assert intent is not None
+                def lose_commit(body):
+                    result=actual(body)
+                    if body['action']=='rollover_commit':raise ProviderUnavailable('Synthetic lost ACK after ACTUAL native commit')
+                    return result
+                with patch.object(provider,'conversation_live_context',side_effect=lose_commit):
+                    assert await p.commit_rollover(intent)
+                assert p.record['generation']==intent['next'] and p.record['rollover'] is None
+            assert p.record['generation']!=first_generation
+            await p.close()
+        asyncio.run(scenario())
+        with database() as db:
+            assert db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='retained'").fetchone()[0]==2
+            assert tuple(db.execute('SELECT phase,rollover FROM foreground_context_producers WHERE dialogue=?',(dialogue,)).fetchone())==('closed',None)
+        assert j.row('SELECT count(*) FROM interaction_instructions')==[(0,)]
+        assert j.row('SELECT count(*) FROM conversation_inputs')==[(0,)]
+        assert not j.messages
+        print('PASS two actual native incorporation/checkpoint/generation cycles with local SQLite CAS and deliberately lost commit ACK, fenced outcome recovery, once-only sources and no models/socket/work replay; provider rollover remains separate')
+    finally:j.close()
+
+
+if __name__=='__main__':
+    binary=str(Path(sys.argv[1]).resolve());qualify(binary);qualify_rollover(binary)

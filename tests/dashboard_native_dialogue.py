@@ -24,6 +24,42 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def test_successor_opens_checkpoint_only_without_retiring_or_replaying_old_socket(self):
+        self.ready()
+        basis={'revision':'a'*64,'through':4,'content':{'kind':'internal_integrator_checkpoint',
+            'checkpoint':{'text':'Keep the current purpose, correction and unresolved request.'}}}
+        successor=Socket();successor.received=[{'setupComplete':{}}]
+        self.stream._connect=lambda *a,**k:successor
+        candidate=self.stream.successor(basis,pending_effects=[{'original':self.original,'intent':str(uuid.uuid4()),'phase':'unconfirmed'}])
+        self.assertFalse(self.socket.closed);self.assertEqual(self.stream.phase,'ready')
+        self.assertEqual(candidate.phase,'ready');self.assertEqual(len(successor.sent),1)
+        self.assertEqual(set(successor.sent[0]),{'setup'})
+        setup=successor.sent[0]['setup'];context=json.dumps(setup)
+        self.assertIn('internal_integrator_checkpoint',context)
+        self.assertIn('unconfirmed',context)
+        self.assertNotIn('toolResponse',successor.sent[0]);self.assertNotIn('realtimeInput',successor.sent[0])
+        candidate.close()
+
+    def test_successor_keeps_old_transport_when_setup_fails_and_refuses_busy_floor(self):
+        self.ready()
+        basis={'revision':'a'*64,'through':1,'content':{'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Known context'}}}
+        self.stream.response_pending=True
+        self.assertIsNone(self.stream.successor(basis))
+        self.stream.response_pending=False
+        successor=Socket();successor.fail_send=True;self.stream._connect=lambda *a,**k:successor
+        with self.assertRaises(DialogueUnavailable):self.stream.successor(basis)
+        self.assertFalse(self.socket.closed);self.assertTrue(successor.closed)
+        self.assertEqual(self.stream.phase,'ready')
+
+    def test_successor_checks_complete_identity_and_seed_size_before_opening(self):
+        self.ready();opened=[]
+        self.stream._continuity_identity={'being_identity':{'text':'a'*8192}}
+        self.stream._connect=lambda *a,**k:opened.append(True)
+        basis={'revision':'a'*64,'through':1,'content':{'kind':'internal_integrator_checkpoint',
+            'checkpoint':{'text':'b'*24200}}}
+        with self.assertRaises(ValueError):self.stream.successor(basis)
+        self.assertEqual(opened,[]);self.assertFalse(self.socket.closed)
+
     def guidance(self,mode='context_only'):
         return {'id':str(uuid.uuid4()),'dialogue':str(uuid.uuid4()),'generation':str(uuid.uuid4()),
                 'basis':1,'mode':mode,'text':'A confirmed fact from Sol; not a new human request.'}

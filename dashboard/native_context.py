@@ -20,6 +20,7 @@ class NativeContext:
         self.dirty=asyncio.Event();self.record=None
         self.runner=None;self.stopping=False;self.failed=False;self.status='not_started'
         self.guidance_lock=asyncio.Lock();self.guidance_attempts=set()
+        self.operation_lock=asyncio.Lock()
 
     async def open(self):
         # Called only for an authenticated explicit avatar open, after the
@@ -43,7 +44,83 @@ class NativeContext:
         return result
 
     async def _open_record(self,record):
+        if record.get('rollover') is not None:
+            # An old process owns no surviving voice socket. Resolve its one
+            # exact transition, never reopen/replay the candidate or tool calls.
+            await self._resolve_rollover(record,json.loads(record['rollover']))
         return await self._call(record,'open',binding=record['binding'])
+
+    async def prepare_rollover(self):
+        async with self.operation_lock:
+            if self.stopping or self.failed or self.record.get('rollover') is not None:return None
+            await self._sync_unlocked(self.record)
+            try:value=await self._call(self.record,'rollover_read')
+            except ProviderUnavailable:return None
+            return value.get('rollover_basis')
+
+    async def begin_rollover(self,basis,next_generation):
+        """Retain the exact candidate intent BEFORE opening a replacement."""
+        async with self.operation_lock:
+            if self.stopping or self.failed or self.record.get('rollover') is not None:return None
+            current=await self._call(self.record,'rollover_read')
+            if current.get('rollover_basis')!=basis:return None
+            intent=await asyncio.to_thread(self.history.context_rollover_intent,self.record,next_generation,basis['revision'])
+            self.record['rollover']=json.dumps(intent,separators=(',',':'))
+            return intent
+
+    async def _resolve_rollover(self,record,intent):
+        # Read-only status=false cannot settle an in-flight commit. The native
+        # abort either observes its commit or fences this exact candidate UUID
+        # so a delayed command cannot change generation after our observation.
+        if record.get('rollover') is None or json.loads(record['rollover'])!=intent:
+            raise ValueError('Select the retained Live rollover intent')
+        value=await self.owner(self.provider.conversation_live_context,{
+            'action':'rollover_abort','dialogue':record['dialogue'],'generation':intent['previous'],
+            'next_generation':intent['next'],'revision':intent['revision']})
+        committed=value.get('rollover_committed')
+        if (type(committed) is not bool or value.get('dialogue')!=record['dialogue']
+                or value.get('generation')!=intent['next' if committed else 'previous']
+                or not committed and value.get('rollover_fenced') is not True
+                or committed and (value.get('rollover',{}).get('committed') is not True
+                    or any(value.get('rollover',{}).get(k)!=intent[k] for k in ('previous','next','revision')))):
+            raise ValueError('Live rollover outcome was not confirmed')
+        updated=await asyncio.to_thread(self.history.context_rollover_settle,record,intent,committed=committed)
+        record.clear();record.update(updated)
+        return committed
+
+    async def abort_rollover(self,intent):
+        async with self.operation_lock:
+            try:return await self._resolve_rollover(self.record,intent)
+            except BaseException:
+                self.failed=True;self.status='needs_review';raise
+
+    async def commit_rollover(self,intent):
+        """Caller owns the prepared socket and final acoustic/output boundary.
+
+        Only native/local journal state changes here. No provider reconnect,
+        socket write, original replay or inference retry is performed.
+        """
+        async with self.operation_lock:
+            if self.stopping or self.failed:raise ValueError('Live context is not active')
+            if self.record.get('rollover') is None or json.loads(self.record['rollover'])!=intent:
+                raise ValueError('Select the retained Live rollover intent')
+            try:
+                try:
+                    value=await self.owner(self.provider.conversation_live_context,{
+                        'action':'rollover_commit','dialogue':self.dialogue,'generation':intent['previous'],
+                        'next_generation':intent['next'],'revision':intent['revision']})
+                except ProviderUnavailable:
+                    return await self._resolve_rollover(self.record,intent)
+                receipt=value.get('rollover',{})
+                if (value.get('dialogue')!=self.dialogue or value.get('generation')!=intent['next']
+                        or any(receipt.get(k)!=intent[v] for k,v in (('previous','previous'),('next','next'),('revision','revision')))
+                        or receipt.get('committed') is not True):
+                    raise ValueError('Live rollover commit was not confirmed')
+                updated=await asyncio.to_thread(self.history.context_rollover_settle,self.record,intent,committed=True)
+                self.record.clear();self.record.update(updated)
+                return True
+            except BaseException:
+                self.failed=True;self.status='needs_review';raise
 
     def notify(self):
         self.dirty.set()
@@ -58,6 +135,10 @@ class NativeContext:
             if self.stopping:return
 
     async def _sync(self,record):
+        async with self.operation_lock:
+            await self._sync_unlocked(record)
+
+    async def _sync_unlocked(self,record):
         # Pending rows reference immutable canonical terminal utterances. Do not
         # use playback-dependent revisions or a row cursor that misses closure.
         # Exact idempotent source reconciliation can resume after a lost owner
@@ -89,8 +170,8 @@ class NativeContext:
         await asyncio.to_thread(self.history.context_phase,record,'closed')
 
     async def offer_guidance(self,deliver,ready=None):
-        if self.record is None or self.stopping or self.failed or self.guidance_lock.locked():return False
-        async with self.guidance_lock:
+        if self.record is None or self.stopping or self.failed or self.guidance_lock.locked() or self.operation_lock.locked():return False
+        async with self.operation_lock,self.guidance_lock:
             try:result=await self._call(self.record,'guidance')
             except ProviderUnavailable:return False
             guide=result.get('guidance')
@@ -153,6 +234,8 @@ def install_schema(db):
         CREATE INDEX IF NOT EXISTS foreground_context_pending ON foreground_context_outbox(dialogue,phase);
         CREATE TRIGGER IF NOT EXISTS foreground_context_source_deleted AFTER DELETE ON foreground_utterances
         BEGIN DELETE FROM foreground_context_outbox WHERE source=OLD.id; END;''')
+    if 'rollover' not in {r[1] for r in db.execute('PRAGMA table_info(foreground_context_producers)')}:
+        db.execute('ALTER TABLE foreground_context_producers ADD COLUMN rollover TEXT')
 
 
 def enqueue(db,row):
