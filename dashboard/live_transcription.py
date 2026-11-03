@@ -55,6 +55,7 @@ class VoiceInbox:
         self.bytes = 0
         self.received_bytes = self.received_messages = 0
         self.peak_bytes = self.peak_messages = 0
+        self.peak_wait_seconds = 0
         self.analyzed_bytes = self.onsets = self.endpoints = 0
         self.changed = asyncio.Event()
         self.error = None
@@ -64,6 +65,7 @@ class VoiceInbox:
         try:
             while True:
                 value = await self.receive()
+                arrived=asyncio.get_running_loop().time()
                 size = 0
                 if self.pcm:
                     if value.get('bytes') is not None:
@@ -84,7 +86,7 @@ class VoiceInbox:
                         await asyncio.wait_for(self.space.wait(),max(0,deadline-asyncio.get_running_loop().time()))
                     except TimeoutError:
                         raise ValueError('Voice processing backlog exceeds bound') from None
-                self.items.append((value, size))
+                self.items.append((value, size, arrived))
                 self.bytes += size
                 self.received_bytes += size
                 self.received_messages += 1
@@ -113,7 +115,7 @@ class VoiceInbox:
             raise self.error
         values, size = [], 0
         while self.items and len(values) < self.batch_size:
-            value, count = self.items[0]
+            value, count, arrived = self.items[0]
             # Native playback observations may share the next fresh check with
             # queued PCM/control frames, in exact order. Disconnect stays alone.
             terminal=value.get('type')=='websocket.disconnect'
@@ -122,6 +124,7 @@ class VoiceInbox:
                 if values:
                     break
             self.items.popleft()
+            self.peak_wait_seconds=max(self.peak_wait_seconds,asyncio.get_running_loop().time()-arrived)
             self.bytes -= count
             size += count
             values.append(value)
@@ -136,6 +139,39 @@ class VoiceInbox:
             await self.task
         self.items.clear()
         self.bytes = 0
+
+
+class VoiceActor:
+    """Join only concurrent fresh checks on one socket; never cache a verdict.
+
+    Input, analysis, output and tools can request the same HTTPS identity check
+    simultaneously. They share its in-flight result, not its future authority:
+    the next call after completion always revalidates. A cancelled waiter cannot
+    cancel another stream consumer's check. No token or identity is logged.
+    """
+    def __init__(self,authorize,request,human):
+        self.authorize,self.request,self.human=authorize,request,human
+        self.pending=None;self.calls=self.checks=0;self.seconds=self.peak=0
+
+    async def _check(self):
+        self.checks+=1;started=asyncio.get_running_loop().time()
+        try:
+            current=await self.authorize(self.request)
+            if current['human']!=self.human:raise HTTPException(403,'Conversation audience changed')
+        finally:
+            spent=asyncio.get_running_loop().time()-started
+            self.seconds+=spent;self.peak=max(self.peak,spent)
+
+    async def __call__(self):
+        self.calls+=1
+        if self.pending is None or self.pending.done():
+            self.pending=asyncio.create_task(self._check())
+            self.pending.add_done_callback(lambda t:None if t.cancelled() else t.exception())
+        await asyncio.shield(self.pending)
+
+    def snapshot(self):
+        return {'calls':self.calls,'fresh_checks':self.checks,
+                'total_ms':round(self.seconds*1000),'peak_ms':round(self.peak*1000)}
 
 
 def wav_bytes(pcm):
@@ -243,10 +279,7 @@ def install(app, config, provider, authorize, origins):
             raise HTTPException(403, 'Action token missing')
         if not getattr(provider, 'receiver', {}).get('voice'):
             raise ValueError('Voice input unavailable')
-        async def actor():
-            current = await authorize(request)
-            if current['human'] != session['human']:
-                raise HTTPException(403, 'Conversation audience changed')
+        actor=VoiceActor(authorize,request,session['human'])
         async def recheck():
             await actor()
             value = await asyncio.to_thread(provider.presentation, f'input list {2**63-1} after')

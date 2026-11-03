@@ -76,7 +76,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         if socket.headers.get('origin') not in origins:
             await socket.close(code=1008);return
         await socket.accept()
-        owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
+        owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=actor=None
         context_producer=None
         control_task=None;control_dirty=False
         output_queue=None;output_pending=deque();output_batch_pending=False
@@ -619,6 +619,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'received_messages':inbox.received_messages if inbox else 0,
                     'peak_pending_messages':inbox.peak_messages if inbox else 0,
                     'peak_pending_pcm_bytes':inbox.peak_bytes if inbox else 0,
+                    'peak_input_queue_wait_ms':round(inbox.peak_wait_seconds*1000) if inbox else 0,
+                    'actor_checks':actor.snapshot() if actor is not None else None,
                     'generated_pcm_bytes':retired_output_bytes+(getattr(stream,'output_bytes',0) if stream else 0),
                     'provider_rollovers':rollover_count,
                     'candidate_setup_failures':candidate_setup_failures,
