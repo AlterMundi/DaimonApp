@@ -23,7 +23,7 @@ from dashboard.provider import Provider
 from dashboard.companion import Grants
 from scripts.interaction_asr import streaming_result
 from dashboard.private_state import read_json
-from dashboard.live_transcription import save_prepared, wav_bytes, VoiceInbox
+from dashboard.live_transcription import save_prepared, wav_bytes, VoiceInbox, VoiceActor
 from dashboard.transcription import TranscriptionUnavailable
 from dashboard_io import Receiver
 
@@ -656,7 +656,44 @@ class LiveTranscription(unittest.TestCase):
         self.assertEqual(Stream.opened,[])
 
 
+class VoiceActorChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_consumers_share_only_the_inflight_read_and_revocation_is_fresh(self):
+        from fastapi import HTTPException
+        held=asyncio.Event();release=asyncio.Event();reads=[];allowed=True
+        async def authorize(request):
+            reads.append(request);held.set();await release.wait()
+            if not allowed:raise HTTPException(401,'Synthetic revoked session')
+            return {'human':100}
+        actor=VoiceActor(authorize,object(),100)
+        tasks=[asyncio.create_task(actor()) for _ in range(8)]
+        await held.wait();self.assertEqual(len(reads),1)
+        tasks[0].cancel()
+        with self.assertRaises(asyncio.CancelledError):await tasks[0]
+        self.assertFalse(actor.pending.done(),'One waiter must not cancel shared authorization')
+        release.set();await asyncio.gather(*tasks[1:])
+        self.assertEqual(actor.snapshot()['calls'],8);self.assertEqual(actor.snapshot()['fresh_checks'],1)
+        allowed=False
+        with self.assertRaises(HTTPException):await actor()
+        self.assertEqual(len(reads),2,'Completed authority is never cached')
+
+    async def test_changed_actor_is_refused_and_not_retained_for_the_next_call(self):
+        from fastapi import HTTPException
+        human=101
+        async def authorize(_):return {'human':human}
+        actor=VoiceActor(authorize,None,100)
+        with self.assertRaises(HTTPException):await actor()
+        human=100;await actor();self.assertEqual(actor.snapshot()['fresh_checks'],2)
+
+
 class VoiceInboxBounds(unittest.IsolatedAsyncioTestCase):
+    async def test_queue_wait_records_consumption_age_without_changing_frames(self):
+        queue=asyncio.Queue();frame={'type':'websocket.receive','bytes':b'\0'*3200}
+        inbox=VoiceInbox(queue.get,pcm=True)
+        try:
+            queue.put_nowait(frame);await asyncio.wait_for(inbox.changed.wait(),1)
+            await asyncio.sleep(.01)
+            self.assertEqual(await inbox.batch(),[frame]);self.assertGreaterEqual(inbox.peak_wait_seconds,.01)
+        finally:await inbox.close()
     async def test_native_burst_waits_for_space_without_growing_or_losing_frames(self):
         queue=asyncio.Queue()
         frames=[{'type':'websocket.receive','bytes':bytes([n])*3200} for n in range(100)]

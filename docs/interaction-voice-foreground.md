@@ -1489,3 +1489,32 @@ voice sessions and the compatible native560writer. Reverting to web code that
 predates this option also requires removing `native_voice_name` from its config.
 Actual setup/audio generation, deployed selection and human listening remain
 separate evidence.
+
+
+## Concurrent access checks and delay diagnostics —3November2026
+
+A human browser trial reported increasing conversation delay. Its retained
+close diagnostic reached256000bytes (eight seconds) of queued ingress, but
+contained no queue age or authorization timing. This proves accumulation, not
+a specific root cause. Offline local detector processing of retained synthetic
+speech consumed1.2699seconds for30.035625seconds of audio (setup0.7794seconds);
+that does not qualify the person's noise conditions or explain the full delay.
+
+Input, detector output, provider output and tool/context work can concurrently
+request the same socket's fresh authorization. Shared-home authorization makes
+a new HTTPS identity request. VoiceActor now joins only a currently in-flight
+check for that same immutable request/actor. Completed checks are never cached;
+the next invocation always revalidates revocation, actor and current binding.
+One cancelled waiter cannot cancel another consumer's check, and exceptions
+remain observed. This removes duplicated concurrent reads without a timed
+authorization cache, weaker grants or another login/credential path.
+
+The existing bounded native close journal adds only scalar fresh-check count,
+caller count, cumulative/peak check duration and peak server input queue age.
+Queue age starts after a frame is received, including its local space wait;
+it cannot measure audio still queued on the browser/network. No PCM, transcript,
+cookie, request header, provider payload or exception detail is logged. Existing
+frame/order/backpressure limits and exact-original retention remain unchanged.
+Measured synthetic concurrency/revocation/cancellation and mounted regressions
+do not establish that the reported human delay is resolved; actual stage
+evidence and continued useful-speech/device acceptance remain required.
