@@ -88,6 +88,16 @@ pub(crate) enum LiveContextCommand {
         id: String,
         outcome: String,
     },
+    RolloverRead {
+        dialogue: String,
+        generation: String,
+    },
+    RolloverCommit {
+        dialogue: String,
+        generation: String,
+        next_generation: String,
+        revision: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +150,14 @@ struct Guidance {
 }
 
 #[derive(Serialize, Deserialize)]
+struct RolloverReceipt {
+    previous: String,
+    next: String,
+    revision: String,
+    through: u64,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Projection {
     dialogue: String,
     human: i64,
@@ -162,6 +180,10 @@ struct Projection {
     native_returns: Vec<super::workflows::WorkflowReturn>,
     #[serde(default)]
     guidance: Vec<Guidance>,
+    #[serde(default)]
+    rollover: Option<RolloverReceipt>,
+    #[serde(default)]
+    generations: Vec<String>,
 }
 
 fn hash(value: &impl Serialize) -> Result<String> {
@@ -281,7 +303,37 @@ fn view(p: &Projection) -> Value {
         "entry_binding":[p.human,p.entry,p.session,p.native],"generation":p.generation,
         "high":p.high,"incorporated":p.incorporated,"checkpointed":p.checkpoint.through,
         "checkpoint_revision":p.checkpoint.revision,"closed":p.closed,
+        "rollover":p.rollover,
+        "rollover_meaning":"Owner-reported projection generation transition; not provider readiness, application, audio playback or work replay.",
         "work_admission":"not_requested"})
+}
+
+fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
+    if p.closed
+        || p.high == 0
+        || p.checkpoint.through != p.high
+        || p.incorporated != p.high
+        || p.range.is_some()
+        || p.guidance
+            .iter()
+            .any(|g| matches!(g.phase.as_str(), "pending" | "submitting"))
+    {
+        bail!("Live rollover needs a complete incorporated checkpoint and settled guidance");
+    }
+    let missing:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.human_id=?1 AND c.session_id=?2 AND c.native_thread=?3 AND c.retired=0 AND json_extract(c.doc,'$.foreground_dialogue')=?4 AND length(json_extract(c.doc,'$.text'))>0 AND NOT EXISTS(SELECT 1 FROM json_each(?5) s WHERE s.key=c.id))",
+        params![p.human,p.session,p.native,p.dialogue,serde_json::to_string(&p.sources)?],|r|r.get(0))?;
+    if missing {
+        bail!("Live rollover must catch up canonical human context first");
+    }
+    let content = json!({"kind":"internal_integrator_checkpoint","dialogue":p.dialogue,
+        "generation":p.generation,"checkpoint":p.checkpoint,
+        "guidance":p.guidance.iter().map(|g|json!({"id":g.id,"basis":g.basis,
+            "text":g.text,"mode":g.mode,"phase":g.phase})).collect::<Vec<_>>(),
+        "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."});
+    if serde_json::to_vec(&content)?.len() > 24576 {
+        bail!("Live rollover continuity exceeds its provider setup reserve");
+    }
+    Ok(json!({"revision":hash(&content)?,"through":p.high,"content":content}))
 }
 fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
     if p.range.as_ref().is_some_and(|r| r.full != full) {
@@ -432,6 +484,8 @@ impl Store {
                 range: None,
                 native_returns: vec![],
                 guidance: vec![],
+                rollover: None,
+                generations: vec![generation.clone()],
             };
             save(&tx, &p)?;
             tx.commit()?;
@@ -450,11 +504,60 @@ impl Store {
             | LiveContextCommand::GuideStatus { dialogue, .. }
             | LiveContextCommand::Guidance { dialogue, .. }
             | LiveContextCommand::GuidanceBegin { dialogue, .. }
-            | LiveContextCommand::GuidanceOutcome { dialogue, .. } => dialogue,
+            | LiveContextCommand::GuidanceOutcome { dialogue, .. }
+            | LiveContextCommand::RolloverRead { dialogue, .. }
+            | LiveContextCommand::RolloverCommit { dialogue, .. } => dialogue,
         };
         let mut p = load(&tx, dialogue, human, entry)?;
         let result = match command {
             LiveContextCommand::Open { .. } => unreachable!(),
+            LiveContextCommand::RolloverRead { generation, .. } => {
+                if generation != p.generation {
+                    bail!("Live producer generation differs");
+                }
+                let mut result = view(&p);
+                result["rollover_basis"] = rollover_basis(&tx, &p)?;
+                // A read must not wake the event watcher or create work.
+                return Ok(result);
+            }
+            LiveContextCommand::RolloverCommit {
+                generation,
+                next_generation,
+                revision,
+                ..
+            } => {
+                uuid(&next_generation)?;
+                if let Some(old) = &p.rollover
+                    && old.previous == generation
+                    && old.next == next_generation
+                    && old.revision == revision
+                    && p.generation == next_generation
+                {
+                    return Ok(view(&p));
+                }
+                if generation != p.generation || generation == next_generation {
+                    bail!("Live rollover generation differs");
+                }
+                if p.generations.is_empty() {
+                    p.generations.push(generation.clone());
+                }
+                if p.generations.len() >= 65 || p.generations.contains(&next_generation) {
+                    bail!("Live rollover generation retired or finite session bound reached");
+                }
+                let basis = rollover_basis(&tx, &p)?;
+                if basis["revision"] != revision {
+                    bail!("Live rollover basis changed");
+                }
+                p.rollover = Some(RolloverReceipt {
+                    previous: generation,
+                    next: next_generation.clone(),
+                    revision,
+                    through: p.high,
+                });
+                p.generation = next_generation;
+                p.generations.push(p.generation.clone());
+                view(&p)
+            }
             LiveContextCommand::Append {
                 generation,
                 source,
@@ -901,6 +1004,174 @@ mod tests {
                 "revision":basis["checkpoint_revision"],"through":through,
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn rollover_requires_exact_complete_checkpoint_and_preserves_once_only_sources() {
+        let mut f = Fixture::new();
+        let mut generation = f.generation.clone();
+        for cycle in 1..=2 {
+            let source = Uuid::now_v7().to_string();
+            let append = json!({"action":"append","dialogue":f.dialogue,"generation":generation,
+                "source":source,"role":"assistant","text":format!("Exact dialogue cycle {cycle}"),"interrupted":false});
+            f.call(append.clone()).unwrap();
+            let read =
+                json!({"action":"rollover_read","dialogue":f.dialogue,"generation":generation});
+            assert!(f.call(read.clone()).is_err());
+            let batch = f.read(false);
+            let ack = f.ack(&batch).unwrap();
+            assert!(
+                f.call(read.clone()).is_err(),
+                "Incorporated text alone is not a checkpoint"
+            );
+            f.checkpoint(&ack, cycle);
+            let changes = f.store.conn.lock().unwrap().total_changes();
+            let basis = f.call(read.clone()).unwrap();
+            assert_eq!(f.store.conn.lock().unwrap().total_changes(), changes);
+            let next = Uuid::now_v7().to_string();
+            let commit = json!({"action":"rollover_commit","dialogue":f.dialogue,"generation":generation,
+                "next_generation":next,"revision":basis["rollover_basis"]["revision"]});
+            let mut wrong = commit.clone();
+            wrong["revision"] = json!("stale");
+            assert!(f.call(wrong).is_err());
+            if cycle == 2 {
+                let mut reused = commit.clone();
+                reused["next_generation"] = json!(f.generation);
+                assert!(
+                    f.call(reused).is_err(),
+                    "A retired socket generation must never regain writer authority"
+                );
+            }
+            let settled = f.call(commit.clone()).unwrap();
+            assert_eq!(settled["generation"], next);
+            assert_eq!(settled["rollover"]["through"], cycle);
+            assert_eq!(
+                f.call(commit).unwrap()["generation"],
+                next,
+                "Lost commit ACK is inspected under the same generation identity"
+            );
+            assert!(
+                f.call(append.clone()).is_err(),
+                "The old producer cannot append"
+            );
+            let mut repeated = append;
+            repeated["generation"] = json!(next);
+            assert_eq!(
+                f.call(repeated).unwrap()["fresh"],
+                false,
+                "Canonical source receipts survive rollover"
+            );
+            generation = next;
+            if cycle == 1 {
+                drop(f.store);
+                f.store =
+                    Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+            }
+        }
+        assert_eq!(f.read(true)["range"]["content"]["checkpoint"]["through"], 2);
+    }
+
+    #[test]
+    fn rollover_is_invalidated_by_new_language_or_pending_guidance() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Initial context")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        f.checkpoint(&ack, 1);
+        let basis = f
+            .call(json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let guide = Uuid::now_v7().to_string();
+        f.call(
+            json!({"action":"guide","dialogue":f.dialogue,"generation":f.generation,
+            "id":guide,"basis":1,"mode":"context_only","text":"A newer correction"}),
+        )
+        .unwrap();
+        let commit = json!({"action":"rollover_commit","dialogue":f.dialogue,"generation":f.generation,
+            "next_generation":Uuid::now_v7().to_string(),"revision":basis["rollover_basis"]["revision"]});
+        assert!(f.call(commit.clone()).is_err());
+        f.call(json!({"action":"guidance_begin","dialogue":f.dialogue,"generation":f.generation,"id":guide})).unwrap();
+        assert!(f.call(commit.clone()).is_err());
+        f.call(json!({"action":"guidance_outcome","dialogue":f.dialogue,"generation":f.generation,"id":guide,"outcome":"sent"})).unwrap();
+        assert!(
+            f.call(commit.clone()).is_err(),
+            "Settled new guidance changes the seed digest too"
+        );
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "New speech before the candidate opens",
+        )
+        .unwrap();
+        assert!(f.call(commit).is_err());
+    }
+
+    #[test]
+    fn rollover_rechecks_late_canonical_original_before_generation_commit() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Earlier language")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        f.checkpoint(&ack, 1);
+        let read =
+            json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation});
+        let basis = f.call(read.clone()).unwrap();
+        f.store
+            .conversation_foreground_capture(
+                100,
+                f.entry,
+                &f.binding,
+                &Uuid::now_v7().to_string(),
+                "A late finalized human correction.",
+                &f.dialogue,
+                None,
+            )
+            .unwrap();
+        assert!(f.call(read).is_err());
+        assert!(f.call(json!({"action":"rollover_commit","dialogue":f.dialogue,"generation":f.generation,
+            "next_generation":Uuid::now_v7().to_string(),"revision":basis["rollover_basis"]["revision"]})).is_err());
+        let sync = f
+            .call(json!({"action":"sync","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        assert_eq!(sync["high"], 2);
+        let batch = f.read(false);
+        assert_eq!(
+            batch["range"]["content"]["events"][0]["text"],
+            "A late finalized human correction."
+        );
+    }
+
+    #[test]
+    fn rollover_does_not_clip_an_oversized_checkpoint_to_fit_provider_setup() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "A retained original")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        f.call(json!({"action":"checkpoint","dialogue":f.dialogue,
+            "revision":ack["checkpoint_revision"],"through":1,"text":"α".repeat(16000)}))
+            .unwrap();
+        let changes = f.store.conn.lock().unwrap().total_changes();
+        assert!(
+            f.call(
+                json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation})
+            )
+            .is_err()
+        );
+        assert_eq!(f.store.conn.lock().unwrap().total_changes(), changes);
+        let full = f.read(true);
+        let revision = full["range"]["revision"].as_str().unwrap();
+        let mut text = String::new();
+        let mut offset = 0;
+        loop {
+            let part=f.call(json!({"action":"part","dialogue":f.dialogue,"revision":revision,"offset":offset})).unwrap();
+            text.push_str(part["range"]["text"].as_str().unwrap());
+            if part["range"]["more"] == true {
+                offset = part["range"]["next"].as_u64().unwrap() as usize;
+            } else {
+                break;
+            }
+        }
+        let retained: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(retained["checkpoint"]["text"], "α".repeat(16000));
     }
 
     #[test]

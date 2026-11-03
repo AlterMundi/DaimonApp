@@ -389,6 +389,50 @@ Receiving558 remains selected. Semantic provider rollover, repeat compaction,
 completed metadata retirement and the complete receiving journey remain pending;
 PR560 stays draft.
 
+### Provider-generation transition kernel
+
+The owner-local native context route now supports `rollover_read` with the
+current dialogue/generation and `rollover_commit` with the same scope, a fresh
+`next_generation` UUID and the exact read revision. These operations remain
+unavailable to the model's integrating controller. They never dispatch a native
+turn or call a provider.
+
+Preparation is read-only and requires an open dialogue, no unfinished frozen
+reader, all retained language incorporated and represented by Sol's current
+checkpoint, and no pending/submitting guidance. The returned seed contains that
+checkpoint and settled guidance as attributed non-executable continuity. Its
+serialized24KiB ceiling reserves space within provider setup; it is not a token
+count or a guarantee that every selected identity/setup combination fits. An
+oversized seed is rejected intact, never clipped. The caller must still check
+the complete setup and request a smaller semantic checkpoint when necessary.
+
+Commit compares the exact seed digest again, so new language, a new checkpoint
+or changed guidance invalidates the candidate. Preparation and commit also check
+the canonical human journal within their transaction: a newly finalized original
+not yet caught up by the projection blocks rollover. Unfinished capture/completion
+still belongs to the runtime owner's idle-boundary check. Commit advances only the projection's
+producer generation; it does not assert provider readiness or application. The
+socket owner must coordinate the actual idle boundary, candidate setup/readiness,
+canonical pending-effect references, local generation journal and commit before
+accepting new capture. Socket writes/tool calls/native work are not replayed from
+the checkpoint. That runtime coordination is the next implementation step.
+
+The last exact transition receipt supports inspection after a lost native commit
+ACK, including restart; reissuing it does not mutate state or open a socket.
+Old generations lose append authority, source receipts still deduplicate canonical
+catch-up, and retired generation UUIDs cannot regain authority. Retain at most
+65generation IDs and one transition receipt per logical dialogue: after64rollovers
+the finite session must end or use a separately supported continuation. No
+unbounded transition history or background continuation is introduced.
+
+Kernel qualification covers two checkpoint/rollover cycles across native restart,
+old writer rejection, canonical source deduplication, unchanged read accounting,
+stale language/guidance digests, late canonical-original catch-up and exact
+oversized-checkpoint retrieval. These
+tests do not establish socket rollover, repeat provider compaction, token
+admission, pending-tool handover or receiving acceptance. The five-minute runtime
+pilot and receiving558 remain unchanged.
+
 ## Astra high review — accepted decisions
 
 The human-requested Astra high agent reviewed this complete plan and actual
