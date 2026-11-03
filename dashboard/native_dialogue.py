@@ -248,7 +248,7 @@ class NativeDialogue:
                 or basis['content'].get('kind')!='internal_integrator_checkpoint'
                 or not isinstance(basis['content'].get('checkpoint',{}).get('text'),str)
                 or not basis['content']['checkpoint']['text'].strip()
-                or len(json.dumps(basis['content'],ensure_ascii=False).encode())>24576):
+                or len(json.dumps(basis['content'],sort_keys=True,ensure_ascii=False,separators=(',',':')).encode())>24576):
             raise ValueError('Select an exact bounded Sol checkpoint seed')
         if pending_effects is None:pending_effects=[]
         if (not isinstance(pending_effects,list) or len(pending_effects)>32

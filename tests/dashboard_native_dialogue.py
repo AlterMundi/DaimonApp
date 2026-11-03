@@ -171,6 +171,27 @@ class Dialogue(unittest.TestCase):
         self.assertFalse(self.socket.closed);self.assertTrue(successor.closed)
         self.assertEqual(self.stream.phase,'ready')
 
+    def test_successor_uses_native_canonical_seed_bytes_without_clipping_unicode(self):
+        self.ready();opened=[]
+        successor=Socket();successor.received=[{'setupComplete':{}}]
+        def connect(*args,**kwargs):opened.append(True);return successor
+        self.stream._connect=connect
+        content={'kind':'internal_integrator_checkpoint','checkpoint':{'text':''}}
+        canonical=lambda:json.dumps(content,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
+        remaining=24576-len(canonical())
+        content['checkpoint']['text']='é'*(remaining//2)+'x'*(remaining%2)
+        self.assertEqual(len(canonical()),24576)
+        self.assertGreater(len(json.dumps(content,ensure_ascii=False).encode()),24576)
+        basis={'revision':'a'*64,'through':1,'content':content}
+        candidate=self.stream.successor(basis)
+        self.assertTrue(any(content['checkpoint']['text'] in part['text'] for part in successor.sent[0]['setup']['systemInstruction']['parts']))
+        self.assertEqual(opened,[True]);candidate.close()
+        content['checkpoint']['text']+='x'
+        with self.assertRaises(ValueError):self.stream.successor(basis)
+        self.assertEqual(opened,[True],'An oversize seed never opens another socket')
+        self.assertFalse(self.socket.closed)
+        self.assertEqual(self.stream.input_bytes,0)
+
     def test_successor_checks_complete_identity_and_seed_size_before_opening(self):
         self.ready();opened=[]
         self.stream._continuity_identity={'being_identity':{'text':'a'*8192}}
