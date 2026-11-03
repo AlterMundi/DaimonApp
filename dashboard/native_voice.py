@@ -140,6 +140,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await asyncio.shield(capture.completion)
                     await asyncio.shield(raw_notifications[capture.ident])
                     await actor()
+                    await acoustic.retire_completed_prefix()
                     await send({'type':'original_completed','id':capture.ident,'sha256':capture.digest,'phase':'foreground'})
                     if context_producer is not None:context_producer.notify()
                 completion_notifications[capture.ident]=launch(completed())

@@ -689,6 +689,44 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
         self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
         self.assertNotIn('text',original);self.assertEqual(self.owner.delegations,[])
 
+    def test_confirmed_original_releases_resident_pcm_before_next_provider_rollover(self):
+        self.configure_duration(600)
+        class LongDetector(Detector):
+            async def feed(self,pcm):
+                previous=self.total;self.total+=len(pcm)
+                generation=getattr(self,'generation',0);speaking=getattr(self,'speaking',False)
+                value={'type':'activity','audio_bytes':self.total,'generation':generation,'speaking':False}
+                if pcm[0]==1:
+                    self.generation=generation+1;self.speaking=True
+                    value.update(generation=self.generation,speaking=True,
+                        onset={'audio_bytes':previous+3072,'generation':self.generation})
+                elif speaking:
+                    self.speaking=False
+                    value['endpoint']={'audio_bytes':self.total,'generation':generation,'authority':'analysis_only','probability':.9}
+                await self.queue.put(value)
+        with patch('dashboard.native_voice.Detector',LongDetector),self.open() as ws:
+            ws.send_json(self.meta(session_seconds=600));self.assertEqual(ws.receive_json()['session_seconds'],600)
+            stream=Stream.opened[-1]
+            for cycle in range(2):
+                for _ in range(198):
+                    ws.send_bytes(bytes(32000))
+                    while True:
+                        value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                        if value['type']=='turn_activity':break
+                ws.send_bytes(b'\1\0'*16000);ws.send_bytes(bytes(32000))
+                original=utterance=None
+                while original is None or utterance is None:
+                    value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                    if value['type']=='original_completed':original=value['id']
+                    if value['type']=='assistant_utterance' and value['utterance']['closed']:utterance=value['utterance']
+                ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertEqual(LongDetector.opened[-1].total,400*32000)
+            self.assertEqual(len(self.owner.inputs),2)
+            self.assertEqual(Stream.opened,[stream],'Retirement does not replace the provider')
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+            self.assertTrue(LongDetector.opened[-1].closed_event.wait(2))
+
     def test_six_hundred_second_pcm_through_two_successors_keeps_one_work_and_return(self):
         self.configure_duration(600)
         class LongDetector(Detector):
