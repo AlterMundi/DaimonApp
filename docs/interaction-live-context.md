@@ -1,14 +1,20 @@
 # Shared context between Live voice and Sol
 
-Current receiving status,3November2026: compatible native receiverPR566/source
-22ed3856 is selected on CompAII ITACA after full CI41609604965.40session bindings,
-13goal definitions/budgets/monotonic accounting and4exact physical collector
-receipts passed; Core/configuration and the web process were preserved.
-The web remainsPR563/source6a5e4d8f, UI92a44cdc7ead, Charon/manualCPU. Its actual
-selected Python app passed the joined context/handover fixtures against the new
-release. The paired566web candidate is prepared but NOT selected: current old
-web does not yet emit the new typed missing-caption observation. No current
-human browser trial was interrupted or newly repeated.
+Current receiving status,3November2026: native and webPR566/source22ed3856
+are selected on CompAII ITACA after full CI41609604965. Native adoption preserved
+40session bindings,13goal definitions/budgets/monotonic accounting and4exact
+physical collector receipts. The subsequent idle web adoption verified75composed
+runtime files,21local/public assets and both generated shells. Four Python
+modules changed; unrelated selected Matrix modules and all other bytes remained.
+Core/native/goal/collector services and configuration were preserved during the
+scoped web restart. UI92a44cdc7ead, Charon/manualCPU and ordinary Sol/Qwen remain
+unchanged. No provider was opened or input replayed during adoption.
+
+Closed assistant audio without output text now reaches Sol as an explicit unknown
+observation. The close journal separates pending-analysis audio, unsent analyzed
+phrase audio and activity-end-to-input-confirmation wall wait. These measurements
+support the next human trial; accumulated delay is not declared resolved. Close
+and reopen the avatar for this backend; the UI label may remain unchanged.
 
 The dated preparation/qualification sections below preserve their original
 status. Actual Sol/Gemini/CPU two-successor continuity and one late pending-work
