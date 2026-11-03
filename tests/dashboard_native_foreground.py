@@ -214,6 +214,40 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt['source_sha256'],hashlib.sha256(wav_bytes(pcm)).hexdigest())
         self.assertIs(self.bridge.transcript(ident,self.owner.text),capture.completion)
         with self.assertRaises(ForegroundUnavailable):self.bridge.transcript(ident,'changed text')
+
+    async def test_close_reserve_keeps_exact_audio_when_normal_count_and_pending_are_full(self):
+        normal=[self.bridge.capture(str(uuid.uuid4()),b'\1\0'*160,{}) for _ in range(4)]
+        self.bridge.capture_ids.update(str(uuid.uuid4()) for _ in range(124))
+        self.assertEqual(len(self.bridge.capture_ids),128)
+        with self.assertRaises(ForegroundUnavailable):
+            self.bridge.capture(str(uuid.uuid4()),b'\2\0'*160,{})
+        scope={'a'*32:'b'*64}
+        recovery=[self.bridge.capture(str(uuid.uuid4()),bytes([n,0])*160,scope,recovery=True)
+                  for n in (2,3,4)]
+        with self.assertRaises(ForegroundUnavailable):
+            self.bridge.capture(str(uuid.uuid4()),b'\5\0'*160,scope,recovery=True)
+        await asyncio.gather(*(c.reservation for c in normal+recovery))
+        self.assertEqual(len(self.owner.inputs),7)
+        for capture in recovery:
+            self.assertEqual(capture.phase,'foreground_captured')
+            self.assertIsNone(capture.transcript)
+            self.assertEqual(capture.questions,scope)
+            self.assertEqual((self.bridge.originals/capture.ident).read_bytes(),wav_bytes(capture.pcm))
+        self.assertEqual(self.owner.delegations,[])
+        self.assertEqual(self.bridge._owners._value,2)
+        self.assertEqual(self.bridge._files._value,1)
+
+    async def test_close_reserve_does_not_raise_audio_quota_or_reopen_live_input(self):
+        self.bridge.input_bytes=self.bridge.max_pcm_bytes-320
+        capture=self.bridge.capture(str(uuid.uuid4()),b'\1\0'*160,{},recovery=True)
+        await capture.reservation
+        with self.assertRaises(ForegroundUnavailable):
+            self.bridge.capture(str(uuid.uuid4()),b'\1\0',{},recovery=True)
+        self.bridge.input_bytes=0
+        with self.assertRaises(ForegroundUnavailable):
+            self.bridge.capture(str(uuid.uuid4()),b'\1\0',{})
+        with self.assertRaises(ValueError):
+            self.bridge.capture(str(uuid.uuid4()),b'\1\0',{},recovery=1)
     async def test_playback_context_cannot_overflow_or_replace_original_references(self):
         original=str(uuid.uuid4())
         self.owner.conversation_foreground_originals=lambda *args:{'sources':[{'id':original}],'context':'x'*15700}

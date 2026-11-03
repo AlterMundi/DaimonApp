@@ -283,16 +283,27 @@ class NativeAcousticSession:
                     span.text=text
             await self._pump()
 
-    async def close(self):
+    async def close(self,*,recover_unassigned=False):
+        if type(recover_unassigned) is not bool:
+            raise ValueError('Select explicit unassigned-tail recovery')
         async with self.lock:
             if self.closed:return
             if self.stream.activity_mode=='manual':self._observe_queues()
             self.closed=True;self.changed.set()
-            # A disconnect does not throw away an unfinished, analyzed original.
+            # A disconnect does not throw away an unfinished original.
             # It remains foreground_captured, never automatically delegated.
             if self.local and self.captured>self.local.start:
                 span=self.local
-                self.bridge.capture(span.ident,self._slice(span.start),span.questions)
+                self.bridge.capture(span.ident,self._slice(span.start),span.questions,recovery=True)
+            elif recover_unassigned:
+                # The detector/provider may not yet have marked speech. Retain
+                # only the raw tail after the last captured span, without a
+                # transcript, asserted speech boundary or automatic delegation.
+                # No onset means the earlier arm-time scope remains frozen.
+                for start in range(self.boundary,self.captured,120*32000):
+                    stop=min(self.captured,start+120*32000)
+                    self.bridge.capture(str(uuid.uuid4()),self._slice(start,stop),
+                                        self.questions,recovery=True)
             self.pcm_base=self.captured
             self.pcm.clear();self.local=None;self.spans.clear();self.provider=None
 
@@ -405,15 +416,4 @@ class NativeAutomaticAcousticSession(NativeAcousticSession):
     async def close(self,*,recover_unassigned=False):
         if type(recover_unassigned) is not bool:
             raise ValueError('Select explicit unassigned-tail recovery')
-        async with self.lock:
-            if not self.closed and (self.unassigned or recover_unassigned) and self.local is None:
-                # At most three120s chunks within the existing300s PCM bound.
-                # These are unconfirmed raw originals, not invented utterances.
-                # A failed connection may have received speech before START or
-                # its transcript. Absence of either is not proof of silence.
-                for start in range(self.boundary,self.captured,120*32000):
-                    stop=min(self.captured,start+120*32000)
-                    # Without an onset, later markers cannot narrow a known
-                    # utterance start. Retain the earlier arm-time scope.
-                    self.bridge.capture(str(uuid.uuid4()),self._slice(start,stop),self.questions)
-        await super().close()
+        await super().close(recover_unassigned=(self.unassigned or recover_unassigned))

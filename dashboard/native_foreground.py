@@ -39,6 +39,10 @@ class ForegroundBridge:
     max_captures = 128
     max_pcm_bytes = 300 * 32000
     max_pending = 4
+    # Closing can discover an unassigned tail after normal capture capacity is
+    # full. Reserve at most three120s chunks within the SAME300s audio quota.
+    # These slots only finish retention; they cannot admit more live input.
+    max_recovery_captures = 3
 
     def __init__(self, provider, stream, cache_root, dialogue, binding, authorize, *, speech_context=None):
         Provider.input_id(dialogue)
@@ -55,6 +59,7 @@ class ForegroundBridge:
         self.captures={}
         self.capture_ids=set()
         self.input_bytes=0
+        self._recovery_captures=0
         self.latest=None
         self.pending_acoustic=None
         self._reservation_tail=None
@@ -91,7 +96,7 @@ class ForegroundBridge:
         await self.authorize()
         return await self._run(self._owners,function,*args,**kwargs)
 
-    def capture(self,ident,pcm,questions):
+    def capture(self,ident,pcm,questions,*,recovery=False):
         """Retain authorized captured PCM before its interpretation is confirmed.
 
         The caller supplies a closed acoustic span or uncorrelated recovery
@@ -99,14 +104,19 @@ class ForegroundBridge:
         transcript. No provider/native work is replayed by raw retention.
         """
         Provider.input_id(ident);Provider.check_capture_questions(questions)
-        if (self.closed or ident in self.capture_ids or len(self.capture_ids)>=self.max_captures
-                or sum(c.phase not in ('foreground','unconfirmed') for c in self.captures.values())>=self.max_pending
+        if type(recovery) is not bool:raise ValueError('Select explicit close retention')
+        reserve=self.max_recovery_captures if recovery else 0
+        if (self.closed or ident in self.capture_ids or len(self.capture_ids)>=self.max_captures+reserve
+                or (not recovery and self._recovery_captures)
+                or (recovery and self._recovery_captures>=self.max_recovery_captures)
+                or sum(c.phase not in ('foreground','unconfirmed') for c in self.captures.values())>=self.max_pending+reserve
                 or not isinstance(pcm,bytes) or not pcm or len(pcm)%2
                 or len(pcm)>120*32000 or self.input_bytes+len(pcm)>self.max_pcm_bytes):
             raise ForegroundUnavailable('Foreground capture exceeds its live bounds')
         data=wav_bytes(pcm)
         value=Capture(ident,pcm,hashlib.sha256(data).hexdigest(),dict(questions or {}))
         self.captures[ident]=value;self.capture_ids.add(ident);self.latest=ident;self.input_bytes+=len(pcm)
+        if recovery:self._recovery_captures+=1
         previous=self._reservation_tail
         async def retain():
             try:

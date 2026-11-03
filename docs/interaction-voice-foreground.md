@@ -504,6 +504,20 @@ completion and interim captions do not finalize originals. Up to4local phrases
 can wait in acoustic order while that correlation finishes; native reservations
 also serialize so a slower earlier write cannot reverse ingress chronology.
 Closing retains an unfinished phrase's captured tail without delegating it.
+An unexpected manual or automatic connection close also retains raw PCM already
+accepted by the acoustic owner before any onset was confirmed. The tail begins
+after the last captured span; it does not duplicate completed originals. Without
+an onset, it keeps the earlier arm-time question scope, supplies no transcript
+and never delegates work. Explicit normal close without an onset does not invent
+a phrase. This covers acoustic-owned bytes, not unread socket/inbox frames.
+
+Close retention has three reserved capture/pending slots for at most three
+120second chunks within the unchanged300second cumulative PCM quota. Normal
+capture remains bounded to128sources/four pending reservations; starting close
+recovery prevents further live capture. The same one file writer/two owner
+slots, fresh authorization and private original cache apply. Storage or later
+authorization failure remains unconfirmed; raw retention is not native admission.
+This correction is source-qualified separately from receiving/device acceptance.
 
 Explicit fragmented input transcription preserves the provider's optional
 [`finished` marker](https://googleapis.github.io/js-genai/release_docs/interfaces/types.Transcription.html).

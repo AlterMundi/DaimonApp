@@ -852,6 +852,29 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
         self.assertEqual(self.owner.delegations,[])
         self.assertFalse(self.owner.completed.is_set())
 
+    def test_manual_detector_failure_before_onset_keeps_unconfirmed_exact_tail(self):
+        class FailedBeforeOnset(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm)
+                raise DialogueUnavailable('Synthetic detector failure before onset')
+        pcm=b'\3\0'*1600
+        with patch('dashboard.native_voice.Detector',FailedBeforeOnset):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(pcm)
+                while ws.receive_json()['type']!='review':pass
+                self.assertTrue(self.owner.context_closed.wait(30),'Wait for actual retained cleanup')
+                self.assertTrue(FailedBeforeOnset.opened[-1].closed_event.wait(2),
+                                'Context close precedes detector shutdown; observe both before teardown')
+        self.assertEqual(len(self.owner.inputs),1)
+        ident,original=next(iter(self.owner.inputs.items()))
+        self.assertEqual(original['phase'],'foreground_captured')
+        self.assertNotIn('text',original)
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.delegations,[])
+        self.assertFalse(self.owner.completed.is_set())
+        self.assertEqual(Stream.opened[-1].total,0,'No onset can acquire the provider floor')
+
     def test_automatic_send_failure_before_onset_keeps_unconfirmed_exact_tail(self):
         class FailedBeforeOnset(Stream):
             activity_mode='automatic'
@@ -1238,6 +1261,8 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
                 self.assertEqual(positions,list(range(2,361,2)))
                 self.assertLess(len(checks)-before,120,'Already queued native controls share a fresh batch check, without an auth cache')
                 ws.send_json({'type':'close'})
+                self.assertTrue(self.owner.context_closed.wait(2),'Observe normal close before fixture teardown')
+                self.assertTrue(Quiet.opened[-1].closed_event.wait(2))
         self.assertTrue(Stream.opened[0].closed_event.wait(2))
         self.assertEqual(Quiet.opened[-1].total,48000,'All microphone frames are processed in order without loss')
         self.assertEqual(self.owner.inputs,{});self.assertEqual(self.owner.delegations,[])
