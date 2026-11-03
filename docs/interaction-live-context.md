@@ -13,8 +13,9 @@ single-commit checkout. Current deployment, health and compatible-writer rollbac
 The dated preparation and qualification sections below preserve their original
 status; references to receiving558 describe those earlier observations. Actual
 Sol/Gemini/CPU two-successor continuity is digitally qualified. Device hearing,
-useful latency, full128000token admission, long/noisy speech and pending effects
-at handover remain unfinished. The five-minute pilot is retained. Native speech
+useful latency, full128000token admission, long/noisy speech and broader pending
+effect/barge-in-at-handover acceptance remain unfinished. One late-result case
+across a physical successor is now qualified below. The five-minute pilot is retained. Native speech
 remains above Sol; the full roadmap and unfinished Android/Beacon/iOS/base
 requirements remain unchanged.
 
@@ -1250,3 +1251,38 @@ writer-preserving adoption route is executed. The complete token-limit, active
 speech/pending effects during handover, noise, device and remaining roadmap
 requirements still need their applicable evidence; do not replace them with a
 claim that two successful checkpoints complete the milestone.
+
+
+## Pending work across an actual provider successor —3November2026
+
+A distinct isolated mounted journey on sourceec9991b7 used actual
+Sol6.1/openai/medium, Gemini3.8Live, the local CPU detector and the existing Qwen
+route for one new synthetic input recording. Its two sentence boundaries yielded
+two retained interpreted originals; only the second requested work. A synthetic
+Alpha worker received exactly one accepted request for two snack ideas.
+
+With Alpha still pending, injected conservative context pressure requested an
+actual Sol full-context read and semantic checkpoint. One real Gemini successor
+was prepared and installed while capture continued. Alpha still had exactly the
+same one admission afterward. Only then did the fixture complete Alpha with two
+ideas. The canonical integrating return reached the new provider and produced
+199202bytes of native24kHzPCM plus the matching spoken transcript: a toast with
+cheese and fresh fruit. No original, worker admission or old provider audio was
+replayed. The source-return tool receipt and generated speech are digital
+observations, not physical hearing or a useful-speech latency benchmark.
+
+The logical voice lasted60.753s; the complete fixture took79.962s. Close retained
+one rollover, no provider failure, context high4/incorporated4/closed, completed
+cleanup and native idle. Input queue peak was3200bytes with2msobserved wait;
+local analysis peak200ms of captured audio, unsent analyzed phrase peak564ms of
+audio and activity-end-to-final-input-confirmation peak216ms of wall time. The
+identity peer and client playback were synthetic, so these values do not measure
+production network/grant or phone performance.
+
+The successful disposable fixture/media were removed; its exact operation,
+source hash and bounded scalar qualification remain in the receiving operator
+record. Native history remains preserved. This closes this specific pending-job
+return-at-handover case, not full128k saturation, arbitrary concurrent effects,
+barge-in during commit, long sessions or device/noise/hearing acceptance.
+No production runtime changed: receivingPR563 stays selected while the human
+browser trial is pending; PR564's scalar diagnostics are merged/prepared only.
