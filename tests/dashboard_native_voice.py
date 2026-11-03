@@ -31,6 +31,7 @@ class Stream:
     activity_mode='manual';model='gemini-3.8-live';max_tools=32;opened=[]
     def __init__(self,*args,**kwargs):
         self.context=kwargs.get('context')
+        self.voice_name=kwargs.get('voice_name')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
         self.start_sent=threading.Event();self.tool_results=queue.Queue();self.notices=[];self.notice_seen=threading.Event();self.input_active=False;self.response_pending=False;self.opened.append(self)
         self.guidance=[];self.guidance_seen=threading.Event()
@@ -187,6 +188,16 @@ class Owner(Receiver):
 
 
 class Mounted(unittest.TestCase):
+    def test_owner_selected_voice_reaches_provider_and_invalid_selection_is_refused(self):
+        self.config['streaming_transcription']['native_voice_name']='Charon'
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            self.assertEqual(Stream.opened[0].voice_name,'Charon')
+            ws.send_json({'type':'close'})
+        for value in ('',1,'Charon\n'):
+            invalid={**self.config,'streaming_transcription':{**self.config['streaming_transcription'],'native_voice_name':value}}
+            with self.assertRaises(ValueError):create_app(invalid,self.owner,lambda raw,bot:int(raw))
+
     def test_failed_candidate_setup_keeps_current_voice_available(self):
         attempted=threading.Event()
         def fail(*args,**kwargs):
@@ -274,6 +285,58 @@ class Mounted(unittest.TestCase):
             _,result=successor.tool_results.get(timeout=2)
             self.assertEqual(result['text'],'Canonical integrating return.')
             self.assertEqual(len(self.owner.inputs),2);self.assertEqual(len(self.owner.delegations),1)
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_new_speech_during_successor_setup_preserves_pending_work_and_late_return(self):
+        class Repeated(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm);generation=(self.total+6399)//6400;first=self.total%6400==3200
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':generation,
+                    'speaking':first,'speech_seen':True,
+                    'onset' if first else 'endpoint':{'generation':generation,'audio_bytes':self.total,
+                        **({} if first else {'authority':'analysis_only','probability':.9})}})
+        held=threading.Event();release=threading.Event();created=threading.Event();successor=Stream.successor
+        def prepare(stream,basis,**kwargs):
+            held.set()
+            if not release.wait(3):raise TimeoutError('Synthetic held successor setup')
+            result=successor(stream,basis,**kwargs);created.set();return result
+        with patch('dashboard.native_voice.Detector',Repeated),patch.object(Stream,'successor',prepare),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            old=Stream.opened[0]
+            def phrase():
+                ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+                utterance=original=None
+                while utterance is None or original is None:
+                    value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                    if value['type']=='assistant_utterance' and value['utterance']['closed']:utterance=value['utterance']
+                    if value['type']=='original_completed':original=value['id']
+                return utterance,original
+            utterance,original=phrase()
+            old.queue.put([{'type':'delegation_proposed','call_id':'admit-work',
+                'original_ids':[original],'formulation':'Preserve one pending synthetic task through new speech.'}])
+            _,receipt=old.tool_results.get(timeout=2);self.assertEqual(receipt['kind'],'integrator_admission')
+            old.rollover_due=True
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            try:
+                self.assertTrue(held.wait(2))
+                second,second_original=phrase()
+                self.assertNotEqual(second_original,original)
+                self.assertEqual(old.total,12800,'New speech must stay on the existing socket during setup')
+                release.set();self.assertTrue(created.wait(2))
+                self.assertTrue(Stream.opened[1].closed_event.wait(2),'Changed speech/playback floor must discard the stale candidate')
+                self.assertFalse(old.closed)
+                self.assertFalse(any(c['action']=='rollover_commit' for c in self.owner.context_calls))
+                self.assertEqual(len(self.owner.inputs),2);self.assertEqual(len(self.owner.delegations),1)
+                old.rollover_due=False  # Isolate return on the preserved socket; two successful successors have separate coverage.
+                self.owner.return_ready=True
+                (self.root/'native.sqlite3').write_bytes(b'late return while new speech is awaiting playback')
+                # Continue the existing admission watch, never open another
+                # watch or manufacture another delegation to repair the test.
+                ws.send_json({'type':'playback','id':second['id'],'played_bytes':640})
+                _,result=old.tool_results.get(timeout=2)
+                self.assertEqual(result['text'],'Canonical integrating return.')
+                self.assertEqual(len(self.owner.delegations),1)
+            finally:release.set()
             ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
 
     def test_slow_guidance_control_does_not_block_provider_audio(self):

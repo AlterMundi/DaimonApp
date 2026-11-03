@@ -26,6 +26,23 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def test_selected_prebuilt_voice_is_kept_across_checkpoint_successor(self):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='manual',voice_name='Charon',connect=self.connect,clock=lambda:self.now)
+        voice={'voiceConfig':{'prebuiltVoiceConfig':{'voiceName':'Charon'}}}
+        self.assertEqual(self.socket.sent[0]['setup']['generationConfig']['speechConfig'],voice)
+        self.ready()
+        successor=Socket();successor.received=[{'setupComplete':{}}]
+        self.stream._connect=lambda *a,**k:successor
+        basis={'revision':'a'*64,'through':0,'content':{'kind':'internal_integrator_checkpoint',
+            'checkpoint':{'text':'Keep the existing conversation.'}}}
+        candidate=self.stream.successor(basis)
+        self.assertEqual(successor.sent[0]['setup']['generationConfig']['speechConfig'],voice)
+        self.assertEqual(candidate.voice_name,'Charon');candidate.close()
+        for invalid in ('',None,1,'Charon\n','Charon/other'):
+            if invalid is None:continue  # Omission deliberately preserves the provider default.
+            with self.assertRaises(ValueError):NativeDialogue(self.key,activity_mode='manual',voice_name=invalid,connect=self.connect)
+
     def pin_stream(self,context=None):
         self.stream.close();self.socket=Socket()
         self.stream=NativeDialogue(self.key,activity_mode='automatic',connect=self.connect,

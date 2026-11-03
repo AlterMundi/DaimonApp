@@ -1,8 +1,22 @@
 # Shared context between Live voice and Sol
 
-Status: Astra high reviewed; accepted implementation decisions,2November2026. Owns the continuation of
-PR560; not receiving adoption. Native speech remains above Sol; the full roadmap
-and unfinished device/Android/Beacon/iOS/base requirements remain unchanged.
+Current receiving status,3November2026: PR560 merged as6dd658af; qualified source
+6ce4b40f is selected on ITACA for the compatible native writer and composed web
+runtime. Web receipt verification completed at07:11:05.816089Z. New dialogues
+use the local CPU detector with manual provider activity; the human remains
+hands-free, without Send. Existing automatic dialogues were not converted.
+The client assets remain92a44cdc7ead. Two unrelated selected Matrix modules
+retain their exact previous bytes; the runtime is not claimed to be a pristine
+single-commit checkout. Current deployment, health and compatible-writer rollback:
+[receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md).
+
+The dated preparation and qualification sections below preserve their original
+status; references to receiving558 describe those earlier observations. Actual
+Sol/Gemini/CPU two-successor continuity is digitally qualified. Device hearing,
+useful latency, full128000token admission, long/noisy speech and pending effects
+at handover remain unfinished. The five-minute pilot is retained. Native speech
+remains above Sol; the full roadmap and unfinished Android/Beacon/iOS/base
+requirements remain unchanged.
 
 ## Selected continuation after actual provider qualification
 
@@ -12,8 +26,9 @@ speech/turn detector owns explicit spans; quiet capture remains local, and only
 never-sent backlog enters a successor. The selected next candidate uses this
 route for NEW dialogues, not an in-place conversion of an automatic connection.
 In-session contextUpdate and append-anchor sliding remain unqualified and OFF.
-Receiving558 is still automatic and unchanged; this is not adoption or device
-acceptance. Exact evidence and limits are recorded at the end of this document.
+This route is now selected for new receiving560 dialogues as recorded above;
+selection is not device acceptance. Exact qualification and limits are recorded
+at the end of this document.
 
 ## Human outcome and ownership
 
