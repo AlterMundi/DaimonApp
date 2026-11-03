@@ -11,6 +11,7 @@ import json
 import sqlite3
 import sys
 import threading
+import uuid
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -250,6 +251,31 @@ def qualify(binary, *, funded=False):
         assert part["text"] == callback["text"]
         after = b.get("/api/interaction?matrix=" + str(page["cursor"]["matrix"]))
         assert not any(v["kind"] == "matrix_result" for v in after["items"])
+        # A normal native signed reply needs no invented execution marker.
+        # The owner imports it as verbatim speech, never as completed work.
+        speech_text = "Sí, podemos continuar desde la misma conversación."
+        spoken = sdk.fixture.send_and_settle(
+            sdk.receiver, client_id="test", send_id=str(uuid.uuid4()),
+            thread_id=sent["thread_id"], text=speech_text,
+            response_to=(sdk.receiver, sent["message_id"]),
+        )
+        ordinary = j.call("route-inspect-ordinary-native-speech", "matrix_status", {
+            "request_id": request["id"], "receive_after": cursor,
+        })
+        assert ordinary["inspection"]["canonical_replies"] == 1
+        spoken_result = next(row["result"] for row in ordinary["results"]
+                             if row["result"]["message_id"] == spoken["message_id"])
+        assert spoken_result["reply_kind"] == "speech" and spoken_result["text"] == speech_text
+        assert "execution_ref" not in spoken_result
+        spoken_page = b.get("/api/interaction?matrix=0")
+        spoken_view = next(row for row in spoken_page["items"]
+                           if row["id"] == "matrix:" + spoken["message_id"])
+        assert spoken_view["reply_kind"] == "speech" and spoken_view["completed"] is None
+        assert j.row("SELECT count(*) FROM interaction_matrix_results") == [(2,)]
+        assert len(observed) == 1
+        if funded:
+            assert state.store.funding_status("episode")["calls"] == 1
+            assert state.store.funding_status("episode")["reserved"] == 30
         # A contextual response carries the selected canonical event, not an
         # automatic peer send or a forged local worker request.
         next_id, _ = b.text(
@@ -361,7 +387,8 @@ def qualify(binary, *, funded=False):
                         "selected_source_only": set(state.reads)
                         == {state.source["event_id"]},
                         "result_passive": True,
-                        "canonical_return_rows": 1,
+                        "canonical_return_rows": j.row("SELECT count(*) FROM interaction_matrix_results")[0][0],
+                        "ordinary_speech_completed": spoken_view["completed"],
                         "provider_model_calls": 0,
                         "native_reader_identity_preserved": True,
                         "worker_kind": "controlled-model-free-stand-in",

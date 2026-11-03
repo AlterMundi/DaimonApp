@@ -596,10 +596,14 @@ class _NativeMatrixTransport:
         Recording this through the authenticated Telecodex owner retains the
         canonical external reply. It does not authorize another native turn.
         """
+        answer = self.accept_verified_reply(request_result, message)
+        return self._conversation_callback(request_result, message, answer)
+
+    def _conversation_callback(self, request_result, message, answer):
+        # Callers have already checked the authenticated route and reply kind.
         origin = self._task.get("origin")
         if origin is None:
             raise MatrixExecutionError("Frozen conversation origin required")
-        answer = self.accept_verified_reply(request_result, message)
         selected = request_result["destination"]
         recipient = {
             key: selected[key]
@@ -627,8 +631,8 @@ class _NativeMatrixTransport:
             "text": answer,
         }
 
-    def accept_verified_reply(self, request_result, message):
-        """Correlate an already SDK-verified selected event, without inference."""
+    def _verified_reply_body(self, request_result, message):
+        """Check the authenticated exact parent/author/thread, without inference."""
         if self._scope.tool != "messaging_send":
             raise MatrixExecutionError("Outgoing request required")
         self._validate_result(request_result)
@@ -653,6 +657,11 @@ class _NativeMatrixTransport:
             raise MatrixExecutionError(
                 "Reply is not from the selected request and recipient"
             )
+        return body
+
+    def accept_verified_reply(self, request_result, message):
+        """Strict controller-worker result; never ordinary speech or approval."""
+        body = self._verified_reply_body(request_result, message)
         relay = closed(
             strict_json(body["text"]),
             ("schema", "via", "kind", "input_ref", "execution_ref", "text"),
@@ -855,6 +864,26 @@ class MatrixConversationReceipt(_NativeMatrixTransport):
         super().__init__(task, scope, author, native_client, None)
         self._validate_submission(submission)
         self._retained_submission = strict_json(canonical(submission))
+
+    def conversation_return(self, request_result, message):
+        """Retain signed speech as speech; structured work results stay strict.
+
+        This read-only receipt cannot create an execution controller. A native
+        human-authorized reply needs no invented worker execution reference.
+        Neither kind establishes task completion, spending or a native turn.
+        """
+        body = self._verified_reply_body(request_result, message)
+        raw = text(body["text"])
+        try:
+            return super().conversation_return(request_result, message)
+        except MatrixExecutionError:
+            # The outer signed route already passed. Non-worker text, including
+            # unverified structured claims, remains verbatim peer speech. It is
+            # not decoded into an instruction, work result or execution grant.
+            pass
+        result = self._conversation_callback(request_result, message, raw)
+        result["reply_kind"] = "speech"
+        return result
 
     def read_replies(self, *, after=0, limit=3, timeout=1.0):
         """One authenticated selected-thread page; no polling or native input.

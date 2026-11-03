@@ -27,7 +27,7 @@ clients must select the same runtime, server origin and socket. The SDK keeps
 messaging-only and observation capabilities separate; the host adapter routes
 each purpose through its existing capability rather than creating a mixed one. The SDK must support an
 absolute `deadline_ns` as well as a per-operation socket timeout. The current qualified source is Matrix
-`79be4788680a3b18f5b04571370d50f0904cd82f`. Legacy nonqueued transport and
+`5e1dba7a1466104495650fc31e52f0f167472776`. Legacy nonqueued transport and
 controller compatibility is also checked against `9b2b8ec2c455d3bf316bc00dc9e1bac44e9d5094`;
 that older source does not supply funded source queues.
 
@@ -67,18 +67,23 @@ send and reads one authenticated `messaging.inbox` page filtered by its immutabl
 thread UUID. The receiver must support the additive selected-thread inbox API
 (Matrix #436); rejection never falls back to a broad scan. One absolute deadline
 covers all SDK calls. Pages contain at most three events and the host output is
-bounded to64KiB. Only exact selected-parent/recipient worker results are exposed
-as canonical callback values; other speech in that thread advances the global
-cursor without becoming a callback or an instruction. Signatures and admission
-remain verified by the existing Matrix reader; this adapter is not a separate
-signature verifier.
+bounded to64KiB. Only replies with the exact selected parent, thread and sender
+are exposed as canonical callback values. Unrelated speech in that thread
+advances the global cursor without becoming a callback or instruction.
+Signatures and admission remain verified by the existing Matrix reader; this
+adapter is not a separate signature verifier.
 
-This importer currently accepts the existing typed `worker_result` relay with
-its exact original and execution reference. An ordinary native Matrix reply
-with plain speech is still readable through the normal Matrix tools but is not
-imported by this host path. Do not report this candidate as universal Matrix
-speech integration; that ordinary-speech/provenance gap remains with #367/#313.
-Canonical retention is never proof of task completion or native incorporation.
+The read-only receipt imports normal native replies verbatim with
+`reply_kind: speech`. No fabricated worker/execution reference is needed. A
+valid existing controller `worker_result` relay keeps its strict original and
+execution-reference correlation and its historical callback bytes. Text that
+fails that worker-envelope check remains unverified speech, including structured
+claims: its embedded text is not extracted and it never becomes an instruction,
+a work result, an approval or a source of fuel. The execution broker's strict
+worker-result parser is unchanged. Canonical presentation remains
+`completed: null`; a signed reply is not task completion or native incorporation.
+Legacy callbacks without `reply_kind` retain their bytes and source revisions;
+absence is not a newly verified completion claim.
 
 The caller records each callback through the existing authenticated owner return
 before retaining `next_cursor`. Re-reading an inspected page is read-only; the
