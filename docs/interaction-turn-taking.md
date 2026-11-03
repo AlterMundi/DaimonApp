@@ -430,7 +430,9 @@ instead of merely returning a truncated result or resetting the lifetime fence.
 Other canonical failures retain their existing visible review path. No silent
 source eviction or automatic re-admission makes room.
 
-The reviewed first extended pilot is600seconds and remains unselected. Mounted
+The first600second receiving pilot is selected on CompAII. Current source,
+configuration and rollback belong to the [maintained receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md);
+physical hearing and useful-latency acceptance remain separate. Mounted
 synthetic600second PCM crosses two checkpointed provider successors, retains three
 originals and one pending work admission, then reads its one canonical return.
 Browser/helper/worklet, quiet resident/unsent-span close retention, legacy-client
