@@ -1518,3 +1518,37 @@ frame/order/backpressure limits and exact-original retention remain unchanged.
 Measured synthetic concurrency/revocation/cancellation and mounted regressions
 do not establish that the reported human delay is resolved; actual stage
 evidence and continued useful-speech/device acceptance remain required.
+
+
+## Selected design criteria are amendments —3November2026
+
+A human chose visual continuity for an existing multipart cover design. The
+avatar sent Sol feasibility questions and acknowledged the criterion, but the
+selected requirement had not reached its owning work session. The current
+human-authorized routing repair was separately received and recorded there;
+that repairs the individual requirement, not the language-layer behavior.
+
+The foreground guidance now distinguishes exploring alternatives from selecting
+a criterion for existing work. The latter is an amendment even when declarative:
+preserve the selected requirement rather than rewriting it as a feasibility
+question, include the original stating that criterion, and keep a later
+confirmation as its current root instead of substituting it for the requirement.
+Sol retains actual routing ownership. No backend infers or dispatches tasks from
+all foreground context, and casual exploration does not start work.
+
+One bounded actual Gemini3.8Live check used synthetic text input/source references
+and a synthetic admission, with real tool decisions/native audio output. It
+read the original, proposed exactly one amendment preserving multipart printing
+and single-body appearance, then answered a later delivery-status question
+without another proposal. Generated PCM was343204bytes; the10.182s fixture
+duration is not a speech-latency benchmark. This qualifies that language/tool
+decision, not actual acoustic input, worker delivery, general reliability or
+device acceptance. No real integrator/worker or retained human input was replayed.
+
+The first fixture advanced on an empty turnComplete that accompanied a source
+query, then interrupted the still-pending tool continuation with its next input.
+It made no delegation. The corrected fixture waited for an actual proposal and
+spoken completion before the next utterance; retain those distinct outcomes.
+The unchanged source/transport bounds passed48native-dialogue checks. Apply
+new guidance only to newly opened dialogues at an idle web boundary; retain
+Charon, fresh authorization, existing work and the full unfinished roadmap.
