@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from dashboard.native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
 from dashboard.native_foreground import ForegroundUnavailable
@@ -161,6 +162,28 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         # The logical pilot bound cannot be reset by freeing a buffer.
         self.session.max_bytes=16000
         with self.assertRaises(ForegroundUnavailable):await self.session.feed(b'\0\0')
+
+    async def test_extended_retirement_waits_for_confirmed_idle_original_and_keeps_tail(self):
+        s=self.session;s.max_bytes=600*32000
+        s.pcm=bytearray(b'\1\0'*3200+b'\2\0'*1600)
+        s.boundary=6400;s.analyzed=9600;s.sent=6400;s.provider_offset_base=1234
+        completion=asyncio.get_running_loop().create_future()
+        capture=SimpleNamespace(phase='foreground',completion=completion)
+        s.bridge=SimpleNamespace(captures={'original':capture})
+        await s.retire_completed_prefix()
+        self.assertEqual(s.pcm_base,0,'Pending durable completion retains its PCM')
+        completion.set_result(None)
+        capture.phase='unconfirmed'
+        await s.retire_completed_prefix();self.assertEqual(s.pcm_base,0)
+        capture.phase='foreground';s.local=object()
+        await s.retire_completed_prefix();self.assertEqual(s.pcm_base,0)
+        s.local=None
+        await s.retire_completed_prefix()
+        self.assertEqual(s.pcm,bytearray(b'\2\0'*1600))
+        self.assertEqual((s.pcm_base,s.captured,s.analyzed,s.sent,s.provider_offset_base),
+                         (6400,9600,9600,6400,1234))
+        await s.retire_completed_prefix()
+        self.assertEqual(s.captured,9600,'Repeated retirement cannot reset logical clocks')
     async def test_early_noninterim_text_is_not_committed_as_a_whole_original(self):
         await self.session.feed(b'\1\0'*1600)
         await self.session.activity(self.activity(3200,onset=3072))

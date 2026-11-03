@@ -83,6 +83,27 @@ class NativeAcousticSession:
             raise ForegroundUnavailable('Acoustic source is outside its retained PCM')
         return bytes(self.pcm[start-self.pcm_base:stop-self.pcm_base])
 
+    def _retire_prefix(self):
+        if not self.pcm_base<=self.boundary<=self.captured:
+            raise ForegroundUnavailable('Acoustic retirement boundary changed')
+        del self.pcm[:self.boundary-self.pcm_base]
+        self.pcm_base=self.boundary
+
+    async def retire_completed_prefix(self):
+        """Release confirmed originals independently of provider replacement.
+
+        Keep the unassigned tail and every logical/provider clock unchanged.
+        An unresolved original or active acoustic span prevents retirement.
+        """
+        async with self.lock:
+            if (self.max_bytes<=300*32000 or self.closed or self.local is not None
+                    or self.provider is not None or self.spans):return
+            if any(c.phase!='foreground' or c.completion is None
+                    or not c.completion.done() or c.completion.cancelled()
+                    or c.completion.exception() is not None
+                    for c in self.bridge.captures.values()):return
+            self._retire_prefix()
+
     def replace_stream(self,stream):
         """Caller holds the idle acoustic lock; logical PCM/detector offsets stay.
 
@@ -98,10 +119,7 @@ class NativeAcousticSession:
         # Only the completed original prefix is retired. Unassigned/trailing
         # PCM stays available for its later exact source or close-time recovery.
         # All capture/detector/provider clocks remain logical and monotonic.
-        if not self.pcm_base<=self.boundary<=self.captured:
-            raise ForegroundUnavailable('Acoustic retirement boundary changed')
-        del self.pcm[:self.boundary-self.pcm_base]
-        self.pcm_base=self.boundary
+        self._retire_prefix()
         self.provider_offset_base=self.sent;self.stream=stream
 
     async def marker(self,audio_bytes,questions):

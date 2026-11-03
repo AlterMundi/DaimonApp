@@ -1585,3 +1585,32 @@ These complement input-inbox queue age, fresh actor-check timing and client
 playback observations. They help locate a growing backlog without increasing its
 bounds, dropping input or weakening fresh authentication. A low isolated profile
 is not proof that a real phone/network/provider path is fluent.
+
+## Confirmed acoustic prefix retirement —3November2026
+
+A real-time-paced synthetic-input journey through the selected600second receiver,
+actual CPU detector, Gemini and Sol closed after425seconds. Four phrases produced
+audio and one natural provider handover completed. The close summary identified
+the resident acoustic buffer bound in `NativeAcousticSession.feed`; analysis
+backlog peaked at200ms of audio and the input inbox at3messages. This is a distinct
+capacity failure, not evidence that it caused the earlier phone latency reports.
+
+The acoustic owner previously retired confirmed PCM only at provider handover.
+Its last retirement left a prefix ending around125seconds; the299second resident
+reserve then expired before the next physical provider lifetime checkpoint.
+The extended receiver now also retires that prefix after durable original
+completion, when no acoustic span or unconfirmed original remains. Unassigned
+trailing PCM, source identity, exact retained originals and all logical/provider
+offsets remain unchanged. Default300second and automatic paths remain unchanged.
+This does not discard silence without an original boundary, raise any capacity,
+reset a provider or replay speech/work. A mounted400second PCM regression keeps
+the same provider across two completed originals; acoustic checks preserve
+pending/active spans and the exact trailing bytes. Full corrected real-wall
+duration and phone/hearing acceptance remain separate qualifications.
+
+Two preparation failures are retained separately: expired synthetic cloud-TTS
+samples stopped before any provider socket, and a local espeak sample was
+recognized as “Apacho” instead of “lapacho”, prematurely failing an irrelevant
+vocabulary assertion. The duration-only journey above removed that assertion,
+preserved actual interpreted language and exposed the capacity failure. No
+accepted human input, uncertain provider operation or worker request was replayed.
