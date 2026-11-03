@@ -429,6 +429,7 @@ jobs:
       - run: python -B tests/dashboard_native_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py
       - run: python -B tests/dashboard_native_context.py
+      - run: python -B tests/dashboard_native_caption.py
       - run: python -B tests/dashboard_native_acoustic.py
       - run: python -B tests/dashboard_native_voice.py
       - run: node tests/native_conversation_ui.js

@@ -131,6 +131,29 @@ by this feature or made a prerequisite to preserve another Live archive.
 
 ## Delivery, acknowledgment and recovery
 
+### Missing-caption recovery implementation in progress
+
+`dashboard/native_caption.py` prepares transient generated-PCM ownership for
+future caption recovery. It is not wired into the selected voice service and
+opens no provider, writes no media and schedules no task. Existing receiving566
+continues to retain explicit unknown observations, without recovered words.
+
+One owner accounts for at most300seconds of24kHz monoPCM16 across the complete
+logical dialogue, including retired utterances and provider successors. It keeps
+at most120seconds for one missing-caption clip, matching the existing file-ASR
+adapter. A longer clip releases its retained bytes and reports ineligibility;
+it never returns a silently truncated transcription input. Provider text releases
+the corresponding PCM immediately. Closing releases the current incomplete
+buffer. A finished missing-caption buffer transfers to its finite recovery
+caller, which must consume/clear it; that transfer is not a durable-media receipt.
+
+Before runtime enablement, finish the source-owned finite recovery job using the
+existing file-ASR outcome/uncertainty rules, immutable derived assistant-caption
+provenance and parent/hash validation, late closed-producer delivery and UI
+association. Do not overwrite an already finalized unknown source, admit human
+work, claim exact words/hearing or retry an uncertain provider operation. The
+utility's focused byte/cleanup tests are preparation, not end-to-end recovery.
+
 1. Producer writes an idempotent delta after the existing canonical retention.
    A repeated same event ID/revision returns its receipt; changed content under
    the same identity is rejected. Work admission is not touched.
