@@ -1095,3 +1095,44 @@ removing that callback wait alone did NOT fix the3.11 failure. The wakeup test
 failed before the source change and passes after it. All3watcher,28bridge and
 50mounted voice checks pass on both3.11 and3.13. Full CI for the corrected source
 is still required; no receiving deployment follows from these local results.
+
+
+## Append-anchor wire outcomes and selected continuation
+
+The first finite append-anchor qualifier ended during repeated-token synthetic
+prehistory, before sending ANY anchor. Its later prehistory generation produced
+partial unrelated text without PCM and the next generation timed out. Zero
+anchors and zero reductions were observed; this is not anchor-eviction evidence.
+Its exact outcome remains retained without replay. The fixture was corrected to
+use balanced descriptive synthetic records and to start continuous PCM only after
+initial history preparation. The two completed Qwen samples were read from their
+verified cache, without new synthesis requests or media copies.
+
+That corrected fixture used the ordinary immutable identity/tools setup and
+isolated compression trigger24000/target22000. Seven prehistory responses
+completed; prompt observations rose from4212to22443. One self-contained canonical
+anchor was then sent with turnComplete:false, while newly arriving natural PCM
+was queued behind its writer fence. The natural question was fully transcribed,
+but there was no generated PCM or turn completion within the finite15second
+response wait. The connection closed after23.279seconds, with threads stopped.
+No slide, post-slide fact recall, second anchor or actual native/Sol work was
+qualified. The previous prehistory problem therefore did not become a false
+success or a reason to add rescue anchors. The test establishes an unusable
+outcome for this attempted flow, not a universal cause or API prohibition.
+
+The requested Astra review already specified the alternative for blocked
+subsequent audio: qualify a NEW dialogue using the existing manual-activity
+route. It keeps the same Gemini3.8Live conversational layer and Sol integration,
+but local detector-owned spans and explicit provider END acknowledgments give
+the existing checkpoint-seeded physical rollover an owned boundary. Continuous
+quiet PCM is analyzed locally rather than becoming an uncertain sent tail on
+the retiring provider. Only never-sent backlog may enter the successor. Do not
+convert an already running automatic dialogue or replay its transmitted audio.
+
+This is the selected next isolated qualification, not a receiving mode switch.
+Reuse the earlier actual Sol semantic-checkpoint and useful-return evidence;
+qualify two actual provider successors during continuous natural capture with
+readable checkpoint facts and uninterrupted source identity. Source durations,
+retention and final input ownership still require actual checks. The full goal,
+ordinary Sol/Qwen chat, runtime558, source-host hold and disabled provider
+pinning/sliding remain unchanged.
