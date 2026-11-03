@@ -134,9 +134,11 @@ by this feature or made a prerequisite to preserve another Live archive.
 ### Missing-caption recovery implementation in progress
 
 `dashboard/native_caption.py` prepares transient generated-PCM ownership for
-future caption recovery. It is not wired into the selected voice service and
-opens no provider, writes no media and schedules no task. Existing receiving566
-continues to retain explicit unknown observations, without recovered words.
+caption recovery. The candidate wires it into native voice only when the
+owner explicitly selects `streaming_transcription.native_caption_recovery=true`.
+The default remains off, including current receiving566, which retains explicit
+unknown observations without recovered words. The buffer itself opens no provider,
+writes no media and schedules no task.
 
 One owner accounts for at most300seconds of24kHz monoPCM16 across the complete
 logical dialogue, including retired utterances and provider successors. It keeps
@@ -166,10 +168,53 @@ cannot erase the caption or create a second response. An unresolved audio-only
 response is explicitly labeled as having no available transcript. These frontend
 changes are not selected during the current human trial.
 
-Before runtime enablement, finish the source-owned finite recovery job using the
-existing file-ASR outcome/uncertainty rules and source-bound transient-media
-cleanup. Actual ASR draft generation/semantic uptake by Sol and receiving/device
-acceptance still need qualification. Do not overwrite an already finalized unknown source, admit human
+`dashboard/native_caption_recovery.py` now supplies the candidate finite job
+owner. It invokes the existing receiver `voice.transcription_command` argv on a
+private24kHz monoPCM16WAV; no human ingress, fabricated original or worker route
+is involved. A confirmed provider transcript discards the transient PCM. Digital
+silence never starts ASR. Native preflight requires
+`foreground_derived_captions:v1` before opening the provider or microphone.
+
+Recovery has two shared helper slots and at most eight owned tasks across all
+current/closing voice connections, with at most eight recoveries admitted per
+explicit avatar open. The logical dialogue still permits only300seconds of
+output; one ASR clip must be no longer than120seconds. The private
+`state_dir/native-caption-audio` cache permits512source receipts and32MiB,
+including reserved result space. Generated media expires after24hours during an
+explicit authorized open; no timer or background sweep is installed. Completed
+media retires after durable caption delivery. Changed/orphaned files, changed
+bindings/options, capacity failure or an uncertain outcome preserve the unknown
+observation and defer recovery rather than failing the voice connection. Receipts
+remain bounded; filling the cache stops new recovery, without evicting human
+originals or hiding unresolved effects.
+
+Each original ASR command is preceded by a durable uncertain intent and runs
+under its source lock and existing timeout (maximum120seconds). Timeout or
+cancellation kills/reaps only that helper process group. An uncertain operation
+can subsequently use only the configured `voice.completed_transcription_command`
+reader, never another original ASR attempt. Completed text survives authorization
+loss and can deliver later under a fresh grant. Cancelled disk writes retain their
+slot and immutable bytes until the actual operation completes. Close defers
+queued ASR and allows only already-running finite jobs to settle. Audio ownership
+is released after real voice cleanup, so a slow recovery does not prevent another
+avatar open or erase its successor's ownership.
+
+Qualification uses actual helper subprocesses with synthetic results, actual
+Python history/outbox/native-controller/SQLite delivery, two live handovers,
+known-sent receipt loss and late closed-producer delivery. These do not establish
+actual provider ASR accuracy, Sol semantic uptake, device hearing or full context
+callback recovery onto a newly detached physical native root. Those remain open
+before activation/full acceptance. Receiving566 remains stable for the pending
+human test.
+
+A related native terminal race now drains already-written internal-return ACKs
+for at most two seconds before its transport closes. New input is rejected as
+known-unsent after that writer completes. An observed ACK for a different physical
+turn retains its existing distinct recovery receipt; a missing ACK remains
+uncertain and is never replayed. The existing owned regular-history recovery
+fixture now covers both ACK-before-terminal and ACK-after-terminal ordering,
+preserving the original human answer. This observation is not semantic
+incorporation or permission to treat the earlier collector as the new writer. Do not overwrite an already finalized unknown source, admit human
 work, claim exact words/hearing or retry an uncertain provider operation. The
 utility's focused byte/cleanup tests are preparation, not end-to-end recovery.
 

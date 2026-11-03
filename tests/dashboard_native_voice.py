@@ -95,7 +95,7 @@ class Owner(Receiver):
         self.input_id=Provider.input_id
         self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event();self.guidance_done=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_audio_observations':'v1','foreground_guidance':'v1','foreground_rollover':'v1'}
+        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -418,6 +418,81 @@ class Mounted(unittest.TestCase):
         with patch.object(self.owner,'presentation',side_effect=without_observations),self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
         self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.contexts,{})
+    def enable_caption_recovery(self,wait=False):
+        self.config['streaming_transcription']['native_caption_recovery']=True
+        script=self.root/'caption-helper.py'
+        script.write_text("""import json,sys,time
+from pathlib import Path
+Path(sys.argv[1]).write_text('started')
+if sys.argv[2]=='wait':
+    while not Path(sys.argv[3]).exists():time.sleep(.01)
+print(json.dumps({'text':'Approximate recovered response.','final':True}))
+""")
+        self.owner.receiver['voice']={'transcription_command':[sys.executable,str(script),
+            str(self.root/'caption-called'),'wait' if wait else 'now',str(self.root/'caption-release')],
+            'timeout_seconds':3,'transcriber_label':'Synthetic caption helper'}
+
+    def test_recovery_incompatible_listener_is_refused_before_provider_opening(self):
+        self.enable_caption_recovery();presentation=self.owner.presentation
+        def without_recovery(command):
+            value=presentation(command)
+            if command=='input voice capabilities':value.pop('foreground_derived_captions')
+            return value
+        with patch.object(self.owner,'presentation',side_effect=without_recovery),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[]);self.assertFalse((self.root/'caption-called').exists())
+
+    def test_missing_output_runs_finite_asr_and_retains_one_approximate_caption(self):
+        self.enable_caption_recovery()
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            Stream.opened[0].queue.put([{'type':'audio','pcm':b'\x10\0'*320},{'type':'turn_complete'}])
+            while True:
+                event=ws.receive_json()
+                if event['type']=='assistant_utterance' and event['utterance'].get('derived_caption'):
+                    draft=event['utterance'];break
+            self.assertEqual(draft['text'],'Approximate recovered response.')
+            items={item['id']:item for item in self.app.state.native_history.page(100)['items']}
+            parent=items[draft['derived_caption']['parent_source']]
+            self.assertEqual((parent['text'],parent['generated_bytes']),('',640))
+            self.assertEqual(len(items),2);self.assertEqual(self.owner.inputs,{})
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+            self.assertTrue(self.owner.context_closed.wait(2),'Observe actual context close before shutting down fixture')
+            deadline=time.monotonic()+2
+            while list((self.root/'native-caption-audio').glob('*.wav')) and time.monotonic()<deadline:time.sleep(.005)
+            self.assertEqual(list((self.root/'native-caption-audio').glob('*.wav')),[])
+        self.assertTrue(self.owner.contexts[self.ident]['closed'])
+        self.assertEqual(len(self.owner.contexts[self.ident]['sources']),2)
+
+    def test_late_caption_after_voice_close_does_not_block_or_release_successor_voice(self):
+        self.enable_caption_recovery(wait=True)
+        with self.open() as first:
+            first.send_json(self.meta());self.assertEqual(first.receive_json()['type'],'ready')
+            Stream.opened[0].queue.put([{'type':'audio','pcm':b'\x10\0'*320},{'type':'turn_complete'}])
+            deadline=time.monotonic()+2
+            while not (self.root/'caption-called').exists() and time.monotonic()<deadline:time.sleep(.005)
+            self.assertTrue((self.root/'caption-called').exists())
+            first.send_json({'type':'close'})
+            self.assertTrue(self.owner.context_closed.wait(2))
+            successor={**self.meta(),'id':str(uuid.uuid4())}
+            with self.open() as second:
+                second.send_json(successor);self.assertEqual(second.receive_json()['type'],'ready')
+                (self.root/'caption-release').touch()
+                deadline=time.monotonic()+2
+                while time.monotonic()<deadline:
+                    if any(item.get('derived_caption') for item in self.app.state.native_history.page(100)['items']):break
+                    time.sleep(.005)
+                self.assertTrue(any(item.get('derived_caption') for item in self.app.state.native_history.page(100)['items']))
+                with self.open() as third:
+                    third.send_json({**self.meta(),'id':str(uuid.uuid4())})
+                    self.assertEqual(third.receive_json()['type'],'review','Old cleanup cannot clear successor ownership')
+                self.assertEqual(len(Stream.opened),2)
+                second.send_json({'type':'close'})
+        self.assertTrue(self.owner.contexts[self.ident]['closed'])
+        self.assertEqual(len(self.owner.contexts[self.ident]['sources']),2)
+        self.assertEqual(self.owner.inputs,{})
+
     def test_voice_semantic_outbox_reaches_context_without_becoming_work(self):
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
@@ -701,7 +776,7 @@ class Mounted(unittest.TestCase):
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures'})
         self.assertGreater(result['actor_checks']['fresh_checks'],0)
         self.assertEqual(result['acoustic_queues'],{'peak_analysis_audio_ms':0,
             'peak_unsent_span_audio_ms':0,'peak_input_confirmation_wait_ms':0})

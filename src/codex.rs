@@ -1605,8 +1605,9 @@ where
     }
     let mut active_turn_id: Option<String> = adopted_turn;
     let mut interrupt_request_id: Option<u64> = None;
-    let mut pending_steers = HashMap::new();
+    let mut pending_steers: HashMap<u64, PendingSteer> = HashMap::new();
     let mut detached_returns = HashSet::<String>::new();
+    let mut internal_ack_deadline: Option<Instant> = None;
     let mut steering_open = true;
     let mut cancel_deadline: Option<Instant> = None;
     let mut turn_error: Option<String> = None;
@@ -1644,7 +1645,18 @@ where
         if turn_completed && goal_snapshot_request_id.is_some() {
             goal_snapshot_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
         }
+        // A terminal event may precede the ACK for an already-written internal
+        // return. Observe that exact ACK before closing this transport, so its
+        // successor physical turn remains recoverable without another submission.
+        let internal_ack_pending = pending_steers.values().any(|p| p.tool_output);
+        if turn_completed && internal_ack_pending && !goal_active && !goal_activation_pending
+            && goal_snapshot_request_id.is_none() && !cancelled && turn_error.is_none() {
+            internal_ack_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
+        } else {
+            internal_ack_deadline = None;
+        }
         if turn_completed
+            && (!internal_ack_pending || cancelled || turn_error.is_some())
             && ((!goal_active && !goal_activation_pending && goal_snapshot_request_id.is_none())
                 || turn_error.is_some()
                 || cancelled)
@@ -1652,6 +1664,9 @@ where
             break;
         }
         tokio::select! {
+          _=async{if let Some(deadline)=internal_ack_deadline{sleep_until(deadline).await;}}, if internal_ack_deadline.is_some() && turn_completed && internal_ack_pending => {
+              break; // Existing unconfirmed outcomes stay uncertain; never replay.
+          }
           _=async{if let Some(deadline)=goal_snapshot_deadline{sleep_until(deadline).await;}}, if goal_snapshot_deadline.is_some() && goal_snapshot_request_id.is_some() => {
               goal_snapshot_request_id=None;
               goal_snapshot_deadline=None;
@@ -1712,6 +1727,10 @@ where
                         if observed.status!="completed" {turn_error=Some(format!("Native turn {} (history observation)",observed.status));}
                         if goal_active {goal_gap=Some(Instant::now()+Duration::from_secs(30));}
                         let _=steer.response.send(Ok(None));
+                        continue;
+                    }
+                    if turn_completed && active_turn_id.is_none() {
+                        let _=steer.response.send(Err(CodexSteerError::Rejected("Native writer completed before this input was submitted".into())));
                         continue;
                     }
                     if cancel.is_cancelled() {

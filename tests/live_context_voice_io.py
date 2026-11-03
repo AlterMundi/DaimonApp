@@ -36,18 +36,20 @@ class VoiceContext(Returning):
         self.context_roles=set();self.context_outputs={}
         self.guide_id=None
         self.context_active=False;self.guide_checkpoint=None
-        self.missing_audio_observations=[]
+        self.missing_audio_observations=[];self.derived_captions=[];self.fixture_errors=[]
         super().__init__(binary)
 
     def handle_extra_rpc(self,message,send):
+        try:return self.context_rpc(message,send)
+        except Exception as error:
+            self.fixture_errors.append((type(error).__name__,str(error)[:256]));raise
+
+    def context_rpc(self,message,send):
         method=message.get('method');p=message.get('params',{});ident=message.get('id')
         if method=='turn/start' and 'toolOutput' in p:
             assert p['input']==[] and p['toolOutput']['name']=='foreground_context'
             output=json.loads(p['toolOutput']['output'])
             self.internal_packets.append(p)
-            evidence=output['evidence'];assert evidence['complete']
-            self.context_roles.update(e['role'] for e in evidence['content']['events'])
-            self.missing_audio_observations.extend(e for e in evidence['content']['events'] if e.get('audio_without_transcript'))
             first=not self.context_active
             self.web_thread=p['threadId']
             if first:self.web_turn='voice-context-native-'+str(len(self.internal_packets))
@@ -56,14 +58,18 @@ class VoiceContext(Returning):
             if first:self.broadcast(self.web_thread,'turn/started',{'turn':{'id':self.web_turn,'status':'inProgress'}})
             call='route-voice-context-'+str(len(self.internal_packets))
             self.context_outputs[call]=output
-            send({'id':call,'method':'item/tool/call','params':{
-                'threadId':self.web_thread,'turnId':self.web_turn,'callId':call,
-                'tool':'interaction_controller','arguments':output['after_incorporation']}})
+            assert output['evidence']['complete'],'This bounded fixture expects complete inline evidence'
+            self.context_ack(send,call,output)
             return True
         if method is None and str(ident).startswith('route-voice-context-'):
             assert message['result']['success'],message
             output=self.context_outputs[ident]
-            if any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):
+            # This fixture models an integrator still working while the finite
+            # ASR draft is pending. Terminal-root/late-ACK ordering has its own
+            # native-return regression; this is not evidence of tool servicing
+            # on a newly detached physical root.
+            if any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):return True
+            if any(e.get('derived_caption') for e in output['evidence']['content']['events']):
                 self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
                     'id':'missing-caption-observation','type':'agentMessage','phase':'final_answer',
                     'text':'PRIVATE_NATIVE_CONTEXT_ONLY'}})
@@ -116,6 +122,15 @@ class VoiceContext(Returning):
             return True
         return CanonicalRouting.handle_extra_rpc(self,message,send)
 
+    def context_ack(self,send,call,output):
+        events=output['evidence']['content']['events']
+        self.context_roles.update(e['role'] for e in events)
+        self.missing_audio_observations.extend(e for e in events if e.get('audio_without_transcript'))
+        self.derived_captions.extend(e for e in events if e.get('derived_caption'))
+        send({'id':call,'method':'item/tool/call','params':{
+            'threadId':self.web_thread,'turnId':self.web_turn,'callId':call,
+            'tool':'interaction_controller','arguments':output['after_incorporation']}})
+
     def checkpoint(self,send,view):
         ident='route-voice-checkpoint-'+str(view['incorporated'])
         send({'id':ident,'method':'item/tool/call','params':{
@@ -143,7 +158,11 @@ def qualify(binary):
         helper.write_text("""import json,pathlib,sys
 root=pathlib.Path(sys.argv[1])
 if '--completed-only' not in sys.argv:
- (root/'unexpected-asr').touch();sys.exit(2)
+ source=pathlib.Path(sys.argv[-1])
+ if source.parent.name!='native-caption-audio':
+  (root/'unexpected-asr').touch();sys.exit(2)
+ with (root/'caption-asr-calls').open('a') as f:f.write('read\\n')
+ print(json.dumps({'text':'Approximate synthetic assistant caption.','final':True}));sys.exit(0)
 with (root/'completed-calls').open('a') as f:f.write('read\\n')
 print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streaming_model':'gemini-3.8-live'}))
 """)
@@ -153,7 +172,7 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),
             'origin':'https://example.test','bot_id':123,
             'shared_auth':{'enabled':True,'home_origin':'https://example.test'},'streaming_transcription':{
-                'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,
+                'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,'native_caption_recovery':True,
                 'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent',
                 'credential_file':str(j.root/'synthetic-key'),'cache_root':str(j.root/'prepared'),
                 'turn_detection':{'enabled':True,'continuous':True,'command':['/synthetic/python','capture-turn']}}}
@@ -202,27 +221,38 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
                     assert [s.total for s in Stream.opened]==[6400,6400,0]
                     # A later audio-only provider turn is not silently omitted
                     # from Sol context or converted into invented human speech.
-                    Stream.opened[-1].queue.put([{'type':'audio','pcm':b'\1\0'*160,'sample_rate':24000},
+                    Stream.opened[-1].queue.put([{'type':'audio','pcm':b'\x10\0'*160,'sample_rate':24000},
                         {'type':'turn_complete'}])
                     while True:
                         event=ws.receive_json();assert event['type']!='review',event
-                        if event['type']=='assistant_utterance' and event['utterance']['closed']:
+                        if event['type']=='assistant_utterance' and event['utterance']['closed'] and not event['utterance'].get('derived_caption'):
                             assert event['utterance']['text']=='' and event['utterance']['generated_bytes']==320
                             ws.send_json({'type':'playback','id':event['utterance']['id'],'played_bytes':320})
                             break
-                    j.wait(lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(5,)])
+                    try:j.wait(lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(6,)])
+                    except AssertionError:
+                        retained=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
+                        print('Caption native boundary:',{k:retained[k] for k in ('high','incorporated','closed','caption_parents')})
+                        print('Caption return phases:',[(r['phase'],r.get('native_turn'),r['envelope'].get('through')) for r in retained['native_returns']])
+                        print('Caption packet lengths:',[(len(json.dumps(packet)),list(packet.get('toolOutput',{}))) for packet in j.internal_packets])
+                        print('Synthetic peer failures:',j.fixture_errors)
+                        last=json.loads(j.internal_packets[-1]['toolOutput']['output'])
+                        print('Last context schema/completeness:',last['schema'],last['evidence'].get('complete'))
+                        print('Last exact RPC shapes:',[(v.get('method'),list(v.get('params',{})),v.get('error')) for v in j.rpc[-6:]])
+                        raise
                     j.wait(lambda:j.row('SELECT busy FROM sessions WHERE thread_id=1')==[(0,)])
                     assert len(j.missing_audio_observations)==1
                     observation=j.missing_audio_observations[0]
                     assert observation['role']=='assistant' and observation['text']==''
                     assert observation['audio_without_transcript']['generated_bytes']==320
+                    assert len(j.derived_captions)==1 and j.derived_captions[0]['derived_caption']['parent_source']==observation['source']
                     ws.send_json({'type':'close'})
                     summary=closed.get(timeout=5)
                     assert summary['context_producer']=='closed' and summary['provider_rollovers']==2,summary
         doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
-        assert doc['closed'] and doc['incorporated']==doc['high']==5
+        assert doc['closed'] and doc['incorporated']==doc['high']==6
         assert doc['checkpoint']['through']==4
-        assert len(doc['sources'])==5 and len(doc['events'])==1
+        assert len(doc['sources'])==6 and len(doc['events'])==2
         assert doc['events'][0]['text']=='' and doc['events'][0]['audio_without_transcript']['generated_bytes']==320
         pressure_packets=[json.loads(p['toolOutput']['output']) for p in j.internal_packets
             if json.loads(p['toolOutput']['output']).get('checkpoint_request') is not None]
@@ -235,12 +265,14 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         assert j.row('SELECT count(*) FROM incoming_updates')==journal
         assert not (j.root/'unexpected-asr').exists()
         assert (j.root/'completed-calls').read_text().splitlines()==['read','read']
+        assert (j.root/'caption-asr-calls').read_text().splitlines()==['read']
+        assert list((j.root/'dashboard'/'native-caption-audio').glob('*.wav'))==[]
         assert not j.messages
         assert not any('PRIVATE_NATIVE_CONTEXT_ONLY' in item['preview'] for item in provider.presentation_list(0,0)['items'])
         with app.state.native_history.database() as db:
             assert db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='pending'").fetchone()[0]==0
-            assert db.execute('SELECT count(*) FROM foreground_utterances').fetchone()[0]==3
-        print('PASS two active voice socket handovers through completed-only originals, canonical assistant outbox including an explicit missing-caption observation, actual owner/controller incorporation/checkpoints and source-bound Sol guidance; no PCM/work/ASR replay or private bookkeeping publication, clean close; synthetic audio/detector/Core/provider peers, zero models')
+            assert db.execute('SELECT count(*) FROM foreground_utterances').fetchone()[0]==4
+        print('PASS two active voice socket handovers through completed-only originals, canonical assistant outbox including a missing-caption observation and one actual synthetic-ASR subprocess with parent-bound approximate recovery, actual owner/controller incorporation/checkpoints and source-bound Sol guidance; no PCM/work/ASR replay or private bookkeeping publication, clean close; synthetic audio/detector/Core/provider peers, zero models')
     finally:j.close()
 
 

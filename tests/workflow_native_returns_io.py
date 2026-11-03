@@ -203,7 +203,8 @@ def qualify(binary, recovery=False):
 
 
 class CompletionRace(Returning):
-    def __init__(self, binary):
+    def __init__(self, binary, ack_after_terminal=False):
+        self.ack_after_terminal=ack_after_terminal
         self.recovery_seen = threading.Event()
         self.rollout = None
         super().__init__(binary)
@@ -219,15 +220,25 @@ class CompletionRace(Returning):
             rows = [{'type': 'session_meta', 'payload': {'id': self.web_thread}},
                     {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': self.detached}}]
             self.rollout.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            if self.ack_after_terminal:
+                self.broadcast(self.web_thread,'item/completed',{'turnId':self.old_turn,'item':{
+                    'id':'old-human-final','type':'agentMessage','phase':'final_answer',
+                    'text':'Original human collector retained its own answer.'}})
+                self.broadcast(self.web_thread,'turn/completed',{'turn':{'id':self.old_turn,'status':'completed'}})
+                # ACK follows the selected root's final event while this exact
+                # already-written request is still outstanding.
+                import time
+                time.sleep(.05)
             send({'id': ident, 'result': {'turn': {'id': self.detached}}})
             self.broadcast(self.web_thread, 'turn/started', {'turn': {'id': self.detached, 'status': 'inProgress'}})
             self.broadcast(self.web_thread, 'item/completed', {'turnId': self.detached, 'item': {
                 'id': 'new-physical-private-progress', 'type': 'agentMessage', 'phase': 'commentary',
                 'text': 'A different physical writer is active.'}})
-            self.broadcast(self.web_thread, 'item/completed', {'turnId': self.old_turn, 'item': {
-                'id': 'old-human-final', 'type': 'agentMessage', 'phase': 'final_answer',
-                'text': 'Original human collector retained its own answer.'}})
-            self.broadcast(self.web_thread, 'turn/completed', {'turn': {'id': self.old_turn, 'status': 'completed'}})
+            if not self.ack_after_terminal:
+                self.broadcast(self.web_thread, 'item/completed', {'turnId': self.old_turn, 'item': {
+                    'id': 'old-human-final', 'type': 'agentMessage', 'phase': 'final_answer',
+                    'text': 'Original human collector retained its own answer.'}})
+                self.broadcast(self.web_thread, 'turn/completed', {'turn': {'id': self.old_turn, 'status': 'completed'}})
             return True
         if self.rollout and method == 'thread/turns/list' and p['threadId'] == self.web_thread:
             send({'id': ident, 'error': {'code': -32601, 'message': 'list_turns is unsupported'}})
@@ -240,8 +251,8 @@ class CompletionRace(Returning):
         return super().handle_extra_rpc(message, send)
 
 
-def qualify_completion_race(binary):
-    j = CompletionRace(binary)
+def qualify_completion_race(binary,ack_after_terminal=False):
+    j = CompletionRace(binary,ack_after_terminal)
     try:
         j.start()
         for topic in (7, 8, 1):
@@ -295,6 +306,7 @@ def qualify_completion_race(binary):
         assert len(j.internal_packets) == 1 and j.row('SELECT count(*) FROM conversation_inputs') == [(1,)]
         assert j.row('SELECT count(*) FROM incoming_updates') == journal and not j.messages
         assert j.row('SELECT first_turn FROM native_collections WHERE local_turn=?', (old,)) == [(j.old_turn,)]
+        print('ACK after terminal:',ack_after_terminal)
         print('PASS completion-race exact ACK → distinct finite observation → owned regular rollout fallback → late canonical final in same Conversation; old human collector preserved, no source replay or fabricated input; synthetic native boundary, zero models')
     finally:
         j.close()
@@ -305,3 +317,4 @@ if __name__ == '__main__':
     qualify(executable)
     qualify(executable, recovery=True)
     qualify_completion_race(executable)
+    qualify_completion_race(executable,True)

@@ -1,7 +1,7 @@
-"""Transient generated PCM for future missing-caption recovery.
+"""Transient generated PCM owned by opt-in assistant caption recovery.
 
-This owns no provider, task, file, ingress or retry. The voice owner must finish
-the derived-caption/outbox lifecycle before enabling it in native_voice.
+This buffer owns no provider, task, file, ingress or retry. Native voice and its
+finite CaptionRecovery owner handle completion, uncertainty and cleanup.
 """
 import hashlib
 import uuid
