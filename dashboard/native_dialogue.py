@@ -444,7 +444,7 @@ class NativeDialogue:
             self._send({'toolResponse': {'functionResponses': [{
                 'id': call_id, 'name': call['name'],
                 **({'willContinue': True} if will_continue else {}),
-                'response': {'result': result, 'scheduling': 'WHEN_IDLE'}}]}})
+                'scheduling': 'WHEN_IDLE', 'response': {'result': result}}]}})
             call['state'] = 'pending' if will_continue else 'response_sent'
 
     def receive(self):

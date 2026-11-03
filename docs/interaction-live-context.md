@@ -633,8 +633,14 @@ and one semantic checkpoint. Both attributed roles and the exact temporary word
 survived; no work, memory write or ordinary chat publication occurred. The full
 test took25.9seconds, not a speech-latency measurement. Previous native work and
 its failed verifier outcome were retained without replay. Native Core and Gemini
-have now been exercised separately at these changed seams; the mounted journey
-with both real providers, active-turn steering and device acceptance remains open.
+have now been exercised separately at these changed seams. A further actual-Core
+case admitted a correction while Sol was awaiting an already-applied controller
+response: both admissions acknowledged the SAME physical turn. A subsequent idle
+pressure admission produced a semantic checkpoint with the corrected temporary
+word. Three internal admissions and seven controller calls completed in26.458s;
+no work, durable memory write or ordinary chat publication occurred. Active-turn
+context steering is therefore qualified at Core; the mounted journey with both
+real providers and device acceptance remains open.
 
 Qualification:250Store tests/20focused projection tests,26acoustic and26bridge
 tests,49mounted voice tests, joined actual owner/controller/SQLite voice journeys,
@@ -642,6 +648,9 @@ mixed human/context publication and clippy all targets with warnings denied.
 CI41568933929 failed its formatting check on the final reserve predicate; the
 actual job diff was inspected and formatting corrected. Final-tree formatting is
 checked separately. No runtime or audio diagnosis follows from that CI failure.
+The corrected source575748a passed CI41572683749, including native text and the
+applicable dashboard/speech/Matrix/routing checks. This does not qualify physical
+handover under continuous capture or authorize treating the draft as deployed.
 
 ## Astra high review — accepted decisions
 
@@ -685,3 +694,89 @@ all counter/media retirement; restart/saturation and receiving/device acceptance
 No additional reviewer quorum, permission ceremony or autonomous attention is
 introduced. The source-only automatic compression setting was removed after
 review. Its setup acceptance remains dated evidence, not the selected design.
+
+## Continuous capture correction — 3 November 2026
+
+The focused follow-up to the requested Astra high review found a real mismatch
+in the physical-generation design: automatic `boundary` is the last detected
+speech END, while `sent` includes later microphone PCM, including silence. The
+current `boundary == sent` handover gate therefore normally stays closed with a
+continuously open microphone. The earlier joined fixtures stopped PCM exactly at
+their synthetic endpoint; they do not establish normal continuous handover.
+
+Do not remove that equality to make a fixture pass. Bytes after the last END
+have already reached the old provider without a finalized source assignment.
+Reassigning them to a successor can cross generation ownership; omitting them can
+lose a delayed phrase. Automatic close currently retains that raw tail only
+after an uncorrelated transcript sets `unassigned`, not merely because raw bytes
+remain. The complete tail-ownership/recovery behavior remains a concrete gap.
+
+Two distinct mounted actual-provider cases delivered synthetic eSpeak PCM but
+received no activity, transcript or audio after readiness; no human original or
+Sol input was admitted. The diagnostic case observed208844PCM bytes reaching both
+ASGI and Gemini, and clean explicit close. Earlier retained natural-Qwen evidence
+already demonstrated automatic activity. These failures identify an unsuitable
+fixture input, not a universal provider/VAD diagnosis. Their terminal outcomes
+remain retained. A distinct natural-Qwen case then used continuous silence frames
+without forcing pressure. One mounted Gemini/Sol connection transmitted2187136PCM
+bytes over68.348s, finalized five unique originals, generated1796644PCM output
+bytes, and observed two interruptions. Actual Sol dispatched one worker request
+and its amendment exactly once; a canonical worker result was accepted and
+reported by Sol. The temporary continuity word also returned with digital audio.
+The worker remained a synthetic delayed fixture; no real external work occurred.
+
+This is partial integration evidence. Gemini did not speak the returned worker
+ideas; it resumed the earlier local tree conversation instead. A final context
+incorporation failed after fixture shutdown, with the actual native thread later
+observed idle and all physical turns completed. Retain that exact pending tail.
+The verifier itself raised because its generic wait checked a receiver's
+WebSocketDisconnect before an already-present deliberate-close receipt. Readback
+confirmed clean explicit provider/producer cleanup, with no provider failure.
+Correct the observation from retained results; do not replay speech or worker
+requests to obtain a green label. A native result ACK or generated PCM is neither
+the useful spoken-result journey nor physical hearing/device acceptance.
+
+Source inspection against the current official FunctionResponse schema also
+found `scheduling` nested inside application `response` data. It now sits beside
+`id`, `name` and `willContinue`, with `response` containing only the actual result.
+The selected value remains WHEN_IDLE, which is also the documented default;
+this shape correction alone does not explain or repair the missing spoken result.
+All42transport tests pass, including the corrected protocol assertion. Primary
+schema: [FunctionResponse](https://raw.githubusercontent.com/googleapis/python-genai/main/google/genai/types.py).
+
+The current primary SDK adds Developer API `send_context_update`, serializing
+`contextUpdate.systemInstruction` in order with other inputs. This corrects any
+earlier claim that active preamble replacement was unavailable. It neither
+triggers compression nor provides an application acknowledgment. The follow-up
+review prefers evaluating in-session semantic checkpoint replacement before
+making physical replacement the ordinary compaction path:
+
+- Preserve the existing Sol frozen-read/incorporation/checkpoint barriers.
+- Serialize immutable base instructions plus attributed checkpoint data through
+  the same provider writer; omit tools so the catalog remains unchanged. Record
+  watermark, digest and sent/uncertain outcome without claiming comprehension.
+- Sliding may retire only checkpoint-covered material. The newer exact tail and
+  unfinished audio need a proven protected suffix. `targetTokens` is a reduction
+  target, not a documented minimum suffix; do not enable sliding from that
+  heuristic alone. System instructions are expressly excluded from eviction.
+- Bound never-sent input while checkpoint coverage catches up. Do not replay
+  already-sent PCM to manufacture a handover or token-budget receipt.
+
+This is a conditional design revision, not an implemented/qualified replacement.
+The existing automatic sliding setting stays OFF. If suffix protection cannot be
+established, physical rollover still needs an acoustic transport fence. Distinguish
+last speech END, old-generation send frontier, frozen transport fence and captured
+never-sent bytes. `audioStreamEnd` can request finalization, but neither a timeout
+nor an arbitrary `turnComplete` proves all preceding PCM became an original or
+certified non-speech. Current Developer API transparent-resumption conversion is
+unsupported. Retain uncertain old-generation tails rather than invent a drain ACK.
+
+Likewise, the128000-token cap is the human's limit, not a qualified server-enforced
+ceiling. The local reserve/estimator and optional observed usage remain bounded
+engineering controls; observed excess cannot retroactively prove prevention.
+The five-minute pilot and receiving558 stay unchanged while these gaps are open.
+
+Primary references checked3November2026:
+- [SDK context-update implementation and Developer API converter/tests](https://github.com/googleapis/python-genai/commit/364889a)
+- [Sliding-window eviction boundary and system-prefix exclusion](https://googleapis.github.io/js-genai/release_docs/interfaces/types.SlidingWindow.html)
+- [Live capabilities and audio-stream finalization](https://ai.google.dev/gemini-api/docs/live-api/capabilities)

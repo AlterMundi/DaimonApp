@@ -260,7 +260,8 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(len(self.socket.sent),3,'No automatic tool response, integrator submission or reconnect')
         self.stream.tool_result('call-1',{'status':'accepted','incorporation':'not established'})
         reply=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
-        self.assertEqual(reply['response']['scheduling'],'WHEN_IDLE')
+        self.assertEqual(reply['scheduling'],'WHEN_IDLE')
+        self.assertNotIn('scheduling',reply['response'])
         with self.assertRaises(ValueError):self.stream.tool_result('call-1',{'status':'completed'})
         self.assertEqual(self.stream.tools['call-1']['state'],'response_sent')
     def test_prior_conversation_context_is_bounded_attributed_data(self):

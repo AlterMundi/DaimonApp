@@ -1391,8 +1391,12 @@ claim that every sentence has become a curated DMK record.
 An earlier source-only setup probe selected provider contextWindowCompression
 at102400tokens targeting64000 and was accepted. Astra high review identified that
 this automatic discard cannot wait for Sol incorporation/checkpoint. The current
-source therefore leaves it OFF; compaction will use explicit generation rollover
-from an acknowledged checkpoint and exact tail. Provider token accounting remains
+source therefore leaves it OFF. Explicit generation rollover from an acknowledged
+checkpoint and exact tail is implemented, but the3November follow-up found its
+automatic acoustic fence cannot advance normally during continuous microphone
+silence. In-session checkpoint replacement and protected-tail compression are
+under evaluation; neither path has full automatic continuation qualification.
+Provider token accounting remains
 a scalar observation, not a local character heuristic. Optional usageMetadata prompt/total counts are retained as
 fixed scalar observations; unknown accounting is not an empty context or a reason
 to close voice. Existing five-minute/media/retention bounds remain until a coherent
@@ -1449,7 +1453,10 @@ provider usage; this estimate is not an exact Live tokenizer or actual-provider
 qualification. Completed acoustic/capture copies, checkpointed guidance text and
 unbound acknowledged native transport now retire selectively. Real Gemini
 successor/spoken-continuity and real Sol context/checkpoint cases pass separately;
-the mounted journey with both actual providers, active-turn integration, longer
-retention/continuation and receiving/device acceptance remain unfinished.
+actual active-Core integration now also passes, preserving a correction within
+the same physical native turn. The mounted journey with both actual providers,
+continuous-capture compaction, longer retention/continuation and receiving/device
+acceptance remain unfinished. The focused Astra high follow-up and actual
+continuous-microphone ownership gap are recorded in the maintained design.
 See the single maintained design/qualification record above. Receiving558 and
 the five-minute logical pilot remain unchanged; PR560 is draft.
