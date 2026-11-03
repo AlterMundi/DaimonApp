@@ -2171,6 +2171,65 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn foreground_attachment_requires_owned_unincorporated_ack_not_another_input() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Pending context language")
+            .unwrap();
+        let packet = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let old = local(&f, "Earlier collector");
+        f.store
+            .native_collection_started(old, "old-context-turn")
+            .unwrap();
+        f.store.workflow_native_link(&packet.id, old).unwrap();
+        f.store.workflow_native_submitting(&packet.id).unwrap();
+        assert!(
+            f.store
+                .native_foreground_attachment(100, f.entry)
+                .unwrap()
+                .is_none()
+        );
+        f.store
+            .workflow_native_outcome(&packet.id, "accepted_uncollected", Some("new-context-turn"))
+            .unwrap();
+        let native = f
+            .store
+            .get_session(f.entry)
+            .unwrap()
+            .unwrap()
+            .codex_thread_id
+            .unwrap();
+        assert_eq!(
+            f.store.native_foreground_attachment(100, f.entry).unwrap(),
+            Some((native, "new-context-turn".into()))
+        );
+        assert!(
+            f.store
+                .native_foreground_attachment(101, f.entry)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            f.store
+                .native_foreground_attachment(100, SessionKey::new(100, Some(999)))
+                .unwrap()
+                .is_none()
+        );
+        let page = f.read(false);
+        f.ack(&page).unwrap();
+        assert!(
+            f.store
+                .native_foreground_attachment(100, f.entry)
+                .unwrap()
+                .is_none(),
+            "Incorporated context does not request another collector"
+        );
+    }
+
+    #[test]
     fn native_context_coalesces_and_never_contributes_chat_publication() {
         let f = Fixture::new();
         f.append(

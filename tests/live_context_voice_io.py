@@ -33,7 +33,7 @@ from conversation_routing_io import CanonicalRouting
 
 class VoiceContext(Returning):
     def __init__(self,binary,keep_integrator_active=True):
-        self.keep_integrator_active=keep_integrator_active
+        self.keep_integrator_active=keep_integrator_active;self.detached_context=None;self.detached_starts=0;self.reattached_tools=0;self.detached_physical=[];self.pending_terminal=None
         self.context_roles=set();self.context_outputs={}
         self.guide_id=None
         self.context_active=False;self.guide_checkpoint=None
@@ -47,6 +47,16 @@ class VoiceContext(Returning):
 
     def context_rpc(self,message,send):
         method=message.get('method');p=message.get('params',{});ident=message.get('id')
+        if method=='thread/turns/list' and self.detached_context is not None and p['threadId']==self.web_thread:
+            pending=self.detached_context
+            send({'id':ident,'result':{'data':[{'id':pending['turn'],'status':'inProgress','items':[]}],'nextCursor':None}})
+            if p.get('limit')==1 and not pending['offered']:
+                # Core keeps an unanswered tool request. The exact attachment
+                # sees it again after metadata confirms the existing writer;
+                # this is no new model input or semantic source.
+                pending['offered']=True;self.reattached_tools+=1
+                self.context_ack(send,pending['call'],pending['output'])
+            return True
         if method=='turn/start' and 'toolOutput' in p:
             assert p['input']==[] and p['toolOutput']['name']=='foreground_context'
             output=json.loads(p['toolOutput']['output'])
@@ -55,12 +65,20 @@ class VoiceContext(Returning):
             self.web_thread=p['threadId']
             if first:self.web_turn='voice-context-native-'+str(len(self.internal_packets))
             self.context_active=True
+            if self.pending_terminal is not None:
+                # Force terminal-before-ACK delivery of the old writer, after
+                # the next internal request has already been written to it.
+                self.broadcast(self.web_thread,'turn/completed',{'turn':{'id':self.pending_terminal,'status':'completed'}})
+                self.pending_terminal=None
             send({'id':ident,'result':{'turn':{'id':self.web_turn}}})
             if first:self.broadcast(self.web_thread,'turn/started',{'turn':{'id':self.web_turn,'status':'inProgress'}})
             call='route-voice-context-'+str(len(self.internal_packets))
             self.context_outputs[call]=output
             assert output['evidence']['complete'],'This bounded fixture expects complete inline evidence'
-            self.context_ack(send,call,output)
+            if first and not self.keep_integrator_active and 'additionalContext' not in p:
+                self.detached_starts+=1;self.detached_physical.append(self.web_turn)
+                self.detached_context={'turn':self.web_turn,'call':call,'output':output,'offered':False}
+            else:self.context_ack(send,call,output)
             return True
         if method is None and str(ident).startswith('route-voice-context-'):
             assert message['result']['success'],message
@@ -69,13 +87,22 @@ class VoiceContext(Returning):
             # ASR draft is pending. Terminal-root/late-ACK ordering has its own
             # native-return regression; this is not evidence of tool servicing
             # on a newly detached physical root.
-            if self.keep_integrator_active and any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):return True
+            if any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):
+                if self.keep_integrator_active:return True
+                if not any(e.get('derived_caption') for e in output['evidence']['content']['events']):
+                    self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
+                        'id':'missing-caption-observation','type':'agentMessage','phase':'final_answer',
+                        'text':'PRIVATE_NATIVE_CONTEXT_ONLY'}})
+                    self.pending_terminal=self.web_turn;self.context_active=False
+                    (self.root/'source-parent-incorporated').touch()
+                    return True
             if any(e.get('audio_without_transcript') or e.get('derived_caption') for e in output['evidence']['content']['events']):
                 self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
                     'id':'missing-caption-observation','type':'agentMessage','phase':'final_answer',
                     'text':'PRIVATE_NATIVE_CONTEXT_ONLY'}})
                 self.broadcast(self.web_thread,'turn/completed',{'turn':{'id':self.web_turn,'status':'completed'}})
                 self.context_active=False
+                self.detached_context=None
                 return True
             if output.get('checkpoint_request') is not None:
                 self.checkpoint_output=output
@@ -152,6 +179,7 @@ class CycleDetector(Detector):
 
 def qualify(binary,detached_semantic=False):
     j=VoiceContext(binary,keep_integrator_active=not detached_semantic)
+    if detached_semantic:(j.root/'detached-test').touch()
     try:
         j.start();j.admit('Seed selected voice context.',topic=1)
         j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.stop()
@@ -163,6 +191,11 @@ if '--completed-only' not in sys.argv:
  if source.parent.name!='native-caption-audio':
   (root/'unexpected-asr').touch();sys.exit(2)
  with (root/'caption-asr-calls').open('a') as f:f.write('read\\n')
+ if (root/'detached-test').exists():
+  import time
+  deadline=time.monotonic()+3
+  while not (root/'source-parent-incorporated').exists() and time.monotonic()<deadline:time.sleep(.005)
+  assert (root/'source-parent-incorporated').exists()
  print(json.dumps({'text':'Approximate synthetic assistant caption.','final':True}));sys.exit(0)
 with (root/'completed-calls').open('a') as f:f.write('read\\n')
 print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streaming_model':'gemini-3.8-live'}))
@@ -252,6 +285,13 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
                     assert summary['context_producer']=='closed' and summary['provider_rollovers']==2,summary
         doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
         assert doc['closed'] and doc['incorporated']==doc['high']==6
+        if detached_semantic:
+            assert j.detached_starts==j.reattached_tools==1
+            receipt=next(r for r in doc['native_returns'] if r['envelope']['through']==6)
+            assert receipt['collection_local']!=receipt['local'] and receipt['native_turn']==j.detached_physical[0]
+            assert j.row('SELECT first_turn FROM native_collections WHERE local_turn=?',(receipt['collection_local'],))==[(receipt['native_turn'],)]
+            assert all(r.get('method') not in ('thread/goal/set','thread/goal/clear') for r in j.rpc)
+            print('PASS exact detached context attachment: one existing physical root, one pending tool, unchanged goals/originals, six sources incorporated and no input replay')
         assert doc['checkpoint']['through']==4
         assert len(doc['sources'])==6 and len(doc['events'])==2
         assert doc['events'][0]['text']=='' and doc['events'][0]['audio_without_transcript']['generated_bytes']==320
@@ -404,4 +444,4 @@ def qualify_rollover(binary):
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
     if '--detached-semantic' in sys.argv[2:]:qualify(binary,detached_semantic=True)
-    else:qualify(binary);qualify_rollover(binary)
+    else:qualify(binary);qualify(binary,detached_semantic=True);qualify_rollover(binary)

@@ -97,6 +97,35 @@ pub(super) fn retained(
 }
 
 impl Store {
+    /// One current context-only physical writer already acknowledged by Core.
+    /// This selects observation/collection, never another native submission.
+    pub(crate) fn native_foreground_attachment(
+        &self,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<Option<(String, String)>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut query = conn.prepare("SELECT doc FROM live_context WHERE human=?1 AND chat=?2 AND topic=?3 AND EXISTS(SELECT 1 FROM json_each(doc,'$.native_returns') r WHERE json_extract(r.value,'$.phase')='accepted_uncollected' AND json_extract(r.value,'$.reported_revision') IS NULL) ORDER BY rowid DESC LIMIT 64")?;
+        let rows = query
+            .query_map(params![human, entry.chat_id, entry.thread_id], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for raw in rows {
+            let parent: ForegroundParent = serde_json::from_str(&raw)?;
+            for receipt in parent.native_returns.iter().rev() {
+                if receipt.phase == "accepted_uncollected"
+                    && receipt.reported_revision.is_none()
+                    && receipt.collection_local.is_some()
+                    && current(&conn, &parent, receipt, false)?
+                    && let Some(physical) = &receipt.native_turn
+                {
+                    return Ok(Some((parent.native.clone(), physical.clone())));
+                }
+            }
+        }
+        Ok(None)
+    }
     pub(in crate::store) fn init_native_foreground_returns(&self) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;

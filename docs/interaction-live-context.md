@@ -201,17 +201,21 @@ avatar open or erase its successor's ownership.
 
 Qualification uses actual helper subprocesses with synthetic results, actual
 Python history/outbox/native-controller/SQLite delivery, two live handovers,
-known-sent receipt loss and late closed-producer delivery. These do not establish
-actual provider ASR accuracy, Sol semantic uptake, device hearing or full context
-callback recovery onto a newly detached physical native root. The unresolved
-semantic case remains reproducible with
-`python -B tests/live_context_voice_io.py <candidate-binary> --detached-semantic`:
-the fake integrator finishes the parent turn before the ASR draft arrives, and
-the expected outcome still requires all six sources incorporated. The default
-active-integrator fixture is explicitly a separate case; passing it does not
-satisfy this regression. Resolve/qualify this gate before activation/full
-acceptance. Receiving566 remains stable for the pending
-human test.
+known-sent receipt loss and late closed-producer delivery. The default integrated
+fixture now covers both an active integrator and a parent turn completing before
+the ASR draft arrives. Its forced terminal-before-ACK race confirms one exact
+physical-turn attachment, one pending controller call serviced, all six sources
+incorporated, unchanged goals/originals and no input replay. The focused command
+remains `python -B tests/live_context_voice_io.py <candidate-binary> --detached-semantic`.
+
+The repair reuses the existing current-turn collector attachment after the entry
+writer releases its slot. Selection requires its owned, acknowledged,
+unincorporated foreground receipt and unchanged binding/epoch; the attachment
+transfers the existing context-only publication fence. The existing heartbeat is
+a process-replacement fallback. Neither path starts another model input, changes
+a goal, replays a return or starts peer attention. These synthetic proofs do not
+establish actual provider ASR accuracy, real Sol semantic uptake, device hearing
+or full acceptance. Receiving566 remains stable during qualification.
 
 A related native terminal race now drains already-written internal-return ACKs
 for at most two seconds before its transport closes. New input is rejected as
