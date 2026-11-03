@@ -72,6 +72,7 @@ def being_identity(selected):
 def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
     activity_mode=selected.get('native_activity_mode','manual')
+    configured_seconds=selected.get('native_session_seconds',300)
     app.state.native_voice_enabled=True
     recovery_slots=asyncio.Semaphore(2);recovery_owned=set()
 
@@ -81,6 +82,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             await socket.close(code=1008);return
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=actor=None
+        session_seconds=300
         context_producer=None;caption_audio=None;caption_recovery=None;audio_released=False
         control_task=None;control_dirty=False
         output_queue=None;output_pending=deque();output_batch_pending=False
@@ -319,7 +321,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         if caption_audio is not None:caption_audio.begin(utterance)
                     if kind=='audio':
                         logical_output_bytes+=len(event['pcm'])
-                        if logical_output_bytes>300*48000:raise ForegroundUnavailable('Logical voice output exceeds its pilot bound')
+                        if logical_output_bytes>session_seconds*48000:raise ForegroundUnavailable('Logical voice output exceeds its session bound')
                         output_bytes+=len(event['pcm']);output_hash.update(event['pcm'])
                         if caption_audio is not None:caption_audio.append(event['pcm'])
                         await flush_output(emit=False)
@@ -349,7 +351,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         await reader_resume.wait()
                         reader_paused.clear()
                     output_pending.extend(await asyncio.to_thread(stream.receive))
-                    if retired_output_bytes+getattr(stream,'output_bytes',0)>300*48000:
+                    if retired_output_bytes+getattr(stream,'output_bytes',0)>session_seconds*48000:
                         raise ForegroundUnavailable('Logical voice generation exceeds its pilot bound')
                 return output_pending.popleft()
             output_queue=VoiceInbox(next_event,batch_size=50)
@@ -429,14 +431,18 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 else:raise ForegroundUnavailable('Integrating returns exceed the live catch-up bound')
                 await notice_if_idle()
         try:
-            async with asyncio.timeout(305):
+            async with asyncio.timeout(305 if configured_seconds==300 else configured_seconds+50) as lifetime:
                 raw=await asyncio.wait_for(socket.receive_text(),5)
                 if len(raw.encode())>8192:raise ValueError('Native voice metadata exceeds bound')
                 meta=json.loads(raw)
-                if (not isinstance(meta,dict) or set(meta)-{'id','binding','csrf','authorization','capture_questions'}
+                if (not isinstance(meta,dict) or set(meta)-{'id','binding','csrf','authorization','capture_questions','session_seconds'}
                         or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf'))
                         or not re.fullmatch('[a-f0-9]{64}',meta['binding'])):
                     raise ValueError('Select one owned native voice conversation')
+                requested_seconds=meta.get('session_seconds',300)
+                if type(requested_seconds) is not int or not 300<=requested_seconds<=1800:
+                    raise ValueError('Select a finite native client duration')
+                session_seconds=min(configured_seconds,requested_seconds)
                 provider.input_id(meta['id']);Provider.check_capture_questions(meta.get('capture_questions'))
                 session,recheck,actor=await bind_voice(socket,meta)
                 human=session['human']
@@ -496,7 +502,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 while len(json.dumps(context,ensure_ascii=False).encode())>32768:sources.pop()
                 await recheck()
                 if activity_mode=='manual':
-                    worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600)
+                    worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600,
+                        **({'session_seconds':session_seconds} if session_seconds>300 else {}))
                 await recheck()
                 opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode=activity_mode,
                     voice_name=selected.get('native_voice_name'),context=context))
@@ -517,6 +524,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {})} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
+                bridge.max_pcm_bytes=session_seconds*32000
+                if session_seconds>300:bridge.max_captures=1024
                 bridge.idle_notify=notice_if_idle
                 async def context_owner(function,*args):
                     # The same bounded owner slots remain held until actual
@@ -544,6 +553,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         provider.receiver['voice'],owner,app.state.native_history.scope,meta['binding'],recheck,
                         recover_caption,recovery_slots,recovery_owned)
                     caption_audio=CaptionAudio()
+                    caption_audio.max_dialogue_bytes=session_seconds*48000
                     await caption_recovery.recover()
                 bridge.generation=context_producer.record['generation']
                 # Only references actually retained in the bounded setup are
@@ -554,7 +564,12 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             'kind':'result','label':'Integrator'},in_context=True)
                 acoustic=(NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                     if activity_mode=='manual' else NativeAutomaticAcousticSession(bridge,meta.get('capture_questions'),acoustic_event))
-                await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':activity_mode,'playback_status':True})
+                acoustic.max_bytes=session_seconds*32000
+                if session_seconds>300:acoustic.max_spans=1024
+                if configured_seconds>300:
+                    lifetime.reschedule(asyncio.get_running_loop().time()+session_seconds+5)
+                await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':activity_mode,'playback_status':True,
+                    **({'session_seconds':session_seconds} if 'session_seconds' in meta or configured_seconds>300 else {})})
                 tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
                 context_task=asyncio.create_task(context_producer.run(),name='native-context')
                 context_task.add_done_callback(ForegroundBridge._observe)
@@ -571,6 +586,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             proposals={key:value for key,value in proposals.items() if value is not task}
                             continue
                         close_stage=task.get_name();task.result()
+                        if session_seconds>300 and bridge.capacity_reached:
+                            raise ForegroundUnavailable('Native voice reached its retained reference capacity')
                         if task in tasks:
                             close_stage+='-ended';return
                         tool_tasks.remove(task)
@@ -586,8 +603,11 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         if message.get('bytes') is not None:await acoustic.feed(message['bytes'])
                         else:
                             value=json.loads(message.get('text',''))
-                            if value=={'type':'close'}:
-                                close_stage='client-close';return
+                            if value=={'type':'close'} or (isinstance(value,dict)
+                                    and set(value)=={'type','recover_unassigned'}
+                                    and value.get('type')=='close' and value['recover_unassigned'] is True):
+                                close_stage='client-close-recovery' if value.get('recover_unassigned') is True else 'client-close'
+                                return
                             if isinstance(value,dict) and value.get('type')=='playback_status':
                                 observed=playback_status(value)
                                 if playback_status_count<32:

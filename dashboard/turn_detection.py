@@ -4,7 +4,7 @@ import base64
 from contextlib import suppress
 import json
 
-from scripts.capture_turn import MODEL_SHA256, SCHEMA, VAD_SHA256
+from scripts.capture_turn import MODEL_SHA256, SCHEMA, VAD_SHA256, analysis_budget
 
 
 class DetectionUnavailable(Exception):
@@ -26,18 +26,20 @@ def command(config):
 
 class Detector:
     @classmethod
-    async def open(cls, argv, *, continuous=False, silence_end_millis=0):
+    async def open(cls, argv, *, continuous=False, silence_end_millis=0,session_seconds=None):
+        seconds,_,_,_=analysis_budget(continuous=continuous,session_seconds=session_seconds)
         if type(silence_end_millis) is not int or silence_end_millis not in (0,1600) or silence_end_millis and not continuous:
             raise ValueError('Acoustic silence is selected only for native continuous speech')
         value = cls()
         value.continuous = continuous
         value.process = await asyncio.create_subprocess_exec(*argv, *(['--continuous'] if continuous else []),
+            *(['--session-seconds',str(seconds)] if seconds>300 else []),
             *(['--silence-end-millis',str(silence_end_millis)] if silence_end_millis else []),stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=8192,
             start_new_session=True)
         try:
             ready = await asyncio.wait_for(value.receive(), 30 if continuous else 15)
-            if ready != {'schema': SCHEMA, 'type': 'ready', 'vad_sha256': VAD_SHA256, 'turn_sha256': MODEL_SHA256, **({'continuous': True} if continuous else {}),**({'silence_end_millis':silence_end_millis} if silence_end_millis else {})}:
+            if ready != {'schema': SCHEMA, 'type': 'ready', 'vad_sha256': VAD_SHA256, 'turn_sha256': MODEL_SHA256, **({'continuous': True} if continuous else {}),**({'silence_end_millis':silence_end_millis} if silence_end_millis else {}),**({'session_seconds':seconds} if seconds>300 else {})}:
                 raise DetectionUnavailable('Unexpected analysis worker')
             return value
         except BaseException:

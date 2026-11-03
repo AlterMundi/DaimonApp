@@ -11,7 +11,8 @@ window.StreamingVoice=(()=>{
   const supported=()=>!!(window.AudioWorkletNode&&(window.AudioContext||window.webkitAudioContext)&&window.WebSocket);
   // One explicitly owned foreground graph can outlive an utterance. It never
   // retains PCM: its bounded consumers own originals and any pre-speech ring.
-  async function openCapture(media){
+  async function openCapture(media,{sessionSeconds=300}={}){
+    if(!Number.isSafeInteger(sessionSeconds)||sessionSeconds<300||sessionSeconds>1800)throw Error('Invalid capture duration');
     const Context=window.AudioContext||window.webkitAudioContext,context=new Context();
     let worklet,source,filter,mute,started=false,closed=false,expired=false,timer;
     const listeners=new Set();
@@ -22,14 +23,14 @@ window.StreamingVoice=(()=>{
       context.close().catch(()=>{});listeners.clear();
     }
     try{
-      await context.audioWorklet.addModule('assets/voice-pcm.js');worklet=new AudioWorkletNode(context,'interaction-pcm');
+      await context.audioWorklet.addModule('assets/voice-pcm.js');worklet=new AudioWorkletNode(context,'interaction-pcm',{processorOptions:{sessionSeconds}});
       source=context.createMediaStreamSource(media);filter=context.createBiquadFilter();mute=context.createGain();
       filter.type='lowpass';filter.frequency.value=7400;mute.gain.value=0;
     }catch(error){close();throw error;}
     worklet.port.onmessage=message=>{
       if(closed)return;
       if(message.data.captureError){close(message.data.captureError);return;}
-      if(message.data.pcm&&message.data.totalBytes>300*32000){
+      if(message.data.pcm&&message.data.totalBytes>sessionSeconds*32000){
         if(!expired){expired=true;close('session_limit');}
         return;
       }
@@ -44,7 +45,7 @@ window.StreamingVoice=(()=>{
         if(closed)throw Error('Capture closed');if(started)return;started=true;
         try{source.connect(filter);filter.connect(worklet);worklet.connect(mute);mute.connect(context.destination);}
         catch(error){close('capture_unavailable');throw error;}
-        timer=setTimeout(()=>close('session_limit'),300000);
+        timer=setTimeout(()=>close('session_limit'),sessionSeconds*1000);
         context.resume().catch(()=>close('capture_unavailable'));
       },
       observe(){if(!closed)worklet.port.postMessage('observe');},

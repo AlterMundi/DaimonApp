@@ -372,6 +372,81 @@ backfill uses the worker's optional `defer` command. A mismatched older worker
 fails analysis without switching or restarting the existing ASR capture.
 No ML inference, model weights or raw audio are retained in the web process.
 Fullscreen microphone opt-in expires after five minutes and is not persisted.
+
+### Extended native analysis budget — development prerequisite
+
+The analysis worker and its `Detector.open` adapter accept an explicit
+`session_seconds` only in continuous mode, from300through1800seconds. The
+adapter passes `--session-seconds` for durations above300 and requires that
+exact duration in the worker's ready acknowledgment before sending PCM. An
+older worker is rejected and reaped; a successful process start alone does not
+prove it supports the selected duration. Ordinary capture and the omitted
+continuous duration preserve their existing flags and ready payloads.
+
+For a selected duration S, cumulative input is bounded to S×32000bytes,
+semantic analyses to ceil(90×S/300), and CPU to ceil(S/2)seconds with a five-second
+hard-limit margin. Extended wall lifetime is S+50seconds, allowing bounded
+analysis/provider startup and closure. The omitted300second mode keeps its
+existing150CPU/305wall-second contract. Resident analysis remains an eight-second
+tail, one partial1024byte frame, two endpoint receipts and fixed recurrent state.
+No model/provider or microphone is opened by this API alone.
+
+The server option `streaming_transcription.native_session_seconds` now selects
+one finite300..1800second manual-activity session; omitted configuration remains
+300seconds. Automatic mode rejects this option. The browser requests its supported
+maximum, current Android PCM clients request300, and legacy clients omitting
+`session_seconds` retain300. The server takes the smaller client/operator bound
+before opening analysis or the provider, advertises it in `ready`, and the browser
+starts no microphone before validating that response. Extended time starts at
+readiness with five seconds of server cleanup reserve; worker startup has its
+separate bounded reserve. Existing default timeout behavior remains unchanged.
+
+The negotiated duration governs cumulative server input and both output counters,
+caption totals, browser timer/capture helper and AudioWorklet sample limit. An
+extended session retains at most1024capture IDs (default128); the existing four
+pending captures, three close-only reserve slots, one file writer/two owner slots,
+original-cache quotas, eight caption recovery admissions and120second ASR clips
+stay independent. Provider sockets retain their existing physical lifetime and
+checkpoint-seeded idle replacement; no source, admission, offer or generation
+counter resets with a successor.
+
+Resident acoustic/client PCM is independently bounded to300seconds. Only a
+completed original prefix retires on server handover; the browser retires that
+prefix after its matching canonical confirmation and local release. A quiet
+unassigned suffix or delayed integrator checkpoint can therefore end the session
+earlier. Extended input stops at the299second resident, seven-second unsent-span
+or119second phrase threshold, leaving one maximum1second captured-frame reserve
+within the hard300/8/120second bounds. Analysis backlog and speech waiting for an
+earlier provider confirmation are accounted separately; background noise alone
+does not become queued provider speech. Capacity close retains acoustic-owned
+unassigned bytes through the existing private original path, with no invented
+transcript or automatic delegation. Unread socket/inbox bytes remain outside
+that recovery guarantee.
+
+Reference capacity is also finite:32integrator admissions,128offered result
+revisions,65provider generations and the existing canonical context/cache limits.
+An extended tool path reaching admission/result-reference capacity closes visibly
+instead of merely returning a truncated result or resetting the lifetime fence.
+Other canonical failures retain their existing visible review path. No silent
+source eviction or automatic re-admission makes room.
+
+The reviewed first extended pilot is600seconds and remains unselected. Mounted
+synthetic600second PCM crosses two checkpointed provider successors, retains three
+originals and one pending work admission, then reads its one canonical return.
+Browser/helper/worklet, quiet resident/unsent-span close retention, legacy-client
+narrowing and incompatible-worker cleanup have separate bounded checks. This is
+logical audio-duration qualification, not ten minutes of actual provider wall
+time, physical hearing, latency or full product/device acceptance.
+
+The existing full-browser qualifier accepts `--session-seconds 600` to verify the actual shipped shell, shared-cookie
+bootstrap, three synthetic-source voice cycles and600second negotiation through
+the real capture helper. It also executes the shipped worklet in Chromium's
+OfflineAudioContext:6000packets/19,200,000PCM bytes, maximum3200bytes per packet,
+then `session_limit` and a closed offline context. No PCM history or physical
+capture/playback is retained. Use a new task-owned `--out` directory and the
+existing installed Playwright module; the qualifier owns its bounded server,
+browser, temporary state and closure receipts. This complements the mounted
+two-successor/worker-return check; it is not a real-provider ten-minute trial.
 Raw original recovery and existing ASR/TTS retention remain separately owned.
 
 One real pinned-model child qualified ready/PCM/close with a silent100ms chunk:

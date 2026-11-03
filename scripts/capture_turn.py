@@ -20,9 +20,31 @@ VAD_BYTES = 1289603
 SCHEMA = 'telecodex.turn-activity/v1'
 
 
+def analysis_budget(*,continuous=False,session_seconds=None):
+    """One finite worker budget; longer capture never enlarges resident state.
+
+    Ordinary capture and omitted continuous duration keep their exact existing
+    byte/analysis/CPU/wall limits. Only the native continuous owner may select
+    an extended duration, and must verify the worker's ready acknowledgment.
+    """
+    if type(continuous) is not bool:
+        raise ValueError('Select explicit continuous analysis')
+    if session_seconds is not None and (not continuous or type(session_seconds) is not int
+                                       or not 300<=session_seconds<=1800):
+        raise ValueError('Select a continuous analysis duration from300to1800seconds')
+    seconds=(300 if continuous else 120) if session_seconds is None else session_seconds
+    analyses=(90*seconds+299)//300 if continuous else 30
+    cpu=(seconds+1)//2 if continuous else 60
+    # Preserve the default wire/runtime contract. Extended workers allow the
+    # parent's30s analysis readiness,15s provider setup and5s close reserve.
+    wall=seconds+(50 if seconds>300 else 5) if continuous else 145
+    return seconds,analyses,cpu,wall
+
+
 class Activity:
     """One capture's recurrent state; at most120s PCM and thirty turn scores."""
-    def __init__(self, vad_path, turn_path, *, continuous=False, silence_end_millis=0):
+    def __init__(self, vad_path, turn_path, *, continuous=False, silence_end_millis=0,session_seconds=None):
+        seconds,analyses,_,_=analysis_budget(continuous=continuous,session_seconds=session_seconds)
         if type(silence_end_millis) is not int or silence_end_millis not in (0,1600):
             raise ValueError('Select disabled or native1600ms acoustic silence')
         self.silence_end_millis=silence_end_millis
@@ -49,8 +71,8 @@ class Activity:
         self.speaking = self.speech_seen = False
         self.pending_onset = False
         self.scored_generation = self.confirmed_generation = 0
-        self.max_bytes = (300 if continuous else 120) * 32000
-        self.max_analyses = 90 if continuous else 30
+        self.max_bytes = seconds * 32000
+        self.max_analyses = analyses
         self.endpoints = []
 
     def _probability(self, frame):
@@ -146,16 +168,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vad-model', type=Path, required=True)
     parser.add_argument('--turn-model', type=Path, required=True)
-    parser.add_argument('--continuous', action='store_true', help='One explicit foreground session, at most five minutes')
+    parser.add_argument('--continuous', action='store_true', help='One explicit foreground session, five minutes by default')
+    parser.add_argument('--session-seconds',type=int,
+                        help='Continuous native analysis only: explicit finite300..1800second session')
     parser.add_argument('--silence-end-millis', type=int, choices=(0,1600), default=0,
                         help='Native speech only: close after confirmed speech and this acoustic silence')
     args = parser.parse_args()
+    try:seconds,_,cpu,wall=analysis_budget(continuous=args.continuous,session_seconds=args.session_seconds)
+    except ValueError as error:parser.error(str(error))
     # This owns only the optional analysis child, never native conversations.
-    resource.setrlimit(resource.RLIMIT_CPU, (150, 155) if args.continuous else (60, 65))
-    signal.alarm(305 if args.continuous else 145)
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu,cpu+5))
+    signal.alarm(wall)
     try:
-        analyzer = Activity(args.vad_model, args.turn_model, continuous=args.continuous,silence_end_millis=args.silence_end_millis)
-        print(json.dumps({'schema': SCHEMA, 'type': 'ready', 'vad_sha256': VAD_SHA256, 'turn_sha256': MODEL_SHA256, **({'continuous': True} if args.continuous else {}),**({'silence_end_millis':args.silence_end_millis} if args.silence_end_millis else {})}), flush=True)
+        analyzer = Activity(args.vad_model, args.turn_model, continuous=args.continuous,silence_end_millis=args.silence_end_millis,
+                            session_seconds=args.session_seconds)
+        print(json.dumps({'schema': SCHEMA, 'type': 'ready', 'vad_sha256': VAD_SHA256, 'turn_sha256': MODEL_SHA256, **({'continuous': True} if args.continuous else {}),**({'silence_end_millis':args.silence_end_millis} if args.silence_end_millis else {}),**({'session_seconds':seconds} if seconds>300 else {})}), flush=True)
         while True:
             raw = sys.stdin.buffer.readline(45001)
             if not raw:
