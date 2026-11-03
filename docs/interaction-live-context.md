@@ -1286,3 +1286,12 @@ return-at-handover case, not full128k saturation, arbitrary concurrent effects,
 barge-in during commit, long sessions or device/noise/hearing acceptance.
 No production runtime changed: receivingPR563 stays selected while the human
 browser trial is pending; PR564's scalar diagnostics are merged/prepared only.
+
+
+This same journey also produced a separate closed assistant row with285600bytes
+of generated audio and no observed output transcription. No retained audio or
+physical hearing establishes whether it contained intelligible speech. The
+current context outbox excludes empty-text rows: high4/incorporated4 therefore
+proves only the four language-bearing sources, not complete coverage of all
+generated audio. This missing-caption case remains an explicit investigation
+item; the useful late-result transcript/audio above is independently present.
