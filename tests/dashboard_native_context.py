@@ -99,6 +99,35 @@ class Context(unittest.IsolatedAsyncioTestCase):
     def retain(self,text='Terminal language α.',*,closed=True,source=None):
         return self.history.retain(100,self.dialogue,self.binding,source or str(uuid.uuid4()),text,'b'*64,640,closed=closed)
 
+    async def test_missing_caption_reaches_sol_as_audio_observation_not_invented_language(self):
+        p=self.producer();await p.open()
+        source=self.retain('',closed=False)
+        self.assertEqual(self.history.context_pending(p.record),[])
+        self.retain('',source=source['id'])
+        pending=self.history.context_pending(p.record)
+        self.assertEqual(len(pending),1)
+        self.assertEqual(pending[0]['text'],'')
+        self.assertEqual(pending[0]['audio_without_transcript'],
+            {'pcm_sha256':'b'*64,'generated_bytes':640})
+        self.provider.lose_next=True
+        with self.assertRaises(ProviderUnavailable):await p._sync(p.record)
+        await p._sync(p.record)
+        self.assertEqual(len(self.provider.fresh),1,'An uncertain receipt is reconciled by the same source')
+        self.assertEqual(self.provider.fresh[0]['text'],'')
+        self.assertEqual(self.provider.fresh[0]['audio_without_transcript'],pending[0]['audio_without_transcript'])
+        self.history.played(100,self.dialogue,source['id'],640)
+        self.assertEqual(self.history.context_pending(p.record),[],'Playback cannot invent another language source')
+        with self.assertRaises(ValueError):self.retain('Invented words',source=source['id'])
+
+    async def test_existing_language_source_revision_keeps_legacy_identity(self):
+        p=self.producer();await p.open()
+        source=self.retain()
+        legacy=[source['id'],self.dialogue,self.binding,source['text'],False,True]
+        expected=hashlib.sha256(json.dumps(legacy,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+        pending=self.history.context_pending(p.record)
+        self.assertEqual(pending[0]['semantic_revision'],expected)
+        self.assertNotIn('audio_without_transcript',pending[0])
+
     async def test_checkpoint_pressure_requests_once_per_generation_without_sync_or_source_replay(self):
         p=self.producer();await p.open()
         pressure={'reason':'tokens','tokens':105000,'usage_kind':'observed'}

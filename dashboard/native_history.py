@@ -186,7 +186,10 @@ class NativeHistory:
                     raise ValueError('Canonical Live context source changed')
                 size+=len(row['text'].encode())
                 if size>65536:break
-                values.append({'source':row['id'],'text':row['text'],'interrupted':bool(row['interrupted']),'semantic_revision':row['semantic_revision']})
+                source={'source':row['id'],'text':row['text'],'interrupted':bool(row['interrupted']),'semantic_revision':row['semantic_revision']}
+                if not row['text'] and row['generated_bytes']:
+                    source['audio_without_transcript']={'pcm_sha256':row['audio_sha256'],'generated_bytes':row['generated_bytes']}
+                values.append(source)
         return values
 
     def context_retained(self,record,sources,receipts):

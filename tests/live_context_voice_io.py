@@ -36,6 +36,7 @@ class VoiceContext(Returning):
         self.context_roles=set();self.context_outputs={}
         self.guide_id=None
         self.context_active=False;self.guide_checkpoint=None
+        self.missing_audio_observations=[]
         super().__init__(binary)
 
     def handle_extra_rpc(self,message,send):
@@ -46,6 +47,7 @@ class VoiceContext(Returning):
             self.internal_packets.append(p)
             evidence=output['evidence'];assert evidence['complete']
             self.context_roles.update(e['role'] for e in evidence['content']['events'])
+            self.missing_audio_observations.extend(e for e in evidence['content']['events'] if e.get('audio_without_transcript'))
             first=not self.context_active
             self.web_thread=p['threadId']
             if first:self.web_turn='voice-context-native-'+str(len(self.internal_packets))
@@ -61,6 +63,13 @@ class VoiceContext(Returning):
         if method is None and str(ident).startswith('route-voice-context-'):
             assert message['result']['success'],message
             output=self.context_outputs[ident]
+            if any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):
+                self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
+                    'id':'missing-caption-observation','type':'agentMessage','phase':'final_answer',
+                    'text':'PRIVATE_NATIVE_CONTEXT_ONLY'}})
+                self.broadcast(self.web_thread,'turn/completed',{'turn':{'id':self.web_turn,'status':'completed'}})
+                self.context_active=False
+                return True
             if output.get('checkpoint_request') is not None:
                 self.checkpoint_output=output
                 send({'id':'route-pressure-read','method':'item/tool/call','params':{
@@ -191,12 +200,30 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
                         assert Stream.opened[-1].context['live_checkpoint']['through']==through
                     assert j.context_roles=={'human','assistant'}
                     assert [s.total for s in Stream.opened]==[6400,6400,0]
+                    # A later audio-only provider turn is not silently omitted
+                    # from Sol context or converted into invented human speech.
+                    Stream.opened[-1].queue.put([{'type':'audio','pcm':b'\1\0'*160,'sample_rate':24000},
+                        {'type':'turn_complete'}])
+                    while True:
+                        event=ws.receive_json();assert event['type']!='review',event
+                        if event['type']=='assistant_utterance' and event['utterance']['closed']:
+                            assert event['utterance']['text']=='' and event['utterance']['generated_bytes']==320
+                            ws.send_json({'type':'playback','id':event['utterance']['id'],'played_bytes':320})
+                            break
+                    j.wait(lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(5,)])
+                    j.wait(lambda:j.row('SELECT busy FROM sessions WHERE thread_id=1')==[(0,)])
+                    assert len(j.missing_audio_observations)==1
+                    observation=j.missing_audio_observations[0]
+                    assert observation['role']=='assistant' and observation['text']==''
+                    assert observation['audio_without_transcript']['generated_bytes']==320
                     ws.send_json({'type':'close'})
                     summary=closed.get(timeout=5)
                     assert summary['context_producer']=='closed' and summary['provider_rollovers']==2,summary
         doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
-        assert doc['closed'] and doc['incorporated']==doc['high']==doc['checkpoint']['through']==4
-        assert len(doc['sources'])==4 and not doc['events']
+        assert doc['closed'] and doc['incorporated']==doc['high']==5
+        assert doc['checkpoint']['through']==4
+        assert len(doc['sources'])==5 and len(doc['events'])==1
+        assert doc['events'][0]['text']=='' and doc['events'][0]['audio_without_transcript']['generated_bytes']==320
         pressure_packets=[json.loads(p['toolOutput']['output']) for p in j.internal_packets
             if json.loads(p['toolOutput']['output']).get('checkpoint_request') is not None]
         assert len(pressure_packets)==2
@@ -212,8 +239,8 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         assert not any('PRIVATE_NATIVE_CONTEXT_ONLY' in item['preview'] for item in provider.presentation_list(0,0)['items'])
         with app.state.native_history.database() as db:
             assert db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='pending'").fetchone()[0]==0
-            assert db.execute('SELECT count(*) FROM foreground_utterances').fetchone()[0]==2
-        print('PASS two active voice socket handovers through completed-only originals, canonical assistant outbox, actual owner/controller incorporation/checkpoints and source-bound Sol guidance; no PCM/work/ASR replay or private bookkeeping publication, clean close; synthetic audio/detector/Core/provider peers, zero models')
+            assert db.execute('SELECT count(*) FROM foreground_utterances').fetchone()[0]==3
+        print('PASS two active voice socket handovers through completed-only originals, canonical assistant outbox including an explicit missing-caption observation, actual owner/controller incorporation/checkpoints and source-bound Sol guidance; no PCM/work/ASR replay or private bookkeeping publication, clean close; synthetic audio/detector/Core/provider peers, zero models')
     finally:j.close()
 
 

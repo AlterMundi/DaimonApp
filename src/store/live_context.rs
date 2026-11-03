@@ -130,6 +130,32 @@ pub(crate) struct LiveAssistantSource {
     source: String,
     text: String,
     interrupted: bool,
+    #[serde(default)]
+    audio_without_transcript: Option<AudioWithoutTranscript>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AudioWithoutTranscript {
+    pcm_sha256: String,
+    generated_bytes: u64,
+}
+
+impl AudioWithoutTranscript {
+    fn validate(&self) -> Result<()> {
+        if self.pcm_sha256.len() != 64
+            || !self
+                .pcm_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || self.generated_bytes == 0
+            || self.generated_bytes > 300 * 48000
+            || self.generated_bytes % 2 != 0
+        {
+            bail!("Select bounded generated audio without a transcript");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -141,6 +167,8 @@ struct Event {
     interrupted: bool,
     /// Arrival sequence is not human capture chronology.
     capture_order: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_without_transcript: Option<AudioWithoutTranscript>,
     revision: String,
 }
 
@@ -263,8 +291,22 @@ fn retain_event(
     text: String,
     interrupted: bool,
     capture_order: Option<i64>,
+    audio_without_transcript: Option<AudioWithoutTranscript>,
 ) -> Result<Value> {
-    let revision = hash(&json!([source, role, text, interrupted, capture_order]))?;
+    // Preserve existing source revisions; only the new observation extends
+    // identity. Playback reports are still neither language nor hearing.
+    let revision = if let Some(audio) = &audio_without_transcript {
+        hash(&json!([
+            source,
+            role,
+            text,
+            interrupted,
+            capture_order,
+            audio
+        ]))?
+    } else {
+        hash(&json!([source, role, text, interrupted, capture_order]))?
+    };
     if let Some((sequence, old)) = p.sources.get(&source) {
         if *old != revision {
             bail!("Finalized Live source cannot be rewritten");
@@ -283,6 +325,7 @@ fn retain_event(
         text,
         interrupted,
         capture_order,
+        audio_without_transcript,
         revision: revision.clone(),
     });
     Ok(json!({"sequence":p.high,"revision":revision,"fresh":true}))
@@ -356,7 +399,7 @@ fn snapshot(p: &Projection, full: bool) -> Result<String> {
         &json!({"dialogue":p.dialogue,"from":from,"through":p.high,
         "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,"guidance":guidance,
         "checkpoint_request":p.checkpoint_request,
-        "policy":"Attributed language context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid."}),
+        "policy":"Attributed context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid. Audio without a transcript has no known words; do not invent its language or assume intelligibility, silence or hearing."}),
     )?)
 }
 fn view(p: &Projection) -> Value {
@@ -805,7 +848,7 @@ impl Store {
                 } else {
                     bail!("Invalid Live context role");
                 };
-                retain_event(&mut p, source, role, text, interrupted, capture_order)?
+                retain_event(&mut p, source, role, text, interrupted, capture_order, None)?
             }
             LiveContextCommand::Sync {
                 generation,
@@ -854,6 +897,7 @@ impl Store {
                             original.text,
                             false,
                             Some(order),
+                            None,
                         )?["fresh"]
                             == true,
                     );
@@ -861,7 +905,14 @@ impl Store {
                 let mut receipts = Vec::new();
                 for source in assistant {
                     uuid(&source.source)?;
-                    bounded(&source.text, 16384)?;
+                    if let Some(audio) = &source.audio_without_transcript {
+                        audio.validate()?;
+                        if !source.text.is_empty() {
+                            bail!("Missing-transcript observation cannot also claim language");
+                        }
+                    } else {
+                        bounded(&source.text, 16384)?;
+                    }
                     let id = source.source.clone();
                     let mut receipt = retain_event(
                         &mut p,
@@ -870,6 +921,7 @@ impl Store {
                         source.text,
                         source.interrupted,
                         None,
+                        source.audio_without_transcript,
                     )?;
                     receipt["source"] = json!(id);
                     receipts.push(receipt);
@@ -1296,6 +1348,59 @@ mod tests {
                 "revision":basis["checkpoint_revision"],"through":through,
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn missing_assistant_caption_is_an_idempotent_bounded_observation_not_language() {
+        let f = Fixture::new();
+        let source = Uuid::now_v7().to_string();
+        let observation = json!({"pcm_sha256":"b".repeat(64),"generated_bytes":285600});
+        let request = json!({"action":"sync","dialogue":f.dialogue,"generation":f.generation,
+            "assistant":[{"source":source,"text":"","interrupted":false,
+                "audio_without_transcript":observation}]});
+        let first = f.call(request.clone()).unwrap();
+        assert_eq!(first["high"], 1);
+        let repeated = f.call(request.clone()).unwrap();
+        assert_eq!(repeated["high"], 1);
+        assert_eq!(repeated["assistant_receipts"][0]["fresh"], false);
+        let pin = f
+            .call(json!({"action":"pin_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let event = &pin["pin"]["content"]["events"][0];
+        assert_eq!(event["role"], "assistant");
+        assert_eq!(event["text"], "");
+        assert_eq!(event["audio_without_transcript"], observation);
+        let mut rewrite = request.clone();
+        rewrite["assistant"][0]["audio_without_transcript"]["pcm_sha256"] = json!("c".repeat(64));
+        assert!(f.call(rewrite).is_err());
+        for invalid in [json!(0), json!(3), json!(14400002)] {
+            let mut bad = request.clone();
+            bad["assistant"][0]["source"] = json!(Uuid::now_v7().to_string());
+            bad["assistant"][0]["audio_without_transcript"]["generated_bytes"] = invalid;
+            assert!(f.call(bad).is_err());
+        }
+        let mut invented = request.clone();
+        invented["assistant"][0]["text"] = json!("Unknown generated words");
+        assert!(f.call(invented).is_err());
+        let mut unmarked = request;
+        unmarked["assistant"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("audio_without_transcript");
+        assert!(f.call(unmarked).is_err());
+        let legacy_id = Uuid::now_v7().to_string();
+        let legacy = f.append(&legacy_id, "Existing exact words").unwrap();
+        assert_eq!(
+            legacy["revision"],
+            hash(&json!([
+                legacy_id,
+                "assistant",
+                "Existing exact words",
+                true,
+                None::<i64>
+            ]))
+            .unwrap()
+        );
     }
 
     #[test]
