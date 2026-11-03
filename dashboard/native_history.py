@@ -28,6 +28,8 @@ class NativeHistory:
                 text TEXT NOT NULL,model TEXT NOT NULL,audio_sha256 TEXT NOT NULL,
                 generated_bytes INTEGER NOT NULL,interrupted INTEGER NOT NULL,
                 closed INTEGER NOT NULL,played_bytes INTEGER NOT NULL DEFAULT 0)''')
+            if 'derived_caption' not in {r[1] for r in db.execute('PRAGMA table_info(foreground_utterances)')}:
+                db.execute('ALTER TABLE foreground_utterances ADD COLUMN derived_caption TEXT')
             db.execute('CREATE INDEX IF NOT EXISTS foreground_utterance_owner ON foreground_utterances(human,scope,observed_at)')
             db.execute('CREATE INDEX IF NOT EXISTS foreground_utterance_dialogue ON foreground_utterances(human,scope,dialogue)')
             install_schema(db)
@@ -90,6 +92,58 @@ class NativeHistory:
             with self._lock:listeners=tuple(self._listeners)
             for notify in listeners:
                 with suppress(RuntimeError):notify()
+        return self.view(row)
+
+    def retain_caption(self,human,dialogue,binding,parent_source,pcm_sha256,generated_bytes,result):
+        """One derived ASR draft; the finalized parent and its receipt stay intact.
+
+        Server-owned recovery calls this only after verifying its configured
+        file-ASR outcome. It is not an HTTP write or a human ingress path.
+        """
+        self.ident(dialogue);self.ident(parent_source)
+        if (type(human) is not int or not isinstance(result,dict)
+                or result.get('final') is not True or not isinstance(result.get('text'),str)
+                or not result['text'].strip() or len(result['text'].encode())>16000 or '\0' in result['text']
+                or type(generated_bytes) is not int or not 0<generated_bytes<=120*48000 or generated_bytes%2
+                or not isinstance(pcm_sha256,str) or not re.fullmatch('[a-f0-9]{64}',pcm_sha256)):
+            raise ValueError('Select a bounded completed file-ASR draft')
+        # Preparation retirement can complete on a later read of this same ASR
+        # outcome. Its cleanup flag is not a different interpretation/source.
+        interpretation={k:result[k] for k in ('text','final','streaming_model') if k in result}
+        raw_result=json.dumps(interpretation,sort_keys=True,ensure_ascii=False,separators=(',',':'))
+        if len(raw_result.encode())>32768:raise ValueError('File-ASR result exceeds its bound')
+        ident=str(uuid.uuid5(uuid.UUID(parent_source),'configured-file-asr-caption/v1'))
+        evidence={'parent_source':parent_source,'pcm_sha256':pcm_sha256,'generated_bytes':generated_bytes,
+            'asr_result_sha256':hashlib.sha256(raw_result.encode()).hexdigest(),'draft':True}
+        encoded=json.dumps(evidence,sort_keys=True,separators=(',',':'))
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            parent=db.execute('SELECT * FROM foreground_utterances WHERE id=?',(parent_source,)).fetchone()
+            if (parent is None or (parent['human'],parent['scope'],parent['dialogue'],parent['binding'])
+                    !=(human,self.scope,dialogue,binding) or not parent['closed'] or parent['text']
+                    or parent['derived_caption'] is not None
+                    or (parent['audio_sha256'],parent['generated_bytes'])!=(pcm_sha256,generated_bytes)):
+                raise ValueError('ASR draft does not match its finalized missing-caption parent')
+            old=db.execute('SELECT rowid,* FROM foreground_utterances WHERE id=?',(ident,)).fetchone()
+            if old is not None:
+                if old['text']!=result['text'] or old['derived_caption']!=encoded:
+                    raise ValueError('Finalized ASR draft cannot be rewritten')
+                return self.view(old)
+            count,size=db.execute('SELECT count(*),coalesce(sum(length(cast(text AS BLOB))),0) FROM foreground_utterances').fetchone()
+            if count>=self.max_rows or size+len(result['text'].encode())>self.max_bytes:
+                raise ValueError('Foreground conversation history reached its retention bound')
+            db.execute("""INSERT INTO foreground_utterances(id,human,scope,dialogue,binding,observed_at,text,
+                model,audio_sha256,generated_bytes,interrupted,closed,derived_caption)
+                VALUES(?,?,?,?,?,?,?,'configured-file-asr',?,0,?,1,?)""",
+                (ident,human,self.scope,dialogue,binding,time.time(),result['text'],pcm_sha256,parent['interrupted'],encoded))
+            row=db.execute('SELECT rowid,* FROM foreground_utterances WHERE id=?',(ident,)).fetchone()
+            enqueue(db,row)
+            # A late finite recovery resumes context delivery, not voice/model
+            # work. Explicit next-owner recovery sees this unfinished producer.
+            db.execute("UPDATE foreground_context_producers SET phase='closing' WHERE dialogue=? AND phase='closed'",(dialogue,))
+        with self._lock:listeners=tuple(self._listeners)
+        for notify in listeners:
+            with suppress(RuntimeError):notify()
         return self.view(row)
 
     def context_register(self,human,dialogue,binding):
@@ -187,6 +241,8 @@ class NativeHistory:
                 size+=len(row['text'].encode())
                 if size>65536:break
                 source={'source':row['id'],'text':row['text'],'interrupted':bool(row['interrupted']),'semantic_revision':row['semantic_revision']}
+                if row['derived_caption'] is not None:
+                    source['derived_caption']=json.loads(row['derived_caption'])
                 if not row['text'] and row['generated_bytes']:
                     source['audio_without_transcript']={'pcm_sha256':row['audio_sha256'],'generated_bytes':row['generated_bytes']}
                 values.append(source)
@@ -243,6 +299,7 @@ class NativeHistory:
         value={k:row[k] for k in ('id','dialogue','binding','observed_at','text','model','audio_sha256','generated_bytes','played_bytes')}
         value.update(speaker='assistant',kind='voice_foreground',interrupted=bool(row['interrupted']),closed=bool(row['closed']),
                      cursor=row['rowid'],playback_meaning='Highest client-reported PCM position; not a contiguous heard range or physical hearing receipt.',playback='client_reported' if row['played_bytes'] else 'not_observed')
+        if row['derived_caption'] is not None:value['derived_caption']=json.loads(row['derived_caption'])
         value['revision']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         return value
 

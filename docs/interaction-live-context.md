@@ -131,6 +131,120 @@ by this feature or made a prerequisite to preserve another Live archive.
 
 ## Delivery, acknowledgment and recovery
 
+### Missing-caption recovery implementation in progress
+
+`dashboard/native_caption.py` prepares transient generated-PCM ownership for
+caption recovery. The candidate wires it into native voice only when the
+owner explicitly selects `streaming_transcription.native_caption_recovery=true`.
+The default remains off, including current receiving566, which retains explicit
+unknown observations without recovered words. The buffer itself opens no provider,
+writes no media and schedules no task.
+
+One owner accounts for at most300seconds of24kHz monoPCM16 across the complete
+logical dialogue, including retired utterances and provider successors. It keeps
+at most120seconds for one missing-caption clip, matching the existing file-ASR
+adapter. A longer clip releases its retained bytes and reports ineligibility;
+it never returns a silently truncated transcription input. Provider text releases
+the corresponding PCM immediately. Closing releases the current incomplete
+buffer. A finished missing-caption buffer transfers to its finite recovery
+caller, which must consume/clear it; that transfer is not a durable-media receipt.
+
+The candidate native Store and Python history/outbox now support a separate
+`derived_caption` source. It names one retained assistant missing-caption parent,
+its exact PCM SHA256/byte count and ASR-result SHA256, always marked as a draft.
+The parent stays immutable. One parent accepts one derived source; exact receipt
+reconciliation is idempotent and changed text/provenance is rejected. Compact
+parent evidence survives text checkpoint retirement, within the existing native
+source/document limits. Late delivery can extend context after voice closure
+without reopening voice or guidance or admitting a human original/work request.
+The native capability is `foreground_derived_captions:v1`; receiving566 does not
+advertise it. Python late-draft retention marks only its context producer for
+pending delivery, and explicit owner recovery can drain it with the same identity.
+
+The candidate timeline associates a recovered draft with its parent card in either
+arrival order, labels the text approximate and keeps the same Copy action. Setup
+context and source-tool reads preserve its draft provenance. Metadata refreshes
+cannot erase the caption or create a second response. An unresolved audio-only
+response is explicitly labeled as having no available transcript. These frontend
+changes are not selected during the current human trial.
+
+`dashboard/native_caption_recovery.py` now supplies the candidate finite job
+owner. It invokes the existing receiver `voice.transcription_command` argv on a
+private24kHz monoPCM16WAV; no human ingress, fabricated original or worker route
+is involved. A confirmed provider transcript discards the transient PCM. Digital
+silence never starts ASR. Native preflight requires
+`foreground_derived_captions:v1` before opening the provider or microphone.
+
+Recovery has two shared helper slots and at most eight owned tasks across all
+current/closing voice connections, with at most eight recoveries admitted per
+explicit avatar open. The logical dialogue still permits only300seconds of
+output; one ASR clip must be no longer than120seconds. The private
+`state_dir/native-caption-audio` cache permits512source receipts and32MiB,
+including reserved result space. Generated media expires after24hours during an
+explicit authorized open; no timer or background sweep is installed. Completed
+media retires after durable caption delivery. Changed/orphaned files, changed
+bindings/options, capacity failure or an uncertain outcome preserve the unknown
+observation and defer recovery rather than failing the voice connection. Receipts
+remain bounded; filling the cache stops new recovery, without evicting human
+originals or hiding unresolved effects.
+
+Each original ASR command is preceded by a durable uncertain intent and runs
+under its source lock and existing timeout (maximum120seconds). Timeout or
+cancellation kills/reaps only that helper process group. An uncertain operation
+can subsequently use only the configured `voice.completed_transcription_command`
+reader, never another original ASR attempt. Completed text survives authorization
+loss and can deliver later under a fresh grant. Cancelled disk writes retain their
+slot and immutable bytes until the actual operation completes. Close defers
+queued ASR and allows only already-running finite jobs to settle. Audio ownership
+is released after real voice cleanup, so a slow recovery does not prevent another
+avatar open or erase its successor's ownership.
+
+Qualification uses actual helper subprocesses with synthetic results, actual
+Python history/outbox/native-controller/SQLite delivery, two live handovers,
+known-sent receipt loss and late closed-producer delivery. The default integrated
+fixture now covers both an active integrator and a parent turn completing before
+the ASR draft arrives. Its forced terminal-before-ACK race confirms one exact
+physical-turn attachment, one pending controller call serviced, all six sources
+incorporated, unchanged goals/originals and no input replay. The focused command
+remains `python -B tests/live_context_voice_io.py <candidate-binary> --detached-semantic`.
+
+The repair reuses the existing current-turn collector attachment after the entry
+writer releases its slot. Selection requires its owned, acknowledged,
+unincorporated foreground receipt and unchanged binding/epoch; the attachment
+transfers the existing context-only publication fence. The existing heartbeat is
+a process-replacement fallback. Neither path starts another model input, changes
+a goal, replays a return or starts peer attention.
+
+A distinct bounded actual Sol6.1/openai/medium readback on3November incorporated
+both a synthetic unknown-audio source and its separate ASR-draft source, read the
+full closed producer, and wrote its semantic checkpoint in15.694seconds. It
+preserved the parent/hash/bytecount/draft provenance and the new control datum,
+with zero human originals, work or ordinary publication. An earlier continuation
+had acknowledged input but no event subscriber on its new Core connection and
+timed out; only that test root was interrupted. The corrected bridge performs
+actual thread/resume before admission. Retained failed sources were not replayed.
+This is semantic handling of synthetic caption evidence, not conversational
+response latency or physical hearing.
+
+The configured file-ASR helper also processed7.895seconds of locally synthesized
+Spanish through the actual recovery module. One submitted/delivered source, no
+uncertain/deferred outcome, durable draft and WAV retirement were observed. Its
+expected control word comino became domino: exact-word accuracy FAILED and this
+result remains a draft. The configured route was not changed or retried. No
+claim of universal ASR accuracy, device acceptance or recovered old unretained
+words follows. Receiving566 remains stable during qualification.
+
+A related native terminal race now drains already-written internal-return ACKs
+for at most two seconds before its transport closes. New input is rejected as
+known-unsent after that writer completes. An observed ACK for a different physical
+turn retains its existing distinct recovery receipt; a missing ACK remains
+uncertain and is never replayed. The existing owned regular-history recovery
+fixture now covers both ACK-before-terminal and ACK-after-terminal ordering,
+preserving the original human answer. This observation is not semantic
+incorporation or permission to treat the earlier collector as the new writer. Do not overwrite an already finalized unknown source, admit human
+work, claim exact words/hearing or retry an uncertain provider operation. The
+utility's focused byte/cleanup tests are preparation, not end-to-end recovery.
+
 1. Producer writes an idempotent delta after the existing canonical retention.
    A repeated same event ID/revision returns its receipt; changed content under
    the same identity is rejected. Work admission is not touched.

@@ -486,11 +486,16 @@ window.Conversation = (() => {
     historyTools?.append(foregroundOlder);
     function foregroundCard(value){
       if(!value||value.kind!=="voice_foreground"||value.speaker!=="assistant"||typeof value.text!=="string"||value.text.length>16384)return;
-      let card=foregroundCards.get(value.id);
+      const derived=value.derived_caption,caption=!!(derived?.draft===true&&typeof derived.parent_source==="string"&&derived.parent_source.length<=128);
+      const key=caption?derived.parent_source:value.id;
+      let card=foregroundCards.get(key);
       if(!card){const box=node("article",undefined,"reply"),title=node("h3","Voice conversation"),status=node("p",undefined,"reply-status"),body=node("div",undefined,"reply-text"),actions=node("div",undefined,"reply-actions"),time=node("time",undefined,"message-time");
-        card={box,status,body,time,value};actions.append(copyButton(()=>card.value.text));box.append(title,status,body,actions,time);foregroundCards.set(value.id,card);$("#conversation-answers").append(box);}
-      card.value=value;setReplyText(card.body,value.text);card.status.textContent=value.interrupted?"Speech interrupted. The text includes generated words you may not have heard.":value.closed?"Assistant voice conversation.":"Speaking…";
-      const observed=new Date(value.observed_at*1000).toISOString();messageTime(card.time,observed);placeInTimeline(card.box,'foreground:'+value.id,observed);
+        card={box,status,body,time,value};actions.append(copyButton(()=>card.value.text));box.append(title,status,body,actions,time);foregroundCards.set(key,card);$("#conversation-answers").append(box);}
+      if(caption)card.caption=value;else card.original=value;
+      card.value=card.original?.text?card.original:(card.caption||card.original);
+      const shown=card.value,approximate=shown===card.caption;
+      setReplyText(card.body,shown.text);card.status.textContent=approximate?"Recovered voice transcript — approximate; it may contain errors.":shown.closed&&!shown.text&&shown.generated_bytes>0?"Voice response — transcript unavailable.":shown.interrupted?"Speech interrupted. The text includes generated words you may not have heard.":shown.closed?"Assistant voice conversation.":"Speaking…";
+      const observed=new Date((card.original||shown).observed_at*1000).toISOString();messageTime(card.time,observed);placeInTimeline(card.box,'foreground:'+key,observed);
     }
     async function foregroundHistory(older=false){
       if(foregroundReading)return;foregroundReading=true;

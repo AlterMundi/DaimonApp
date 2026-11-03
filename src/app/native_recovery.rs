@@ -1,6 +1,44 @@
-//! Bounded read-only native observation on the existing listener heartbeat.
-//! No input, goal mutation, inference, peer attention or service restart.
+//! Bounded native observation and exact already-admitted writer collection.
+//! No new input, kickoff, goal mutation, peer attention or service restart.
 use super::*;
+
+/// Finite continuation after this entry's writer releases its slot. Reuse the
+/// existing exact-current-turn attachment; no kickoff, goal mutation or replay.
+pub(super) fn attach_foreground(
+    app: &App,
+    human: i64,
+    key: SessionKey,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+    Box::pin(async move {
+        if !app.shared.config.codex.shared_app_server
+            || !app
+                .shared
+                .config
+                .interaction
+                .as_ref()
+                .is_some_and(|c| c.human_id == human && c.entry() == key)
+            || app.shared.store.native_writer_held(key)?
+        {
+            return Ok(());
+        }
+        if app
+            .workers
+            .lock()
+            .await
+            .get(&key)
+            .is_some_and(|w| w.cancel.lock().expect("cancel mutex poisoned").is_some())
+        {
+            return Ok(());
+        }
+        if let Some((native, physical)) =
+            app.shared.store.native_foreground_attachment(human, key)?
+        {
+            let args = format!("{} {} {} {}", key.chat_id, key.thread_id, native, physical);
+            super::goals::attach_active(app, human, &args).await?;
+        }
+        Ok(())
+    })
+}
 
 pub(super) async fn tick(app: &App) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
@@ -86,6 +124,11 @@ pub(super) async fn tick(app: &App) -> Result<()> {
                                 response,
                             });
                         }
+                    }
+                    if exact.is_some() && observed.as_ref().is_some_and(|t|t["status"]=="inProgress") {
+                        // Existing heartbeat fallback after process replacement.
+                        // Only foreground context receipts can select attachment.
+                        attach_foreground(app,selected.human,selected.key).await?;
                     }
                     if let Some(turn) = observed.as_ref().filter(|t| exact.is_none() && t["status"] == "inProgress") {
                         let physical = turn["id"]

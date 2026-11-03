@@ -22,6 +22,9 @@ from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSessi
 from .native_dialogue import NativeDialogue, DialogueUnavailable
 from .native_foreground import ForegroundBridge, ForegroundUnavailable
 from .native_context import NativeContext
+from .native_caption import CaptionAudio
+from .native_caption_recovery import CaptionRecovery
+from .private_state import private_directory
 from .provider import Provider, ProviderUnavailable
 from .turn_detection import Detector, DetectionUnavailable
 
@@ -70,6 +73,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
     activity_mode=selected.get('native_activity_mode','manual')
     app.state.native_voice_enabled=True
+    recovery_slots=asyncio.Semaphore(2);recovery_owned=set()
 
     @app.websocket('/api/interaction/voice/native')
     async def native_voice(socket:WebSocket):
@@ -77,7 +81,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             await socket.close(code=1008);return
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=actor=None
-        context_producer=None
+        context_producer=None;caption_audio=None;caption_recovery=None;audio_released=False
         control_task=None;control_dirty=False
         output_queue=None;output_pending=deque();output_batch_pending=False
         output_guard=asyncio.Lock();reader_pause=False
@@ -90,6 +94,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
         first_playback_status=last_playback_status=None;playback_status_count=0
+        def release_owner():
+            nonlocal audio_released
+            if owner is not None and not audio_released:
+                active.discard(owner);audio_released=True
         async def send(value):
             nonlocal first_send_failure
             async with sending:
@@ -108,10 +116,13 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             if utterance is None:return
             record=await asyncio.to_thread(app.state.native_history.retain,owner,meta['id'],meta['binding'],
                 utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed)
-            if not stopping and emit:await send({'type':'assistant_utterance','utterance':record})
             if closed:
                 if context_producer is not None:context_producer.notify()
+                if caption_audio is not None:
+                    evidence,pcm=caption_audio.finish()
+                    if pcm is not None:caption_recovery.submit(meta['id'],evidence,pcm)
                 utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
+            if not stopping and emit:await send({'type':'assistant_utterance','utterance':record})
         async def acoustic_event(value):
             await send(value)
             if value['type']=='phrase_end':
@@ -303,16 +314,20 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     # final marker must not erase that complete text.
                     if kind=='input_transcript' and 'finished' in event:continue
                 if kind in ('audio','output_transcript'):
-                    if utterance is None:utterance=str(uuid.uuid4())
+                    if utterance is None:
+                        utterance=str(uuid.uuid4())
+                        if caption_audio is not None:caption_audio.begin(utterance)
                     if kind=='audio':
                         logical_output_bytes+=len(event['pcm'])
                         if logical_output_bytes>300*48000:raise ForegroundUnavailable('Logical voice output exceeds its pilot bound')
                         output_bytes+=len(event['pcm']);output_hash.update(event['pcm'])
+                        if caption_audio is not None:caption_audio.append(event['pcm'])
                         await flush_output(emit=False)
                         await send({'type':'audio','id':utterance,'end':output_bytes,
                             'pcm':base64.b64encode(event['pcm']).decode(),'sample_rate':24000})
                         continue
                     output_text+=event['text']
+                    if caption_audio is not None:caption_audio.caption(event['text'])
                     if len(output_text.encode())>16384:raise ForegroundUnavailable('Assistant utterance exceeds its live bound')
                     # Update the same app-owned assistant record, not human or native input.
                     await flush_output()
@@ -434,8 +449,12 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         or capabilities.get('foreground_context')!='v1'
                         or capabilities.get('foreground_audio_observations')!='v1'
                         or capabilities.get('foreground_guidance')!='v1'
-                        or capabilities.get('foreground_rollover')!='v1'):
+                        or capabilities.get('foreground_rollover')!='v1'
+                        or selected.get('native_caption_recovery') is True and capabilities.get('foreground_derived_captions')!='v1'):
                     raise ForegroundUnavailable('Selected listener does not support native foreground originals')
+                if selected.get('native_caption_recovery') is True:
+                    CaptionRecovery.configuration(provider.receiver.get('voice'))
+                    await asyncio.to_thread(private_directory,Path(config['state_dir'])/'native-caption-audio')
                 await asyncio.to_thread(app.state.native_history.capacity)
                 initial=await asyncio.to_thread(provider.presentation_list,0,0,'before')
                 if initial['binding']!=meta['binding']:raise ForegroundUnavailable('Integrating conversation changed')
@@ -469,6 +488,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     sources.append({'id':item['id'],'speaker':'assistant_foreground','observed_at':item['observed_at'],
                         'text_excerpt':excerpt(item['text']),'interrupted':item['interrupted'],
                         'played_bytes':item['played_bytes'],'generated_bytes':item['generated_bytes'],'playback_meaning':item['playback_meaning'],
+                        **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {}),
                         'bounded':True,'can_delegate':False})
                 context={'display_name':config.get('daimon_name','Daimon'),'sources':sources,'source_data':True}
                 identity=await asyncio.to_thread(being_identity,selected)
@@ -493,7 +513,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'text_excerpt':item['text'][:200],'text_bounded':len(item['text'])>200,
                         'interrupted':item['interrupted'],'closed':item['closed'],
                         'played_bytes':item['played_bytes'],'generated_bytes':item['generated_bytes'],
-                        'meaning':item['playback_meaning']} for item in history['items'][:4]]
+                        'meaning':item['playback_meaning'],
+                        **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {})} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
                 bridge.idle_notify=notice_if_idle
@@ -505,6 +526,25 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     return await bridge._run(bridge._owners,function,*args)
                 context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
                 await context_producer.open()
+                if selected.get('native_caption_recovery') is True:
+                    async def recover_caption(value,result):
+                        record=await bridge._run(bridge._owners,app.state.native_history.retain_caption,
+                            owner,value['dialogue'],meta['binding'],value['source'],value['pcm_sha256'],value['generated_bytes'],result)
+                        if value['dialogue']==meta['id'] and not context_producer.stopping:
+                            context_producer.notify()
+                            if not stopping:await send({'type':'assistant_utterance','utterance':record})
+                        else:
+                            # Late captions belong to their closed conversation,
+                            # not to the current voice generation or a new request.
+                            prior=NativeContext(app.state.native_history,provider,owner,value['dialogue'],meta['binding'],context_owner)
+                            producer=await bridge._run(bridge._owners,app.state.native_history.context_register,
+                                owner,value['dialogue'],meta['binding'])
+                            await prior._finish(producer)
+                    caption_recovery=CaptionRecovery(Path(config['state_dir'])/'native-caption-audio',
+                        provider.receiver['voice'],owner,app.state.native_history.scope,meta['binding'],recheck,
+                        recover_caption,recovery_slots,recovery_owned)
+                    caption_audio=CaptionAudio()
+                    await caption_recovery.recover()
                 bridge.generation=context_producer.record['generation']
                 # Only references actually retained in the bounded setup are
                 # offered. No replay, unsolicited speech or wider source lookup.
@@ -595,14 +635,19 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 if context_producer is not None:
                     with suppress(Exception):await context_producer.close()
                 if worker:await worker.close()
+                if caption_audio is not None:caption_audio.close()
+                if caption_recovery is not None:
+                    if ((opening is None or opening.done())
+                            and (successor_opening is None or successor_opening.done())):release_owner()
+                    await caption_recovery.close()
                 if stream is None and opening:
                     def late(task):
                         if not task.cancelled():
                             with suppress(Exception):task.result().close()
-                        if owner is not None:active.discard(owner)
+                        if owner is not None:release_owner()
                     opening.add_done_callback(late)
                 if (owner is not None and (opening is None or opening.done())
-                        and (successor_opening is None or successor_opening.done())):active.discard(owner)
+                        and (successor_opening is None or successor_opening.done())):release_owner()
                 with suppress(Exception):await socket.close()
             def observe_close(task):
                 if owner is None:return
@@ -623,6 +668,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'peak_input_queue_wait_ms':round(inbox.peak_wait_seconds*1000) if inbox else 0,
                     'actor_checks':actor.snapshot() if actor is not None else None,
                     'acoustic_queues':acoustic.diagnostics() if acoustic is not None else None,
+                    'caption_recovery':dict(caption_recovery.counts) if caption_recovery is not None else None,
                     'generated_pcm_bytes':retired_output_bytes+(getattr(stream,'output_bytes',0) if stream else 0),
                     'provider_rollovers':rollover_count,
                     'candidate_setup_failures':candidate_setup_failures,

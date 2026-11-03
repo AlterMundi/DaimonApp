@@ -132,6 +132,8 @@ pub(crate) struct LiveAssistantSource {
     interrupted: bool,
     #[serde(default)]
     audio_without_transcript: Option<AudioWithoutTranscript>,
+    #[serde(default)]
+    derived_caption: Option<DerivedCaption>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +160,31 @@ impl AudioWithoutTranscript {
     }
 }
 
+/// A file-ASR draft derives from one retained audio observation, never from a
+/// human original or a claim that a device played intelligible words.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DerivedCaption {
+    parent_source: String,
+    pcm_sha256: String,
+    generated_bytes: u64,
+    asr_result_sha256: String,
+    draft: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CaptionParent {
+    audio: AudioWithoutTranscript,
+    interrupted: bool,
+    derived_source: Option<String>,
+}
+
+#[derive(Default)]
+struct SourceEvidence {
+    audio_without_transcript: Option<AudioWithoutTranscript>,
+    derived_caption: Option<DerivedCaption>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Event {
     sequence: u64,
@@ -169,6 +196,8 @@ struct Event {
     capture_order: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     audio_without_transcript: Option<AudioWithoutTranscript>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    derived_caption: Option<DerivedCaption>,
     revision: String,
 }
 
@@ -254,6 +283,8 @@ struct Projection {
     /// catch-up from reintroducing sources represented by a checkpoint.
     sources: BTreeMap<String, (u64, String)>,
     events: Vec<Event>,
+    #[serde(default)]
+    caption_parents: BTreeMap<String, CaptionParent>,
     range: Option<Frozen>,
     #[serde(default)]
     full_incorporated_revision: Option<String>,
@@ -291,11 +322,17 @@ fn retain_event(
     text: String,
     interrupted: bool,
     capture_order: Option<i64>,
-    audio_without_transcript: Option<AudioWithoutTranscript>,
+    evidence: Option<SourceEvidence>,
 ) -> Result<Value> {
+    let SourceEvidence {
+        audio_without_transcript,
+        derived_caption,
+    } = evidence.unwrap_or_default();
     // Preserve existing source revisions; only the new observation extends
     // identity. Playback reports are still neither language nor hearing.
-    let revision = if let Some(audio) = &audio_without_transcript {
+    let revision = if let Some(caption) = &derived_caption {
+        hash(&json!([source, role, text, interrupted, capture_order, {"derived_caption":caption}]))?
+    } else if let Some(audio) = &audio_without_transcript {
         hash(&json!([
             source,
             role,
@@ -313,8 +350,24 @@ fn retain_event(
         }
         return Ok(json!({"sequence":sequence,"revision":revision,"fresh":false}));
     }
-    if p.closed || p.sources.len() >= MAX_SOURCES {
+    if (p.closed && derived_caption.is_none()) || p.sources.len() >= MAX_SOURCES {
         bail!("Live producer closed or source bound reached");
+    }
+    if let Some(audio) = &audio_without_transcript {
+        p.caption_parents.insert(
+            source.clone(),
+            CaptionParent {
+                audio: audio.clone(),
+                interrupted,
+                derived_source: None,
+            },
+        );
+    }
+    if let Some(caption) = &derived_caption {
+        p.caption_parents
+            .get_mut(&caption.parent_source)
+            .context("Missing retained caption parent")?
+            .derived_source = Some(source.clone());
     }
     p.high += 1;
     p.sources.insert(source.clone(), (p.high, revision.clone()));
@@ -326,6 +379,7 @@ fn retain_event(
         interrupted,
         capture_order,
         audio_without_transcript,
+        derived_caption,
         revision: revision.clone(),
     });
     Ok(json!({"sequence":p.high,"revision":revision,"fresh":true}))
@@ -399,7 +453,7 @@ fn snapshot(p: &Projection, full: bool) -> Result<String> {
         &json!({"dialogue":p.dialogue,"from":from,"through":p.high,
         "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,"guidance":guidance,
         "checkpoint_request":p.checkpoint_request,
-        "policy":"Attributed context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid. Audio without a transcript has no known words; do not invent its language or assume intelligibility, silence or hearing."}),
+        "policy":"Attributed context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid. Audio without a transcript has no known words; do not invent its language or assume intelligibility, silence or hearing. A derived_caption is an approximate file-ASR draft of assistant-generated audio, not a replacement original, human request, verified exact language, intelligibility or hearing."}),
     )?)
 }
 fn view(p: &Projection) -> Value {
@@ -610,6 +664,7 @@ impl Store {
                 },
                 sources: BTreeMap::new(),
                 events: vec![],
+                caption_parents: BTreeMap::new(),
                 range: None,
                 full_incorporated_revision: None,
                 native_returns: vec![],
@@ -905,7 +960,35 @@ impl Store {
                 let mut receipts = Vec::new();
                 for source in assistant {
                     uuid(&source.source)?;
-                    if let Some(audio) = &source.audio_without_transcript {
+                    if let Some(caption) = &source.derived_caption {
+                        uuid(&caption.parent_source)?;
+                        bounded(&source.text, 16384)?;
+                        let parent = p
+                            .caption_parents
+                            .get(&caption.parent_source)
+                            .context("Derived caption needs its retained assistant audio parent")?;
+                        if source.audio_without_transcript.is_some()
+                            || caption.generated_bytes > 120 * 48000
+                            || !caption.draft
+                            || caption.parent_source == source.source
+                            || caption.pcm_sha256 != parent.audio.pcm_sha256
+                            || caption.generated_bytes != parent.audio.generated_bytes
+                            || source.interrupted != parent.interrupted
+                            || caption.asr_result_sha256.len() != 64
+                            || !caption
+                                .asr_result_sha256
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                            || parent
+                                .derived_source
+                                .as_ref()
+                                .is_some_and(|id| id != &source.source)
+                        {
+                            bail!(
+                                "Derived caption differs from its retained audio or ASR draft provenance"
+                            );
+                        }
+                    } else if let Some(audio) = &source.audio_without_transcript {
                         audio.validate()?;
                         if !source.text.is_empty() {
                             bail!("Missing-transcript observation cannot also claim language");
@@ -921,7 +1004,10 @@ impl Store {
                         source.text,
                         source.interrupted,
                         None,
-                        source.audio_without_transcript,
+                        Some(SourceEvidence {
+                            audio_without_transcript: source.audio_without_transcript,
+                            derived_caption: source.derived_caption,
+                        }),
                     )?;
                     receipt["source"] = json!(id);
                     receipts.push(receipt);
@@ -1348,6 +1434,72 @@ mod tests {
                 "revision":basis["checkpoint_revision"],"through":through,
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn derived_caption_keeps_parent_after_checkpoint_close_and_deduplicates() {
+        let f = Fixture::new();
+        let parent = Uuid::now_v7().to_string();
+        let source = Uuid::now_v7().to_string();
+        f.call(
+            json!({"action":"sync","dialogue":f.dialogue,"generation":f.generation,
+            "assistant":[{"source":parent,"text":"","interrupted":true,
+                "audio_without_transcript":{"pcm_sha256":"b".repeat(64),"generated_bytes":640}}]}),
+        )
+        .unwrap();
+        let ack = f.ack(&f.read(true)).unwrap();
+        f.checkpoint(&ack, 1);
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let request = json!({"action":"sync","dialogue":f.dialogue,"generation":f.generation,
+            "assistant":[{"source":source,"text":"Approximate recovered words.","interrupted":true,
+                "derived_caption":{"parent_source":parent,"pcm_sha256":"b".repeat(64),
+                    "generated_bytes":640,"asr_result_sha256":"c".repeat(64),"draft":true}}]});
+        let first = f.call(request.clone()).unwrap();
+        assert_eq!(first["high"], 2);
+        assert_eq!(
+            first["closed"], true,
+            "Late captions do not reopen audio or guidance"
+        );
+        assert_eq!(first["new_human_sources"], 0);
+        assert_eq!(
+            f.call(request.clone()).unwrap()["assistant_receipts"][0]["fresh"],
+            false
+        );
+        let page = f.read(true);
+        let content = &page["range"]["content"];
+        assert_eq!(content["checkpoint"]["through"], 1);
+        assert_eq!(
+            content["events"][0]["derived_caption"]["parent_source"],
+            parent
+        );
+        assert_eq!(content["events"][0]["role"], "assistant");
+        for (field, value) in [
+            ("parent_source", json!(Uuid::now_v7().to_string())),
+            ("pcm_sha256", json!("d".repeat(64))),
+            ("generated_bytes", json!(642)),
+            ("asr_result_sha256", json!("invalid")),
+            ("draft", json!(false)),
+        ] {
+            let mut bad = request.clone();
+            bad["assistant"][0]["derived_caption"][field] = value;
+            assert!(f.call(bad).is_err());
+        }
+        let mut second = request.clone();
+        second["assistant"][0]["source"] = json!(Uuid::now_v7().to_string());
+        assert!(
+            f.call(second).is_err(),
+            "Only one derived source per missing-caption parent"
+        );
+        let mut rewrite = request;
+        rewrite["assistant"][0]["text"] = json!("Different draft");
+        assert!(f.call(rewrite).is_err());
+        assert!(
+            f.append(&Uuid::now_v7().to_string(), "New independent speech")
+                .is_err()
+        );
+        let ack = f.ack(&page).unwrap();
+        assert_eq!(f.checkpoint(&ack, 2)["checkpointed"], 2);
     }
 
     #[test]
@@ -2018,6 +2170,65 @@ mod tests {
             .workflow_native_outcome(&r.id, "accepted", Some("physical-context-turn"))
             .unwrap();
     }
+    #[test]
+    fn foreground_attachment_requires_owned_unincorporated_ack_not_another_input() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Pending context language")
+            .unwrap();
+        let packet = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let old = local(&f, "Earlier collector");
+        f.store
+            .native_collection_started(old, "old-context-turn")
+            .unwrap();
+        f.store.workflow_native_link(&packet.id, old).unwrap();
+        f.store.workflow_native_submitting(&packet.id).unwrap();
+        assert!(
+            f.store
+                .native_foreground_attachment(100, f.entry)
+                .unwrap()
+                .is_none()
+        );
+        f.store
+            .workflow_native_outcome(&packet.id, "accepted_uncollected", Some("new-context-turn"))
+            .unwrap();
+        let native = f
+            .store
+            .get_session(f.entry)
+            .unwrap()
+            .unwrap()
+            .codex_thread_id
+            .unwrap();
+        assert_eq!(
+            f.store.native_foreground_attachment(100, f.entry).unwrap(),
+            Some((native, "new-context-turn".into()))
+        );
+        assert!(
+            f.store
+                .native_foreground_attachment(101, f.entry)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            f.store
+                .native_foreground_attachment(100, SessionKey::new(100, Some(999)))
+                .unwrap()
+                .is_none()
+        );
+        let page = f.read(false);
+        f.ack(&page).unwrap();
+        assert!(
+            f.store
+                .native_foreground_attachment(100, f.entry)
+                .unwrap()
+                .is_none(),
+            "Incorporated context does not request another collector"
+        );
+    }
+
     #[test]
     fn native_context_coalesces_and_never_contributes_chat_publication() {
         let f = Fixture::new();

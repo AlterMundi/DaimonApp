@@ -3074,6 +3074,15 @@ impl App {
                 if let Err(error) = result {
                     tracing::error!("turn failed for {:?}: {error:#}", key);
                 }
+                // A context return may have started a distinct physical turn
+                // just as this collector completed. Attach that exact writer
+                // now; waiting for maintenance would leave its tools unanswered.
+                if native_recovery::attach_foreground(&app, requester, target)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("Exact foreground collector remains pending; no input replayed");
+                }
             }
         });
 

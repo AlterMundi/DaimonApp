@@ -1600,6 +1600,27 @@ function boot(readOnly=false,standalone=false,options={}) {
   const voiceCard=nativeAvatar.nodes.get('#conversation-timeline').children.find(box=>box.children[0]?.textContent==='Voice conversation');
   assert.equal(voiceCard.children[2].textContent,nativeRecord.text,'Voice history does not render a truncated preview');
   await voiceCard.children[3].children[0].handlers.click();assert.equal(nativeAvatar.copied.at(-1),nativeRecord.text);
+  const parentRecord={...nativeRecord,id:'missing-output',text:'',generated_bytes:640,interrupted:false,cursor:2};
+  const recoveredRecord={...parentRecord,id:'recovered-output',text:'Approximate recovered words.',generated_bytes:0,cursor:3,
+    derived_caption:{parent_source:parentRecord.id,draft:true}};
+  nativeAvatar.native().hooks.onUtterance(recoveredRecord);
+  nativeAvatar.native().hooks.onUtterance(parentRecord);
+  let recoveredCards=nativeAvatar.nodes.get('#conversation-timeline').children.filter(box=>box.children[2]?.textContent===recoveredRecord.text);
+  assert.equal(recoveredCards.length,1,'A caption arriving before its parent renders one associated response');
+  assert(recoveredCards[0].children[1].textContent.includes('approximate'),'Recovered text is never presented as exact provider words');
+  await recoveredCards[0].children[3].children[0].handlers.click();assert.equal(nativeAvatar.copied.at(-1),recoveredRecord.text);
+  const earlierParent={...parentRecord,id:'earlier-missing-output',cursor:4};
+  nativeAvatar.native().hooks.onUtterance(earlierParent);
+  const missingCard=nativeAvatar.nodes.get('#conversation-timeline').children.find(box=>box.children[1]?.textContent==='Voice response — transcript unavailable.');
+  assert(missingCard,'Missing provider words remain explicitly unavailable before recovery');
+  const laterDraft={...recoveredRecord,id:'later-recovered-output',text:'Later approximate words.',cursor:5,
+    derived_caption:{parent_source:earlierParent.id,draft:true}};
+  nativeAvatar.native().hooks.onUtterance(laterDraft);
+  assert.equal(missingCard.children[2].textContent,laterDraft.text,'A later caption updates its existing parent card');
+  assert(missingCard.children[1].textContent.includes('approximate'));
+  nativeAvatar.native().hooks.onUtterance(recoveredRecord);nativeAvatar.native().hooks.onUtterance(parentRecord);
+  recoveredCards=nativeAvatar.nodes.get('#conversation-timeline').children.filter(box=>box.children[2]?.textContent===recoveredRecord.text);
+  assert.equal(recoveredCards.length,1,'Refresh and delayed original metadata cannot duplicate or erase the recovered caption');
   nativeAvatar.native().session.hasAudio=true;nativeAvatar.native().hooks.onState({active:true,floor:false,pending:false,playback:'playing'});
   nativeAvatar.nodes.get('#conversation-audio').beforeNodes[0].handlers.click();assert.equal(nativeAvatar.native().session.paused,true);
   nativeAvatar.nodes.get('#conversation-audio').beforeNodes[0].handlers.click();assert.equal(nativeAvatar.native().session.paused,false);

@@ -174,7 +174,7 @@ class NativeContext:
         for _ in range(self.max_sources+1):
             sources=await asyncio.to_thread(self.history.context_pending,record)
             if not sources and sent:return
-            payload=[{k:s[k] for k in ('source','text','interrupted','audio_without_transcript') if k in s} for s in sources]
+            payload=[{k:s[k] for k in ('source','text','interrupted','audio_without_transcript','derived_caption') if k in s} for s in sources]
             result=await self._call(record,'sync',assistant=payload)
             receipts=result.get('assistant_receipts')
             if not isinstance(receipts,list) or len(receipts)!=len(sources):
@@ -261,6 +261,8 @@ def semantic_revision(row):
     data=[row['id'],row['dialogue'],row['binding'],row['text'],bool(row['interrupted']),bool(row['closed'])]
     if not row['text'] and row['closed'] and row['generated_bytes']:
         data.append({'pcm_sha256':row['audio_sha256'],'generated_bytes':row['generated_bytes']})
+    if 'derived_caption' in row.keys() and row['derived_caption'] is not None:
+        data.append({'derived_caption':json.loads(row['derived_caption'])})
     return hashlib.sha256(json.dumps(data,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
 
@@ -290,7 +292,8 @@ def enqueue(db,row):
     if previous is not None:
         if previous['revision']!=revision:raise ValueError('Final Live context source changed')
         return
-    if registered['phase']=='closed':raise ValueError('Closed Live producer cannot acquire another terminal source')
+    if registered['phase']=='closed' and ('derived_caption' not in row.keys() or row['derived_caption'] is None):
+        raise ValueError('Closed Live producer cannot acquire another terminal source')
     count=db.execute('SELECT count(*) FROM foreground_context_outbox WHERE dialogue=?',(row['dialogue'],)).fetchone()[0]
     if count>=NativeContext.max_sources:raise ValueError('Live context source outbox reached its bound')
     db.execute("INSERT INTO foreground_context_outbox(source,dialogue,revision,phase) VALUES(?,?,?,'pending')",

@@ -250,6 +250,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         result["foreground_retention"] = json!("v1");
         result["foreground_context"] = json!("v1");
         result["foreground_audio_observations"] = json!("v1");
+        result["foreground_derived_captions"] = json!("v1");
         result["foreground_guidance"] = json!("v1");
         result["foreground_rollover"] = json!("v1");
         result["foreground_completed_reader"] = json!(

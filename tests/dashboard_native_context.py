@@ -64,7 +64,7 @@ class Journal:
             for source in body['assistant']:
                 old=p['sources'].get(source['source'])
                 if old is None:
-                    assert not p['closed']
+                    assert not p['closed'] or 'derived_caption' in source
                     p['sources'][source['source']]=source;self.fresh.append(source)
                 else:assert old==source
                 receipts.append({'source':source['source'],'sequence':list(p['sources']).index(source['source'])+1,
@@ -118,6 +118,41 @@ class Context(unittest.IsolatedAsyncioTestCase):
         self.history.played(100,self.dialogue,source['id'],640)
         self.assertEqual(self.history.context_pending(p.record),[],'Playback cannot invent another language source')
         with self.assertRaises(ValueError):self.retain('Invented words',source=source['id'])
+
+    async def test_late_asr_draft_is_a_new_parent_bound_source_after_close(self):
+        p=self.producer();await p.open()
+        parent=self.retain('')
+        await p._finish(p.record)
+        original=self.history.page(100)['items'][0]
+        result={'text':'Approximate assistant words.','final':True}
+        draft=self.history.retain_caption(100,self.dialogue,self.binding,parent['id'],'b'*64,640,result)
+        self.assertNotEqual(draft['id'],parent['id'])
+        self.assertEqual(draft['derived_caption']['parent_source'],parent['id'])
+        self.assertTrue(draft['derived_caption']['draft'])
+        self.assertEqual(draft['generated_bytes'],0,'A derived caption does not duplicate generated audio')
+        self.assertEqual(self.history.retain_caption(100,self.dialogue,self.binding,parent['id'],'b'*64,640,result),draft)
+        self.assertEqual(self.history.retain_caption(100,self.dialogue,self.binding,parent['id'],'b'*64,640,
+            {**result,'preparation_audio_deleted':True}),draft,'Cleanup completion cannot author another transcript')
+        with self.assertRaises(ValueError):
+            self.history.retain_caption(100,self.dialogue,self.binding,parent['id'],'b'*64,640,{'text':'Changed words','final':True})
+        for human,dialogue,binding,parent_id,checksum,count in (
+                (101,self.dialogue,self.binding,parent['id'],'b'*64,640),
+                (100,str(uuid.uuid4()),self.binding,parent['id'],'b'*64,640),
+                (100,self.dialogue,'c'*64,parent['id'],'b'*64,640),
+                (100,self.dialogue,self.binding,draft['id'],'b'*64,640),
+                (100,self.dialogue,self.binding,parent['id'],'c'*64,640),
+                (100,self.dialogue,self.binding,parent['id'],'b'*64,642)):
+            with self.assertRaises(ValueError):
+                self.history.retain_caption(human,dialogue,binding,parent_id,checksum,count,result)
+        self.provider.lose_next=True
+        with self.assertRaises(ProviderUnavailable):await p._sync(p.record)
+        await p._finish(p.record)
+        self.assertEqual(len(self.provider.fresh),2)
+        self.assertEqual(self.provider.fresh[-1]['derived_caption'],draft['derived_caption'])
+        self.assertTrue(self.provider.producers[self.dialogue]['closed'])
+        items={item['id']:item for item in self.history.page(100)['items']}
+        self.assertEqual(items[parent['id']],original,'Final unknown source stays byte-for-byte unchanged')
+        self.assertEqual(self.history.context_unfinished(100,self.binding,str(uuid.uuid4())),[])
 
     async def test_existing_language_source_revision_keeps_legacy_identity(self):
         p=self.producer();await p.open()
