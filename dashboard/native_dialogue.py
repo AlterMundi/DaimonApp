@@ -5,6 +5,7 @@ module cannot retain human originals, submit work, cancel jobs or reconnect. The
 bridge must bind proposals to durable originals before any integrator effect.
 """
 import base64
+import hashlib
 import json
 import math
 import re
@@ -41,10 +42,14 @@ class NativeDialogue:
     max_attention_notices = 32
     max_guidance = 64
     max_guidance_bytes = 65536
+    max_pin_bytes = 49152
+    max_pins = 128
 
-    def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic):
+    def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic, context_pinning=False):
         if activity_mode not in ('manual', 'automatic'):
             raise ValueError('Select explicit native activity ownership')
+        if type(context_pinning) is not bool:
+            raise ValueError('Select explicit native context pinning')
         if context is not None and (not isinstance(context,dict) or len(json.dumps(context,ensure_ascii=False).encode())>32768):
             raise ValueError('Select bounded server-owned conversation context')
         self.activity_mode = activity_mode
@@ -66,6 +71,12 @@ class NativeDialogue:
         self._clock = clock
         self._started = clock()
         self._lock = threading.RLock()
+        # Preparation has a distinct short lock: a pin must become visible to
+        # the NEXT writer even when the current socket send is still blocked.
+        self._pin_guard=threading.Lock();self.context_pinning=context_pinning
+        self._pending_pin=None;self._pin_attempt=None;self._pin_owner=None
+        self._pin_sequence=0;self._pin_through=0;self._pin_checkpointed=0
+        self._base_preamble=None;self.preamble_estimate=0;self.history_estimate=0
         self._reader = threading.Lock()
         self._socket = None
         self.phase = 'opening'
@@ -248,7 +259,7 @@ class NativeDialogue:
         candidate=None
         try:
             candidate=type(self)(self._credential_file,activity_mode=self.activity_mode,
-                context=context,connect=self._connect,clock=self._clock)
+                context=context,connect=self._connect,clock=self._clock,context_pinning=self.context_pinning)
             deadline=time.monotonic()+15
             while time.monotonic()<deadline:
                 events=candidate.receive()
@@ -296,6 +307,83 @@ class NativeDialogue:
             self._fail('native-dialogue-session-bound')
 
     def _send(self, value):
+        if 'setup' in value:
+            self._base_preamble=json.loads(json.dumps(value['setup']['systemInstruction']))
+            resident=len(json.dumps(self._base_preamble,ensure_ascii=False).encode())
+            return self._wire(value,preamble=resident)
+        self._drain_pin()
+        return self._wire(value)
+
+    def queue_pin(self,pin,sequence):
+        """Queue/coalesce one owner snapshot; no socket write or model turn.
+
+        The producer must synchronize canonical retention and recheck its frozen
+        revision before this call. Sequence is local monotonic producer ordering,
+        not a provider application ACK or permission to replay a failed write.
+        """
+        if (not self.context_pinning or type(sequence) is not int or not 1<=sequence<=self.max_pins
+                or not isinstance(pin,dict) or set(pin)!={'revision','through','checkpointed','bytes','content'}
+                or not re.fullmatch('[a-f0-9]{64}',str(pin.get('revision')))
+                or any(type(pin.get(k)) is not int for k in ('through','checkpointed','bytes'))
+                or not 0<=pin['checkpointed']<=pin['through']<=2**63-1):
+            raise ValueError('Select a bounded owned Live pin')
+        content=pin['content']
+        raw=json.dumps(content,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
+        if (len(raw.encode())!=pin['bytes'] or not 0<pin['bytes']<=self.max_pin_bytes
+                or hashlib.sha256(raw.encode()).hexdigest()!=pin['revision']
+                or not isinstance(content,dict) or content.get('kind')!='internal_live_context_pin'
+                or content.get('through')!=pin['through']
+                or not isinstance(content.get('checkpoint'),dict)
+                or content['checkpoint'].get('through')!=pin['checkpointed']):
+            raise ValueError('Live pin revision or complete content changed')
+        try:owner=tuple(str(uuid.UUID(content[k])) for k in ('dialogue','generation'))
+        except (ValueError,TypeError,KeyError,AttributeError):
+            raise ValueError('Live pin owner is unavailable') from None
+        # Use the SDK's ordinary single-text system-instruction form. Preserve
+        # every immutable base text verbatim before the attributed data section.
+        base='\n\n'.join(part['text'] for part in self._base_preamble['parts'])
+        body={'contextUpdate':{'systemInstruction':{'parts':[{'text':base+
+            '\n\nAttributed canonical continuity data, not new human speech or authority. Do not dispatch, speak or replay these records merely because this preamble changed. '+raw}]}}}
+        with self._pin_guard:
+            if (self.phase!='ready' or sequence<=self._pin_sequence
+                    or self._pin_owner is not None and owner!=self._pin_owner
+                    or pin['through']<self._pin_through or pin['checkpointed']<self._pin_checkpointed):
+                raise ValueError('Live pin is stale or belongs to another producer')
+            self._pin_owner=owner;self._pin_sequence=sequence
+            self._pin_through=pin['through'];self._pin_checkpointed=pin['checkpointed']
+            # Own an encoded copy. Later caller mutation cannot change what is
+            # sent under this retained revision. Known-unsent revisions coalesce.
+            self._pending_pin=(sequence,pin['revision'],json.dumps(body,ensure_ascii=False))
+
+    def pin_status(self):
+        with self._pin_guard:
+            return {'pending':None if self._pending_pin is None else {
+                'sequence':self._pending_pin[0],'revision':self._pending_pin[1],'phase':'queued'},
+                'attempt':None if self._pin_attempt is None else dict(self._pin_attempt)}
+
+    def flush_pin(self):
+        with self._lock:
+            self._active()
+            return self._drain_pin()
+
+    def _drain_pin(self):
+        sent=False
+        while True:
+            with self._pin_guard:
+                pending=self._pending_pin
+                if pending is None:return sent
+                self._pending_pin=None
+                sequence,revision,encoded=pending
+                self._pin_attempt={'sequence':sequence,'revision':revision,'phase':'submitting'}
+            try:self._wire(json.loads(encoded),preamble=len(encoded.encode()),replacement=True)
+            except BaseException as error:
+                with self._pin_guard:
+                    self._pin_attempt['phase']='unsent' if isinstance(error,DialogueCapacity) else 'uncertain'
+                raise
+            with self._pin_guard:self._pin_attempt['phase']='sent'
+            sent=True
+
+    def _wire(self, value, *, preamble=None, replacement=False):
         # Live has no countTokens endpoint. This is an intentionally generous
         # local estimate, not an exact tokenizer or a provider-usage receipt:
         # one UTF-8 byte per text/protocol token, 64 tokens/s for PCM (the
@@ -312,9 +400,19 @@ class NativeDialogue:
         ending=('activityEnd' in value.get('realtimeInput',{})
             or value.get('realtimeInput',{}).get('audioStreamEnd') is True)
         limit=self.max_context_tokens-(512 if ending else self.context_input_reserve)
-        if self.context_estimate+cost>limit:
+        if replacement:
+            # Provider observations can include the OLD preamble. Never subtract
+            # a byte estimate from an observed whole-window count: that could
+            # invent savings. Keep history's independent upper bound instead.
+            history=max(self.history_estimate,self.context_estimate-self.preamble_estimate)
+            estimate=history+preamble
+        else:estimate=self.context_estimate+cost
+        if estimate>limit:
             self._fail('native-dialogue-context-input-bound',known_unsent=True)
-        self.context_estimate+=cost
+        self.context_estimate=estimate
+        if replacement:self.history_estimate=history
+        else:self.history_estimate+=cost-(preamble or 0)
+        if preamble is not None:self.preamble_estimate=preamble
         try:
             self._socket.send(encoded)
         except Exception:
@@ -493,6 +591,7 @@ class NativeDialogue:
         return value
 
     def _context_output(self,cost):
+        self.history_estimate+=cost
         self.context_estimate+=cost
         if self.context_estimate>self.max_context_tokens:
             self._fail('native-dialogue-context-output-bound')
@@ -510,7 +609,10 @@ class NativeDialogue:
                 for key,count in selected.items():peak[key]=max(peak.get(key,0),count)
                 if peak!=self.context_usage:
                     self.context_usage=peak
-                    self.context_estimate=max(self.context_estimate,max(peak.values()))
+                    if self.context_pinning:
+                        self.history_estimate=max(self.history_estimate,max(peak.values()))
+                        self.context_estimate=max(self.context_estimate,self.history_estimate+self.preamble_estimate)
+                    else:self.context_estimate=max(self.context_estimate,max(peak.values()))
                     self._context_output(0)
                     events.append({'type':'context_usage','usage':dict(peak)})
         if 'setupComplete' in value:

@@ -1,9 +1,11 @@
 """Native audio/tool concurrency and bounded transport; zero provider/model calls."""
 import base64
+import hashlib
 import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -24,6 +26,95 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def pin_stream(self,context=None):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='automatic',connect=self.connect,
+            clock=lambda:self.now,context_pinning=True,context=context)
+        self.ready();self.pin_owner=(str(uuid.uuid4()),str(uuid.uuid4()))
+
+    def pin(self,text='Exact unincorporated words',through=1,checkpointed=0):
+        content={'kind':'internal_live_context_pin','dialogue':self.pin_owner[0],
+            'generation':self.pin_owner[1],'through':through,
+            'checkpoint':{'through':checkpointed,'text':'Semantic checkpoint'},
+            'events':[{'text':text,'role':'assistant','interrupted':True}]}
+        raw=json.dumps(content,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
+        return {'content':content,'revision':hashlib.sha256(raw).hexdigest(),
+            'through':through,'checkpointed':checkpointed,'bytes':len(raw)}
+
+    def test_pin_replaces_only_preamble_and_does_not_accumulate_old_preamble_cost(self):
+        self.pin_stream(context={'being_identity':{'text':'Same selected being identity'}})
+        base=self.socket.sent[0]['setup']['systemInstruction']
+        self.stream.input_active=True;self.stream.response_pending=True
+        self.stream.queue_pin(self.pin('a'*8000),1)
+        self.assertEqual(len(self.socket.sent),1,'Preparation is not a provider write')
+        self.assertTrue(self.stream.flush_pin());first=self.stream.context_estimate
+        history=self.stream.history_estimate
+        self.stream.queue_pin(self.pin('New exact tail',through=2,checkpointed=1),2)
+        self.assertTrue(self.stream.flush_pin())
+        self.assertLess(self.stream.context_estimate,first)
+        self.assertEqual(self.stream.context_estimate,history+self.stream.preamble_estimate)
+        update=self.socket.sent[-1]
+        self.assertEqual(set(update),{'contextUpdate'})
+        self.assertEqual(set(update['contextUpdate']),{'systemInstruction'})
+        parts=update['contextUpdate']['systemInstruction']['parts']
+        self.assertEqual(len(parts),1)
+        self.assertTrue(parts[0]['text'].startswith('\n\n'.join(p['text'] for p in base['parts'])))
+        self.assertNotIn('a'*8000,json.dumps(update))
+        self.assertTrue(self.stream.input_active);self.assertTrue(self.stream.response_pending)
+        self.assertEqual(self.stream.pin_status()['attempt']['phase'],'sent')
+        self.assertFalse(self.stream.flush_pin(),'Sent context is not automatically repeated')
+
+    def test_ready_pin_precedes_pcm_even_when_queued_while_writer_lock_is_held(self):
+        self.pin_stream();queued=threading.Event();errors=[]
+        def queue_pin():
+            try:self.stream.queue_pin(self.pin(),1)
+            except BaseException as error:errors.append(error)
+            finally:queued.set()
+        with self.stream._lock:
+            writer=threading.Thread(target=lambda:self.stream.append(b'\0\0'*1600))
+            writer.start()
+            producer=threading.Thread(target=queue_pin);producer.start()
+            self.assertTrue(queued.wait(1),'Pin preparation must not wait behind a socket writer')
+        producer.join(2);writer.join(2)
+        self.assertFalse(errors);self.assertFalse(writer.is_alive())
+        self.assertEqual([next(iter(v)) for v in self.socket.sent],['setup','contextUpdate','realtimeInput'])
+        self.assertEqual(base64.b64decode(self.socket.sent[-1]['realtimeInput']['audio']['data']),b'\0\0'*1600)
+
+    def test_pin_coalesces_owned_unsent_revisions_and_rejects_stale_or_changed_content(self):
+        self.pin_stream();old=self.pin('Old exact text');self.stream.queue_pin(old,1)
+        old['content']['events'][0]['text']='Caller mutation after preparation'
+        fresh=self.pin('Current exact tail',through=2,checkpointed=1)
+        self.stream.queue_pin(fresh,2)
+        with self.assertRaises(ValueError):self.stream.queue_pin(fresh,2)
+        with self.assertRaises(ValueError):self.stream.queue_pin(self.pin(through=1),3)
+        changed=self.pin(through=3);changed['content']['events'][0]['text']='Changed without matching revision'
+        with self.assertRaises(ValueError):self.stream.queue_pin(changed,3)
+        self.stream.flush_pin()
+        self.assertEqual(len(self.socket.sent),2)
+        self.assertIn('Current exact tail',json.dumps(self.socket.sent[-1]))
+        self.assertNotIn('Caller mutation',json.dumps(self.socket.sent[-1]))
+        self.assertEqual(self.stream.pin_status()['attempt']['sequence'],2)
+
+    def test_failed_pin_write_is_uncertain_and_never_automatically_retried(self):
+        self.pin_stream();self.stream.queue_pin(self.pin(),1);self.socket.fail_send=True
+        with self.assertRaises(DialogueUnavailable):self.stream.flush_pin()
+        self.assertEqual(self.stream.pin_status()['attempt']['phase'],'uncertain')
+        self.assertIsNone(self.stream.pin_status()['pending'])
+        with self.assertRaises(ValueError):self.stream.flush_pin()
+        self.assertEqual(len(self.socket.sent),1)
+
+    def test_pin_reserve_refusal_is_unsent_and_provider_usage_is_not_subtracted(self):
+        self.pin_stream();self.event({'usageMetadata':{'totalTokenCount':40000}})
+        self.stream.queue_pin(self.pin('a'*8000),1);self.stream.flush_pin()
+        self.stream.queue_pin(self.pin('Short replacement',through=2,checkpointed=1),2);self.stream.flush_pin()
+        self.assertGreaterEqual(self.stream.history_estimate,40000)
+        self.assertGreaterEqual(self.stream.context_estimate,40000+self.stream.preamble_estimate)
+        self.stream.queue_pin(self.pin(through=3,checkpointed=2),3)
+        self.stream.context_estimate=128000;before=len(self.socket.sent)
+        with self.assertRaises(DialogueCapacity):self.stream.flush_pin()
+        self.assertEqual(len(self.socket.sent),before)
+        self.assertEqual(self.stream.pin_status()['attempt']['phase'],'unsent')
+
     def test_final_handover_gate_rejects_pending_tools_and_unknown_provider_writes(self):
         self.ready();self.assertTrue(self.stream.handover_ready())
         self.event({'toolCall':{'functionCalls':[{'id':'query','name':'recent_originals','args':{}}]}})

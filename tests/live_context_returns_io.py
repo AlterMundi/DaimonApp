@@ -4,6 +4,7 @@
 No model/provider/audio calls. This qualifies wrapper delivery and presentation,
 not actual Core admission, semantic model incorporation or device acceptance.
 """
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -110,6 +111,8 @@ def qualify(binary):
         assert len(receipts)==2 and all(r['reported_revision'] for r in receipts)
         before=j.row('SELECT doc FROM live_context WHERE dialogue=?',(j.dialogue,))
         pin=j.context('pin_read',generation=generation)['pin']
+        encoded=json.dumps(pin['content'],sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()
+        assert pin['bytes']==len(encoded) and pin['revision']==hashlib.sha256(encoded).hexdigest()
         assert pin['through']==2 and pin['checkpointed']==0
         assert [e['role'] for e in pin['content']['events']]==['human','assistant']
         assert pin['content']['events'][1]['interrupted'] is True

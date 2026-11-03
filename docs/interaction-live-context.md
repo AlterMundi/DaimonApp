@@ -859,7 +859,9 @@ and pending effect references. Provider sliding may then remove duplicated
 completed conversation while Sol alone performs semantic compaction. This is the
 next implementation, not yet a selected runtime setting; sliding remains OFF.
 
-Use the supported ordered `contextUpdate.systemInstruction`, preserving tools.
+The current SDK exposes ordered `contextUpdate.systemInstruction`, preserving tools.
+Actual application on the selected Developer API endpoint still needs qualification;
+SDK serialization and a successful socket write do not establish that application.
 Mark pin coverage dirty immediately when terminal human/assistant information
 arrives, before asynchronous retention; keep reading provider events. Freeze the
 canonical snapshot after retention and recheck its revision before sending.
@@ -910,3 +912,61 @@ formatting and clippy all targets pass. This does NOT yet update Gemini's
 preamble or activate sliding: ordered pin writing, repeated checkpoint cycles,
 occupancy accounting, never-sent pressure buffering and actual-slide qualification
 remain the next implementation work.
+
+
+## Ordered pin writer and actual endpoint discriminator,3November2026
+
+The transport now has an explicit `context_pinning=False` prototype, with no
+application enablement or receiving adoption. Owner snapshots must match their
+canonical SHA256 revision and serialized byte count. A separate short producer
+lock allows a ready pin to queue while the socket writer is occupied. The same
+writer drains pending pins before subsequent PCM, tool results and guidance;
+known-unsent intermediate revisions coalesce. It preserves the complete immutable
+identity/policy preamble and leaves tools unchanged. Replacements do not accumulate
+old preamble byte estimates as resident context. Observed whole-window usage is
+never reduced by subtracting an estimated old prefix; historical allowance remains
+conservative. Sequence, owner, revision, byte and count bounds reject stale data.
+Attempted writes become sent, known-unsent or uncertain, without automatic retry.
+A sent phase is deliberately NOT an applied receipt.
+
+Forty-seven transport checks pass, including writer contention/priority,
+coalescing, changed content, replacement accounting and uncertain-write handling.
+The49mounted voice and26bridge checks pass with the default path unchanged. The
+actual owner/controller/SQLite journey additionally checks that Rust's canonical
+pin bytes and SHA256 match Python's encoding. These checks establish local
+ordering and the snapshot contract, not provider continuity or semantic coverage.
+
+Actual selected Gemini3.8Live probes did not establish context replacement. A
+configured CompAII probe produced voice but returned an identity-related value
+instead of the new synthetic fact; another asked for a source without producing
+voice. A distinct minimal probe removed the application policy and ALL tools:
+its baseline spoke the two initial synthetic values correctly, but the response
+after `contextUpdate.systemInstruction` still spoke the old values. A corrected
+minimal probe using `context_update.system_instruction`, as spelled in Google's
+WebSockets guide, likewise spoke its baseline correctly and retained the old
+values after the update. Both completed their responses without a protocol error.
+One intervening verifier had an inconsistent initial expectation and never reached
+its update; that setup error is retained separately and is NOT provider evidence.
+Every connection is closed. No media, human input, native work, recovery replay,
+production change or sliding activation was involved.
+
+The primary Python SDK's `send_context_update` and Developer API converter expose
+this message and the SDK defaults to the same v1beta endpoint; an assumed alpha
+version mismatch is therefore not a finding. Google's Cloud Live guide documents
+ordered prefix replacement, while the inspected Developer API Live reference did
+not describe a ContextUpdate type. These observations leave endpoint rollout,
+applicability and input-path behavior unresolved; they do not prove a universal
+provider limitation or identify a model-prompt defect. Keep pinning and automatic
+sliding OFF. Do not build protected eviction on an unobserved prefix update, infer
+application from send(), or rerun paid fixtures merely for another green label.
+The next investigation must resolve the actual endpoint/input contract or qualify
+a supported continuity alternative; repeated checkpoint-cycle integration and
+input-pressure buffering remain pending that decision.
+
+Primary sources inspected:
+
+- https://raw.githubusercontent.com/googleapis/python-genai/main/google/genai/live.py
+- https://raw.githubusercontent.com/googleapis/python-genai/main/google/genai/_live_converters.py
+- https://raw.githubusercontent.com/googleapis/python-genai/main/google/genai/_api_client.py
+- https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api/start-manage-session
+- https://aistudio.google.com/api-reference/live
