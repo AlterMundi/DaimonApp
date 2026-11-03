@@ -76,13 +76,15 @@ class ForegroundBridge:
     async def _run(self, limit, function, *args, **kwargs):
         # A cancelled waiter cannot release a slot while its owning file/control
         # thread is still running. There are at most two owner calls/one writer.
-        await asyncio.wait_for(limit.acquire(),2)
+        async with asyncio.timeout(2):
+            await limit.acquire()
         task=asyncio.create_task(asyncio.to_thread(function,*args,**kwargs))
         def done(future):
             limit.release()
             if not future.cancelled():future.exception()
         task.add_done_callback(done)
-        return await asyncio.wait_for(asyncio.shield(task),18)
+        async with asyncio.timeout(18):
+            return await asyncio.shield(task)
 
     async def _owner(self,function,*args,**kwargs):
         if self.closed:raise ForegroundUnavailable('Foreground conversation ended')

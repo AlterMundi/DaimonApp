@@ -707,18 +707,15 @@ class Mounted(unittest.TestCase):
             def append(self,pcm):
                 super().append(pcm)
                 raise DialogueUnavailable('Synthetic provider send outcome is unknown')
-        self.select_automatic();observed=queue.Queue()
-        def log(message,*args,**kwargs):
-            if message=='native_voice_closed %s':observed.put(json.loads(args[0]))
+        self.select_automatic()
         pcm=b'\3\0'*1600
-        with patch('dashboard.native_voice.NativeDialogue',FailedBeforeOnset),patch.object(logging.getLogger('uvicorn.error'),'info',side_effect=log):
+        with patch('dashboard.native_voice.NativeDialogue',FailedBeforeOnset):
             with self.open() as ws:
                 ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
                 ws.send_bytes(pcm)
                 event=ws.receive_json()
                 while event['type']!='review':event=ws.receive_json()
-                result=observed.get(timeout=30)
-        self.assertEqual(result['error_type'],'DialogueUnavailable')
+                self.assertTrue(self.owner.context_closed.wait(2),'Observe completed owned cleanup, not a deferred logging callback')
         self.assertEqual(len(self.owner.inputs),1)
         ident,original=next(iter(self.owner.inputs.items()))
         self.assertEqual(original['phase'],'foreground_captured')

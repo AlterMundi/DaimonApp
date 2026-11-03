@@ -93,7 +93,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         async def send(value):
             nonlocal first_send_failure
             async with sending:
-                try:await asyncio.wait_for(socket.send_json(value),3)
+                try:
+                    async with asyncio.timeout(3):
+                        await socket.send_json(value)
                 except Exception as error:
                     if first_send_failure is None:
                         task=asyncio.current_task();name=task.get_name() if task else None

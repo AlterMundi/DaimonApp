@@ -1017,3 +1017,81 @@ waiting in the receive inbox/current batch, and automatic old-generation tail
 ownership remain open. No additional VAD, namespace/store, pilot duration,
 provider endpoint selection or receiving deployment is introduced. The five-minute
 pilot, disabled pinning/sliding and full unfinished product scope remain.
+
+
+## Natural-audio discriminator and append-anchor fallback review
+
+A distinct natural-PCM probe now establishes that missing context-update uptake
+is not limited to text questions. On the selected v1beta/Gemini3.8Live endpoint,
+the first synthetic spoken question was fully transcribed and its two initial
+facts were spoken correctly. After the context update, the second distinct
+spoken question was also fully transcribed, with automatic START/END observations,
+but the reply repeated the old facts. The connection closed after15.534seconds;
+91204generated PCM bytes were counted, not retained as another media copy.
+Two fresh Qwen samples used the existing bounded cache. No native/human work,
+hardware, replay, deployed endpoint change or sliding activation occurred.
+
+The requested Astra high reviewer read this evidence and selected the next
+specific fallback to qualify: append a self-contained internal anchor through
+clientContent with turnComplete:false, at a verified idle generation boundary.
+The anchor contains the semantic checkpoint, EXACT newer both-role language,
+source revisions, interruptions and pending-effect references. Immutable setup
+identity stays fixed and describes these records as attributed source data,
+not new human speech, work, authority or a request to talk. Each refresh is
+complete without depending on a prior anchor; Sol transfer remains incremental.
+This is a reviewed candidate, NOT an enabled or qualified compaction mechanism.
+
+The SDK sliding contract retains a suffix cut at a USER-turn boundary. Its target
+is a reduction target, not a guaranteed minimum suffix or a promise to preserve
+a particular USER anchor. Therefore source text MUST NOT describe this fallback
+as equivalent to a protected system preamble. It needs a selected-endpoint
+qualification and conservative coverage bounds. For a64000target, the review's
+starting envelope is immutable prefix+anchor<=24000estimated tokens, newer admitted
+history<=16000, unfinished/output/retention reserve<=8000 and16000margin. Bounds
+must also leave room below the trigger for a fresh anchor and pending output;
+these estimates do not claim exact tokenizer accounting.
+
+Use the existing idle guidance gate. Unlike a preamble replacement, clientContent
+can interrupt generation even when turnComplete:false, so do NOT drain anchors
+indiscriminately before every write. Queue/coalesce preparation, wait for actual
+terminal provider state, acquire/recheck the shared writer and append before
+new PCM/tools/guidance. Retain bounded NEVER-SENT incoming PCM near coverage
+pressure; no old sent audio is replayed. A late provider onset can race a local
+idle observation, and a terminal assistant may precede its human source's durable
+interpretation: retain and budget those coverage gaps rather than claim complete
+coverage. Only a committed Sol checkpoint retires the canonical exact tail.
+
+Next qualifier: one connection, ordinary immutable setup, two actually observed
+prompt-occupancy reductions, independently distinguishable checkpoint/tail facts,
+a correction, late interpretation, interrupted output and natural PCM arriving
+at refresh. Inspect revisions, write order and current usage as well as digital
+spoken recall. Recall alone does not prove a slide. Do not repeat the passed
+full Gemini/Sol worker journey. If the newest complete anchor is evicted within
+these bounds or blocks later audio, do not add unqualified rescue anchors. The
+review's smallest existing alternative is a NEW manual-activity dialogue using
+local detector-owned spans, end ACKs, bounded never-sent backlog and checkpoint-
+seeded rollover between spans; never convert a running automatic dialogue or
+replay its old sent tail. No new contextUpdate probe is needed.
+
+Primary contract: https://googleapis.github.io/js-genai/release_docs/interfaces/types.SlidingWindow.html
+
+## Python3.11 cleanup cancellation qualification
+
+CI41584589629's dashboard job timed out in the new unexpected-close test. The
+same failure was reproduced locally under the locked dashboard dependencies and
+Python3.11: cleanup awaited a cancelling native-return observer before retaining
+the tail. A separate deterministic source-wakeup test proved that cancellation
+racing a ready notification returned normally instead of closing the watcher.
+Python3.11's wait_for can return an already completed inner future in that race.
+The local3.13 pass had not qualified the actual CI interpreter.
+
+Source watching, the bounded bridge owner/file waits and native socket sends now
+use asyncio.timeout around the awaited operation. The original heartbeat,2/18second
+owner/file limits,3second send limit, protected running threads and actual slot
+release are preserved. External cancellation propagates instead of becoming a
+successful notification/control result. The close regression observes owned
+cleanup and exact retained bytes rather than waiting on a logging callback;
+removing that callback wait alone did NOT fix the3.11 failure. The wakeup test
+failed before the source change and passes after it. All3watcher,28bridge and
+50mounted voice checks pass on both3.11 and3.13. Full CI for the corrected source
+is still required; no receiving deployment follows from these local results.
