@@ -36,8 +36,8 @@ def analysis_budget(*,continuous=False,session_seconds=None):
     analyses=(90*seconds+299)//300 if continuous else 30
     cpu=(seconds+1)//2 if continuous else 60
     # Preserve the default wire/runtime contract. Extended workers allow the
-    # parent's30s readiness deadline plus5s cleanup beyond the selected session.
-    wall=seconds+(35 if seconds>300 else 5) if continuous else 145
+    # parent's30s analysis readiness,15s provider setup and5s close reserve.
+    wall=seconds+(50 if seconds>300 else 5) if continuous else 145
     return seconds,analyses,cpu,wall
 
 
@@ -168,7 +168,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vad-model', type=Path, required=True)
     parser.add_argument('--turn-model', type=Path, required=True)
-    parser.add_argument('--continuous', action='store_true', help='One explicit foreground session, at most five minutes')
+    parser.add_argument('--continuous', action='store_true', help='One explicit foreground session, five minutes by default')
     parser.add_argument('--session-seconds',type=int,
                         help='Continuous native analysis only: explicit finite300..1800second session')
     parser.add_argument('--silence-end-millis', type=int, choices=(0,1600), default=0,

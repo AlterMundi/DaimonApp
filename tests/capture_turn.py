@@ -17,8 +17,8 @@ class CaptureTurn(unittest.TestCase):
         self.assertEqual(analysis_budget(),(120,30,60,145))
         self.assertEqual(analysis_budget(continuous=True),(300,90,150,305))
         self.assertEqual(analysis_budget(continuous=True,session_seconds=300),(300,90,150,305))
-        self.assertEqual(analysis_budget(continuous=True,session_seconds=600),(600,180,300,635))
-        self.assertEqual(analysis_budget(continuous=True,session_seconds=1800),(1800,540,900,1835))
+        self.assertEqual(analysis_budget(continuous=True,session_seconds=600),(600,180,300,650))
+        self.assertEqual(analysis_budget(continuous=True,session_seconds=1800),(1800,540,900,1850))
         for seconds in (True,300.0,'600',299,1801):
             with self.subTest(seconds=seconds),self.assertRaises(ValueError):
                 Activity('/missing-vad','/missing-turn',continuous=True,session_seconds=seconds)

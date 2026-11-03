@@ -372,6 +372,33 @@ backfill uses the worker's optional `defer` command. A mismatched older worker
 fails analysis without switching or restarting the existing ASR capture.
 No ML inference, model weights or raw audio are retained in the web process.
 Fullscreen microphone opt-in expires after five minutes and is not persisted.
+
+### Extended native analysis budget — development prerequisite
+
+The analysis worker and its `Detector.open` adapter accept an explicit
+`session_seconds` only in continuous mode, from300through1800seconds. The
+adapter passes `--session-seconds` for durations above300 and requires that
+exact duration in the worker's ready acknowledgment before sending PCM. An
+older worker is rejected and reaped; a successful process start alone does not
+prove it supports the selected duration. Ordinary capture and the omitted
+continuous duration preserve their existing flags and ready payloads.
+
+For a selected duration S, cumulative input is bounded to S×32000bytes,
+semantic analyses to ceil(90×S/300), and CPU to ceil(S/2)seconds with a five-second
+hard-limit margin. Extended wall lifetime is S+50seconds, allowing bounded
+analysis/provider startup and closure. The omitted300second mode keeps its
+existing150CPU/305wall-second contract. Resident analysis remains an eight-second
+tail, one partial1024byte frame, two endpoint receipts and fixed recurrent state.
+No model/provider or microphone is opened by this API alone.
+
+This is an implemented analysis prerequisite, not an enabled longer avatar
+session. The server still selects300seconds. Before exposing a longer session,
+the same client-narrowed budget must govern server wall/input/output counters,
+capture source limits, browser capture/helper/worklet, and caption totals.
+Resident unresolved PCM and unsent queues need independent bounds, and native
+checkpointed provider succession must preserve source/admission/offer identities.
+The reviewed first extended pilot is600seconds; no duration, hearing or physical
+device acceptance follows from the worker's synthetic600second qualification.
 Raw original recovery and existing ASR/TTS retention remain separately owned.
 
 One real pinned-model child qualified ready/PCM/close with a silent100ms chunk:
