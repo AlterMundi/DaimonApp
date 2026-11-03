@@ -989,6 +989,24 @@ class Mounted(unittest.TestCase):
             self.assertEqual(result['assistant_speech'][0]['played_bytes'],320,'Read current observations rather than opening-time context')
             self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'})
+    def test_recovered_caption_keeps_approximate_provenance_in_setup_and_source_tool(self):
+        history=self.app.state.native_history;parent=str(uuid.uuid4())
+        history.retain(100,self.ident,self.owner.binding,parent,'','b'*64,640)
+        draft=history.retain_caption(100,self.ident,self.owner.binding,parent,'b'*64,640,
+            {'text':'Approximate recovered assistant words.','final':True})
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            retained=next(s for s in stream.context['sources'] if s['id']==draft['id'])
+            self.assertEqual(retained['derived_caption'],draft['derived_caption'])
+            stream.queue.put([{'type':'source_query','call_id':'draft','before':0}])
+            _,result=stream.tool_results.get(timeout=2)
+            observed=next(s for s in result['assistant_speech'] if s['id']==draft['id'])
+            self.assertEqual(observed['derived_caption'],draft['derived_caption'])
+            self.assertEqual(observed['generated_bytes'],0)
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+
     def test_provider_cancellation_does_not_end_voice_or_cancel_work(self):
         with self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready');stream=Stream.opened[0]

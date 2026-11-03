@@ -469,6 +469,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     sources.append({'id':item['id'],'speaker':'assistant_foreground','observed_at':item['observed_at'],
                         'text_excerpt':excerpt(item['text']),'interrupted':item['interrupted'],
                         'played_bytes':item['played_bytes'],'generated_bytes':item['generated_bytes'],'playback_meaning':item['playback_meaning'],
+                        **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {}),
                         'bounded':True,'can_delegate':False})
                 context={'display_name':config.get('daimon_name','Daimon'),'sources':sources,'source_data':True}
                 identity=await asyncio.to_thread(being_identity,selected)
@@ -493,7 +494,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'text_excerpt':item['text'][:200],'text_bounded':len(item['text'])>200,
                         'interrupted':item['interrupted'],'closed':item['closed'],
                         'played_bytes':item['played_bytes'],'generated_bytes':item['generated_bytes'],
-                        'meaning':item['playback_meaning']} for item in history['items'][:4]]
+                        'meaning':item['playback_meaning'],
+                        **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {})} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
                 bridge.idle_notify=notice_if_idle

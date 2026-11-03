@@ -147,10 +147,29 @@ the corresponding PCM immediately. Closing releases the current incomplete
 buffer. A finished missing-caption buffer transfers to its finite recovery
 caller, which must consume/clear it; that transfer is not a durable-media receipt.
 
+The candidate native Store and Python history/outbox now support a separate
+`derived_caption` source. It names one retained assistant missing-caption parent,
+its exact PCM SHA256/byte count and ASR-result SHA256, always marked as a draft.
+The parent stays immutable. One parent accepts one derived source; exact receipt
+reconciliation is idempotent and changed text/provenance is rejected. Compact
+parent evidence survives text checkpoint retirement, within the existing native
+source/document limits. Late delivery can extend context after voice closure
+without reopening voice or guidance or admitting a human original/work request.
+The native capability is `foreground_derived_captions:v1`; receiving566 does not
+advertise it. Python late-draft retention marks only its context producer for
+pending delivery, and explicit owner recovery can drain it with the same identity.
+
+The candidate timeline associates a recovered draft with its parent card in either
+arrival order, labels the text approximate and keeps the same Copy action. Setup
+context and source-tool reads preserve its draft provenance. Metadata refreshes
+cannot erase the caption or create a second response. An unresolved audio-only
+response is explicitly labeled as having no available transcript. These frontend
+changes are not selected during the current human trial.
+
 Before runtime enablement, finish the source-owned finite recovery job using the
-existing file-ASR outcome/uncertainty rules, immutable derived assistant-caption
-provenance and parent/hash validation, late closed-producer delivery and UI
-association. Do not overwrite an already finalized unknown source, admit human
+existing file-ASR outcome/uncertainty rules and source-bound transient-media
+cleanup. Actual ASR draft generation/semantic uptake by Sol and receiving/device
+acceptance still need qualification. Do not overwrite an already finalized unknown source, admit human
 work, claim exact words/hearing or retry an uncertain provider operation. The
 utility's focused byte/cleanup tests are preparation, not end-to-end recovery.
 

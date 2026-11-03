@@ -325,15 +325,46 @@ def qualify_rollover(binary):
                     assert await p.commit_rollover(intent)
                 assert p.record['generation']==intent['next'] and p.record['rollover'] is None
             assert p.record['generation']!=first_generation
+            parent=str(uuid.uuid4())
+            history.retain(100,dialogue,binding,parent,'','c'*64,640,closed=True)
+            await p._sync(p.record)
+            await asyncio.to_thread(j.wait,lambda:j.row("SELECT json_extract(doc,'$.checkpoint.through') FROM live_context WHERE dialogue=?",(dialogue,))==[(3,)])
+            await asyncio.to_thread(j.wait,lambda:j.row('SELECT busy FROM sessions WHERE thread_id=1')==[(0,)])
             await p.close()
+            before=next(v for v in history.page(100)['items'] if v['id']==parent)
+            draft=history.retain_caption(100,dialogue,binding,parent,'c'*64,640,
+                {'text':'Synthetic approximate assistant caption after voice close.','final':True})
+            actual=provider.conversation_live_context
+            def lose_caption_receipt(body):
+                result=actual(body)
+                if body['action']=='sync' and any(s.get('derived_caption') for s in body.get('assistant',[])):
+                    raise ProviderUnavailable('Synthetic lost derived-caption retention ACK')
+                return result
+            with patch.object(provider,'conversation_live_context',side_effect=lose_caption_receipt):
+                try:await p._sync(p.record)
+                except ProviderUnavailable:pass
+                else:raise AssertionError('Fixture must lose the actual source receipt')
+            await p._finish(p.record)
+            await asyncio.to_thread(j.wait,lambda:j.row("SELECT json_extract(doc,'$.checkpoint.through') FROM live_context WHERE dialogue=?",(dialogue,))==[(4,)])
+            await asyncio.to_thread(j.wait,lambda:j.row('SELECT busy FROM sessions WHERE thread_id=1')==[(0,)])
+            doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
+            assert doc['closed'] and doc['high']==4 and doc['incorporated']==4
+            assert len(doc['sources'])==4 and doc['caption_parents'][parent]['derived_source']==draft['id']
+            assert before==next(v for v in history.page(100)['items'] if v['id']==parent)
+            assert history.retain_caption(100,dialogue,binding,parent,'c'*64,640,
+                {'text':'Synthetic approximate assistant caption after voice close.','final':True})==draft
+            events=[e for packet in j.internal_packets for e in json.loads(packet['toolOutput']['output'])['evidence']['content']['events']]
+            derived=[e for e in events if e.get('derived_caption')]
+            assert len(derived)==1 and derived[0]['derived_caption']['parent_source']==parent
+
         asyncio.run(scenario())
         with database() as db:
-            assert db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='retained'").fetchone()[0]==2
+            assert db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='retained'").fetchone()[0]==4
             assert tuple(db.execute('SELECT phase,rollover FROM foreground_context_producers WHERE dialogue=?',(dialogue,)).fetchone())==('closed',None)
         assert j.row('SELECT count(*) FROM interaction_instructions')==[(0,)]
         assert j.row('SELECT count(*) FROM conversation_inputs')==[(0,)]
         assert not j.messages
-        print('PASS two actual native incorporation/checkpoint/generation cycles with local SQLite CAS and deliberately lost commit ACK, fenced outcome recovery, once-only sources and no models/socket/work replay; provider rollover remains separate')
+        print('PASS two actual native checkpoint/generation cycles plus a late parent-bound ASR draft after checkpoint and voice close; lost actual source ACK reconciled once, original unchanged, closed producer retained, zero human originals/models/work replay; ASR/provider generation remains simulated')
     finally:j.close()
 
 
