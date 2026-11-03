@@ -13,6 +13,7 @@ const MAX_DIALOGUES: usize = 64;
 const MAX_SOURCES: usize = 4096;
 const PAGE: usize = 8000;
 const INLINE: usize = 16000;
+const MAX_PIN: usize = 49152;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -96,6 +97,10 @@ pub(crate) enum LiveContextCommand {
         outcome: String,
     },
     RolloverRead {
+        dialogue: String,
+        generation: String,
+    },
+    PinRead {
         dialogue: String,
         generation: String,
     },
@@ -380,9 +385,7 @@ fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     {
         bail!("Live rollover needs a complete incorporated checkpoint and settled guidance");
     }
-    let missing:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.human_id=?1 AND c.session_id=?2 AND c.native_thread=?3 AND c.retired=0 AND json_extract(c.doc,'$.foreground_dialogue')=?4 AND length(json_extract(c.doc,'$.text'))>0 AND NOT EXISTS(SELECT 1 FROM json_each(?5) s WHERE s.key=c.id))",
-        params![p.human,p.session,p.native,p.dialogue,serde_json::to_string(&p.sources)?],|r|r.get(0))?;
-    if missing {
+    if human_context_missing(conn, p)? {
         bail!("Live rollover must catch up canonical human context first");
     }
     let content = json!({"kind":"internal_integrator_checkpoint","dialogue":p.dialogue,
@@ -394,6 +397,10 @@ fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
         bail!("Live rollover continuity exceeds its provider setup reserve");
     }
     Ok(json!({"revision":hash(&content)?,"through":p.high,"content":content}))
+}
+fn human_context_missing(conn: &Connection, p: &Projection) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.human_id=?1 AND c.session_id=?2 AND c.native_thread=?3 AND c.retired=0 AND json_extract(c.doc,'$.foreground_dialogue')=?4 AND length(json_extract(c.doc,'$.text'))>0 AND NOT EXISTS(SELECT 1 FROM json_each(?5) s WHERE s.key=c.id))",
+        params![p.human,p.session,p.native,p.dialogue,serde_json::to_string(&p.sources)?],|r|r.get(0))?)
 }
 fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
     if p.range.as_ref().is_some_and(|r| r.full != full) {
@@ -588,6 +595,7 @@ impl Store {
             | LiveContextCommand::GuidanceBegin { dialogue, .. }
             | LiveContextCommand::GuidanceOutcome { dialogue, .. }
             | LiveContextCommand::RolloverRead { dialogue, .. }
+            | LiveContextCommand::PinRead { dialogue, .. }
             | LiveContextCommand::RolloverCommit { dialogue, .. }
             | LiveContextCommand::RolloverStatus { dialogue, .. }
             | LiveContextCommand::RolloverAbort { dialogue, .. } => dialogue,
@@ -596,6 +604,33 @@ impl Store {
         let abort = matches!(&command, LiveContextCommand::RolloverAbort { .. });
         let result = match command {
             LiveContextCommand::Open { .. } => unreachable!(),
+            LiveContextCommand::PinRead { generation, .. } => {
+                if p.closed || generation != p.generation {
+                    bail!("Select the current active Live pin generation");
+                }
+                if human_context_missing(&tx, &p)? {
+                    bail!("Live pin must catch up canonical human context first");
+                }
+                // A provider pin is a frozen COPY, not Sol's semantic read or
+                // incorporation. Never acquire/replace its shared range or ACK
+                // language merely because it is available to the voice owner.
+                let mut content: Value = serde_json::from_str(&snapshot(&p, true)?)?;
+                content
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("checkpoint_request");
+                content["kind"] = json!("internal_live_context_pin");
+                content["generation"] = json!(p.generation);
+                let bytes = serde_json::to_vec(&content)?.len();
+                if bytes > MAX_PIN {
+                    bail!("Live pin needs semantic compaction before its bounded preamble can fit");
+                }
+                let mut result = view(&p);
+                result["pin"] = json!({"revision":hash(&content)?,"through":p.high,
+                    "checkpointed":p.checkpoint.through,"bytes":bytes,"content":content});
+                tx.commit()?;
+                return Ok(result);
+            }
             LiveContextCommand::CheckpointNeeded {
                 generation,
                 reason,
@@ -1261,6 +1296,91 @@ mod tests {
                 "revision":basis["checkpoint_revision"],"through":through,
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn owner_pin_keeps_exact_unincorporated_tail_without_changing_sol_reader() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "First exact source")
+            .unwrap();
+        let frozen = f.read(true);
+        f.append(&Uuid::now_v7().to_string(), "Newer interrupted words")
+            .unwrap();
+        let request = json!({"action":"pin_read","dialogue":f.dialogue,"generation":f.generation});
+        let before = {
+            let conn = f.store.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT doc FROM live_context WHERE dialogue=?1",
+                [&f.dialogue],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        let pin = f.call(request.clone()).unwrap();
+        assert_eq!(pin["incorporated"], 0);
+        assert_eq!(pin["pin"]["through"], 2);
+        assert_eq!(pin["pin"]["content"]["events"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            pin["pin"]["content"]["events"][1]["text"],
+            "Newer interrupted words"
+        );
+        assert_eq!(pin["pin"]["content"]["events"][1]["interrupted"], true);
+        let after = {
+            let conn = f.store.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT doc FROM live_context WHERE dialogue=?1",
+                [&f.dialogue],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            before, after,
+            "A pin read cannot mutate or wake the projection"
+        );
+        assert_eq!(f.ack(&frozen).unwrap()["incorporated"], 1);
+        let still_exact = f.call(request.clone()).unwrap();
+        assert_eq!(
+            still_exact["pin"]["revision"], pin["pin"]["revision"],
+            "An ACK alone cannot retire exact words"
+        );
+        f.checkpoint(&frozen, 1);
+        let compact = f.call(request).unwrap();
+        assert_eq!(compact["pin"]["checkpointed"], 1);
+        assert_eq!(compact["pin"]["content"]["checkpoint"]["through"], 1);
+        assert_eq!(
+            compact["pin"]["content"]["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            compact["pin"]["content"]["events"][0]["text"],
+            "Newer interrupted words"
+        );
+        assert_ne!(compact["pin"]["revision"], pin["pin"]["revision"]);
+    }
+
+    #[test]
+    fn owner_pin_rejects_oversize_closed_and_wrong_generation_without_clipping() {
+        let f = Fixture::new();
+        let request = json!({"action":"pin_read","dialogue":f.dialogue,"generation":f.generation});
+        let mut wrong = request.clone();
+        wrong["generation"] = json!(Uuid::now_v7().to_string());
+        assert!(f.call(wrong).is_err());
+        for _ in 0..4 {
+            f.append(&Uuid::now_v7().to_string(), &"a".repeat(15000))
+                .unwrap();
+        }
+        assert!(f.call(request.clone()).is_err());
+        let exact = f.read(true);
+        assert_eq!(exact["high"], 4);
+        assert_eq!(exact["incorporated"], 0);
+        assert!(exact["range"]["characters"].as_u64().unwrap() > MAX_PIN as u64);
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        assert!(f.call(request).is_err());
     }
 
     #[test]

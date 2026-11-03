@@ -828,3 +828,85 @@ guess whether the model supplied an invalid UUID, cursor, extra field or tool.
 This failure does not disprove the deterministic association repair, but it also
 does not qualify the complete actual-provider spoken-result journey. No receiving
 or device acceptance follows from the unit checks.
+
+A subsequent distinct, instrumented mounted journey passed on source5786323:
+actual Gemini3.8Live and actual Sol6.1/openai/medium exchanged five fresh natural
+Qwen originals on a continuous microphone timeline. Sol dispatched one request
+and its amendment exactly once to the synthetic delayed Alpha worker. The actual
+canonical integrating-source response then carried the returned ideas; Gemini
+generated PCM and the corresponding complete phrase about chickpea salad and
+vegetable soup without an oven. One barge-in was observed. Input/output totaled
+2242094/964328PCM bytes. The useful return's first generated PCM arrived0.554s
+after its integrating-source tool response: one digital interval, not final-human-
+speech latency, intelligibility, phone hearing or a comparative benchmark.
+
+Explicit close completed cleanly. Exact actual-Core readback showed five physical
+turns completed, all controller calls succeeded and native idle. The last closed
+projection receipt had high11/incorporated11, establishing final context drain
+rather than only transport ACK. No runtime deployment or physical handover
+occurred; the successful disposable fixture was removed with native history and
+bounded evidence retained. Do not rerun this accepted journey for another green
+label. The earlier invalid-argument loop was not reproduced, so its cause and
+robustness remain unresolved. A separate short actual-provider diagnostic also
+produced valid arguments; it is not evidence that the intermittent fault is fixed.
+
+## In-session pinned language — focused Astra follow-up,3November2026
+
+The requested reviewer accepted a practical replacement for ordinary physical
+rollover: one replaceable system preamble containing immutable identity/policy,
+Sol's checkpoint through C, the EXACT newer canonical both-role tail through P,
+and pending effect references. Provider sliding may then remove duplicated
+completed conversation while Sol alone performs semantic compaction. This is the
+next implementation, not yet a selected runtime setting; sliding remains OFF.
+
+Use the supported ordered `contextUpdate.systemInstruction`, preserving tools.
+Mark pin coverage dirty immediately when terminal human/assistant information
+arrives, before asynchronous retention; keep reading provider events. Freeze the
+canonical snapshot after retention and recheck its revision before sending.
+Prioritize a ready dirty pin over PCM, tool responses and guidance through the
+same writer. Coalesce superseded unsent revisions. Near the volatile-suffix limit,
+buffer only newly captured never-sent PCM with byte/time bounds while retention
+finishes; never hold the acoustic lock waiting for native storage. Older uncertain
+PCM and attempted writes are not replayed.
+
+Retire exact tail only after Sol commits its semantic checkpoint. Incorporation
+ACK alone cannot remove it. Replace with the new checkpoint plus every newer
+event, rejecting stale prepared revisions. Late human interpretations retain
+their original capture chronology; interrupted generated assistant text stays
+attributed and potentially unheard. The ordinary provider suffix needs room for
+ALL unresolved retention/transcript/output lag, not just the latest human turn.
+
+Repeated compaction requires checkpoint-cycle identity within the SAME physical
+provider generation, replacing once-per-generation pressure suppression. Account
+the current preamble independently from cumulative transmitted/billable data;
+replacements must not accumulate forever in `context_estimate`. Historical peak
+usage is not current occupancy after an observed slide, and expecting a slide
+does not justify reclaiming history allowance.
+
+Bound preamble, exact tail, unresolved lag and never-sent input explicitly; request
+Sol compaction early. Qualify two actual slides under continuous natural PCM,
+inspecting provider usage and pin revisions as well as distinctive facts present
+only in checkpoint versus exact tail. Include delayed retention, late transcript,
+interrupted output, input during replacement and a pending actual-source result
+with no duplicate admission/offer. Reuse the accepted Sol/Gemini journey above.
+If Sol cannot catch up within the bounds, retain recovery and end gracefully.
+The guarantee is completed canonical language preserved by the pinned checkpoint
+and exact tail, with qualified bounded lag for unfinished material. Exact universal
+128000-token prevention remains limited by provider accounting; conservative
+headroom is an engineering control, not a tokenizer proof. No additional VAD,
+Gemini tool catalog or physical reconnection is needed for ordinary compaction.
+
+The first implementation seam is available as owner-only `pin_read`: it returns
+a revision-bound checkpoint plus exact post-checkpoint events and current
+uncheckpointed guidance, within49152serialized bytes. It requires the active
+generation and canonical-human catch-up, never clips an oversized pin, and leaves
+Sol's frozen reader, incorporation watermark and stored projection byte-for-byte
+unchanged. Incorporation alone does not shrink its exact tail; a semantic
+checkpoint does. The native model controller cannot invoke this producer read.
+The253Store tests include these retirement/staleness/boundary cases; the actual
+owner/controller/SQLite journey confirms human/assistant roles, interrupted text,
+producer-only authorization and no new native wakeup. Dashboard's29owner tests,
+formatting and clippy all targets pass. This does NOT yet update Gemini's
+preamble or activate sliding: ordered pin writing, repeated checkpoint cycles,
+occupancy accounting, never-sent pressure buffering and actual-slide qualification
+remain the next implementation work.

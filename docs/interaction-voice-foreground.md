@@ -1454,9 +1454,13 @@ qualification. Completed acoustic/capture copies, checkpointed guidance text and
 unbound acknowledged native transport now retire selectively. Real Gemini
 successor/spoken-continuity and real Sol context/checkpoint cases pass separately;
 actual active-Core integration now also passes, preserving a correction within
-the same physical native turn. The mounted journey with both actual providers,
-continuous-capture compaction, longer retention/continuation and receiving/device
-acceptance remain unfinished. The focused Astra high follow-up and actual
-continuous-microphone ownership gap are recorded in the maintained design.
+the same physical native turn. A finite actual Gemini/Sol mounted journey now
+also passes five originals, one request plus amendment, barge-in, useful spoken
+canonical return and final high11/incorporated11 context drain. This does not
+resolve the earlier intermittent invalid-tool-argument loop. Continuous-capture
+compaction, longer retention/continuation and receiving/device acceptance remain
+unfinished. The focused Astra high follow-up selects pinned checkpoint plus
+exact newer language as the next in-session compaction implementation; it and
+the actual continuous-microphone ownership gap are recorded in the maintained design.
 See the single maintained design/qualification record above. Receiving558 and
 the five-minute logical pilot remain unchanged; PR560 is draft.
