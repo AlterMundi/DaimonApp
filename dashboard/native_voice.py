@@ -477,7 +477,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 if activity_mode=='manual':
                     worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600)
                 await recheck()
-                opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode=activity_mode,context=context))
+                opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode=activity_mode,
+                    voice_name=selected.get('native_voice_name'),context=context))
                 stream=await asyncio.shield(opening)
                 # Provider readiness is actual setupComplete, not successful connect().
                 while True:

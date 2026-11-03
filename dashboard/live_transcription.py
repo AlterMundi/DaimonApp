@@ -184,7 +184,7 @@ def install(app, config, provider, authorize, origins):
     mode=selected.get('mode','prepared')
     if (mode not in ('prepared','captions')
             or selected.get('provider','qwen') not in ('qwen','gemini')
-            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file'}
+            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name'}
             or not {'enabled','endpoint','credential_file','cache_root'}<=set(selected)
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
@@ -206,6 +206,10 @@ def install(app, config, provider, authorize, origins):
             or not isinstance(selected['native_identity_file'],str)
             or not Path(selected['native_identity_file']).is_absolute()):
         raise ValueError('Select one explicit native being-identity file')
+    if 'native_voice_name' in selected and (selected.get('native_dialogue') is not True
+            or not isinstance(selected['native_voice_name'],str)
+            or not re.fullmatch('[A-Za-z][A-Za-z0-9]{0,63}',selected['native_voice_name'])):
+        raise ValueError('Select one explicit prebuilt native voice name')
     candidates=[selected]+([fallback] if fallback is not None else [])
     detector_command = detection_command(selected)
     root = private_directory(selected['cache_root'])

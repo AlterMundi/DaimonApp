@@ -1464,3 +1464,28 @@ exact newer language as the next in-session compaction implementation; it and
 the actual continuous-microphone ownership gap are recorded in the maintained design.
 See the single maintained design/qualification record above. Receiving558 and
 the five-minute logical pilot remain unchanged; PR560 is draft.
+
+
+## Explicit native voice selection —3November2026
+
+Optional server-owned `streaming_transcription.native_voice_name` selects a
+prebuilt Gemini voice when `native_dialogue=true`. The provider setup sends
+`generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`.
+The name is validated before opening a provider socket; omission preserves the
+provider default. Physical successors carry the SAME selection, independent of
+semantic checkpoint contents. Browser metadata cannot override it. This does
+not change ordinary Qwen TTS, model selection, memory or work routing.
+
+Nicolas requested a voice similar to the ordinary masculine Qwen voice rather
+than the female-sounding Live default. Charon is the selected first candidate,
+not a claim of an identical voice or completed subjective comparison. The
+provider documents prebuilt voice selection and tone guidance in the
+[Live capabilities guide](https://ai.google.dev/gemini-api/docs/live-api/capabilities#change-voice-and-language).
+Voces retains ownership of the wider multi-provider audition; this option is
+the shared adapter contract for one explicitly selected prebuilt Live voice.
+
+Apply only to new dialogues at an idle web adoption boundary. Preserve existing
+voice sessions and the compatible native560writer. Reverting to web code that
+predates this option also requires removing `native_voice_name` from its config.
+Actual setup/audio generation, deployed selection and human listening remain
+separate evidence.

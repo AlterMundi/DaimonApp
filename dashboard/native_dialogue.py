@@ -45,14 +45,17 @@ class NativeDialogue:
     max_pin_bytes = 49152
     max_pins = 128
 
-    def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic, context_pinning=False):
+    def __init__(self, credential_file, *, activity_mode, voice_name=None, context=None, connect=None, clock=time.monotonic, context_pinning=False):
         if activity_mode not in ('manual', 'automatic'):
             raise ValueError('Select explicit native activity ownership')
         if type(context_pinning) is not bool:
             raise ValueError('Select explicit native context pinning')
+        if voice_name is not None and (not isinstance(voice_name,str) or not re.fullmatch('[A-Za-z][A-Za-z0-9]{0,63}',voice_name)):
+            raise ValueError('Select a bounded prebuilt native voice name')
         if context is not None and (not isinstance(context,dict) or len(json.dumps(context,ensure_ascii=False).encode())>32768):
             raise ValueError('Select bounded server-owned conversation context')
         self.activity_mode = activity_mode
+        self.voice_name = voice_name
         self._credential_file=credential_file
         self._connect=connect
         self._continuity_identity={k:json.loads(json.dumps(v)) for k,v in (context or {}).items()
@@ -95,7 +98,9 @@ class NativeDialogue:
             self._socket.settimeout(1)
             self._send({'setup': {
                 'model': 'models/' + self.model,
-                'generationConfig': {'responseModalities': ['AUDIO'], 'maxOutputTokens': 512},
+                'generationConfig': {'responseModalities': ['AUDIO'], 'maxOutputTokens': 512,
+                    **({'speechConfig':{'voiceConfig':{'prebuiltVoiceConfig':{'voiceName':voice_name}}}}
+                        if voice_name is not None else {})},
                 'inputAudioTranscription': {}, 'outputAudioTranscription': {},
                 'realtimeInputConfig': {'automaticActivityDetection': (
                     {'disabled':True} if activity_mode=='manual' else {
@@ -259,7 +264,7 @@ class NativeDialogue:
         candidate=None
         try:
             candidate=type(self)(self._credential_file,activity_mode=self.activity_mode,
-                context=context,connect=self._connect,clock=self._clock,context_pinning=self.context_pinning)
+                voice_name=self.voice_name,context=context,connect=self._connect,clock=self._clock,context_pinning=self.context_pinning)
             deadline=time.monotonic()+15
             while time.monotonic()<deadline:
                 events=candidate.receive()
