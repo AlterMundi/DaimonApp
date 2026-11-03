@@ -1552,3 +1552,22 @@ spoken completion before the next utterance; retain those distinct outcomes.
 The unchanged source/transport bounds passed48native-dialogue checks. Apply
 new guidance only to newly opened dialogues at an idle web boundary; retain
 Charon, fresh authorization, existing work and the full unfinished roadmap.
+
+
+## Acoustic queue observations
+
+The existing `native_voice_closed` scalar journal separates three manual-mode
+observations under `acoustic_queues`: peak captured audio duration still waiting
+for local analysis (`peak_analysis_audio_ms`), peak analyzed phrase audio not yet
+sent to the provider (`peak_unsent_span_audio_ms`), and peak wall-clock wait after
+sending activity-end for BOTH its matching ACK and final input interpretation
+(`peak_input_confirmation_wait_ms`). The first two measure PCM duration, not
+wall-clock latency. Confirmation is source finalization, not the time to useful
+speech or physical hearing. Automatic provider endpointing reports `null`, since
+it does not use the local detector/span queue. Peaks survive buffer retirement
+and cleanup; no audio, text, per-frame log or new retained media is added.
+
+These complement input-inbox queue age, fresh actor-check timing and client
+playback observations. They help locate a growing backlog without increasing its
+bounds, dropping input or weakening fresh authentication. A low isolated profile
+is not proof that a real phone/network/provider path is fluent.
