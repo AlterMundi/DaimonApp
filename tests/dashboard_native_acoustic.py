@@ -9,6 +9,7 @@ from dashboard.native_foreground import ForegroundUnavailable
 
 
 class Stream:
+    activity_mode='manual'
     def __init__(self):self.events=[]
     def activity_start(self):self.events.append(('start',))
     def append(self,pcm):self.events.append(('pcm',pcm))
@@ -65,6 +66,33 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.transcripts,[])
         await self.ack('ACTIVITY_END','0.2s')
         self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'Hello')])
+
+    async def test_handover_retires_only_completed_prefix_and_keeps_logical_tail_offsets(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'First'})
+        await self.ack('ACTIVITY_END','0.2s')
+        tail=b'\2\0'*1600
+        await self.session.feed(tail);await self.session.activity(self.activity(9600))
+        successor=Stream()
+        async with self.session.lock:self.session.replace_stream(successor)
+        self.assertEqual(self.session.pcm_base,6400)
+        self.assertEqual(self.session.pcm,tail)
+        self.assertEqual(self.session.captured,9600)
+        await self.session.feed(b'\3\0'*1600)
+        await self.session.activity(self.activity(12800,2,onset=12800))
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(16000,2,endpoint=True))
+        await self.session.provider_event({'type':'input_transcript','text':'Second'})
+        await self.ack('ACTIVITY_END','0.3s')
+        self.assertEqual(self.bridge.captures[-1][1],tail+b'\3\0'*1600+b'\0\0'*1600)
+        self.assertEqual(self.session.sent,16000)
+        async with self.session.lock:self.session.replace_stream(Stream())
+        self.assertEqual(self.session.pcm,b'')
+        self.assertEqual(self.session.captured,16000)
+        # The logical pilot bound cannot be reset by freeing a buffer.
+        self.session.max_bytes=16000
+        with self.assertRaises(ForegroundUnavailable):await self.session.feed(b'\0\0')
     async def test_early_noninterim_text_is_not_committed_as_a_whole_original(self):
         await self.session.feed(b'\1\0'*1600)
         await self.session.activity(self.activity(3200,onset=3072))
@@ -209,6 +237,25 @@ class Automatic(unittest.IsolatedAsyncioTestCase):
     async def vad(self,kind,offset):
         return await self.session.provider_event({'type':'voice_activity','activity':kind,
             'audio_offset':offset,'source':'provider_automatic_activity'})
+    async def test_successor_rebases_provider_offsets_without_replaying_pcm(self):
+        successor=Stream();successor.activity_mode='automatic'
+        with self.assertRaises(ForegroundUnavailable):self.session.replace_stream(successor)
+        await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Previous'})
+        await self.vad('ACTIVITY_END','2s')
+        async with self.session.lock:self.session.replace_stream(successor)
+        self.assertEqual(self.session.pcm,b'')
+        self.assertEqual(self.session.pcm_base,64000)
+        pcm=b'\3\0'*16000
+        await self.session.feed(pcm)
+        await self.vad('ACTIVITY_START','0.25s');await self.vad('ACTIVITY_END','1s')
+        await self.session.provider_event({'type':'input_transcript','text':'Next'})
+        self.assertEqual(self.bridge.captures[-1][1],pcm)
+        self.assertEqual(successor.events,[('pcm',pcm)])
+        self.assertEqual(self.session.provider_offset_base,64000)
+        self.assertEqual(self.session.boundary,96000)
+        await self.session.close()
+        self.assertEqual(self.session.captured,96000)
     async def test_continuous_noise_and_early_final_keep_exact_original_and_event_identity(self):
         ident=await self.vad('ACTIVITY_START','0.75s')
         self.assertEqual(self.bridge.pending_acoustic,ident)
@@ -227,6 +274,31 @@ class Automatic(unittest.IsolatedAsyncioTestCase):
         await self.session.close();await self.session.close()
         self.assertEqual(len(self.bridge.captures),1)
         self.assertEqual(self.bridge.captures[0][1],self.pcm)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_failed_connection_keeps_pcm_before_any_provider_onset_or_transcript(self):
+        await self.session.close(recover_unassigned=True)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1],self.pcm)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_failed_connection_keeps_only_tail_after_completed_original(self):
+        first=await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        await self.vad('ACTIVITY_END','1.5s')
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(self.bridge.captures[0],(first,self.pcm[8000:48000],{}))
+        self.assertEqual(self.bridge.captures[1][1],self.pcm[48000:])
+        self.assertEqual(self.bridge.transcripts,[(first,'Confirmed')])
+
+    async def test_unassigned_recovery_keeps_existing_chunk_bound_and_question_scope(self):
+        original=self.pcm
+        for _ in range(120):await self.session.feed(bytes(32000))
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertTrue(all(len(c[1])<=120*32000 and c[2]=={} for c in self.bridge.captures))
+        self.assertEqual(b''.join(c[1] for c in self.bridge.captures),original+bytes(120*32000))
         self.assertEqual(self.bridge.transcripts,[])
 
     async def test_final_after_end_and_fragmentation(self):

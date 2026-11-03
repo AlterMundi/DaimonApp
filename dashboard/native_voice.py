@@ -21,6 +21,7 @@ from .live_transcription import VoiceInbox
 from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
 from .native_dialogue import NativeDialogue, DialogueUnavailable
 from .native_foreground import ForegroundBridge, ForegroundUnavailable
+from .native_context import NativeContext
 from .provider import Provider, ProviderUnavailable
 from .turn_detection import Detector, DetectionUnavailable
 
@@ -28,7 +29,7 @@ from .turn_detection import Detector, DetectionUnavailable
 def failure_site(error):
     """Source location only: never exception text, locals or absolute paths."""
     site=None;trace=error.__traceback__
-    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription'}
+    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription','dashboard.native_context'}
     while trace is not None:
         module=trace.tb_frame.f_globals.get('__name__')
         if module in modules:
@@ -76,14 +77,25 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             await socket.close(code=1008);return
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
+        context_producer=None
+        control_task=None;control_dirty=False
+        output_queue=None;output_pending=deque();output_batch_pending=False
+        output_guard=asyncio.Lock();reader_pause=False
+        reader_paused=asyncio.Event();reader_resume=asyncio.Event();reader_resume.set()
+        successor_opening=None;rollover_count=0;retired_output_bytes=0;logical_output_bytes=0
+        candidate_setup_failures=0
+        attempted_rollover_basis=None;retiring=None
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
+        completion_notifications={}
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
         first_playback_status=last_playback_status=None;playback_status_count=0
         async def send(value):
             nonlocal first_send_failure
             async with sending:
-                try:await asyncio.wait_for(socket.send_json(value),3)
+                try:
+                    async with asyncio.timeout(3):
+                        await socket.send_json(value)
                 except Exception as error:
                     if first_send_failure is None:
                         task=asyncio.current_task();name=task.get_name() if task else None
@@ -98,6 +110,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed)
             if not stopping and emit:await send({'type':'assistant_utterance','utterance':record})
             if closed:
+                if context_producer is not None:context_producer.notify()
                 utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         async def acoustic_event(value):
             await send(value)
@@ -115,11 +128,35 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await asyncio.shield(raw_notifications[capture.ident])
                     await actor()
                     await send({'type':'original_completed','id':capture.ident,'sha256':capture.digest,'phase':'foreground'})
-                launch(completed())
+                    if context_producer is not None:context_producer.notify()
+                completion_notifications[capture.ident]=launch(completed())
         def launch(operation):
             task=asyncio.create_task(operation,name='native-tool');tool_tasks.add(task)
             return task
-        async def notice_if_idle():
+        def guidance_floor():
+            return (acoustic is not None and not stopping and not acoustic.closed
+                and acoustic.local is None and acoustic.provider is None and not acoustic.spans
+                and not stream.input_active and not stream.response_pending)
+        async def guide_if_idle():
+            if context_producer is None or not guidance_floor():return
+            async def ready(frame):
+                if not guidance_floor():return False
+                if frame['mode']=='spoken_offer' and await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return False
+                return guidance_floor()
+            async def deliver(frame):
+                await actor()
+                if not await ready(frame):return False
+                # The control claim happens outside this floor lock. Only the
+                # final send is serialized with captured PCM/provider offsets.
+                async with acoustic.lock:
+                    if not guidance_floor():return False
+                    return await asyncio.to_thread(stream.guide,frame)
+            await context_producer.offer_guidance(deliver,ready)
+        async def control_if_idle():
+            if context_producer is not None:
+                await context_producer.request_checkpoint(getattr(stream,'checkpoint_pressure',None))
+            await guide_if_idle()
+            await rollover_if_idle()
             # Existing pending tools already stream returns. A new session or
             # cancelled watch needs one event-driven, attributed control notice.
             def available():
@@ -133,58 +170,183 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             generation=bridge.offer_generation
             if await asyncio.to_thread(stream.notify_integrator_update):
                 bridge.noticed_generation=generation
+        async def notice_if_idle():
+            # Native control can wait on its owner socket. It must never hold
+            # the provider receive loop or prevent an arriving speech boundary.
+            # Coalesce changes while preserving a notice arriving during send.
+            nonlocal control_task,control_dirty
+            if stopping:return
+            control_dirty=True
+            if control_task is not None and not control_task.done():return
+            async def controls():
+                nonlocal control_dirty
+                while control_dirty and not stopping:
+                    control_dirty=False
+                    await control_if_idle()
+            control_task=launch(controls())
+
+        def rollover_floor():
+            if (retiring is not None or not guidance_floor() or utterance is not None or output_batch_pending
+                    or bridge.pending_acoustic is not None or output_queue is None):return False
+            if output_pending or output_queue.items:return False
+            if stream.activity_mode=='manual':
+                if acoustic.analyzed!=acoustic.captured:return False
+            elif acoustic.boundary!=acoustic.sent or acoustic.unassigned:return False
+            if any(c.phase!='foreground' or c.completion is None or not c.completion.done()
+                or c.completion.cancelled() or c.completion.exception() is not None for c in bridge.captures.values()):return False
+            watch,_=bridge.idle_watch
+            return all(t is watch or t.done() and not t.cancelled() and t.exception() is None
+                for t in proposals.values())
+
+        async def rollover_if_idle():
+            nonlocal stream,reader_pause,successor_opening,rollover_count,retired_output_bytes,attempted_rollover_basis,retiring,candidate_setup_failures
+            if (context_producer is None or not getattr(stream,'rollover_due',False)
+                    or not rollover_floor()):return False
+            if await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return False
+            basis=await context_producer.prepare_rollover()
+            if basis is None:return False
+            attempt=(basis['revision'],getattr(stream,'turns_finished',0))
+            if attempt==attempted_rollover_basis or not rollover_floor():return False
+            intent=await context_producer.begin_rollover(basis,str(uuid.uuid4()))
+            if intent is None:return False
+            attempted_rollover_basis=attempt
+            old=stream;candidate=None;installed=False;watch=None;watch_ident=None
+            effects=bridge.pending_effects()
+            try:
+                await actor()
+                successor_opening=asyncio.create_task(asyncio.to_thread(old.successor,basis,pending_effects=effects))
+                try:candidate=await asyncio.shield(successor_opening)
+                except (DialogueUnavailable,ValueError,TimeoutError,OSError):
+                    if getattr(old,'phase','ready')!='ready':raise
+                    candidate_setup_failures+=1
+                    return False
+                except BaseException:
+                    if not successor_opening.done():
+                        def late_successor(task):
+                            if not task.cancelled():
+                                with suppress(Exception):
+                                    result=task.result()
+                                    if result is not None:result.close()
+                            if stopping and owner is not None:active.discard(owner)
+                        successor_opening.add_done_callback(late_successor)
+                    raise
+                if candidate is None or not rollover_floor():return False
+                reader_paused.clear();reader_pause=True;reader_resume.clear()
+                try:await asyncio.wait_for(reader_paused.wait(),2)
+                except TimeoutError:return False
+                async with output_guard:
+                    if output_batch_pending or output_pending or output_queue.items:return False
+                    async with acoustic.lock:
+                        await actor()
+                        if not rollover_floor() or bridge.pending_effects()!=effects:return False
+                        if await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return False
+                        watch,watch_ident=bridge.idle_watch
+                        if hasattr(old,'handover_ready'):
+                            if not await asyncio.to_thread(old.handover_ready,watch_ident):return False
+                            if not rollover_floor() or bridge.idle_watch!=(watch,watch_ident):return False
+                        if watch is not None:
+                            # Only an idle queue wait is retired. This never
+                            # cancels admission, a tool send or native work.
+                            cancelled_proposals.add(watch);watch.cancel()
+                            await asyncio.gather(watch,return_exceptions=True)
+                        if not await context_producer.commit_rollover(intent):return False
+                        bridge.replace_stream(candidate,intent['next'])
+                        acoustic.replace_stream(candidate)
+                        notified=[ident for ident,t in completion_notifications.items()
+                            if t.done() and not t.cancelled() and t.exception() is None
+                            and raw_notifications[ident].done() and not raw_notifications[ident].cancelled()
+                            and raw_notifications[ident].exception() is None]
+                        bridge.retire_captures(notified)
+                        for ident in notified:
+                            del completion_notifications[ident];del raw_notifications[ident]
+                        retiring=old
+                        stream=candidate;installed=True;rollover_count+=1
+                        retired_output_bytes+=getattr(old,'output_bytes',0)
+            finally:
+                reader_pause=False;reader_resume.set()
+                if not installed:
+                    if candidate is not None:candidate.close()
+                    if context_producer.record.get('rollover') is not None:
+                        if await context_producer.abort_rollover(intent):
+                            raise ForegroundUnavailable('Live generation changed before socket installation')
+                    if watch is not None and not stopping and not context_producer.failed:
+                        tools=getattr(old,'tools',None)
+                        if tools is None or tools.get(watch_ident,{}).get('state')=='pending':
+                            proposals[watch_ident]=launch(bridge._watch(watch_ident))
+            if installed:
+                await asyncio.to_thread(old.close)
+                retiring=None
+                return True
+            return False
+
+        async def process_outputs(events):
+            nonlocal utterance,output_text,output_bytes,output_hash,logical_output_bytes
+            await actor()
+            for event in events:
+                kind=event['type']
+                if kind in ('context_usage','context_pressure'):continue  # Owner control hint, not conversation/UI content.
+                if kind in ('tool_rejected','recent_results_query','session_pending_query','source_query','session_status_query','integrating_source_query','delegation_proposed','integrator_watch'):
+                    proposals[event['call_id']]=launch(bridge.tool(event));continue
+                if kind=='proposal_cancelled':
+                    proposal=proposals.pop(event['call_id'],None)
+                    if proposal is not None:
+                        cancelled_proposals.add(proposal);proposal.cancel()
+                        await asyncio.gather(proposal,return_exceptions=True)
+                    await send(event);continue
+                if kind in ('voice_activity','input_transcript'):
+                    original=acoustic.provider.ident if acoustic.provider else None
+                    owned=await acoustic.provider_event(event)
+                    if owned is not None:original=owned
+                    event={**event,'id':original}
+                    # Explicit transcription fragments are rendered as
+                    # the acoustic owner's accumulated caption; an empty
+                    # final marker must not erase that complete text.
+                    if kind=='input_transcript' and 'finished' in event:continue
+                if kind in ('audio','output_transcript'):
+                    if utterance is None:utterance=str(uuid.uuid4())
+                    if kind=='audio':
+                        logical_output_bytes+=len(event['pcm'])
+                        if logical_output_bytes>300*48000:raise ForegroundUnavailable('Logical voice output exceeds its pilot bound')
+                        output_bytes+=len(event['pcm']);output_hash.update(event['pcm'])
+                        await flush_output(emit=False)
+                        await send({'type':'audio','id':utterance,'end':output_bytes,
+                            'pcm':base64.b64encode(event['pcm']).decode(),'sample_rate':24000})
+                        continue
+                    output_text+=event['text']
+                    if len(output_text.encode())>16384:raise ForegroundUnavailable('Assistant utterance exceeds its live bound')
+                    # Update the same app-owned assistant record, not human or native input.
+                    await flush_output()
+                elif kind=='interrupted':
+                    await send(event);await flush_output(interrupted=True,closed=True)
+                elif kind=='turn_complete':
+                    await flush_output(closed=True);await send(event)
+                elif kind=='closing':
+                    await send(event);return False
+                elif kind!='ready':await send(event)
+            return True
 
         async def outputs():
-            nonlocal utterance,output_text,output_bytes,output_hash
-            pending=deque()
+            nonlocal output_queue,output_batch_pending
             async def next_event():
-                while not pending:pending.extend(await asyncio.to_thread(stream.receive))
-                return pending.popleft()
-            queued=VoiceInbox(next_event,batch_size=50)
+                while not output_pending:
+                    if reader_pause:
+                        reader_paused.set()
+                        await reader_resume.wait()
+                        reader_paused.clear()
+                    output_pending.extend(await asyncio.to_thread(stream.receive))
+                    if retired_output_bytes+getattr(stream,'output_bytes',0)>300*48000:
+                        raise ForegroundUnavailable('Logical voice generation exceeds its pilot bound')
+                return output_pending.popleft()
+            output_queue=VoiceInbox(next_event,batch_size=50)
             try:
                 while True:
-                    events=await queued.batch()
-                    await actor()
-                    for event in events:
-                        kind=event['type']
-                        if kind in ('tool_rejected','recent_results_query','session_pending_query','source_query','session_status_query','integrating_source_query','delegation_proposed','integrator_watch'):
-                            proposals[event['call_id']]=launch(bridge.tool(event));continue
-                        if kind=='proposal_cancelled':
-                            proposal=proposals.pop(event['call_id'],None)
-                            if proposal is not None:
-                                cancelled_proposals.add(proposal);proposal.cancel()
-                                await asyncio.gather(proposal,return_exceptions=True)
-                            await send(event);continue
-                        if kind in ('voice_activity','input_transcript'):
-                            original=acoustic.provider.ident if acoustic.provider else None
-                            owned=await acoustic.provider_event(event)
-                            if owned is not None:original=owned
-                            event={**event,'id':original}
-                            # Explicit transcription fragments are rendered as
-                            # the acoustic owner's accumulated caption; an empty
-                            # final marker must not erase that complete text.
-                            if kind=='input_transcript' and 'finished' in event:continue
-                        if kind in ('audio','output_transcript'):
-                            if utterance is None:utterance=str(uuid.uuid4())
-                            if kind=='audio':
-                                output_bytes+=len(event['pcm']);output_hash.update(event['pcm'])
-                                await flush_output(emit=False)
-                                await send({'type':'audio','id':utterance,'end':output_bytes,
-                                    'pcm':base64.b64encode(event['pcm']).decode(),'sample_rate':24000})
-                                continue
-                            output_text+=event['text']
-                            if len(output_text.encode())>16384:raise ForegroundUnavailable('Assistant utterance exceeds its live bound')
-                            # Update the same app-owned assistant record, not human or native input.
-                            await flush_output()
-                        elif kind=='interrupted':
-                            await send(event);await flush_output(interrupted=True,closed=True)
-                        elif kind=='turn_complete':
-                            await flush_output(closed=True);await send(event)
-                        elif kind=='closing':
-                            await send(event);return
-                        elif kind!='ready':await send(event)
+                    events=await output_queue.batch();output_batch_pending=True
+                    async with output_guard:
+                        try:
+                            if not await process_outputs(events):return
+                        finally:output_batch_pending=False
                     await notice_if_idle()
-            finally:await queued.close()
+            finally:await output_queue.close()
         async def analysis():
             queued=VoiceInbox(worker.receive,batch_size=50)
             try:
@@ -204,6 +366,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             async for changed in changes([Path(provider.receiver['db_path'])]):
                 await actor()
                 if not changed:continue
+                await notice_if_idle()
                 # A source can acquire currentness/publication metadata without
                 # a new row ID. Re-read this session's bounded window instead
                 # of advancing permanently past an as-yet-unoffered source.
@@ -267,7 +430,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # All preflight happens before provider opening and browser microphone acquisition.
                 capabilities=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                 if (capabilities.get('binding')!=meta['binding'] or capabilities.get('foreground_retention')!='v1'
-                        or capabilities.get('foreground_completed_reader') is not True):
+                        or capabilities.get('foreground_completed_reader') is not True
+                        or capabilities.get('foreground_context')!='v1'
+                        or capabilities.get('foreground_guidance')!='v1'
+                        or capabilities.get('foreground_rollover')!='v1'):
                     raise ForegroundUnavailable('Selected listener does not support native foreground originals')
                 await asyncio.to_thread(app.state.native_history.capacity)
                 initial=await asyncio.to_thread(provider.presentation_list,0,0,'before')
@@ -328,6 +494,16 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'meaning':item['playback_meaning']} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
+                bridge.idle_notify=notice_if_idle
+                async def context_owner(function,*args):
+                    # The same bounded owner slots remain held until actual
+                    # control completion, including final cleanup after audio
+                    # ownership has closed. No extra unbounded thread pool.
+                    await actor()
+                    return await bridge._run(bridge._owners,function,*args)
+                context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
+                await context_producer.open()
+                bridge.generation=context_producer.record['generation']
                 # Only references actually retained in the bounded setup are
                 # offered. No replay, unsolicited speech or wider source lookup.
                 for item in sources:
@@ -338,6 +514,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     if activity_mode=='manual' else NativeAutomaticAcousticSession(bridge,meta.get('capture_questions'),acoustic_event))
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':activity_mode,'playback_status':True})
                 tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
+                context_task=asyncio.create_task(context_producer.run(),name='native-context')
+                context_task.add_done_callback(ForegroundBridge._observe)
+                tasks.add(context_task)
                 if worker:tasks.add(asyncio.create_task(analysis(),name='native-analysis'))
                 inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192,batch_control_frames=True,wait_for_space=True)
                 checked=time.monotonic()
@@ -346,7 +525,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     done,_=await asyncio.wait({incoming,*tasks,*tool_tasks},return_when=asyncio.FIRST_COMPLETED)
                     for task in done-{incoming}:
                         if task in cancelled_proposals:
-                            cancelled_proposals.discard(task);tool_tasks.discard(task);continue
+                            cancelled_proposals.discard(task);tool_tasks.discard(task)
+                            proposals={key:value for key,value in proposals.items() if value is not task}
+                            continue
                         close_stage=task.get_name();task.result()
                         if task in tasks:
                             close_stage+='-ended';return
@@ -387,22 +568,30 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             stopping=True
             if stream:
                 with suppress(Exception):stream.close()
+            if retiring:
+                with suppress(Exception):retiring.close()
             async def cleanup():
                 if incoming is not None:
                     incoming.cancel()
                     with suppress(asyncio.CancelledError,Exception):await incoming
                 if inbox:await inbox.close()
-                for task in tasks:task.cancel()
-                for task in tasks:
+                audio_tasks={task for task in tasks if task.get_name()!='native-context'}
+                for task in audio_tasks:task.cancel()
+                for task in audio_tasks:
                     with suppress(asyncio.CancelledError,Exception):await task
                 if acoustic:
-                    with suppress(Exception):await acoustic.close()
+                    with suppress(Exception):
+                        if isinstance(acoustic,NativeAutomaticAcousticSession):
+                            await acoustic.close(recover_unassigned=(close_error is not None or close_stage!='client-close'))
+                        else:await acoustic.close()
                 if bridge:
                     with suppress(Exception):await bridge.close()
                 for task in list(tool_tasks):task.cancel()
                 for task in list(tool_tasks):
                     with suppress(asyncio.CancelledError,Exception):await task
                 with suppress(Exception):await flush_output(interrupted=True,closed=True)
+                if context_producer is not None:
+                    with suppress(Exception):await context_producer.close()
                 if worker:await worker.close()
                 if stream is None and opening:
                     def late(task):
@@ -410,7 +599,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             with suppress(Exception):task.result().close()
                         if owner is not None:active.discard(owner)
                     opening.add_done_callback(late)
-                if owner is not None and (opening is None or opening.done()):active.discard(owner)
+                if (owner is not None and (opening is None or opening.done())
+                        and (successor_opening is None or successor_opening.done())):active.discard(owner)
                 with suppress(Exception):await socket.close()
             def observe_close(task):
                 if owner is None:return
@@ -422,12 +612,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'client_playback':{'source':'untrusted_client_observation','count':playback_status_count,
                         'first':first_playback_status,'last':last_playback_status},
                     'boundary_mismatch':acoustic.boundary_mismatch if acoustic else None,
+                    'context_producer':context_producer.status if context_producer is not None else 'not_started',
                     'elapsed_ms':round((time.monotonic()-started)*1000),
                     'received_pcm_bytes':inbox.received_bytes if inbox else 0,
                     'received_messages':inbox.received_messages if inbox else 0,
                     'peak_pending_messages':inbox.peak_messages if inbox else 0,
                     'peak_pending_pcm_bytes':inbox.peak_bytes if inbox else 0,
-                    'generated_pcm_bytes':getattr(stream,'output_bytes',0) if stream else 0,
+                    'generated_pcm_bytes':retired_output_bytes+(getattr(stream,'output_bytes',0) if stream else 0),
+                    'provider_rollovers':rollover_count,
+                    'candidate_setup_failures':candidate_setup_failures,
                     'cleanup':'cancelled' if task.cancelled() else 'failed' if task.exception() is not None else 'completed'}
                 logging.getLogger('uvicorn.error').info('native_voice_closed %s',json.dumps(summary,separators=(',',':')))
             cleanup_task=asyncio.create_task(cleanup())

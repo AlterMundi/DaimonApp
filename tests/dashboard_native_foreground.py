@@ -74,6 +74,24 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.owner.inputs,{})
         self.assertEqual(self.stream.results,[('invalid',result)])
 
+    async def test_capture_retirement_keeps_originals_latest_correlation_and_replay_bound(self):
+        first,pcm,_=await self.captured('First')
+        second,_,_=await self.captured('Second')
+        third,_,latest=await self.captured('Third')
+        before=self.bridge.input_bytes
+        self.bridge.retire_captures([first,second,third])
+        self.assertEqual(set(self.bridge.captures),{third})
+        self.assertEqual(self.bridge.capture_ids,{first,second,third})
+        self.assertEqual(self.bridge.latest,third)
+        self.assertEqual(self.bridge.input_bytes,before)
+        self.assertEqual(set(self.owner.inputs),{first,second,third})
+        self.assertEqual(latest.phase,'foreground')
+        with self.assertRaises(ForegroundUnavailable):self.bridge.capture(first,pcm,{})
+        self.bridge.max_captures=3
+        with self.assertRaises(ForegroundUnavailable):self.bridge.capture(str(uuid.uuid4()),pcm,{})
+        result=await self.bridge.tool({'type':'source_query','call_id':'current','before':0})
+        self.assertEqual({v['id'] for v in result['sources']},{first,second,third})
+
     async def test_result_index_reuses_canonical_page_and_revalidates_offered_worker_text(self):
         reads=[];ident='delivery:'+str(uuid.uuid4());revision='c'*64
         self.owner.presentation_list=lambda *args:reads.append(args) or {
@@ -275,6 +293,11 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.tool({'type':'delegation_proposed','call_id':'work',
                                     'original_ids':[ident],'formulation':'Derivative'})
         self.assertEqual(len(self.owner.delegations),1)
+        successor=Stream();self.bridge.replace_stream(successor,str(uuid.uuid4()))
+        result=await self.bridge.tool({'type':'delegation_proposed','call_id':'work',
+            'original_ids':[ident],'formulation':'A replacement model asks again.'})
+        self.assertEqual(result['kind'],'unconfirmed')
+        self.assertEqual(len(self.owner.delegations),1,'A new provider generation/call ID cannot reauthor an uncertain admission')
     def source(self):return {'id':'native:123','revision':'b'*64,'kind':'result','label':'Integrator'}
     async def results(self,count):
         async def wait():
@@ -411,6 +434,30 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.close();release.set()
             with self.assertRaises(ForegroundUnavailable):await task
         self.assertEqual(seen,[pcm]);self.assertTrue((self.root/'prepared'/f'{ident}.json').exists())
+
+    async def test_immediate_close_finishes_already_captured_retention_only(self):
+        ident=str(uuid.uuid4());pcm=b'\3\0'*160
+        capture=self.bridge.capture(ident,pcm,{})
+        await self.bridge.close()
+        self.assertEqual((await capture.reservation)['phase'],'foreground_captured')
+        self.assertEqual(self.auth,1,'Close does not bypass actor/binding validation')
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.inputs[ident]['foreground_dialogue'],self.dialogue)
+        self.assertEqual(self.owner.delegations,[])
+        self.assertIsNone(capture.completion)
+        with self.assertRaises(ForegroundUnavailable):self.bridge.capture(str(uuid.uuid4()),pcm,{})
+
+    async def test_close_retention_still_rejects_revoked_actor_without_dispatch(self):
+        async def revoked():raise ForegroundUnavailable('Synthetic actor grant changed')
+        self.bridge.authorize=revoked
+        ident=str(uuid.uuid4());pcm=b'\4\0'*160
+        capture=self.bridge.capture(ident,pcm,{})
+        await self.bridge.close()
+        with self.assertRaises(ForegroundUnavailable):await capture.reservation
+        self.assertEqual(capture.phase,'unconfirmed')
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.inputs,{})
+        self.assertEqual(self.owner.delegations,[])
 
 
 class OriginalPages(unittest.TestCase):

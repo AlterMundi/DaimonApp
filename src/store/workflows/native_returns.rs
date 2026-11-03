@@ -3,6 +3,7 @@
 use super::*;
 
 mod context;
+mod foreground;
 mod routed;
 use context::{ReturnContext, ReturnParent};
 
@@ -55,6 +56,28 @@ pub(crate) struct ReturnObservation {
 }
 fn bind_on(conn: &Connection, local: i64, id: &str) -> Result<()> {
     let mut ids = bindings_on(conn, local)?;
+    if id.starts_with("foreground:") {
+        // Coalesce completed Live batch bindings within one long physical turn.
+        // Keep the context-only lifetime bit even after its source IDs retire;
+        // an empty list must not accidentally become a publication grant.
+        conn.execute(
+            "INSERT OR IGNORE INTO bot_state(key,value) VALUES(?1,'true')",
+            [format!("foreground_context_local:{local}")],
+        )?;
+        let mut retained = Vec::new();
+        for old in ids {
+            let done = if let Some((w, i)) = foreground::load(conn, &old)? {
+                w.native_returns[i].reported_revision.is_some()
+                    && w.native_returns[i].phase.starts_with("accepted")
+            } else {
+                false
+            };
+            if !done {
+                retained.push(old);
+            }
+        }
+        ids = retained;
+    }
     if ids.iter().any(|v| v == id) {
         return Ok(());
     }
@@ -152,6 +175,9 @@ fn bindings_on(conn: &Connection, local: i64) -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 fn selected_on(conn: &Connection, id: &str) -> Result<(ReturnContext, usize)> {
+    if let Some(selected) = foreground::load(conn, id)? {
+        return Ok(selected);
+    }
     if let Some(selected) = routed::load(conn, id)? {
         return Ok(selected);
     }
@@ -172,6 +198,7 @@ fn current_on(
 ) -> Result<bool> {
     let r = &context.native_returns[index];
     match &context.parent {
+        ReturnParent::Foreground(parent) => foreground::current(conn, parent, r, admission),
         ReturnParent::Routed(parent) => routed::current(conn, parent, r, admission),
         ReturnParent::Workflow(w) => {
             if admission
@@ -198,6 +225,7 @@ fn current_on(
 }
 fn save_on(conn: &Connection, context: &ReturnContext) -> Result<()> {
     match &context.parent {
+        ReturnParent::Foreground(parent) => foreground::save(conn, parent, &context.native_returns),
         ReturnParent::Routed(parent) => routed::save(conn, parent, &context.native_returns),
         ReturnParent::Workflow(w) => {
             let mut current = w.clone();
@@ -256,6 +284,13 @@ pub(in crate::store) fn transfer_collection_on(
     native: &str,
     physical: &str,
 ) -> Result<Option<bool>> {
+    let foreground:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 JOIN bot_state b ON b.key='foreground_context_local:'||old.id WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id)",params![local,physical],|r|r.get(0))?;
+    if foreground {
+        conn.execute(
+            "INSERT OR IGNORE INTO bot_state(key,value) VALUES(?1,'true')",
+            [format!("foreground_context_local:{local}")],
+        )?;
+    }
     let ids = {
         let mut query = conn.prepare("SELECT DISTINCT j.value FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 JOIN bot_state b ON b.key='workflow_return_local:'||old.id JOIN json_each(b.value) j WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id ORDER BY j.value LIMIT 33")?;
         query
@@ -290,26 +325,55 @@ pub(in crate::store) fn transfer_collection_on(
         save_on(conn, &context)?;
         transferred = true;
     }
-    Ok(if transferred {
+    Ok(if transferred || foreground {
         Some(human_before_on(conn, local, physical)?)
     } else {
         None
     })
 }
 pub(in crate::store) fn only_on(conn: &Connection, local: i64) -> Result<bool> {
-    Ok(!bindings_on(conn, local)?.is_empty() && !later_human_on(conn, local)?)
+    Ok(
+        (!bindings_on(conn, local)?.is_empty() || foreground_on(conn, local)?)
+            && !later_human_on(conn, local)?,
+    )
+}
+fn foreground_on(conn: &Connection, local: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bot_state WHERE key=?1)",
+        [format!("foreground_context_local:{local}")],
+        |r| r.get(0),
+    )?)
 }
 pub(in crate::store) fn visible_on(conn: &Connection, local: i64) -> Result<bool> {
     Ok(publication_sources_on(conn, local)?.is_none_or(|ids| !ids.is_empty()))
 }
 fn publication_sources_on(conn: &Connection, local: i64) -> Result<Option<Vec<String>>> {
+    associated_sources_on(conn, local, true)
+}
+/// Freeze return association independently of the human presentation lifetime.
+/// These IDs identify internal evidence; they never grant or restrict audience.
+pub(in crate::store) fn return_sources_on(conn: &Connection, local: i64) -> Result<Vec<String>> {
+    Ok(associated_sources_on(conn, local, false)?.unwrap_or_default())
+}
+fn associated_sources_on(
+    conn: &Connection,
+    local: i64,
+    respect_human: bool,
+) -> Result<Option<Vec<String>>> {
     let bindings = bindings_on(conn, local)?;
-    if bindings.is_empty() || later_human_on(conn, local)? {
+    if (bindings.is_empty() && !foreground_on(conn, local)?)
+        || respect_human && later_human_on(conn, local)?
+    {
         return Ok(None);
     }
     let mut sources = Vec::new();
     for id in &bindings {
         let (w, index) = selected_on(conn, id)?;
+        if matches!(w.parent, ReturnParent::Foreground(_)) {
+            // Context never contributes a publication grant or a negative
+            // fence against an independently admitted human/work source.
+            continue;
+        }
         let r = &w.native_returns[index];
         if r.collection_local
             .map_or(r.local != Some(local), |owner| owner != local)
@@ -518,6 +582,7 @@ impl Store {
         if routed {
             contexts.extend(routed::retained(&tx, Some(human), Some(entry), true)?);
         }
+        contexts.extend(foreground::retained(&tx, human, entry)?);
         let mut selected = vec![];
         let now = Utc::now().timestamp();
         for mut w in contexts {

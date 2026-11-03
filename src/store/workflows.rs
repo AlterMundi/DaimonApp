@@ -11,7 +11,8 @@ mod native_returns;
 pub(crate) use native_returns::{ReturnDispatch, WorkflowReturn};
 pub(super) use native_returns::{
     only_on as native_only_on, publication_on as native_publication_on,
-    reconcile_on as native_reconcile_on, source_current_on as native_source_current_on,
+    reconcile_on as native_reconcile_on, return_sources_on as native_return_sources_on,
+    source_current_on as native_source_current_on,
     transfer_collection_on as native_transfer_collection_on, visible_on as native_visible_on,
 };
 
@@ -2466,6 +2467,106 @@ mod tests {
             .unwrap();
         assert_eq!(anchor, "old-physical");
     }
+    #[test]
+    fn human_turn_freezes_return_association_without_changing_presentation_lifetime() {
+        let (_f, s, e, plan) = setup();
+        let v = declare(&s, &e, plan);
+        let first = advance(&s, &e, &v).unwrap();
+        let worker = accept(&s, &first);
+        answer(
+            &s,
+            &first,
+            worker,
+            "result",
+            vec![first.id.clone()],
+            "Two useful ideas",
+        );
+        let selected = s.workflow_native_reserve(100, e.key).unwrap().remove(0);
+        let local = turn(&s, &e, "An independently admitted human correction");
+        s.record_native_message(
+            local,
+            "native-1",
+            "human-physical",
+            "before",
+            Some("commentary"),
+            "Ordinary progress before the return",
+        )
+        .unwrap();
+        s.workflow_native_link(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.workflow_native_outcome(&selected.id, "accepted", Some("human-physical"))
+            .unwrap();
+        s.record_native_message(
+            local,
+            "native-1",
+            "human-physical",
+            "useful",
+            Some("commentary"),
+            "The worker returned two useful ideas",
+        )
+        .unwrap();
+        // Reobserving an old item after the return cannot widen its association.
+        s.record_native_message(
+            local,
+            "native-1",
+            "human-physical",
+            "before",
+            Some("commentary"),
+            "Ordinary progress before the return",
+        )
+        .unwrap();
+        let page = s.interaction_presentation_list(100, e.key, 0, 0).unwrap();
+        let rows = page["items"].as_array().unwrap();
+        let before = rows
+            .iter()
+            .find(|i| i["preview"] == "Ordinary progress before the return")
+            .unwrap();
+        assert!(before["native_returns"].is_null());
+        let useful = rows
+            .iter()
+            .find(|i| i["preview"] == "The worker returned two useful ideas")
+            .unwrap();
+        assert_eq!(useful["kind"], "integrator_progress");
+        assert_eq!(useful["native_returns"], json!([selected.id]));
+        assert!(
+            useful["current"].is_null(),
+            "Association is not a new publication restriction"
+        );
+        let part = s
+            .interaction_presentation_part(
+                100,
+                e.key,
+                useful["id"].as_str().unwrap(),
+                useful["revision"].as_str().unwrap(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(part["native_returns"], useful["native_returns"]);
+        answer(
+            &s,
+            &first,
+            worker,
+            "corrected",
+            vec![first.id.clone()],
+            "Corrected ideas",
+        );
+        let page = s.interaction_presentation_list(100, e.key, 0, 0).unwrap();
+        let retained = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["preview"] == "The worker returned two useful ideas")
+            .unwrap();
+        assert!(
+            retained["native_returns"].is_null(),
+            "Stale evidence is no longer a returning voice offer"
+        );
+        assert!(
+            s.workflow_native_visible(local).unwrap(),
+            "The ordinary human lifetime remains visible"
+        );
+    }
+
     #[test]
     fn callback_publication_fences_every_accepted_source_in_its_frozen_set() {
         let (_f, s, e, plan) = setup();

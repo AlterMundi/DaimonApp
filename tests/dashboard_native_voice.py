@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 from dashboard.app import create_app
 from dashboard.provider import Provider, ProviderUnavailable
 from dashboard.live_transcription import wav_bytes
-from dashboard.native_voice import playback_status, being_identity, ForegroundUnavailable
+from dashboard.native_voice import playback_status, being_identity, ForegroundUnavailable, DialogueUnavailable
 from dashboard_io import Receiver
 
 
@@ -33,6 +33,16 @@ class Stream:
         self.context=kwargs.get('context')
         self.queue=queue.Queue();self.queue.put([{'type':'ready'}]);self.total=0;self.closed=False;self.closed_event=threading.Event()
         self.start_sent=threading.Event();self.tool_results=queue.Queue();self.notices=[];self.notice_seen=threading.Event();self.input_active=False;self.response_pending=False;self.opened.append(self)
+        self.guidance=[];self.guidance_seen=threading.Event()
+        self.rollover_due=False
+        self.handover_checks=[]
+    def handover_ready(self,watch=None):
+        self.handover_checks.append(watch)
+        return not self.input_active and not self.response_pending
+    def successor(self,basis,*,pending_effects=None):
+        value=type(self)(context={'live_checkpoint':basis,'pending_integrator_effects':pending_effects})
+        value.receive()  # setupComplete belongs to candidate preparation.
+        return value
     def receive(self):
         try:return self.queue.get(timeout=.05)
         except queue.Empty:return []
@@ -50,6 +60,11 @@ class Stream:
     def notify_integrator_update(self):
         if self.input_active or self.response_pending:return False
         self.notices.append('internal_integrator_update_available');self.notice_seen.set();return True
+    def guide(self,value):
+        if self.input_active or self.response_pending:return False
+        self.guidance.append(value);self.guidance_seen.set()
+        if value['mode']=='spoken_offer':self.response_pending=True
+        return True
 
 
 class Detector:
@@ -77,8 +92,9 @@ class Owner(Receiver):
         self.return_kind='integrator_answer';self.native_returns=[]
         self.return_current=True;self.return_seen=threading.Event()
         self.input_id=Provider.input_id
+        self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event();self.guidance_done=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible}
+        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_guidance':'v1','foreground_rollover':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -118,8 +134,234 @@ class Owner(Receiver):
         value=self.inputs[ident];value.update(phase='foreground',text=record['text'].strip());self.completed.set();return value
     def conversation_input_status(self,ident):return self.inputs[ident]
 
+    def conversation_live_context(self,body):
+        self.context_calls.append(body)
+        dialogue=body['dialogue'];generation=body['generation']
+        if body['action']=='open':
+            self.assert_context_binding(body['binding'])
+            context=self.contexts.setdefault(dialogue,{'dialogue':dialogue,'generation':generation,'closed':False,'sources':{}})
+        else:context=self.contexts[dialogue]
+        if body['action']=='rollover_read':
+            if not context['sources']:raise ProviderUnavailable('Synthetic checkpoint not yet ready')
+            content={'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Keep conversation purpose and pending integrating references.'}}
+            revision=hashlib.sha256(json.dumps([context['generation'],context['sources']],sort_keys=True).encode()).hexdigest()
+            return {k:context[k] for k in ('dialogue','generation','closed')}|{'rollover_basis':{'revision':revision,'through':len(context['sources']),'content':content}}
+        if body['action']=='rollover_commit':
+            assert context['generation']==generation
+            revision=hashlib.sha256(json.dumps([context['generation'],context['sources']],sort_keys=True).encode()).hexdigest()
+            if body['revision']!=revision:raise ProviderUnavailable('Synthetic candidate basis changed')
+            context['generation']=body['next_generation']
+            context['rollover']={'previous':generation,'next':body['next_generation'],'revision':revision,'committed':True}
+            return {k:context[k] for k in ('dialogue','generation','closed','rollover')}
+        if body['action']=='rollover_abort':
+            committed=context['generation']==body['next_generation']
+            return {k:context[k] for k in ('dialogue','generation','closed')}|{'rollover':context.get('rollover'),
+                'rollover_committed':committed,'rollover_fenced':not committed}
+        assert context['generation']==generation
+        receipts=[]
+        guide=context.get('guidance')
+        if body['action']=='guidance':
+            return {k:context[k] for k in ('dialogue','generation','closed')}|{'guidance':guide if guide and guide['phase']=='pending' else None}
+        if body['action']=='guidance_begin':
+            assert guide['id']==body['id'] and guide['phase']=='pending';guide['phase']='submitting'
+        elif body['action']=='guidance_outcome':
+            assert guide['id']==body['id'];guide['phase']='pending' if body['outcome']=='unsent' else body['outcome']
+            if body['outcome']=='sent':self.guidance_done.set()
+        if body['action']=='sync':
+            for ident,value in self.inputs.items():
+                if value.get('foreground_dialogue')==dialogue and value.get('text'):
+                    context['sources'].setdefault(ident,{'role':'human','text':value['text']})
+            for source in body.get('assistant',[]):
+                ident=source['source'];value={'role':'assistant',**source}
+                if ident in context['sources']:assert context['sources'][ident]==value
+                else:context['sources'][ident]=value
+                receipts.append({'source':ident,'sequence':list(context['sources']).index(ident)+1,
+                    'revision':hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest(),'fresh':True})
+            if any(s['role']=='human' for s in context['sources'].values()) and any(s['role']=='assistant' for s in context['sources'].values()):
+                self.context_retained.set()
+        elif body['action']=='close':context['closed']=True;self.context_closed.set()
+        return {k:context[k] for k in ('dialogue','generation','closed')}|{'assistant_receipts':receipts,'guidance':guide}
+
+    def assert_context_binding(self,binding):
+        assert binding==self.binding
+
 
 class Mounted(unittest.TestCase):
+    def test_failed_candidate_setup_keeps_current_voice_available(self):
+        attempted=threading.Event()
+        def fail(*args,**kwargs):
+            attempted.set();raise DialogueUnavailable('Synthetic candidate setup unavailable')
+        with patch.object(Stream,'successor',side_effect=fail),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            old=Stream.opened[0];old.rollover_due=True
+            old.queue.put([{'type':'output_transcript','text':'Current purpose.'},{'type':'turn_complete'}])
+            self.assertTrue(attempted.wait(2))
+            old.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
+            while True:
+                value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                if value['type']=='audio':break
+            self.assertFalse(old.closed);self.assertEqual(len(Stream.opened),1)
+            ws.send_json({'type':'close'})
+            closed=self.owner.context_closed.wait(2)
+            with self.app.state.native_history.database() as db:
+                record=dict(db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(self.ident,)).fetchone())
+            self.assertTrue(closed,f'actions={[c["action"] for c in self.owner.context_calls]}, local={record}')
+
+    def test_preparing_a_successor_keeps_old_audio_and_defers_changed_floor(self):
+        held=threading.Event();release=threading.Event();created=threading.Event();successor=Stream.successor
+        def prepare(stream,basis,**kwargs):
+            held.set()
+            if not release.wait(2):raise TimeoutError('Synthetic held candidate setup')
+            result=successor(stream,basis,**kwargs);created.set();return result
+        with patch.object(Stream,'successor',prepare),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            old=Stream.opened[0];old.rollover_due=True
+            old.queue.put([{'type':'output_transcript','text':'Earlier purpose.'},{'type':'turn_complete'}])
+            try:
+                self.assertTrue(held.wait(2))
+                old.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                    {'type':'output_transcript','text':'Still available during candidate setup.'}])
+                while ws.receive_json()['type']!='audio':pass
+                self.assertEqual(len(Stream.opened),1,'Candidate preparation must not stop old audio reception')
+                release.set()
+                self.assertTrue(created.wait(2))
+                self.assertEqual(len(Stream.opened),2)
+                self.assertTrue(Stream.opened[1].closed_event.wait(2))
+                self.assertFalse(old.closed)
+                self.assertFalse(any(c['action']=='rollover_commit' for c in self.owner.context_calls))
+            finally:release.set()
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_two_active_socket_rollovers_keep_speech_and_pending_work_once_only(self):
+        class Repeated(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm);generation=(self.total+6399)//6400;first=self.total%6400==3200
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':generation,
+                    'speaking':first,'speech_seen':True,
+                    'onset' if first else 'endpoint':{'generation':generation,'audio_bytes':self.total,
+                        **({} if first else {'authority':'analysis_only','probability':.9})}})
+        with patch('dashboard.native_voice.Detector',Repeated),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            for cycle in range(2):
+                old=Stream.opened[-1]
+                ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+                utterance=None;original=None
+                while utterance is None or original is None:
+                    value=ws.receive_json()
+                    self.assertNotEqual(value['type'],'review',value)
+                    if value['type']=='assistant_utterance' and value['utterance']['closed']:utterance=value['utterance']
+                    if value['type']=='original_completed':original=value['id']
+                if cycle==0:
+                    old.queue.put([{'type':'delegation_proposed','call_id':'admit-work',
+                        'original_ids':[original],'formulation':'A synthetic long task stays with Sol.'}])
+                    _,receipt=old.tool_results.get(timeout=2)
+                    self.assertEqual(receipt['kind'],'integrator_admission')
+                old.rollover_due=True
+                ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+                self.assertTrue(old.closed_event.wait(3),f'Cycle {cycle}: active socket must actually be replaced after playback: opened={len(Stream.opened)}, actions={[c["action"] for c in self.owner.context_calls]}')
+                self.assertEqual(old.handover_checks,['admit-work' if cycle==0 else None])
+                self.assertEqual(len(Stream.opened),cycle+2)
+                successor=Stream.opened[-1]
+                self.assertFalse(successor.closed)
+                self.assertEqual(successor.context['live_checkpoint']['through'],2*(cycle+1))
+                self.assertEqual(successor.context['pending_integrator_effects'][0]['original'],next(iter(self.owner.inputs)))
+                self.assertEqual(len(self.owner.delegations),1,'Rollover must not resubmit the pending task')
+            self.assertEqual([s.total for s in Stream.opened],[6400,6400,0],'No old captured PCM is replayed')
+            self.owner.return_ready=True
+            (self.root/'native.sqlite3').write_bytes(b'late canonical result after two generations')
+            self.assertTrue(successor.notice_seen.wait(2))
+            successor.queue.put([{'type':'integrator_watch','call_id':'admit-work'}])
+            _,result=successor.tool_results.get(timeout=2)
+            self.assertEqual(result['text'],'Canonical integrating return.')
+            self.assertEqual(len(self.owner.inputs),2);self.assertEqual(len(self.owner.delegations),1)
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_slow_guidance_control_does_not_block_provider_audio(self):
+        held=threading.Event();release=threading.Event();finished=threading.Event()
+        original=self.owner.conversation_live_context
+        def delayed(body):
+            if body['action']=='guidance':
+                held.set()
+                if not release.wait(5):raise TimeoutError('Synthetic held control')
+                finished.set()
+            return original(body)
+        with patch.object(self.owner,'conversation_live_context',side_effect=delayed),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            try:
+                (self.root/'native.sqlite3').write_bytes(b'control notification')
+                self.assertTrue(held.wait(2))
+                Stream.opened[0].queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
+                while ws.receive_json()['type']!='audio':pass
+                self.assertFalse(finished.is_set(),'Provider audio must arrive while the owner control read is still held')
+            finally:release.set()
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def queue_guidance(self,mode='context_only'):
+        context=self.owner.contexts[self.ident]
+        value={'id':str(uuid.uuid4()),'generation':context['generation'],'basis':0,
+            'mode':mode,'text':'Use the confirmed memory and keep current human corrections.','phase':'pending'}
+        context['guidance']=value
+        (self.root/'native.sqlite3').write_bytes(b'new source-bound guidance')
+        return value
+
+    def test_guidance_targets_same_live_and_waits_for_generation(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0];stream.response_pending=True
+            guide=self.queue_guidance()
+            self.assertFalse(stream.guidance_seen.wait(.05))
+            self.assertEqual(guide['phase'],'pending')
+            stream.response_pending=False;stream.queue.put([{'type':'turn_complete'}])
+            self.assertTrue(self.owner.guidance_done.wait(2))
+            self.assertEqual(len(stream.guidance),1);self.assertEqual(stream.guidance[0]['dialogue'],self.ident)
+            self.assertEqual(stream.guidance[0]['id'],guide['id']);self.assertEqual(guide['phase'],'sent')
+            self.assertEqual(self.owner.inputs,{});self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_spoken_guidance_waits_for_playback_without_claim_write_loop(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            stream=Stream.opened[0]
+            stream.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                {'type':'output_transcript','text':'Earlier serialized reply.'},{'type':'turn_complete'}])
+            while True:
+                value=ws.receive_json()
+                if value['type']=='assistant_utterance' and value['utterance']['closed']:
+                    utterance=value['utterance'];break
+            guide=self.queue_guidance('spoken_offer')
+            self.assertFalse(stream.guidance_seen.wait(.1))
+            self.assertEqual(guide['phase'],'pending')
+            self.assertFalse(any(c['action']=='guidance_begin' for c in self.owner.context_calls),'Known pending playback must not cause a claim/defer DB-write wakeup loop')
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertTrue(self.owner.guidance_done.wait(2));self.assertEqual(len(stream.guidance),1)
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_context_incompatible_listener_is_refused_before_provider_opening(self):
+        presentation=self.owner.presentation
+        def without_context(command):
+            value=presentation(command)
+            if command=='input voice capabilities':value.pop('foreground_context')
+            return value
+        with patch.object(self.owner,'presentation',side_effect=without_context),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.contexts,{})
+    def test_voice_semantic_outbox_reaches_context_without_becoming_work(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            self.assertTrue(self.owner.context_retained.wait(2),'Both canonical human and terminal assistant context must arrive without Send')
+            context=self.owner.contexts[self.ident]
+            sources=list(context['sources'].values())
+            self.assertTrue(any(s['role']=='human' and s['text']=='Exact synthetic interpretation' for s in sources))
+            self.assertTrue(any(s['role']=='assistant' and s['text']=='A native foreground response.' for s in sources))
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+            self.assertTrue(self.owner.context_closed.wait(2),'Observe the actual owner close before tearing down its websocket fixture')
+        self.assertEqual(len(self.owner.inputs),1)
+        self.assertTrue(self.owner.contexts[self.ident]['closed'])
+        with self.app.state.native_history.database() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='pending'").fetchone()[0],0)
+
     def test_owner_selected_identity_reaches_native_connector_and_refreshes_on_read(self):
         selected=self.root/'selected-identity.txt'
         text='Oliva: a distinct being. The avatar and integrator share this identity.'
@@ -386,7 +628,9 @@ class Mounted(unittest.TestCase):
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures'})
+        self.assertEqual(result['provider_rollovers'],0)
+        self.assertIn(result['context_producer'],('not_started','active','needs_review','closed'))
         self.assertEqual(self.owner.delegations,[])
 
     def test_mismatched_boundary_close_retains_only_validated_scalar_timing(self):
@@ -406,7 +650,9 @@ class Mounted(unittest.TestCase):
                 while event['type']!='review':event=ws.receive_json()
                 # Observe actual cleanup/journal while the fixture is alive;
                 # context teardown can cancel the route before its callback.
-                result=observed.get(timeout=2)
+                # Partial capture retention has its own bounded file/native
+                # cleanup. This is a scalar/privacy check, not a 2s close SLA.
+                result=observed.get(timeout=30)
         self.assertEqual(result['boundary_mismatch'],{'activity':'start','expected_pcm_bytes':0,
             'reported_offset_nanoseconds':3000000001,'sent_pcm_bytes':3200,'provider_input_bytes':None,
             'span_start':0,'span_end':None,'start_observed':True,'end_observed':False})
@@ -454,6 +700,30 @@ class Mounted(unittest.TestCase):
         self.assertEqual(original['voice']['audio_sha256'],hashlib.sha256(wav_bytes(b'\1\0'*1600+b'\0\0'*1600)).hexdigest())
         self.assertEqual(self.owner.delegations,[])
         self.assertFalse(self.owner.completed.is_set())
+
+    def test_automatic_send_failure_before_onset_keeps_unconfirmed_exact_tail(self):
+        class FailedBeforeOnset(Stream):
+            activity_mode='automatic'
+            def append(self,pcm):
+                super().append(pcm)
+                raise DialogueUnavailable('Synthetic provider send outcome is unknown')
+        self.select_automatic()
+        pcm=b'\3\0'*1600
+        with patch('dashboard.native_voice.NativeDialogue',FailedBeforeOnset):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(pcm)
+                event=ws.receive_json()
+                while event['type']!='review':event=ws.receive_json()
+                self.assertTrue(self.owner.context_closed.wait(2),'Observe completed owned cleanup, not a deferred logging callback')
+        self.assertEqual(len(self.owner.inputs),1)
+        ident,original=next(iter(self.owner.inputs.items()))
+        self.assertEqual(original['phase'],'foreground_captured')
+        self.assertNotIn('text',original)
+        self.assertEqual((self.root/'native.sqlite3.voice'/ident).read_bytes(),wav_bytes(pcm))
+        self.assertEqual(self.owner.delegations,[])
+        self.assertFalse(self.owner.completed.is_set())
+        self.assertEqual(FailedBeforeOnset.opened[-1].total,len(pcm),'Unknown provider audio is never resent')
 
     def test_reopened_voice_context_uses_current_binding_without_removing_history(self):
         history=self.app.state.native_history

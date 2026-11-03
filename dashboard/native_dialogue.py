@@ -5,7 +5,9 @@ module cannot retain human originals, submit work, cancel jobs or reconnect. The
 bridge must bind proposals to durable originals before any integrator effect.
 """
 import base64
+import hashlib
 import json
+import math
 import re
 import threading
 import time
@@ -18,10 +20,17 @@ class DialogueUnavailable(Exception):
     """A lost stream or tool response is not permission to replay it."""
 
 
+class DialogueCapacity(DialogueUnavailable):
+    """Local admission refused this write before touching the provider socket."""
+    known_unsent=True
+
+
 class NativeDialogue:
     endpoint = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
     model = 'gemini-3.8-live'
     max_seconds = 300
+    max_context_tokens = 128000
+    context_input_reserve = 8192
     max_input_bytes = 300 * 32000
     max_output_bytes = 300 * 48000
     max_event_bytes = 262144
@@ -31,13 +40,23 @@ class NativeDialogue:
     max_tool_responses = 160
     max_pending = 4
     max_attention_notices = 32
+    max_guidance = 64
+    max_guidance_bytes = 65536
+    max_pin_bytes = 49152
+    max_pins = 128
 
-    def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic):
+    def __init__(self, credential_file, *, activity_mode, context=None, connect=None, clock=time.monotonic, context_pinning=False):
         if activity_mode not in ('manual', 'automatic'):
             raise ValueError('Select explicit native activity ownership')
+        if type(context_pinning) is not bool:
+            raise ValueError('Select explicit native context pinning')
         if context is not None and (not isinstance(context,dict) or len(json.dumps(context,ensure_ascii=False).encode())>32768):
             raise ValueError('Select bounded server-owned conversation context')
         self.activity_mode = activity_mode
+        self._credential_file=credential_file
+        self._connect=connect
+        self._continuity_identity={k:json.loads(json.dumps(v)) for k,v in (context or {}).items()
+            if k in ('display_name','being_identity')}
         self.input_active = False
         self.response_pending = False
         self.attention_notices = 0
@@ -52,6 +71,12 @@ class NativeDialogue:
         self._clock = clock
         self._started = clock()
         self._lock = threading.RLock()
+        # Preparation has a distinct short lock: a pin must become visible to
+        # the NEXT writer even when the current socket send is still blocked.
+        self._pin_guard=threading.Lock();self.context_pinning=context_pinning
+        self._pending_pin=None;self._pin_attempt=None;self._pin_owner=None
+        self._pin_sequence=0;self._pin_through=0;self._pin_checkpointed=0
+        self._base_preamble=None;self.preamble_estimate=0;self.history_estimate=0
         self._reader = threading.Lock()
         self._socket = None
         self.phase = 'opening'
@@ -59,6 +84,11 @@ class NativeDialogue:
         self.tools = {}
         self.tool_responses = 0
         self.failure_code = None
+        self.context_usage = None
+        self.context_estimate=0
+        self._pressure_notified=False
+        self.turns_finished=0
+        self.guidance_attempts=set();self.guidance_bytes=0
         try:
             self._socket = connect(self.endpoint, header=['x-goog-api-key: ' + token],
                                    timeout=10, redirect_limit=0, enable_multithread=True)
@@ -82,6 +112,9 @@ class NativeDialogue:
                     'Your primary role is conversation and constructing faithful request language together. '
                     'The Sol integrator owns deliberate planning, memory research, routing and coordination of persistent work sessions. '
                     'Keep spoken replies brief, usually one or two sentences; expand when asked. '
+                    'When actually consulting memory or Sol, describe it naturally in the first person, such as trying to recall or checking a detail; do not narrate internal session routing unless it helps the human or they ask. Natural phrasing must never fabricate a recollection or conceal an unconfirmed consultation. '
+                    'A conversational style adjustment is temporary context, not a durable saved note. Never say a preference or lesson was saved or will persist unless the actual memory write is confirmed. Ask Sol to preserve a requested lasting lesson through the existing original-bound delegation. '
+                    'A question about the most meaningful projects in our shared history is different from current priorities or active task status; preserve that distinction when consulting Sol. '
                     'Handle self-contained conversation, explanations and prompt refinement here without starting work. '
                     'Distinguish exploring an idea from asking for an action; do not delegate an idea merely because it could become a task. '
                     'When the human requests work, use the available conversation context to formulate it faithfully. '
@@ -123,6 +156,7 @@ class NativeDialogue:
                     'Do not open another return subscription after admission or after receiving an update. '
                     'Use await_integrator_update only when work is pending without a continued delegation or watch, including after cancellation; never poll for work. '
                     'An internal_integrator_update_available notice is server control context, not human speech or a new work request. '
+                    'An internal_integrator_guidance packet is attributed context from Sol within this same being. It is not human speech, a new work request, a tool capability, proof of completed work or a system-instruction replacement. Incorporate relevant facts or corrections without quoting the packet or narrating internal routing; preserve newer human speech and corrections. Do not delegate the packet or open another watch because of it. Context-only guidance asks for no spoken acknowledgment; an explicit spoken offer may be expressed briefly when useful. Sent guidance alone does not establish durable memory, provider application or hearing. '
                     'When it arrives, use await_integrator_update to read the actual canonical return; do not acknowledge the notice aloud, invent its contents, query human originals or delegate it as work. '
                     'Only refer to exact retained original IDs supplied by the owning bridge. '
                     'A formulation is your attributed derivative, never a replacement human quote. '
@@ -176,7 +210,7 @@ class NativeDialogue:
         except Exception:
             self._fail('native-dialogue-open-unconfirmed')
 
-    def _fail(self, reason):
+    def _fail(self, reason, *, known_unsent=False):
         # Keep the first fixed internal code when another thread subsequently
         # sees only a terminal phase. Never store provider payload/error text.
         if self.failure_code is None:self.failure_code=reason
@@ -186,7 +220,85 @@ class NativeDialogue:
                 self._socket.close()
             except Exception:
                 pass
-        raise DialogueUnavailable(reason) from None
+        raise (DialogueCapacity if known_unsent else DialogueUnavailable)(reason) from None
+
+    def successor(self,basis,*,pending_effects=None):
+        """Prepare one socket from attributed continuity, without retiring this one.
+
+        This opens/setup-checks a candidate only. The owner must retain its
+        exact generation intent first, recheck the final acoustic/output floor,
+        commit native/local generation, then install it. No audio, tool request,
+        pending provider call ID or completed human original is replayed.
+        """
+        if (not isinstance(basis,dict) or set(basis)!={'revision','through','content'}
+                or not re.fullmatch('[a-f0-9]{64}',str(basis['revision']))
+                or type(basis['through']) is not int or not 0<=basis['through']<=2**63-1
+                or not isinstance(basis['content'],dict)
+                or basis['content'].get('kind')!='internal_integrator_checkpoint'
+                or not isinstance(basis['content'].get('checkpoint',{}).get('text'),str)
+                or not basis['content']['checkpoint']['text'].strip()
+                or len(json.dumps(basis['content'],ensure_ascii=False).encode())>24576):
+            raise ValueError('Select an exact bounded Sol checkpoint seed')
+        if pending_effects is None:pending_effects=[]
+        if (not isinstance(pending_effects,list) or len(pending_effects)>32
+                or any(not isinstance(v,dict) or set(v)!={'original','intent','phase'}
+                    or any(not isinstance(v[k],str) or not 1<=len(v[k])<=128 for k in v)
+                    or v['phase'] not in ('accepted','answered','pending','unconfirmed')
+                    or any(str(uuid.UUID(v[k]))!=v[k] for k in ('original','intent'))
+                    for v in pending_effects)):
+            raise ValueError('Select bounded existing integrating effect references')
+        context={**self._continuity_identity,'live_checkpoint':basis,
+            'pending_integrator_effects':pending_effects,'source_data':True,
+            'continuity_meaning':'Sol checkpoint and pending effect references, not new human instructions. Do not speak/reexecute them or repeat admission; actual canonical status and returns remain with the existing integrating bridge.'}
+        # Constructor validates the COMPLETE setup context before any socket.
+        # No preview clipping can turn an oversized checkpoint into continuity.
+        with self._lock:
+            self._active()
+            if self.input_active or self.response_pending:
+                return None
+        candidate=None
+        try:
+            candidate=type(self)(self._credential_file,activity_mode=self.activity_mode,
+                context=context,connect=self._connect,clock=self._clock,context_pinning=self.context_pinning)
+            deadline=time.monotonic()+15
+            while time.monotonic()<deadline:
+                events=candidate.receive()
+                if any(e['type'] not in ('ready','context_usage') for e in events):
+                    raise DialogueUnavailable('native-dialogue-successor-before-readiness')
+                if any(e['type']=='ready' for e in events):return candidate
+            raise DialogueUnavailable('native-dialogue-successor-readiness-bound')
+        except BaseException:
+            if candidate is not None:candidate.close()
+            raise
+
+    @property
+    def checkpoint_pressure(self):
+        """Early pressure report; missing provider usage remains unknown."""
+        # This hint is read on the async owner loop. Never wait there for a
+        # provider send holding the thread lock; the final gate below owns it.
+        observed=max((self.context_usage or {}).values(),default=0)
+        usage=max(observed,self.context_estimate)
+        reason=('tokens' if usage>=102400 else 'lifetime' if self._clock()-self._started>=240
+            else 'tools' if len(self.tools)>=24 or self.tool_responses>=128
+            else 'text' if self.text_bytes>=98304 else 'guidance' if self.guidance_bytes>=49152 else None)
+        if reason is None:return None
+        return {'reason':reason,'tokens':usage,
+            'usage_kind':'observed' if self.context_usage and observed>=self.context_estimate else 'conservative'}
+
+    @property
+    def rollover_due(self):
+        return self.checkpoint_pressure is not None
+
+    def handover_ready(self,idle_watch=None):
+        """Final locked transport observation; caller invokes off the async loop."""
+        if not self._lock.acquire(blocking=False):return False
+        try:
+            if self.phase!='ready' or self.input_active or self.response_pending:return False
+            return all(c['state'] in ('response_sent','cancelled') or
+                ident==idle_watch and c['state']=='pending'
+                    and c['name'] in ('await_integrator_update','delegate_to_integrator')
+                for ident,c in self.tools.items())
+        finally:self._lock.release()
 
     def _active(self, *, ready=True):
         if self.phase not in (('ready',) if ready else ('opening', 'ready')):
@@ -195,8 +307,114 @@ class NativeDialogue:
             self._fail('native-dialogue-session-bound')
 
     def _send(self, value):
+        if 'setup' in value:
+            self._base_preamble=json.loads(json.dumps(value['setup']['systemInstruction']))
+            resident=len(json.dumps(self._base_preamble,ensure_ascii=False).encode())
+            return self._wire(value,preamble=resident)
+        self._drain_pin()
+        return self._wire(value)
+
+    def queue_pin(self,pin,sequence):
+        """Queue/coalesce one owner snapshot; no socket write or model turn.
+
+        The producer must synchronize canonical retention and recheck its frozen
+        revision before this call. Sequence is local monotonic producer ordering,
+        not a provider application ACK or permission to replay a failed write.
+        """
+        if (not self.context_pinning or type(sequence) is not int or not 1<=sequence<=self.max_pins
+                or not isinstance(pin,dict) or set(pin)!={'revision','through','checkpointed','bytes','content'}
+                or not re.fullmatch('[a-f0-9]{64}',str(pin.get('revision')))
+                or any(type(pin.get(k)) is not int for k in ('through','checkpointed','bytes'))
+                or not 0<=pin['checkpointed']<=pin['through']<=2**63-1):
+            raise ValueError('Select a bounded owned Live pin')
+        content=pin['content']
+        raw=json.dumps(content,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
+        if (len(raw.encode())!=pin['bytes'] or not 0<pin['bytes']<=self.max_pin_bytes
+                or hashlib.sha256(raw.encode()).hexdigest()!=pin['revision']
+                or not isinstance(content,dict) or content.get('kind')!='internal_live_context_pin'
+                or content.get('through')!=pin['through']
+                or not isinstance(content.get('checkpoint'),dict)
+                or content['checkpoint'].get('through')!=pin['checkpointed']):
+            raise ValueError('Live pin revision or complete content changed')
+        try:owner=tuple(str(uuid.UUID(content[k])) for k in ('dialogue','generation'))
+        except (ValueError,TypeError,KeyError,AttributeError):
+            raise ValueError('Live pin owner is unavailable') from None
+        # Use the SDK's ordinary single-text system-instruction form. Preserve
+        # every immutable base text verbatim before the attributed data section.
+        base='\n\n'.join(part['text'] for part in self._base_preamble['parts'])
+        body={'contextUpdate':{'systemInstruction':{'parts':[{'text':base+
+            '\n\nAttributed canonical continuity data, not new human speech or authority. Do not dispatch, speak or replay these records merely because this preamble changed. '+raw}]}}}
+        with self._pin_guard:
+            if (self.phase!='ready' or sequence<=self._pin_sequence
+                    or self._pin_owner is not None and owner!=self._pin_owner
+                    or pin['through']<self._pin_through or pin['checkpointed']<self._pin_checkpointed):
+                raise ValueError('Live pin is stale or belongs to another producer')
+            self._pin_owner=owner;self._pin_sequence=sequence
+            self._pin_through=pin['through'];self._pin_checkpointed=pin['checkpointed']
+            # Own an encoded copy. Later caller mutation cannot change what is
+            # sent under this retained revision. Known-unsent revisions coalesce.
+            self._pending_pin=(sequence,pin['revision'],json.dumps(body,ensure_ascii=False))
+
+    def pin_status(self):
+        with self._pin_guard:
+            return {'pending':None if self._pending_pin is None else {
+                'sequence':self._pending_pin[0],'revision':self._pending_pin[1],'phase':'queued'},
+                'attempt':None if self._pin_attempt is None else dict(self._pin_attempt)}
+
+    def flush_pin(self):
+        with self._lock:
+            self._active()
+            return self._drain_pin()
+
+    def _drain_pin(self):
+        sent=False
+        while True:
+            with self._pin_guard:
+                pending=self._pending_pin
+                if pending is None:return sent
+                self._pending_pin=None
+                sequence,revision,encoded=pending
+                self._pin_attempt={'sequence':sequence,'revision':revision,'phase':'submitting'}
+            try:self._wire(json.loads(encoded),preamble=len(encoded.encode()),replacement=True)
+            except BaseException as error:
+                with self._pin_guard:
+                    self._pin_attempt['phase']='unsent' if isinstance(error,DialogueCapacity) else 'uncertain'
+                raise
+            with self._pin_guard:self._pin_attempt['phase']='sent'
+            sent=True
+
+    def _wire(self, value, *, preamble=None, replacement=False):
+        # Live has no countTokens endpoint. This is an intentionally generous
+        # local estimate, not an exact tokenizer or a provider-usage receipt:
+        # one UTF-8 byte per text/protocol token, 64 tokens/s for PCM (the
+        # documented audio rate is ~25/s), plus each generation's 512-token
+        # output allowance. Lower provider observations never release reserve.
+        encoded=json.dumps(value,ensure_ascii=False)
+        audio=value.get('realtimeInput',{}).get('audio')
+        cost=(math.ceil(len(base64.b64decode(audio['data']))*64/32000)
+            if audio is not None else len(encoded.encode()))
+        generates=('toolResponse' in value or value.get('clientContent',{}).get('turnComplete') is True
+            or 'activityEnd' in value.get('realtimeInput',{}))
+        cost+=512 if generates else 0
+        # Phrase-end/stop controls may consume the already reserved margin.
+        ending=('activityEnd' in value.get('realtimeInput',{})
+            or value.get('realtimeInput',{}).get('audioStreamEnd') is True)
+        limit=self.max_context_tokens-(512 if ending else self.context_input_reserve)
+        if replacement:
+            # Provider observations can include the OLD preamble. Never subtract
+            # a byte estimate from an observed whole-window count: that could
+            # invent savings. Keep history's independent upper bound instead.
+            history=max(self.history_estimate,self.context_estimate-self.preamble_estimate)
+            estimate=history+preamble
+        else:estimate=self.context_estimate+cost
+        if estimate>limit:
+            self._fail('native-dialogue-context-input-bound',known_unsent=True)
+        self.context_estimate=estimate
+        if replacement:self.history_estimate=history
+        else:self.history_estimate+=cost-(preamble or 0)
+        if preamble is not None:self.preamble_estimate=preamble
         try:
-            self._socket.send(json.dumps(value))
+            self._socket.send(encoded)
         except Exception:
             self._fail('native-dialogue-send-unconfirmed')
 
@@ -272,6 +490,35 @@ class NativeDialogue:
                                          'turnComplete':True}})
             return True
 
+    def guide(self,value):
+        """Append attributed Sol context only at a known provider-turn boundary.
+
+        The owner serializes this against capture. Mark before socket write;
+        False proves no send, True proves only send(), never provider uptake.
+        """
+        if (not isinstance(value,dict) or set(value)!={'id','dialogue','generation','basis','mode','text'}
+                or any(not isinstance(value[k],str) or str(uuid.UUID(value[k]))!=value[k] for k in ('id','dialogue','generation'))
+                or type(value['basis']) is not int or not 0<=value['basis']<=2**63-1
+                or value['mode'] not in ('context_only','spoken_offer')
+                or not isinstance(value['text'],str) or not value['text'] or '\0' in value['text'] or len(value['text'].encode())>8192):
+            raise ValueError('Select bounded attributed Live guidance')
+        with self._lock:
+            self._active()
+            if value['id'] in self.guidance_attempts:
+                raise ValueError('Live guidance was already attempted; do not replay')
+            if self.input_active or self.response_pending:return False
+            packet={'kind':'internal_integrator_guidance','speaker':'Sol','source_data':True,
+                'human_speech':False,**value}
+            text=json.dumps(packet,ensure_ascii=False,separators=(',',':'))
+            size=len(text.encode())
+            if len(self.guidance_attempts)>=self.max_guidance or self.guidance_bytes+size>self.max_guidance_bytes:
+                self._fail('native-dialogue-guidance-bound')
+            self.guidance_attempts.add(value['id']);self.guidance_bytes+=size
+            spoken=value['mode']=='spoken_offer'
+            if spoken:self.response_pending=True
+            self._send({'clientContent':{'turns':[{'role':'user','parts':[{'text':text}]}],'turnComplete':spoken}})
+            return True
+
     def tool_result(self, call_id, result, *, will_continue=False):
         """Return one bridge-owned outcome; this method never invokes the bridge.
 
@@ -295,7 +542,7 @@ class NativeDialogue:
             self._send({'toolResponse': {'functionResponses': [{
                 'id': call_id, 'name': call['name'],
                 **({'willContinue': True} if will_continue else {}),
-                'response': {'result': result, 'scheduling': 'WHEN_IDLE'}}]}})
+                'scheduling': 'WHEN_IDLE', 'response': {'result': result}}]}})
             call['state'] = 'pending' if will_continue else 'response_sent'
 
     def receive(self):
@@ -311,6 +558,9 @@ class NativeDialogue:
                 raw = self._socket.recv()
             except self._timeouts:
                 self._active(ready=False)
+                if self.phase=='ready' and not self._pressure_notified and self.checkpoint_pressure is not None:
+                    self._pressure_notified=True
+                    return [{'type':'context_pressure'}]
                 return []
             except Exception:
                 self._fail('native-dialogue-receive-unconfirmed')
@@ -335,12 +585,36 @@ class NativeDialogue:
         if not isinstance(value, str) or len(value.encode()) > 16384:
             raise ValueError('Invalid transcript')
         self.text_bytes += len(value.encode())
+        self._context_output(len(value.encode()))
         if self.text_bytes > self.max_text_bytes:
             self._fail('native-dialogue-text-bound')
         return value
 
+    def _context_output(self,cost):
+        self.history_estimate+=cost
+        self.context_estimate+=cost
+        if self.context_estimate>self.max_context_tokens:
+            self._fail('native-dialogue-context-output-bound')
+
     def _events(self, value):
         events = []
+        usage=value.get('usageMetadata')
+        if isinstance(usage,dict):
+            # Optional provider accounting is observation, not a local tokenizer
+            # or proof of semantic retention after the provider slides context.
+            selected={k:usage[k] for k in ('promptTokenCount','totalTokenCount')
+                if type(usage.get(k)) is int and 0<=usage[k]<=2**31-1}
+            if selected:
+                peak=dict(self.context_usage or {})
+                for key,count in selected.items():peak[key]=max(peak.get(key,0),count)
+                if peak!=self.context_usage:
+                    self.context_usage=peak
+                    if self.context_pinning:
+                        self.history_estimate=max(self.history_estimate,max(peak.values()))
+                        self.context_estimate=max(self.context_estimate,self.history_estimate+self.preamble_estimate)
+                    else:self.context_estimate=max(self.context_estimate,max(peak.values()))
+                    self._context_output(0)
+                    events.append({'type':'context_usage','usage':dict(peak)})
         if 'setupComplete' in value:
             if self.phase != 'opening' or not isinstance(value['setupComplete'], dict):
                 raise ValueError('Unexpected readiness')
@@ -393,6 +667,7 @@ class NativeDialogue:
                     raise ValueError('Invalid generated PCM')
                 self.response_pending=True
                 self.output_bytes += len(pcm)
+                self._context_output(math.ceil(len(pcm)*64/48000))
                 if self.output_bytes > self.max_output_bytes:
                     self._fail('native-dialogue-output-bound')
                 # An interruption clears playback; do not enqueue audio from
@@ -401,6 +676,7 @@ class NativeDialogue:
                     events.append({'type': 'audio', 'pcm': pcm, 'sample_rate': 24000})
         self._validation_stage="tool-envelope"
         for call in calls:
+            self._context_output(len(json.dumps(call,ensure_ascii=False).encode()))
             ident, args, name = call['id'], call['args'], call['name']
             if (not isinstance(ident,str) or not ident or len(ident)>256
                     or ident in self.tools or len(self.tools)>=self.max_tools
@@ -426,6 +702,7 @@ class NativeDialogue:
         if content.get('generationComplete'):
             events.append({'type': 'generation_complete'})
         if content.get('turnComplete'):
+            self.turns_finished+=1
             self.response_pending=False
             events.append({'type': 'turn_complete'})
         if 'goAway' in value:

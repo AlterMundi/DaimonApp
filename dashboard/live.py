@@ -47,7 +47,11 @@ async def changes(paths, heartbeat=15, subscribe=None):
         yield True
         while True:
             try:
-                await asyncio.wait_for(wake.wait(), heartbeat)
+                # Python3.11 wait_for may return a concurrent wakeup instead of
+                # propagating external cancellation. Keep the heartbeat in this
+                # task so closing a voice/SSE owner always releases its watch.
+                async with asyncio.timeout(heartbeat):
+                    await wake.wait()
                 # Collapse a transaction/atomic replacement into one invalidation.
                 await asyncio.sleep(.1)
                 wake.clear()

@@ -1368,3 +1368,99 @@ Transport/bridge/mounted tests cover strict cursors, read-only ownership, stale
 and progress filtering, file availability, source-bound pagination and invalidated
 reads. Receiving558 stays selected for its existing phone trial; this new source
 contract is not a claim of deployment or device acceptance.
+
+
+## Shared Live context and compaction — human corrections,2November2026
+
+Instructions15907154/166edb59/fe543d9a/74ae68c5 require the integrating Sol
+conversation to receive the complete conversational meaning over time: human
+speech AND avatar replies, not only selected work requests. Sol remains the
+being's continuity, memory and tool-owning reasoning layer. Live is a temporary
+conversational embodiment, not another durable memory owner. Do not create a
+second independent avatar memory corpus or full-environment archive.
+
+Deliver incremental, attributed context events with stable IDs, revisions and a
+cursor, preserving text completion, corrections and interruption/heard-unknown
+status. Normal synchronization sends only unseen deltas. Complete active context
+must remain readable on demand, under the actual128k-token Live budget, without
+silently treating bytes as tokens. A context update is not work admission: it
+must not duplicate a request separately delegated through exact human originals.
+Sol can use the existing memory system deliberately; receiving context is not a
+claim that every sentence has become a curated DMK record.
+
+An earlier source-only setup probe selected provider contextWindowCompression
+at102400tokens targeting64000 and was accepted. Astra high review identified that
+this automatic discard cannot wait for Sol incorporation/checkpoint. The current
+source therefore leaves it OFF. Explicit generation rollover from an acknowledged
+checkpoint and exact tail is implemented, but the3November follow-up found its
+automatic acoustic fence cannot advance normally during continuous microphone
+silence. In-session checkpoint replacement and protected-tail compression are
+under evaluation; neither path has full automatic continuation qualification.
+Provider token accounting remains
+a scalar observation, not a local character heuristic. Optional usageMetadata prompt/total counts are retained as
+fixed scalar observations; unknown accounting is not an empty context or a reason
+to close voice. Existing five-minute/media/retention bounds remain until a coherent
+continuation path is qualified. This setting alone is not the full context bridge.
+
+Important provider distinction: slidingWindow discards older turns; it is NOT a
+semantic summary. Before depending on that discard for continuity, Sol must have
+incorporated the preceding delta range and supplied a compact checkpoint carrying
+ongoing requests, corrections, relationship/identity context and useful memory
+references. Keep pending original/admission/return receipts outside compaction;
+never replay an effect as part of context reconstruction. Retain only bounded
+unacknowledged context until actual Sol incorporation, then permit its temporary
+Live projection to retire. Existing original recovery/history protections are not
+authorization to delete old retained records wholesale.
+
+Sol-to-Live guidance must be an attributed, revision-bound internal context
+update for the selected active dialogue, with receipt and no new human utterance,
+worker authority, independent work dispatch or automatic private publication.
+Apply it at a safe audio/turn boundary; transport uncertainty never authorizes
+replaying guidance or work. Subscription/update work exists only while the human
+has the selected avatar conversation open; no Matrix/inbox wakeup, peer poller or
+permanent background attention is implied.
+
+Existing supported seams: human originals already live in the owned native input
+journal; assistant speech in app NativeHistory; Core NativeToolOutput supports
+retained internal steering without impersonating human input; event-driven native
+return dispatch already preserves accepted/rejected/uncertain outcomes. Extend
+those owners rather than encode context as a synthetic workflow/task. The native
+controller still needs the owned delta/read/ack/guidance operations and a bounded
+source journal; these are unfinished, not supplied by merely naming these routes.
+
+Primary API references checked2November2026:
+- https://ai.google.dev/api/live#ContextWindowCompressionConfig
+- https://ai.google.dev/api/live#ContextWindowCompressionConfig.SlidingWindow
+- https://ai.google.dev/api/live#UsageMetadata
+- https://ai.google.dev/gemini-api/docs/live-api/session-management
+
+
+The reviewed implementation design and decisions are in
+[Shared Live context](interaction-live-context.md). Astra high reviewed the actual
+Store/Core/producer seams before implementation. Two watermarks, semantic revisions,
+source-specific no-publication policy, canonical catch-up and explicit provider
+rollover are required; unconditionally enabling the provider sliding window is
+rejected. No full automatic continuity/device completion is claimed.
+
+Source continuation,3November2026: the reviewed context bridge now qualifies two
+active provider-peer handovers through actual native incorporation/checkpoints,
+plus pending-work speech and late-return continuity. Exact transition journals,
+idle reader/capture/playback gates, provider-offset rebasing and once-only
+admission references are implemented. Early pressure now requests one semantic
+checkpoint per physical generation, including quiet/fully incorporated context.
+Input admission keeps a conservative local reserve anchored upward to optional
+provider usage; this estimate is not an exact Live tokenizer or actual-provider
+qualification. Completed acoustic/capture copies, checkpointed guidance text and
+unbound acknowledged native transport now retire selectively. Real Gemini
+successor/spoken-continuity and real Sol context/checkpoint cases pass separately;
+actual active-Core integration now also passes, preserving a correction within
+the same physical native turn. A finite actual Gemini/Sol mounted journey now
+also passes five originals, one request plus amendment, barge-in, useful spoken
+canonical return and final high11/incorporated11 context drain. This does not
+resolve the earlier intermittent invalid-tool-argument loop. Continuous-capture
+compaction, longer retention/continuation and receiving/device acceptance remain
+unfinished. The focused Astra high follow-up selects pinned checkpoint plus
+exact newer language as the next in-session compaction implementation; it and
+the actual continuous-microphone ownership gap are recorded in the maintained design.
+See the single maintained design/qualification record above. Receiving558 and
+the five-minute logical pilot remain unchanged; PR560 is draft.

@@ -233,6 +233,8 @@ jobs:
         run: python3 -B tests/workflow_native_returns_io.py target/release/telecodex
       - name: Qualify ordinary routed native returns
         run: python3 -B tests/routed_native_returns_io.py target/release/telecodex
+      - name: Qualify Live context returns and publication scope
+        run: python3 -B tests/live_context_returns_io.py target/release/telecodex
       - name: Qualify the optional shared integrating entry
         run: python3 -B tests/entry_projection_io.py target/release/telecodex
       # Exercise this new slice before the longer unchanged compatibility group.
@@ -305,6 +307,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python3 -m pip install -r dashboard/requirements.lock
+      - run: python3 -B tests/live_context_voice_io.py target/release/telecodex
       - run: python3 -B tests/conversation_http_io.py target/release/telecodex
       - run: python3 -B tests/conversation_requests_http_io.py target/release/telecodex
       - run: python3 -B tests/conversation_tasks_http_io.py target/release/telecodex
@@ -425,6 +428,7 @@ jobs:
       - run: python -B tests/dashboard_transcription.py
       - run: python -B tests/dashboard_native_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py
+      - run: python -B tests/dashboard_native_context.py
       - run: python -B tests/dashboard_native_acoustic.py
       - run: python -B tests/dashboard_native_voice.py
       - run: node tests/native_conversation_ui.js

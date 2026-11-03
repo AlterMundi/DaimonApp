@@ -1,13 +1,15 @@
 """Native audio/tool concurrency and bounded transport; zero provider/model calls."""
 import base64
+import hashlib
 import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dashboard.native_dialogue import NativeDialogue, DialogueUnavailable
+from dashboard.native_dialogue import NativeDialogue, DialogueUnavailable, DialogueCapacity
 
 
 class Socket:
@@ -24,6 +26,171 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def pin_stream(self,context=None):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='automatic',connect=self.connect,
+            clock=lambda:self.now,context_pinning=True,context=context)
+        self.ready();self.pin_owner=(str(uuid.uuid4()),str(uuid.uuid4()))
+
+    def pin(self,text='Exact unincorporated words',through=1,checkpointed=0):
+        content={'kind':'internal_live_context_pin','dialogue':self.pin_owner[0],
+            'generation':self.pin_owner[1],'through':through,
+            'checkpoint':{'through':checkpointed,'text':'Semantic checkpoint'},
+            'events':[{'text':text,'role':'assistant','interrupted':True}]}
+        raw=json.dumps(content,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()
+        return {'content':content,'revision':hashlib.sha256(raw).hexdigest(),
+            'through':through,'checkpointed':checkpointed,'bytes':len(raw)}
+
+    def test_pin_replaces_only_preamble_and_does_not_accumulate_old_preamble_cost(self):
+        self.pin_stream(context={'being_identity':{'text':'Same selected being identity'}})
+        base=self.socket.sent[0]['setup']['systemInstruction']
+        self.stream.input_active=True;self.stream.response_pending=True
+        self.stream.queue_pin(self.pin('a'*8000),1)
+        self.assertEqual(len(self.socket.sent),1,'Preparation is not a provider write')
+        self.assertTrue(self.stream.flush_pin());first=self.stream.context_estimate
+        history=self.stream.history_estimate
+        self.stream.queue_pin(self.pin('New exact tail',through=2,checkpointed=1),2)
+        self.assertTrue(self.stream.flush_pin())
+        self.assertLess(self.stream.context_estimate,first)
+        self.assertEqual(self.stream.context_estimate,history+self.stream.preamble_estimate)
+        update=self.socket.sent[-1]
+        self.assertEqual(set(update),{'contextUpdate'})
+        self.assertEqual(set(update['contextUpdate']),{'systemInstruction'})
+        parts=update['contextUpdate']['systemInstruction']['parts']
+        self.assertEqual(len(parts),1)
+        self.assertTrue(parts[0]['text'].startswith('\n\n'.join(p['text'] for p in base['parts'])))
+        self.assertNotIn('a'*8000,json.dumps(update))
+        self.assertTrue(self.stream.input_active);self.assertTrue(self.stream.response_pending)
+        self.assertEqual(self.stream.pin_status()['attempt']['phase'],'sent')
+        self.assertFalse(self.stream.flush_pin(),'Sent context is not automatically repeated')
+
+    def test_ready_pin_precedes_pcm_even_when_queued_while_writer_lock_is_held(self):
+        self.pin_stream();queued=threading.Event();errors=[]
+        def queue_pin():
+            try:self.stream.queue_pin(self.pin(),1)
+            except BaseException as error:errors.append(error)
+            finally:queued.set()
+        with self.stream._lock:
+            writer=threading.Thread(target=lambda:self.stream.append(b'\0\0'*1600))
+            writer.start()
+            producer=threading.Thread(target=queue_pin);producer.start()
+            self.assertTrue(queued.wait(1),'Pin preparation must not wait behind a socket writer')
+        producer.join(2);writer.join(2)
+        self.assertFalse(errors);self.assertFalse(writer.is_alive())
+        self.assertEqual([next(iter(v)) for v in self.socket.sent],['setup','contextUpdate','realtimeInput'])
+        self.assertEqual(base64.b64decode(self.socket.sent[-1]['realtimeInput']['audio']['data']),b'\0\0'*1600)
+
+    def test_pin_coalesces_owned_unsent_revisions_and_rejects_stale_or_changed_content(self):
+        self.pin_stream();old=self.pin('Old exact text');self.stream.queue_pin(old,1)
+        old['content']['events'][0]['text']='Caller mutation after preparation'
+        fresh=self.pin('Current exact tail',through=2,checkpointed=1)
+        self.stream.queue_pin(fresh,2)
+        with self.assertRaises(ValueError):self.stream.queue_pin(fresh,2)
+        with self.assertRaises(ValueError):self.stream.queue_pin(self.pin(through=1),3)
+        changed=self.pin(through=3);changed['content']['events'][0]['text']='Changed without matching revision'
+        with self.assertRaises(ValueError):self.stream.queue_pin(changed,3)
+        self.stream.flush_pin()
+        self.assertEqual(len(self.socket.sent),2)
+        self.assertIn('Current exact tail',json.dumps(self.socket.sent[-1]))
+        self.assertNotIn('Caller mutation',json.dumps(self.socket.sent[-1]))
+        self.assertEqual(self.stream.pin_status()['attempt']['sequence'],2)
+
+    def test_failed_pin_write_is_uncertain_and_never_automatically_retried(self):
+        self.pin_stream();self.stream.queue_pin(self.pin(),1);self.socket.fail_send=True
+        with self.assertRaises(DialogueUnavailable):self.stream.flush_pin()
+        self.assertEqual(self.stream.pin_status()['attempt']['phase'],'uncertain')
+        self.assertIsNone(self.stream.pin_status()['pending'])
+        with self.assertRaises(ValueError):self.stream.flush_pin()
+        self.assertEqual(len(self.socket.sent),1)
+
+    def test_pin_reserve_refusal_is_unsent_and_provider_usage_is_not_subtracted(self):
+        self.pin_stream();self.event({'usageMetadata':{'totalTokenCount':40000}})
+        self.stream.queue_pin(self.pin('a'*8000),1);self.stream.flush_pin()
+        self.stream.queue_pin(self.pin('Short replacement',through=2,checkpointed=1),2);self.stream.flush_pin()
+        self.assertGreaterEqual(self.stream.history_estimate,40000)
+        self.assertGreaterEqual(self.stream.context_estimate,40000+self.stream.preamble_estimate)
+        self.stream.queue_pin(self.pin(through=3,checkpointed=2),3)
+        self.stream.context_estimate=128000;before=len(self.socket.sent)
+        with self.assertRaises(DialogueCapacity):self.stream.flush_pin()
+        self.assertEqual(len(self.socket.sent),before)
+        self.assertEqual(self.stream.pin_status()['attempt']['phase'],'unsent')
+
+    def test_final_handover_gate_rejects_pending_tools_and_unknown_provider_writes(self):
+        self.ready();self.assertTrue(self.stream.handover_ready())
+        self.event({'toolCall':{'functionCalls':[{'id':'query','name':'recent_originals','args':{}}]}})
+        self.assertFalse(self.stream.handover_ready('query'))
+        self.stream.tool_result('query',{'kind':'sources'})
+        self.assertFalse(self.stream.handover_ready())
+        self.event({'serverContent':{'turnComplete':True}})
+        self.event({'toolCall':{'functionCalls':[{'id':'watch','name':'await_integrator_update','args':{}}]}})
+        self.assertFalse(self.stream.handover_ready());self.assertTrue(self.stream.handover_ready('watch'))
+        self.stream.tools['watch']['state']='response_unconfirmed'
+        self.assertFalse(self.stream.handover_ready('watch'))
+
+    def test_successor_opens_checkpoint_only_without_retiring_or_replaying_old_socket(self):
+        self.ready()
+        basis={'revision':'a'*64,'through':4,'content':{'kind':'internal_integrator_checkpoint',
+            'checkpoint':{'text':'Keep the current purpose, correction and unresolved request.'}}}
+        successor=Socket();successor.received=[{'setupComplete':{},'usageMetadata':{'promptTokenCount':40}}]
+        self.stream._connect=lambda *a,**k:successor
+        candidate=self.stream.successor(basis,pending_effects=[{'original':self.original,'intent':str(uuid.uuid4()),'phase':'unconfirmed'}])
+        self.assertFalse(self.socket.closed);self.assertEqual(self.stream.phase,'ready')
+        self.assertEqual(candidate.phase,'ready');self.assertEqual(len(successor.sent),1)
+        self.assertEqual(set(successor.sent[0]),{'setup'})
+        setup=successor.sent[0]['setup'];context=json.dumps(setup)
+        self.assertIn('internal_integrator_checkpoint',context)
+        self.assertIn('unconfirmed',context)
+        self.assertNotIn('toolResponse',successor.sent[0]);self.assertNotIn('realtimeInput',successor.sent[0])
+        candidate.close()
+
+    def test_successor_keeps_old_transport_when_setup_fails_and_refuses_busy_floor(self):
+        self.ready()
+        basis={'revision':'a'*64,'through':1,'content':{'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Known context'}}}
+        self.stream.response_pending=True
+        self.assertIsNone(self.stream.successor(basis))
+        self.stream.response_pending=False
+        successor=Socket();successor.fail_send=True;self.stream._connect=lambda *a,**k:successor
+        with self.assertRaises(DialogueUnavailable):self.stream.successor(basis)
+        self.assertFalse(self.socket.closed);self.assertTrue(successor.closed)
+        self.assertEqual(self.stream.phase,'ready')
+
+    def test_successor_checks_complete_identity_and_seed_size_before_opening(self):
+        self.ready();opened=[]
+        self.stream._continuity_identity={'being_identity':{'text':'a'*8192}}
+        self.stream._connect=lambda *a,**k:opened.append(True)
+        basis={'revision':'a'*64,'through':1,'content':{'kind':'internal_integrator_checkpoint',
+            'checkpoint':{'text':'b'*24200}}}
+        with self.assertRaises(ValueError):self.stream.successor(basis)
+        self.assertEqual(opened,[]);self.assertFalse(self.socket.closed)
+
+    def guidance(self,mode='context_only'):
+        return {'id':str(uuid.uuid4()),'dialogue':str(uuid.uuid4()),'generation':str(uuid.uuid4()),
+                'basis':1,'mode':mode,'text':'A confirmed fact from Sol; not a new human request.'}
+
+    def test_guidance_waits_for_provider_floor_and_only_spoken_offer_completes_turn(self):
+        self.ready();value=self.guidance()
+        self.event({'voiceActivity':{'type':'ACTIVITY_START','audioOffset':'0s'}})
+        count=len(self.socket.sent);self.assertFalse(self.stream.guide(value));self.assertEqual(len(self.socket.sent),count)
+        self.event({'voiceActivity':{'type':'ACTIVITY_END','audioOffset':'1s'}})
+        self.assertFalse(self.stream.guide(value))
+        self.event({'serverContent':{'turnComplete':True}})
+        self.assertTrue(self.stream.guide(value));frame=self.socket.sent[-1]['clientContent']
+        self.assertFalse(frame['turnComplete']);self.assertFalse(self.stream.response_pending)
+        content=json.loads(frame['turns'][0]['parts'][0]['text'])
+        self.assertEqual(content['kind'],'internal_integrator_guidance');self.assertFalse(content['human_speech'])
+        self.assertEqual(content['id'],value['id'])
+        with self.assertRaises(ValueError):self.stream.guide(value)
+        spoken=self.guidance('spoken_offer');self.assertTrue(self.stream.guide(spoken))
+        self.assertTrue(self.socket.sent[-1]['clientContent']['turnComplete']);self.assertTrue(self.stream.response_pending)
+
+    def test_guidance_failed_send_is_not_replayed_or_reported_applied(self):
+        self.ready();value=self.guidance();self.socket.fail_send=True
+        with self.assertRaises(DialogueUnavailable):self.stream.guide(value)
+        self.assertIn(value['id'],self.stream.guidance_attempts)
+        self.assertEqual(self.stream.failure_code,'native-dialogue-send-unconfirmed')
+        with self.assertRaises(ValueError):self.stream.guide(value)
+        self.assertEqual(len(self.socket.sent),1)
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.key=Path(self.tmp.name)/'key'
         self.key.write_text('synthetic-secret');self.key.chmod(0o600)
@@ -85,6 +252,57 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
         self.assertEqual(self.event(self.audio())[0]['type'],'audio')
 
+    def test_provider_accounting_does_not_enable_ungated_discard(self):
+        setup=self.socket.sent[0]['setup']
+        self.assertNotIn('contextWindowCompression',setup)
+        self.assertEqual(self.stream.max_context_tokens,128000)
+        self.ready()
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':105000,'totalTokenCount':105100,'private_payload':'not retained'}}),
+            [{'type':'context_usage','usage':{'promptTokenCount':105000,'totalTokenCount':105100}}])
+        self.assertEqual(self.stream.context_usage,{'promptTokenCount':105000,'totalTokenCount':105100})
+        self.assertTrue(self.stream.rollover_due)
+        self.assertEqual(self.stream.checkpoint_pressure,{'reason':'tokens','tokens':105100,'usage_kind':'observed'})
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':100,'totalTokenCount':200}}),[],'A lower observation cannot authorize context discard')
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':True,'totalTokenCount':-1}}),[])
+        self.assertEqual(self.stream.phase,'ready')
+        self.assertEqual(self.stream.input_bytes,0)
+
+    def test_quiet_transport_requests_checkpoint_without_inventing_provider_usage_or_speech(self):
+        self.ready()
+        self.stream._clock=lambda:self.stream._started+241
+        self.assertEqual(self.stream.checkpoint_pressure,{'reason':'lifetime','tokens':self.stream.context_estimate,'usage_kind':'conservative'})
+        self.assertEqual(self.stream.receive(),[{'type':'context_pressure'}])
+        self.assertEqual(self.stream.receive(),[])
+        self.assertEqual(len(self.socket.sent),1)
+
+    def test_context_reserve_rejects_before_write_and_allows_the_owned_phrase_end(self):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='manual',connect=self.connect,clock=lambda:self.now)
+        self.ready();self.stream.activity_start()
+        self.stream.context_estimate=120000
+        before=len(self.socket.sent)
+        self.stream.activity_end()
+        self.assertEqual(len(self.socket.sent),before+1,'Phrase end uses the reserved margin')
+        self.stream.response_pending=False
+        with self.assertRaises(DialogueCapacity):self.stream.activity_start()
+        self.assertEqual(len(self.socket.sent),before+1,'A refused input never touches the socket')
+        self.assertTrue(self.socket.closed)
+
+    def test_missing_usage_uses_conservative_media_text_and_tool_accounting(self):
+        self.ready();initial=self.stream.context_estimate
+        self.assertGreater(initial,0,'Setup identity and tool context consume reserve')
+        self.stream.append(b'\0\0'*1600)
+        self.assertGreaterEqual(self.stream.context_estimate,initial+7)
+        before=self.stream.context_estimate
+        self.event({'serverContent':{'outputTranscription':{'text':'α reply'}}})
+        self.assertGreaterEqual(self.stream.context_estimate,before+len('α reply'.encode()))
+        self.event({'usageMetadata':{'totalTokenCount':102500}})
+        self.assertTrue(self.stream.rollover_due)
+        self.event({'usageMetadata':{'totalTokenCount':1}})
+        self.assertGreaterEqual(self.stream.context_estimate,102500)
+        with self.assertRaisesRegex(DialogueUnavailable,'context-output-bound'):
+            self.event({'usageMetadata':{'totalTokenCount':128001}})
+
     def test_recent_results_tool_only_offers_bounded_read_cursors(self):
         self.ready()
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'results','name':'recent_results','args':{}}]}}),
@@ -133,7 +351,8 @@ class Dialogue(unittest.TestCase):
         self.assertEqual(len(self.socket.sent),3,'No automatic tool response, integrator submission or reconnect')
         self.stream.tool_result('call-1',{'status':'accepted','incorporation':'not established'})
         reply=self.socket.sent[-1]['toolResponse']['functionResponses'][0]
-        self.assertEqual(reply['response']['scheduling'],'WHEN_IDLE')
+        self.assertEqual(reply['scheduling'],'WHEN_IDLE')
+        self.assertNotIn('scheduling',reply['response'])
         with self.assertRaises(ValueError):self.stream.tool_result('call-1',{'status':'completed'})
         self.assertEqual(self.stream.tools['call-1']['state'],'response_sent')
     def test_prior_conversation_context_is_bounded_attributed_data(self):

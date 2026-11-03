@@ -11,6 +11,33 @@ from dashboard.live import changes
 from dashboard.alerts import Receiver
 
 class Live(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_during_source_wakeup_releases_watch_and_subscription(self):
+        callbacks=[];unsubscribed=[]
+        def subscribe(callback):
+            callbacks.append(callback)
+            return lambda:unsubscribed.append(True)
+        with tempfile.TemporaryDirectory() as directory:
+            before=len(os.listdir('/proc/self/fd'))
+            source=changes([Path(directory)/'conversation.db'],subscribe=subscribe)
+            self.assertTrue(await anext(source))
+            pending=asyncio.create_task(anext(source))
+            try:
+                await asyncio.sleep(0);await asyncio.sleep(0)
+                callbacks[0]()
+                # Cancel while a ready source wakeup is returning to its owner,
+                # rather than assuming cancellation always happens during sleep.
+                await asyncio.sleep(0);await asyncio.sleep(0)
+                pending.cancel()
+                done,_=await asyncio.wait({pending},timeout=1)
+                self.assertIn(pending,done,'Source wakeup cannot swallow owner cancellation')
+                with self.assertRaises(asyncio.CancelledError):await pending
+                self.assertEqual(unsubscribed,[True])
+                self.assertLessEqual(len(os.listdir('/proc/self/fd')),before)
+            finally:
+                if not pending.done():pending.cancel()
+                await asyncio.gather(pending,return_exceptions=True)
+                await source.aclose()
+
     async def test_real_changes_and_unrelated_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);db=root/'conversation.db';observer=root/'topics.json'

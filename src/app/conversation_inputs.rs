@@ -129,6 +129,59 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("foreground context ") {
+        let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;
+        if !matches!(
+            selected,
+            crate::store::LiveContextCommand::Open { .. }
+                | crate::store::LiveContextCommand::Append { .. }
+                | crate::store::LiveContextCommand::Close { .. }
+                | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::CheckpointNeeded { .. }
+                | crate::store::LiveContextCommand::Guidance { .. }
+                | crate::store::LiveContextCommand::GuidanceBegin { .. }
+                | crate::store::LiveContextCommand::GuidanceOutcome { .. }
+                | crate::store::LiveContextCommand::RolloverRead { .. }
+                | crate::store::LiveContextCommand::PinRead { .. }
+                | crate::store::LiveContextCommand::RolloverCommit { .. }
+                | crate::store::LiveContextCommand::RolloverStatus { .. }
+                | crate::store::LiveContextCommand::RolloverAbort { .. }
+        ) {
+            bail!("Semantic incorporation belongs to the native integrator");
+        }
+        let dialogue = match &selected {
+            crate::store::LiveContextCommand::Open { dialogue, .. }
+            | crate::store::LiveContextCommand::Append { dialogue, .. }
+            | crate::store::LiveContextCommand::Close { dialogue, .. }
+            | crate::store::LiveContextCommand::Sync { dialogue, .. }
+            | crate::store::LiveContextCommand::CheckpointNeeded { dialogue, .. }
+            | crate::store::LiveContextCommand::Guidance { dialogue, .. }
+            | crate::store::LiveContextCommand::GuidanceBegin { dialogue, .. }
+            | crate::store::LiveContextCommand::GuidanceOutcome { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverRead { dialogue, .. }
+            | crate::store::LiveContextCommand::PinRead { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverCommit { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverStatus { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverAbort { dialogue, .. } => dialogue.clone(),
+            _ => unreachable!(),
+        };
+        let publishes_context = matches!(
+            selected,
+            crate::store::LiveContextCommand::Open { .. }
+                | crate::store::LiveContextCommand::Append { .. }
+                | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::Close { .. }
+                | crate::store::LiveContextCommand::CheckpointNeeded { .. }
+        );
+        let result = app
+            .shared
+            .store
+            .live_context(human, cfg.entry(), selected)?;
+        if publishes_context {
+            super::workflows::foreground(app, human, &dialogue).await?;
+        }
+        return Ok(result);
+    }
     if let Some(body) = args.strip_prefix("foreground retain ") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -195,6 +248,9 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
         result["foreground_retention"] = json!("v1");
+        result["foreground_context"] = json!("v1");
+        result["foreground_guidance"] = json!("v1");
+        result["foreground_rollover"] = json!("v1");
         result["foreground_completed_reader"] = json!(
             app.shared
                 .config
