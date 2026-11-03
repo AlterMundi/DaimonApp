@@ -1605,8 +1605,15 @@ offsets remain unchanged. Default300second and automatic paths remain unchanged.
 This does not discard silence without an original boundary, raise any capacity,
 reset a provider or replay speech/work. A mounted400second PCM regression keeps
 the same provider across two completed originals; acoustic checks preserve
-pending/active spans and the exact trailing bytes. Full corrected real-wall
-duration and phone/hearing acceptance remain separate qualifications.
+pending/active spans and the exact trailing bytes. The corrected real-wall
+journey reached its600second budget with five generated responses, two natural
+provider handovers, ten completed originals and one hash-verified raw tail. Sol
+incorporated all15context events and ended idle. The paced sender overshot by one
+packet; the server correctly applied its logical quota and retained the owned
+tail. The original verifier expected client-close and failed. Read-only retained
+state establishes duration/continuity and expected capacity closure without
+replay; graceful phone close and hearing remain separate qualifications.
+Web575is receiving-selected; native572and all browser assets/configuration remain.
 
 Two preparation failures are retained separately: expired synthetic cloud-TTS
 samples stopped before any provider socket, and a local espeak sample was
@@ -1614,3 +1621,29 @@ recognized as “Apacho” instead of “lapacho”, prematurely failing an irre
 vocabulary assertion. The duration-only journey above removed that assertion,
 preserved actual interpreted language and exposed the capacity failure. No
 accepted human input, uncertain provider operation or worker request was replayed.
+
+## Controlled local noise and packet-arrival observations —3November2026
+
+The same600second journey's five server-detected-end→first-received-PCM intervals
+were904/811/865/749/1148ms. These are synthetic one-word replies, not a useful
+speech or hearing metric: one first packet contains only two PCM bytes. Neither
+these values nor low server queue peaks explain the earlier person's growing
+delay, prove browser playback or replace the pending device trial.
+
+A separate local CPU-only observation used the selected interpreter and pinned
+Silero/SmartTurn models, with four14.295second signals. Spanish espeak-ng at145wpm
+starts after2seconds and is followed by6seconds without speech. Continuous noise
+combines deterministic low-pass uniform noise (coefficient0.97, seed20261103) and
+70/140/280Hz harmonics;12/6dB compare whole synthesized-utterance RMS with noise
+RMS, not active-phoneme SNR. All signals remain in memory; no microphone, provider,
+ASR/native work or configuration/threshold changes. Workers run sequentially and
+exit0 in0.98–1.21seconds each. These processing times are not realtime latency.
+
+Clean speech and12dB mixtures produced two onsets/endpoints. The6dB mixture had
+two onsets and one final endpoint; it did not assert the earlier internal pause
+complete. Noise alone produced no onset,
+endpoint or speech observation. All four cases finished non-speaking, and none
+of the final61tail observations indicated speech despite continuing noise.
+The12/6dB mixtures clipped two/four samples respectively. This qualifies only
+these controlled signals; arbitrary road noise, competing voices, echo, the
+actual person's microphone and useful phone/hearing latency remain unqualified.
