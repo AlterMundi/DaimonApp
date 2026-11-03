@@ -203,8 +203,14 @@ Qualification uses actual helper subprocesses with synthetic results, actual
 Python history/outbox/native-controller/SQLite delivery, two live handovers,
 known-sent receipt loss and late closed-producer delivery. These do not establish
 actual provider ASR accuracy, Sol semantic uptake, device hearing or full context
-callback recovery onto a newly detached physical native root. Those remain open
-before activation/full acceptance. Receiving566 remains stable for the pending
+callback recovery onto a newly detached physical native root. The unresolved
+semantic case remains reproducible with
+`python -B tests/live_context_voice_io.py <candidate-binary> --detached-semantic`:
+the fake integrator finishes the parent turn before the ASR draft arrives, and
+the expected outcome still requires all six sources incorporated. The default
+active-integrator fixture is explicitly a separate case; passing it does not
+satisfy this regression. Resolve/qualify this gate before activation/full
+acceptance. Receiving566 remains stable for the pending
 human test.
 
 A related native terminal race now drains already-written internal-return ACKs

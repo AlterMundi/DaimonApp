@@ -32,7 +32,8 @@ from conversation_routing_io import CanonicalRouting
 
 
 class VoiceContext(Returning):
-    def __init__(self,binary):
+    def __init__(self,binary,keep_integrator_active=True):
+        self.keep_integrator_active=keep_integrator_active
         self.context_roles=set();self.context_outputs={}
         self.guide_id=None
         self.context_active=False;self.guide_checkpoint=None
@@ -68,8 +69,8 @@ class VoiceContext(Returning):
             # ASR draft is pending. Terminal-root/late-ACK ordering has its own
             # native-return regression; this is not evidence of tool servicing
             # on a newly detached physical root.
-            if any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):return True
-            if any(e.get('derived_caption') for e in output['evidence']['content']['events']):
+            if self.keep_integrator_active and any(e.get('audio_without_transcript') for e in output['evidence']['content']['events']):return True
+            if any(e.get('audio_without_transcript') or e.get('derived_caption') for e in output['evidence']['content']['events']):
                 self.broadcast(self.web_thread,'item/completed',{'turnId':self.web_turn,'item':{
                     'id':'missing-caption-observation','type':'agentMessage','phase':'final_answer',
                     'text':'PRIVATE_NATIVE_CONTEXT_ONLY'}})
@@ -149,8 +150,8 @@ class CycleDetector(Detector):
                 **({} if first else {'authority':'analysis_only','probability':.9})}})
 
 
-def qualify(binary):
-    j=VoiceContext(binary)
+def qualify(binary,detached_semantic=False):
+    j=VoiceContext(binary,keep_integrator_active=not detached_semantic)
     try:
         j.start();j.admit('Seed selected voice context.',topic=1)
         j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.stop()
@@ -401,4 +402,6 @@ def qualify_rollover(binary):
 
 
 if __name__=='__main__':
-    binary=str(Path(sys.argv[1]).resolve());qualify(binary);qualify_rollover(binary)
+    binary=str(Path(sys.argv[1]).resolve())
+    if '--detached-semantic' in sys.argv[2:]:qualify(binary,detached_semantic=True)
+    else:qualify(binary);qualify_rollover(binary)
