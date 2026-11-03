@@ -42,6 +42,14 @@ pub(super) fn record_native_message_on(
         params![thread, turn, item, local_turn, phase, text, now_string(),internal_only],
     )? == 1;
     if inserted {
+        // An independently admitted human retains their presentation lifetime,
+        // including when a worker return joins the SAME physical turn. Freeze
+        // its source association separately so useful returning commentary can
+        // reach voice without promoting ordinary progress or changing audience.
+        let sources = super::workflows::native_return_sources_on(conn, local_turn)?;
+        if !sources.is_empty() {
+            conn.execute("UPDATE interaction_native_messages SET native_return_sources=?4 WHERE native_thread=?1 AND native_turn=?2 AND item_id=?3",params![thread,turn,item,serde_json::to_string(&sources)?])?;
+        }
         if let Some(marker) = super::workflows::native_publication_on(conn, local_turn)? {
             conn.execute("UPDATE interaction_native_messages SET presentation_input=?4 WHERE native_thread=?1 AND native_turn=?2 AND item_id=?3",params![thread,turn,item,marker])?;
         }
@@ -350,6 +358,12 @@ impl Store {
             if !presentation {
                 conn.execute_batch(
                     "ALTER TABLE interaction_native_messages ADD COLUMN presentation_input TEXT;",
+                )?;
+            }
+            let returns:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('interaction_native_messages') WHERE name='native_return_sources')",[],|r|r.get(0))?;
+            if !returns {
+                conn.execute_batch(
+                    "ALTER TABLE interaction_native_messages ADD COLUMN native_return_sources TEXT;",
                 )?;
             }
             let old:bool=conn.query_row("SELECT [notnull] FROM pragma_table_info('interaction_sources') WHERE name='origin_message'",[],|r|r.get(0))?;

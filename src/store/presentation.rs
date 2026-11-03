@@ -761,18 +761,18 @@ pub(super) fn source_on(
         }
     }
     if let Some(local) = source["local_turn"].as_i64() {
-        let marker: Option<String> = conn
+        let (marker, return_sources): (Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT presentation_input FROM interaction_native_messages WHERE rowid=?1",
+                "SELECT presentation_input,native_return_sources FROM interaction_native_messages WHERE rowid=?1",
                 [source["id"]
                     .as_str()
                     .and_then(|s| s.strip_prefix("native:"))
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0)],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
-            .flatten();
+            .unwrap_or_default();
         if marker.as_deref() == Some("workflow-internal") {
             return Ok(None);
         }
@@ -809,6 +809,26 @@ pub(super) fn source_on(
         } else if super::workflows::native_only_on(conn, local)? {
             // Pre-upgrade/unmarked callback items cannot acquire authority later.
             return Ok(None);
+        }
+        if source["native_returns"].is_null() {
+            if let Some(raw) = return_sources {
+                let ids: Vec<String> = serde_json::from_str(&raw)?;
+                anyhow::ensure!(
+                    ids.len() <= 32,
+                    "Native return association exceeds its bound"
+                );
+                if !ids.is_empty()
+                    && ids.iter().all(|id| {
+                        super::workflows::native_source_current_on(conn, id).unwrap_or(false)
+                    })
+                {
+                    // Association is frozen at item insertion, never inferred
+                    // from later bindings. Human presentation stays independent:
+                    // stale evidence retires this offer, not the human's message.
+                    source["native_return"] = json!(ids[0]);
+                    source["native_returns"] = json!(ids);
+                }
+            }
         }
     }
     // Canonical native items keep controller metadata. All reader/player views

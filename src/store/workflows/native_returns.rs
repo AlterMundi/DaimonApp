@@ -348,8 +348,22 @@ pub(in crate::store) fn visible_on(conn: &Connection, local: i64) -> Result<bool
     Ok(publication_sources_on(conn, local)?.is_none_or(|ids| !ids.is_empty()))
 }
 fn publication_sources_on(conn: &Connection, local: i64) -> Result<Option<Vec<String>>> {
+    associated_sources_on(conn, local, true)
+}
+/// Freeze return association independently of the human presentation lifetime.
+/// These IDs identify internal evidence; they never grant or restrict audience.
+pub(in crate::store) fn return_sources_on(conn: &Connection, local: i64) -> Result<Vec<String>> {
+    Ok(associated_sources_on(conn, local, false)?.unwrap_or_default())
+}
+fn associated_sources_on(
+    conn: &Connection,
+    local: i64,
+    respect_human: bool,
+) -> Result<Option<Vec<String>>> {
     let bindings = bindings_on(conn, local)?;
-    if (bindings.is_empty() && !foreground_on(conn, local)?) || later_human_on(conn, local)? {
+    if (bindings.is_empty() && !foreground_on(conn, local)?)
+        || respect_human && later_human_on(conn, local)?
+    {
         return Ok(None);
     }
     let mut sources = Vec::new();

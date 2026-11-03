@@ -780,3 +780,51 @@ Primary references checked3November2026:
 - [SDK context-update implementation and Developer API converter/tests](https://github.com/googleapis/python-genai/commit/364889a)
 - [Sliding-window eviction boundary and system-prefix exclusion](https://googleapis.github.io/js-genai/release_docs/interfaces/types.SlidingWindow.html)
 - [Live capabilities and audio-stream finalization](https://ai.google.dev/gemini-api/docs/live-api/capabilities)
+
+## Returning speech during an admitted human turn — 3 November 2026
+
+Readback of the partial natural-Qwen case localized its missing result before the
+Gemini prompt: Sol's useful worker-result commentary was canonical, but its
+`presentation_input` retained the concurrent human correction. The returning
+source association was absent. Voice correctly filters ordinary commentary;
+therefore that result never entered the provider's integrating-source tool
+response. Earlier response bodies had been admission/correction answers, not the
+worker's returned ideas. Do not diagnose this as Gemini ignoring an offered
+result or repair it by repeating the worker request.
+
+New native message inserts freeze accepted current return-source IDs separately
+from `presentation_input`, in nullable `native_return_sources`. The human's
+ordinary presentation lifetime remains unchanged. The existing canonical reader
+exposes `native_returns` when that complete frozen set is still current, allowing
+the existing voice return watcher to offer meaningful commentary. If any source
+changes, the return association disappears; the ordinary human message remains
+readable. Reobserving an existing native item does not add later source bindings.
+Context-only batches never contribute return IDs. No new queue, work dispatch,
+model admission, publication audience or hearing receipt is introduced.
+
+The added column is nullable and uses explicit inserts. Startup does not backfill
+old items, infer their causality from later bindings or replay their audio/work.
+Existing internal-only publication/source-set fences remain authoritative. This
+is source association at the existing collection boundary, not sentence-level
+causal attribution. Rollback/readers must retain the new metadata to preserve
+this returning-speech behavior; old readers retain ordinary human history but
+cannot offer these mixed-turn commentary returns to voice.
+
+A regression fixture records ordinary progress before a real return, accepts the
+return during an independent human turn, records useful commentary, and reads it
+through both presentation list and exact part. It verifies that earlier progress
+never gains the association and that a later correction retires only the offer,
+preserving human visibility. The251Store and49mounted voice checks and clippy all
+targets with warnings denied pass. A distinct actual Gemini/Sol natural-speech
+journey closed before its worker-result step: it observed three originals,
+sixteen source reads and eleven invalid-argument rejections, eventually exhausting
+the existing32tool-proposal bound. One worker request had been admitted; its
+correction and result were not qualified. The fixed close code was
+`native-dialogue-invalid-provider-event-tool-envelope`; exact recordings and
+admissions remain retained. No duplicate request or replay was used to repair it.
+The rejection event currently omits the invalid argument's specific shape, so
+the next focused diagnosis must capture bounded field/type evidence rather than
+guess whether the model supplied an invalid UUID, cursor, extra field or tool.
+This failure does not disprove the deterministic association repair, but it also
+does not qualify the complete actual-provider spoken-result journey. No receiving
+or device acceptance follows from the unit checks.
