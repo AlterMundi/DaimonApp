@@ -220,6 +220,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
         result["foreground_retention"] = json!("v1");
+        result["foreground_context"] = json!("v1");
         result["foreground_completed_reader"] = json!(
             app.shared
                 .config

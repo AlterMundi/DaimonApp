@@ -557,6 +557,15 @@ class Provider:
                 'more':page.get('more',False),'source_data':True,
                 'meaning':'References to retained human originals; excerpts are bounded. Captured/preparing originals are not ready for delegation. Retention or native acceptance does not establish work completion.'}
 
+    def conversation_live_context(self,body):
+        """Server-owned semantic producer; one request, never an audio/work retry."""
+        if not isinstance(body,dict) or body.get('action') not in ('open','sync','close'):
+            raise ValueError('Select a server-owned Live context operation')
+        self.input_id(body.get('dialogue'));self.input_id(body.get('generation'))
+        if len(json.dumps(body,ensure_ascii=False).encode())>131072:
+            raise ValueError('Live context batch exceeds its bound')
+        return self.presentation('input foreground context '+json.dumps(body,ensure_ascii=False))
+
     def conversation_foreground_complete(self, ident, binding, dialogue):
         """Read a now-completed receipt for the same retained acoustic original."""
         self.input_id(ident);self.input_id(dialogue)

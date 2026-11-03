@@ -21,6 +21,7 @@ from .live_transcription import VoiceInbox
 from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
 from .native_dialogue import NativeDialogue, DialogueUnavailable
 from .native_foreground import ForegroundBridge, ForegroundUnavailable
+from .native_context import NativeContext
 from .provider import Provider, ProviderUnavailable
 from .turn_detection import Detector, DetectionUnavailable
 
@@ -28,7 +29,7 @@ from .turn_detection import Detector, DetectionUnavailable
 def failure_site(error):
     """Source location only: never exception text, locals or absolute paths."""
     site=None;trace=error.__traceback__
-    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription'}
+    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription','dashboard.native_context'}
     while trace is not None:
         module=trace.tb_frame.f_globals.get('__name__')
         if module in modules:
@@ -76,6 +77,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             await socket.close(code=1008);return
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=None
+        context_producer=None
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
@@ -98,6 +100,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed)
             if not stopping and emit:await send({'type':'assistant_utterance','utterance':record})
             if closed:
+                if context_producer is not None:context_producer.notify()
                 utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
         async def acoustic_event(value):
             await send(value)
@@ -115,6 +118,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await asyncio.shield(raw_notifications[capture.ident])
                     await actor()
                     await send({'type':'original_completed','id':capture.ident,'sha256':capture.digest,'phase':'foreground'})
+                    if context_producer is not None:context_producer.notify()
                 launch(completed())
         def launch(operation):
             task=asyncio.create_task(operation,name='native-tool');tool_tasks.add(task)
@@ -267,7 +271,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # All preflight happens before provider opening and browser microphone acquisition.
                 capabilities=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                 if (capabilities.get('binding')!=meta['binding'] or capabilities.get('foreground_retention')!='v1'
-                        or capabilities.get('foreground_completed_reader') is not True):
+                        or capabilities.get('foreground_completed_reader') is not True
+                        or capabilities.get('foreground_context')!='v1'):
                     raise ForegroundUnavailable('Selected listener does not support native foreground originals')
                 await asyncio.to_thread(app.state.native_history.capacity)
                 initial=await asyncio.to_thread(provider.presentation_list,0,0,'before')
@@ -328,6 +333,14 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'meaning':item['playback_meaning']} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
+                async def context_owner(function,*args):
+                    # The same bounded owner slots remain held until actual
+                    # control completion, including final cleanup after audio
+                    # ownership has closed. No extra unbounded thread pool.
+                    await actor()
+                    return await bridge._run(bridge._owners,function,*args)
+                context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
+                await context_producer.open()
                 # Only references actually retained in the bounded setup are
                 # offered. No replay, unsolicited speech or wider source lookup.
                 for item in sources:
@@ -338,6 +351,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     if activity_mode=='manual' else NativeAutomaticAcousticSession(bridge,meta.get('capture_questions'),acoustic_event))
                 await send({'type':'ready','id':meta['id'],'model':stream.model,'activity_mode':activity_mode,'playback_status':True})
                 tasks={asyncio.create_task(outputs(),name='native-output'),asyncio.create_task(returns(cursor),name='native-returns'),asyncio.create_task(acoustic.watch_transcripts(),name='native-transcripts')}
+                context_task=asyncio.create_task(context_producer.run(),name='native-context')
+                context_task.add_done_callback(ForegroundBridge._observe)
+                tasks.add(context_task)
                 if worker:tasks.add(asyncio.create_task(analysis(),name='native-analysis'))
                 inbox=VoiceInbox(socket.receive,pcm=True,batch_size=50,control_bytes=8192,batch_control_frames=True,wait_for_space=True)
                 checked=time.monotonic()
@@ -392,8 +408,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     incoming.cancel()
                     with suppress(asyncio.CancelledError,Exception):await incoming
                 if inbox:await inbox.close()
-                for task in tasks:task.cancel()
-                for task in tasks:
+                audio_tasks={task for task in tasks if task.get_name()!='native-context'}
+                for task in audio_tasks:task.cancel()
+                for task in audio_tasks:
                     with suppress(asyncio.CancelledError,Exception):await task
                 if acoustic:
                     with suppress(Exception):await acoustic.close()
@@ -403,6 +420,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 for task in list(tool_tasks):
                     with suppress(asyncio.CancelledError,Exception):await task
                 with suppress(Exception):await flush_output(interrupted=True,closed=True)
+                if context_producer is not None:
+                    with suppress(Exception):await context_producer.close()
                 if worker:await worker.close()
                 if stream is None and opening:
                     def late(task):
@@ -422,6 +441,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'client_playback':{'source':'untrusted_client_observation','count':playback_status_count,
                         'first':first_playback_status,'last':last_playback_status},
                     'boundary_mismatch':acoustic.boundary_mismatch if acoustic else None,
+                    'context_producer':context_producer.status if context_producer is not None else 'not_started',
                     'elapsed_ms':round((time.monotonic()-started)*1000),
                     'received_pcm_bytes':inbox.received_bytes if inbox else 0,
                     'received_messages':inbox.received_messages if inbox else 0,

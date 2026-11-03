@@ -11,6 +11,7 @@ import re
 import time
 import threading
 import uuid
+from .native_context import NativeContext, enqueue, install_schema, semantic_revision
 
 
 class NativeHistory:
@@ -29,6 +30,7 @@ class NativeHistory:
                 closed INTEGER NOT NULL,played_bytes INTEGER NOT NULL DEFAULT 0)''')
             db.execute('CREATE INDEX IF NOT EXISTS foreground_utterance_owner ON foreground_utterances(human,scope,observed_at)')
             db.execute('CREATE INDEX IF NOT EXISTS foreground_utterance_dialogue ON foreground_utterances(human,scope,dialogue)')
+            install_schema(db)
 
     def subscribe(self,notify):
         with self._lock:
@@ -83,11 +85,93 @@ class NativeHistory:
                     VALUES(?,?,?,?,?,?,?,'gemini-3.8-live',?,?,?,?)''',
                     (ident,human,self.scope,dialogue,binding,time.time(),text,audio_sha256,generated_bytes,int(interrupted),int(closed)))
             row=db.execute('SELECT rowid,* FROM foreground_utterances WHERE id=?',(ident,)).fetchone()
+            enqueue(db,row)
         if (text and old is None) or old is not None and (old['text']!=text or bool(old['closed'])!=closed):
             with self._lock:listeners=tuple(self._listeners)
             for notify in listeners:
                 with suppress(RuntimeError):notify()
         return self.view(row)
+
+    def context_register(self,human,dialogue,binding):
+        self.ident(dialogue)
+        if type(human) is not int or not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding):
+            raise ValueError('Select an owned Live producer')
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(dialogue,)).fetchone()
+            if row is None:
+                if db.execute('SELECT count(*) FROM foreground_context_producers').fetchone()[0]>=NativeContext.max_producers:
+                    raise ValueError('Live context producer retention reached its bound')
+                db.execute("INSERT INTO foreground_context_producers VALUES(?,?,?,?,?,'open')",
+                    (dialogue,human,self.scope,binding,str(uuid.uuid4())))
+                row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(dialogue,)).fetchone()
+            record=dict(row)
+            if (record['human'],record['scope'],record['binding'])!=(human,self.scope,binding):
+                raise ValueError('Live context producer ownership changed')
+            rows=db.execute('SELECT * FROM foreground_utterances WHERE dialogue=? AND human=? AND scope=? AND binding=? AND closed=1 ORDER BY rowid LIMIT 4097',
+                (dialogue,human,self.scope,binding)).fetchall()
+            if len(rows)>NativeContext.max_sources:raise ValueError('Live canonical assistant catch-up exceeds bound')
+            for utterance in rows:enqueue(db,utterance)
+        return record
+
+    def context_unfinished(self,human,binding,excluding):
+        with self.database() as db:
+            return [dict(r) for r in db.execute("SELECT * FROM foreground_context_producers WHERE human=? AND scope=? AND binding=? AND dialogue!=? AND phase!='closed' ORDER BY rowid LIMIT 64",
+                (human,self.scope,binding,excluding)).fetchall()]
+
+    def _context_owned(self,db,record):
+        row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone()
+        if row is None or any(row[k]!=record[k] for k in ('human','scope','binding','generation')) or record['scope']!=self.scope:
+            raise ValueError('Live context producer ownership changed')
+
+    def context_seal(self,record):
+        """A new explicit avatar open owns no previous live audio connection.
+
+        Preserve partial generated text as interrupted after that connection
+        ended; do not manufacture missing language or a physical hearing receipt.
+        """
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE');self._context_owned(db,record)
+            db.execute('UPDATE foreground_utterances SET closed=1,interrupted=1 WHERE human=? AND scope=? AND binding=? AND dialogue=? AND closed=0',
+                (record['human'],self.scope,record['binding'],record['dialogue']))
+            rows=db.execute('SELECT * FROM foreground_utterances WHERE human=? AND scope=? AND binding=? AND dialogue=? ORDER BY rowid LIMIT 4097',
+                (record['human'],self.scope,record['binding'],record['dialogue'])).fetchall()
+            if len(rows)>NativeContext.max_sources:raise ValueError('Live canonical assistant catch-up exceeds bound')
+            for row in rows:enqueue(db,row)
+
+    def context_pending(self,record):
+        with self.database() as db:
+            self._context_owned(db,record)
+            rows=db.execute("SELECT u.*,o.revision AS semantic_revision FROM foreground_context_outbox o JOIN foreground_utterances u ON u.id=o.source WHERE o.dialogue=? AND o.phase='pending' ORDER BY u.rowid LIMIT 8",(record['dialogue'],)).fetchall()
+            values=[];size=0
+            for row in rows:
+                if (row['human'],row['scope'],row['binding'])!=(record['human'],self.scope,record['binding']) or not row['closed'] or semantic_revision(row)!=row['semantic_revision']:
+                    raise ValueError('Canonical Live context source changed')
+                size+=len(row['text'].encode())
+                if size>65536:break
+                values.append({'source':row['id'],'text':row['text'],'interrupted':bool(row['interrupted']),'semantic_revision':row['semantic_revision']})
+        return values
+
+    def context_retained(self,record,sources,receipts):
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE');self._context_owned(db,record)
+            by_id={r['source']:r for r in receipts}
+            for source in sources:
+                receipt=by_id[source['source']]
+                changed=db.execute("UPDATE foreground_context_outbox SET phase='retained',native_sequence=?,native_revision=? WHERE source=? AND dialogue=? AND revision=? AND phase='pending'",
+                    (receipt['sequence'],receipt['revision'],source['source'],record['dialogue'],source['semantic_revision'])).rowcount
+                if changed!=1:
+                    old=db.execute('SELECT * FROM foreground_context_outbox WHERE source=? AND dialogue=?',
+                        (source['source'],record['dialogue'])).fetchone()
+                    if (old is None or old['phase']!='retained' or old['revision']!=source['semantic_revision']
+                            or old['native_sequence']!=receipt['sequence'] or old['native_revision']!=receipt['revision']):
+                        raise ValueError('Live context source receipt changed before commit')
+
+    def context_phase(self,record,phase):
+        if phase not in ('closing','closed'):raise ValueError('Invalid Live producer phase')
+        with self.database() as db:
+            db.execute('BEGIN IMMEDIATE');self._context_owned(db,record)
+            db.execute("UPDATE foreground_context_producers SET phase=? WHERE dialogue=? AND (phase!='closed' OR ?='closed')",(phase,record['dialogue'],phase))
 
     def pending_audio(self,human,dialogue):
         self.ident(dialogue)

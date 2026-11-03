@@ -77,8 +77,9 @@ class Owner(Receiver):
         self.return_kind='integrator_answer';self.native_returns=[]
         self.return_current=True;self.return_seen=threading.Event()
         self.input_id=Provider.input_id
+        self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible}
+        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -118,8 +119,61 @@ class Owner(Receiver):
         value=self.inputs[ident];value.update(phase='foreground',text=record['text'].strip());self.completed.set();return value
     def conversation_input_status(self,ident):return self.inputs[ident]
 
+    def conversation_live_context(self,body):
+        self.context_calls.append(body)
+        dialogue=body['dialogue'];generation=body['generation']
+        if body['action']=='open':
+            self.assert_context_binding(body['binding'])
+            context=self.contexts.setdefault(dialogue,{'dialogue':dialogue,'generation':generation,'closed':False,'sources':{}})
+        else:context=self.contexts[dialogue]
+        assert context['generation']==generation
+        receipts=[]
+        if body['action']=='sync':
+            for ident,value in self.inputs.items():
+                if value.get('foreground_dialogue')==dialogue and value.get('text'):
+                    context['sources'].setdefault(ident,{'role':'human','text':value['text']})
+            for source in body.get('assistant',[]):
+                ident=source['source'];value={'role':'assistant',**source}
+                if ident in context['sources']:assert context['sources'][ident]==value
+                else:context['sources'][ident]=value
+                receipts.append({'source':ident,'sequence':list(context['sources']).index(ident)+1,
+                    'revision':hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest(),'fresh':True})
+            if any(s['role']=='human' for s in context['sources'].values()) and any(s['role']=='assistant' for s in context['sources'].values()):
+                self.context_retained.set()
+        elif body['action']=='close':context['closed']=True;self.context_closed.set()
+        return {k:context[k] for k in ('dialogue','generation','closed')}|{'assistant_receipts':receipts}
+
+    def assert_context_binding(self,binding):
+        assert binding==self.binding
+
 
 class Mounted(unittest.TestCase):
+    def test_context_incompatible_listener_is_refused_before_provider_opening(self):
+        presentation=self.owner.presentation
+        def without_context(command):
+            value=presentation(command)
+            if command=='input voice capabilities':value.pop('foreground_context')
+            return value
+        with patch.object(self.owner,'presentation',side_effect=without_context),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.contexts,{})
+    def test_voice_semantic_outbox_reaches_context_without_becoming_work(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            self.assertTrue(self.owner.context_retained.wait(2),'Both canonical human and terminal assistant context must arrive without Send')
+            context=self.owner.contexts[self.ident]
+            sources=list(context['sources'].values())
+            self.assertTrue(any(s['role']=='human' and s['text']=='Exact synthetic interpretation' for s in sources))
+            self.assertTrue(any(s['role']=='assistant' and s['text']=='A native foreground response.' for s in sources))
+            self.assertEqual(self.owner.delegations,[])
+            ws.send_json({'type':'close'})
+            self.assertTrue(self.owner.context_closed.wait(2),'Observe the actual owner close before tearing down its websocket fixture')
+        self.assertEqual(len(self.owner.inputs),1)
+        self.assertTrue(self.owner.contexts[self.ident]['closed'])
+        with self.app.state.native_history.database() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM foreground_context_outbox WHERE phase='pending'").fetchone()[0],0)
+
     def test_owner_selected_identity_reaches_native_connector_and_refreshes_on_read(self):
         selected=self.root/'selected-identity.txt'
         text='Oliva: a distinct being. The avatar and integrator share this identity.'
@@ -386,7 +440,8 @@ class Mounted(unittest.TestCase):
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','generated_pcm_bytes','cleanup','client_playback','context_producer'})
+        self.assertIn(result['context_producer'],('not_started','active','needs_review','closed'))
         self.assertEqual(self.owner.delegations,[])
 
     def test_mismatched_boundary_close_retains_only_validated_scalar_timing(self):

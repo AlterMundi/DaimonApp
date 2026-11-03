@@ -252,11 +252,72 @@ journeys also pass, including known-unsent recovery, completion-race collection
 and late canonical results. These tests use zero models; they do not establish
 actual Core/model incorporation, Gemini delivery or device acceptance.
 
-Still required before receiving selection: mounted voice-producer registration,
-assistant canonical catch-up/outbox across the app/native database boundary,
-guidance, semantic provider rollover, retirement of completed source/transport
-metadata and coherent actual-native/provider qualification. The five-minute
-pilot limit stays in place.
+### Mounted producer qualification —3November2026
+
+The mounted voice route now registers an authenticated context producer before
+microphone readiness. The listener must advertise `foreground_context:v1` before
+the provider opens. One event-driven task shares the bridge's existing two owner
+slots; captions, PCM chunks and playback positions do not create native context
+turns. Complete originals and terminal/interrupted assistant utterances signal
+the task. Native `sync` atomically catches up human originals and up to8selected
+assistant sources/64KiB of language, then reserves one coalesced native range.
+
+Terminal assistant retention and its outbox reference commit in the same app
+SQLite transaction. The outbox stores stable source IDs, semantic revisions and
+native retention receipts, not another copy of the language or PCM. Its semantic
+revision ignores playback/hash/byte changes. A lost retention acknowledgment
+leaves the reference pending; cleanup does not automatically repeat an unknown
+boundary. The next explicit avatar open reconciles the same producer/source IDs;
+the native journal keeps its original return IDs and uncertain transport outcome.
+An abandoned connection's retained partial assistant language is sealed as
+interrupted, without inventing its ending or a hearing receipt. Slow closure of
+an earlier row is recovered independently of newer row positions.
+
+Close drains pending semantic references with an18second bounded wait, after
+audio/output ownership ends. Failure stays `needs_review`/closing with retained
+sources. Producer `closed` means retention/producer close was confirmed; it does
+not mean Sol incorporated the context. The native Store's incorporation watermark
+remains authoritative. This adds no startup model turn, timer, peer attention,
+audio/ASR replay, worker registry or background loop after the selected voice
+connection closes.
+
+The app producer metadata is bounded to64producers and4096source references per
+dialogue; outbox rows reference the existing bounded canonical history. Completed
+source metadata retirement remains required before lifting the pilot. The
+native2MiB/dialogue and64MiB/global reservations still stop on saturation while
+retaining originals and existing context.
+
+Four SQLite/outbox tests and43mounted voice tests pass, including receipt loss,
+same-identity recovery, partial/slow closure, semantic-vs-playback revisions,
+batch limits and owner boundaries. A joined WebSocket → actual voice decoder and
+completed-only original → app canonical history/outbox → actual owner socket →
+native Store/controller journey passes both roles, explicit incorporation,
+producer close and internal-only presentation. Its audio, detector and Core
+reasoning are simulated; it uses zero models or hardware capture. Eight native
+projection/transport tests and the actual-wrapper context journey still pass;
+clippy with warnings denied passes.
+
+The joined fixture initially used amplitude-one PCM, which the actual decoder
+correctly rejected as inaudible, then an unsupported synthetic model label, which
+the actual transcript validator correctly rejected. The fixture now supplies a
+bounded synthetic tone and the selected model's allowed metadata. No production
+speech gate, selected provider or model was changed to make the fixture pass.
+The mounted close fixture waits for its actual close receipt before teardown;
+close metadata also checks the new fixed producer-state scalar. These verifier
+corrections are not evidence of an audio-quality improvement.
+
+Receiving activation must select the native listener and web producer together.
+Once native foreground-return records exist, a native rollback must retain their
+reader and publication handling; the old558native reader is not a compatible
+rollback for this new source. Existing receiving558 remains unchanged while this
+draft is qualified.
+
+Still required before receiving selection: Sol-to-Live guidance, semantic provider
+rollover, retirement of completed source/transport metadata and coherent actual
+Core/provider qualification. The128k-token admission guard and long-session
+continuity are not proved by these storage/batching tests. The five-minute pilot
+limit stays in place; physical hearing, fluency and full-goal acceptance remain
+unfinished.
 
 ## Qualification and delivery
 

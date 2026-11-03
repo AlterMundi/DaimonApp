@@ -37,6 +37,8 @@ pub(crate) enum LiveContextCommand {
     Sync {
         dialogue: String,
         generation: String,
+        #[serde(default)]
+        assistant: Vec<LiveAssistantSource>,
     },
     Read {
         dialogue: String,
@@ -57,6 +59,14 @@ pub(crate) enum LiveContextCommand {
         through: u64,
         text: String,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LiveAssistantSource {
+    source: String,
+    text: String,
+    interrupted: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -407,9 +417,18 @@ impl Store {
                 };
                 retain_event(&mut p, source, role, text, interrupted, capture_order)?
             }
-            LiveContextCommand::Sync { generation, .. } => {
+            LiveContextCommand::Sync {
+                generation,
+                assistant,
+                ..
+            } => {
                 if p.generation != generation {
                     bail!("Live producer generation differs");
+                }
+                if assistant.len() > 8
+                    || assistant.iter().map(|s| s.text.len()).sum::<usize>() > 65536
+                {
+                    bail!("Live assistant catch-up exceeds its batch bound");
                 }
                 // Read only this selected dialogue's canonical finalized text.
                 // No media/status helper, ASR, work admission or native replay.
@@ -449,8 +468,26 @@ impl Store {
                             == true,
                     );
                 }
+                let mut receipts = Vec::new();
+                for source in assistant {
+                    uuid(&source.source)?;
+                    bounded(&source.text, 16384)?;
+                    let id = source.source.clone();
+                    let mut receipt = retain_event(
+                        &mut p,
+                        source.source,
+                        "assistant".into(),
+                        source.text,
+                        source.interrupted,
+                        None,
+                    )?;
+                    receipt["source"] = json!(id);
+                    receipts.push(receipt);
+                }
                 let mut value = view(&p);
                 value["new_sources"] = json!(fresh);
+                value["new_human_sources"] = json!(fresh);
+                value["assistant_receipts"] = json!(receipts);
                 value
             }
             LiveContextCommand::Close { generation, .. } => {

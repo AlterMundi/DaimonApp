@@ -92,8 +92,8 @@ def qualify(binary):
         first = json.loads(j.internal_packets[0]['toolOutput']['output'])
         assert first['evidence']['content']['events'][0]['source'] == human['id']
         assert first['evidence']['content']['events'][0]['role'] == 'human'
-        j.context('append', generation=generation, source=str(uuid.uuid4()), role='assistant',
-                  text='A terminal assistant utterance; generated is not necessarily heard.', interrupted=True)
+        j.context('sync', generation=generation, assistant=[{'source':str(uuid.uuid4()),
+                  'text':'A terminal assistant utterance; generated is not necessarily heard.', 'interrupted':True}])
         j.wait(lambda: len(j.internal_packets) == 2)
         j.wait(lambda: j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?", (j.dialogue,)) == [(2,)])
         j.wait(lambda: j.row('SELECT busy FROM sessions WHERE thread_id=1') == [(0,)])
