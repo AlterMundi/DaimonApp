@@ -24,11 +24,23 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def test_final_handover_gate_rejects_pending_tools_and_unknown_provider_writes(self):
+        self.ready();self.assertTrue(self.stream.handover_ready())
+        self.event({'toolCall':{'functionCalls':[{'id':'query','name':'recent_originals','args':{}}]}})
+        self.assertFalse(self.stream.handover_ready('query'))
+        self.stream.tool_result('query',{'kind':'sources'})
+        self.assertFalse(self.stream.handover_ready())
+        self.event({'serverContent':{'turnComplete':True}})
+        self.event({'toolCall':{'functionCalls':[{'id':'watch','name':'await_integrator_update','args':{}}]}})
+        self.assertFalse(self.stream.handover_ready());self.assertTrue(self.stream.handover_ready('watch'))
+        self.stream.tools['watch']['state']='response_unconfirmed'
+        self.assertFalse(self.stream.handover_ready('watch'))
+
     def test_successor_opens_checkpoint_only_without_retiring_or_replaying_old_socket(self):
         self.ready()
         basis={'revision':'a'*64,'through':4,'content':{'kind':'internal_integrator_checkpoint',
             'checkpoint':{'text':'Keep the current purpose, correction and unresolved request.'}}}
-        successor=Socket();successor.received=[{'setupComplete':{}}]
+        successor=Socket();successor.received=[{'setupComplete':{},'usageMetadata':{'promptTokenCount':40}}]
         self.stream._connect=lambda *a,**k:successor
         candidate=self.stream.successor(basis,pending_effects=[{'original':self.original,'intent':str(uuid.uuid4()),'phase':'unconfirmed'}])
         self.assertFalse(self.socket.closed);self.assertEqual(self.stream.phase,'ready')
@@ -154,8 +166,11 @@ class Dialogue(unittest.TestCase):
         self.assertNotIn('contextWindowCompression',setup)
         self.assertEqual(self.stream.max_context_tokens,128000)
         self.ready()
-        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':105000,'totalTokenCount':105100,'private_payload':'not retained'}}),[])
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':105000,'totalTokenCount':105100,'private_payload':'not retained'}}),
+            [{'type':'context_usage','usage':{'promptTokenCount':105000,'totalTokenCount':105100}}])
         self.assertEqual(self.stream.context_usage,{'promptTokenCount':105000,'totalTokenCount':105100})
+        self.assertTrue(self.stream.rollover_due)
+        self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':100,'totalTokenCount':200}}),[],'A lower observation cannot authorize context discard')
         self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':True,'totalTokenCount':-1}}),[])
         self.assertEqual(self.stream.phase,'ready')
         self.assertEqual(self.stream.input_bytes,0)

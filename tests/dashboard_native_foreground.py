@@ -275,6 +275,11 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.tool({'type':'delegation_proposed','call_id':'work',
                                     'original_ids':[ident],'formulation':'Derivative'})
         self.assertEqual(len(self.owner.delegations),1)
+        successor=Stream();self.bridge.replace_stream(successor,str(uuid.uuid4()))
+        result=await self.bridge.tool({'type':'delegation_proposed','call_id':'work',
+            'original_ids':[ident],'formulation':'A replacement model asks again.'})
+        self.assertEqual(result['kind'],'unconfirmed')
+        self.assertEqual(len(self.owner.delegations),1,'A new provider generation/call ID cannot reauthor an uncertain admission')
     def source(self):return {'id':'native:123','revision':'b'*64,'kind':'result','label':'Integrator'}
     async def results(self,count):
         async def wait():

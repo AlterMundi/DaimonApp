@@ -67,6 +67,7 @@ class NativeDialogue:
         self.tool_responses = 0
         self.failure_code = None
         self.context_usage = None
+        self.turns_finished=0
         self.guidance_attempts=set();self.guidance_bytes=0
         try:
             self._socket = connect(self.endpoint, header=['x-goog-api-key: ' + token],
@@ -240,13 +241,34 @@ class NativeDialogue:
             deadline=time.monotonic()+15
             while time.monotonic()<deadline:
                 events=candidate.receive()
-                if any(e['type']!='ready' for e in events):
+                if any(e['type'] not in ('ready','context_usage') for e in events):
                     raise DialogueUnavailable('native-dialogue-successor-before-readiness')
-                if events:return candidate
+                if any(e['type']=='ready' for e in events):return candidate
             raise DialogueUnavailable('native-dialogue-successor-readiness-bound')
         except BaseException:
             if candidate is not None:candidate.close()
             raise
+
+    @property
+    def rollover_due(self):
+        """Early handover request, not a token admission/compression claim."""
+        # This hint is read on the async owner loop. Never wait there for a
+        # provider send holding the thread lock; the final gate below owns it.
+        usage=max((self.context_usage or {}).values(),default=0)
+        return (usage>=102400 or self._clock()-self._started>=240
+            or len(self.tools)>=24 or self.tool_responses>=128
+            or self.text_bytes>=98304 or self.guidance_bytes>=49152)
+
+    def handover_ready(self,idle_watch=None):
+        """Final locked transport observation; caller invokes off the async loop."""
+        if not self._lock.acquire(blocking=False):return False
+        try:
+            if self.phase!='ready' or self.input_active or self.response_pending:return False
+            return all(c['state'] in ('response_sent','cancelled') or
+                ident==idle_watch and c['state']=='pending'
+                    and c['name'] in ('await_integrator_update','delegate_to_integrator')
+                for ident,c in self.tools.items())
+        finally:self._lock.release()
 
     def _active(self, *, ready=True):
         if self.phase not in (('ready',) if ready else ('opening', 'ready')):
@@ -436,7 +458,12 @@ class NativeDialogue:
             # or proof of semantic retention after the provider slides context.
             selected={k:usage[k] for k in ('promptTokenCount','totalTokenCount')
                 if type(usage.get(k)) is int and 0<=usage[k]<=2**31-1}
-            if selected:self.context_usage=selected
+            if selected:
+                peak=dict(self.context_usage or {})
+                for key,count in selected.items():peak[key]=max(peak.get(key,0),count)
+                if peak!=self.context_usage:
+                    self.context_usage=peak
+                    events.append({'type':'context_usage','usage':dict(peak)})
         if 'setupComplete' in value:
             if self.phase != 'opening' or not isinstance(value['setupComplete'], dict):
                 raise ValueError('Unexpected readiness')
@@ -522,6 +549,7 @@ class NativeDialogue:
         if content.get('generationComplete'):
             events.append({'type': 'generation_complete'})
         if content.get('turnComplete'):
+            self.turns_finished+=1
             self.response_pending=False
             events.append({'type': 'turn_complete'})
         if 'goAway' in value:

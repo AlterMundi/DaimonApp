@@ -50,6 +50,21 @@ class NativeAcousticSession:
         self.markers=[]
         self.closed=False;self.lock=asyncio.Lock();self.changed=asyncio.Event()
         self.boundary_mismatch=None
+        self.provider_offset_base=0
+
+    def replace_stream(self,stream):
+        """Caller holds the idle acoustic lock; logical PCM/detector offsets stay.
+
+        The new provider starts at byte zero. Keep retained source/capture clocks
+        monotonic and rebase only its incoming activity offsets.
+        """
+        if self.closed or self.local is not None or self.provider is not None or self.spans:
+            raise ForegroundUnavailable('Acoustic handover requires an idle boundary')
+        if stream.activity_mode!=self.stream.activity_mode:
+            raise ForegroundUnavailable('Acoustic handover changed activity ownership')
+        if self.stream.activity_mode=='automatic' and (self.boundary!=self.sent or self.unassigned):
+            raise ForegroundUnavailable('Automatic handover needs its complete acknowledged input boundary')
+        self.provider_offset_base=self.sent;self.stream=stream
 
     async def marker(self,audio_bytes,questions):
         # The client emits this narrowing snapshot before the PCM containing its
@@ -185,7 +200,7 @@ class NativeAcousticSession:
                     raise ForegroundUnavailable('Native activity is not the selected manual protocol')
                 start=event.get('activity')=='ACTIVITY_START'
                 target=span.stream_start if start else span.stream_end
-                offset=self._offset(event.get('audio_offset'))
+                offset=self._offset(event.get('audio_offset'))+self.provider_offset_base
                 if target is None or abs(offset-target)>2:
                     # Fixed scalar timing evidence only; never provider text,
                     # PCM, exception contents or an unvalidated event payload.
@@ -283,7 +298,7 @@ class NativeAutomaticAcousticSession(NativeAcousticSession):
             if kind=='voice_activity':
                 if event.get('source')!='provider_automatic_activity':
                     raise ForegroundUnavailable('Native activity is not the selected automatic protocol')
-                offset=self._offset(event.get('audio_offset'))
+                offset=self._offset(event.get('audio_offset'))+self.provider_offset_base
                 if offset!=offset.to_integral_value() or offset%2 or not self.boundary<=offset<=self.sent:
                     raise ForegroundUnavailable('Automatic boundary does not match transmitted PCM')
                 offset=int(offset)

@@ -67,6 +67,10 @@ class ForegroundBridge:
         self.offer_generation=0
         self.noticed_generation=0
         self._tool_calls=set()
+        self._admissions={}
+        self._watch_task=None;self._watch_idle=False;self._watch_ident=None
+        self.generation=dialogue
+        self.idle_notify=None
 
     async def _run(self, limit, function, *args, **kwargs):
         # A cancelled waiter cannot release a slot while its owning file/control
@@ -297,9 +301,24 @@ class ForegroundBridge:
                         raise ForegroundUnavailable('Original is not ready in this conversation')
                 if self.pending_acoustic is not None or self.latest!=root:
                     raise ForegroundUnavailable('A newer spoken correction is pending')
+                previous=self._admissions.get(root)
+                if previous is not None:
+                    # A replacement voice model may ask again. Preserve the
+                    # actual old admission/uncertainty instead of minting a new
+                    # work intent for the same completed human original.
+                    result=dict(previous['receipt'])
+                    if result.get('kind')=='integrator_admission' and not self._watching:
+                        await self._watch(ident,result);return
+                    if not self.closed:await asyncio.to_thread(self.stream.tool_result,ident,result)
+                    return result
+                if len(self._admissions)>=32:
+                    raise ForegroundUnavailable('Integrating admission references reached the live bound')
                 body={'binding':self.binding,'id':root,
-                      'intent_id':str(uuid.uuid5(uuid.UUID(self.dialogue),'delegate:'+ident)),
+                      'intent_id':str(uuid.uuid5(uuid.UUID(self.dialogue),self.generation+':delegate:'+ident)),
                       'formulation':event['formulation'],'source_ids':sources}
+                admission={'original':root,'intent':body['intent_id'],'phase':'unconfirmed',
+                    'receipt':{'kind':'unconfirmed','meaning':'This exact original already has an unconfirmed integrating admission. Do not repeat work; use its retained canonical status/returns.'}}
+                self._admissions[root]=admission
                 # One call only. A lost ACK is unconfirmed, never permission to
                 # reauthor a second request or retry a provider/native effect.
                 accepted=await self._owner(self.provider.conversation_foreground_delegate,body)
@@ -309,6 +328,7 @@ class ForegroundBridge:
                         'worker_delivery':'not_established_by_this_receipt',
                         'acknowledgment':'The request was sent to the integrating conversation. This receipt does not establish delivery to or start by a worker.',
                         'completion':'Not established by admission. Use real integrating returns.'}
+                admission['phase']='accepted';admission['receipt']=dict(result)
                 if not self._watching:
                     # The admitted nonblocking call itself carries returns; no
                     # extra model-selected subscription is required.
@@ -396,12 +416,16 @@ class ForegroundBridge:
     async def _watch(self,ident,initial=None):
         if self._watching:raise ForegroundUnavailable('An integrating watch is already pending')
         self._watching=True
+        self._watch_task=asyncio.current_task();self._watch_ident=ident
         source=None
         try:
             if initial is not None:
                 await asyncio.to_thread(self.stream.tool_result,ident,initial,will_continue=True)
             while True:
-                source=await self._returns.get()
+                self._watch_idle=True
+                if self.idle_notify is not None:await self.idle_notify()
+                try:source=await self._returns.get()
+                finally:self._watch_idle=False
                 if source is None:
                     raise ForegroundUnavailable('Foreground conversation ended')
                 self._queued.discard((source['id'],source['revision']))
@@ -425,7 +449,23 @@ class ForegroundBridge:
                     self._returns.put_nowait(source);self._queued.add(key)
                     self.offer_generation+=1  # Only a known-unoffered read can rearm attention.
             raise
-        finally:self._watching=False
+        finally:
+            self._watching=False;self._watch_idle=False;self._watch_task=None;self._watch_ident=None
+
+    @property
+    def idle_watch(self):
+        return (self._watch_task,self._watch_ident) if self._watching and self._watch_idle else (None,None)
+
+    def pending_effects(self):
+        return [{k:v[k] for k in ('original','intent','phase')} for v in self._admissions.values()]
+
+    def replace_stream(self,stream,generation):
+        if self._watching:raise ForegroundUnavailable('Retire the idle provider watch before handover')
+        Provider.input_id(generation)
+        self.stream=stream;self.generation=generation;self._tool_calls.clear()
+        # Unoffered canonical references remain queued. A future/current return
+        # can nudge the replacement without repeating the old delegation call.
+        if self._queued:self.noticed_generation=-1
 
     def integrating_source(self,source,*,in_context=False):
         """Register an authenticated canonical reference, in setup or for an offer.

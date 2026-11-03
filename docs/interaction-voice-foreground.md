@@ -1437,3 +1437,13 @@ Store/Core/producer seams before implementation. Two watermarks, semantic revisi
 source-specific no-publication policy, canonical catch-up and explicit provider
 rollover are required; unconditionally enabling the provider sliding window is
 rejected. No full automatic continuity/device completion is claimed.
+
+Source continuation,3November2026: the reviewed context bridge now qualifies two
+active provider-peer handovers through actual native incorporation/checkpoints,
+plus pending-work speech and late-return continuity. Exact transition journals,
+idle reader/capture/playback gates, provider-offset rebasing and once-only
+admission references are implemented. Provider peers/Core reasoning are synthetic;
+token-triggered checkpoints/admission, complete metadata retirement, actual
+provider continuity/performance and receiving acceptance remain unfinished.
+See the single maintained design/qualification record above. Receiving558 and
+the five-minute logical pilot remain unchanged; PR560 is draft.

@@ -385,7 +385,7 @@ dashboard state endpoint; it now uses the existing shared-browser authentication
 fixture and access endpoint, with an exact matching WebSocket host. This is a
 fixture correction, not an audio improvement.
 
-Receiving558 remains selected. Semantic provider rollover, repeat compaction,
+Receiving558 remains selected. Real-provider rollover, repeat compaction,
 completed metadata retirement and the complete receiving journey remain pending;
 PR560 stays draft.
 
@@ -415,7 +415,8 @@ producer generation; it does not assert provider readiness or application. The
 socket owner must coordinate the actual idle boundary, candidate setup/readiness,
 canonical pending-effect references, local generation journal and commit before
 accepting new capture. Socket writes/tool calls/native work are not replayed from
-the checkpoint. That runtime coordination is the next implementation step.
+the checkpoint. The active-loop coordination below implements this source path;
+actual provider and receiving acceptance remain separate.
 
 The last exact transition receipt supports inspection after a lost native commit
 ACK, including restart; reissuing it does not mutate state or open a socket.
@@ -436,7 +437,10 @@ pilot and receiving558 remain unchanged.
 ### Local journal recovery and prepared provider successor
 
 The app's existing producer table now holds one small pending transition intent
-(`previous`, `next`, exact seed revision). `NativeContext` serializes context
+(`previous`, `next`, exact seed revision) and its last exact local settlement
+receipt. The receipt makes a committed SQLite update inspectable when its
+awaiting coroutine is cancelled before updating its in-memory projection.
+`NativeContext` serializes context
 sync, guidance and generation mutation through one operation lock. It records
 the intent before a caller opens its candidate, checks the unchanged basis again,
 and advances the local producer generation only after an exact native receipt.
@@ -471,12 +475,74 @@ after its candidate was fenced. Synthetic Core reasoning and transport peers
 are explicit; these fixtures use zero model/hardware calls. The prior joined
 voice/context/guidance journey still passes.
 
-Remaining integration is in the active voice loop: idle reader/capture/playback
-handover, pending watch/effect continuity, provider-offset rebasing and complete
-counter/media retirement. Then wire token/headroom-triggered checkpoint requests,
-qualify repeated actual provider continuity and adopt the coherent receiving
-version. No automatic rollover or128k-token admission is claimed by these
-prepared methods. PR560 remains draft and the five-minute runtime pilot remains.
+The prepared methods do not implement128k-token admission. Their active-loop
+integration and remaining delivery requirements are described below. PR560
+remains draft and the five-minute runtime pilot remains.
+
+### Active voice-loop handover —3November2026
+
+The prepared successor is now connected to the existing explicit avatar loop.
+An advisory request occurs at102400observed provider tokens,240seconds,24tool
+proposals,128tool responses or early text/guidance bounds. This hint is not a
+tokenizer, hard admission rule or permission to discard context. Rollover still
+requires a current complete Sol checkpoint. Token/headroom-triggered checkpoint
+delivery and hard admission are unfinished.
+
+Candidate setup runs while the old stream continues receiving audio and serving
+new speech. At installation, the owner pauses/drains its provider event reader,
+checks any already-dequeued output batch, acquires the acoustic boundary, waits
+for serialized playback and requires complete original retention. The final
+transport gate takes its thread lock without waiting and rejects active output,
+unknown provider writes and pending tools other than the known idle return watch.
+Provider usage observations retain monotonic peaks and wake this control path
+without being displayed as conversation content or treated as authority.
+Native/local generation commits before the stream references change. Failed or
+stale preparation closes the candidate and resolves/fences its exact intent;
+a candidate setup failure leaves the healthy old conversation available.
+Only a changed seed or another completed provider turn permits a new attempt;
+idle reads do not write sync repeatedly and wake their own database watcher.
+
+Only an idle queue wait may be retired, never a tool send, admission or native
+job. Known-unoffered canonical returns remain in the same queue; a failed
+installation can resume the same old watch. The successor receives bounded
+admission/uncertainty references, and any late result uses the existing canonical
+reader/notice path. A second proposal for the same retained original returns its
+actual previous admission or uncertainty rather than minting another work intent,
+including when a new provider reuses a raw call ID. Per-provider tool IDs retire;
+the bounded logical admission ledger remains.
+
+Logical capture/detector clocks and source IDs remain monotonic. Incoming provider
+activity offsets are rebased by the bytes already sent before replacement; old
+PCM is never resent. Automatic mode additionally requires an exact acknowledged
+boundary with no unassigned tail. The existing300second logical PCM/output and
+128capture pilot bounds remain; aggregate output is bounded across generations.
+At most one candidate or retiring stream exists per active owner. Closing during
+preparation resolves its transition while preserving any separate unknown source
+retention failure for explicit recovery. The fixed scalar close journal adds the
+rollover count, candidate setup-failure count and retired output totals, never
+checkpoint/tool content.
+
+Qualification:49mounted voice tests,25bridge tests,25acoustic tests,13producer
+tests and39transport tests pass. The joined mounted journey now performs two
+active socket handovers through actual owner/controller/SQLite incorporation and
+checkpoints, once-only completed human originals, canonical assistant outbox and
+one Sol guide. Four sources survive, old PCM is not replayed and private native
+bookkeeping stays unpublished. A separate mounted journey speaks across both
+replacements while integrating work remains pending, then receives its late
+canonical return without another admission. Holding candidate setup still permits
+old audio; changed floors defer installation. Audio/detector/Core/provider peers
+remain synthetic. These are not real-provider continuity or hearing receipts.
+
+Previous-head CI41558621219 passed native text/other applicable jobs but its
+dashboard scalar-boundary test timed out awaiting cleanup's journal after2seconds.
+That privacy/retention verifier now allows a finite30seconds; all its exact scalar
+and no-private-content assertions remain. This is not a claimed audio or latency
+improvement, nor a finding of the underlying timing cause.
+
+Remaining before adoption: token/headroom checkpoint signaling and admission,
+completed transport/media/guidance metadata retirement, actual Core/provider
+continuity/performance and receiving/device acceptance. PR560 stays draft,
+receiving558 is unchanged and the five-minute pilot is not lifted.
 
 ## Astra high review — accepted decisions
 

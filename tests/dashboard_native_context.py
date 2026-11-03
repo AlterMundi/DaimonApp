@@ -94,6 +94,18 @@ class Context(unittest.IsolatedAsyncioTestCase):
     def retain(self,text='Terminal language α.',*,closed=True,source=None):
         return self.history.retain(100,self.dialogue,self.binding,source or str(uuid.uuid4()),text,'b'*64,640,closed=closed)
 
+    async def test_lost_local_settle_ack_reconciles_the_same_exact_transition(self):
+        for committed in (False,True):
+            p=self.producer(str(uuid.uuid4()));await p.open();basis=await p.prepare_rollover()
+            intent=await p.begin_rollover(basis,str(uuid.uuid4()))
+            # SQLite committed, but its awaiting coroutine was cancelled before
+            # it could update its in-memory generation/intent projection.
+            first=self.history.context_rollover_settle(p.record,intent,committed=committed)
+            second=self.history.context_rollover_settle(p.record,intent,committed=committed)
+            self.assertEqual(first,second)
+            self.assertIsNone(second['rollover'])
+            with self.assertRaises(ValueError):self.history.context_rollover_settle(p.record,intent,committed=not committed)
+
     async def test_two_generation_transitions_keep_outbox_sources_and_local_owner(self):
         p=self.producer();await p.open();generations=[p.record['generation']]
         for cycle in range(2):
@@ -153,6 +165,34 @@ class Context(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):await p.abort_rollover(intent)
         self.assertIsNotNone(p.record['rollover']);self.assertTrue(p.failed)
         await p.close()
+
+    async def test_idle_rollover_preparation_does_not_self_wake_through_sync_writes(self):
+        p=self.producer();await p.open();self.retain();await p._sync(p.record)
+        before=len(self.provider.calls)
+        first=await p.prepare_rollover();second=await p.prepare_rollover()
+        self.assertEqual(first,second)
+        self.assertEqual([c['action'] for c in self.provider.calls[before:]],['rollover_read','rollover_read'])
+        await p.close()
+
+    async def test_close_settles_prepared_candidate_without_reopening_or_committing(self):
+        p=self.producer();await p.open();basis=await p.prepare_rollover()
+        intent=await p.begin_rollover(basis,str(uuid.uuid4()))
+        await p.close()
+        self.assertEqual(p.status,'closed');self.assertIsNone(p.record['rollover'])
+        self.assertIn(intent['next'],self.provider.fenced)
+        self.assertFalse(any(c['action']=='rollover_commit' for c in self.provider.calls))
+
+    async def test_transition_cleanup_does_not_retry_an_independent_unknown_source_write(self):
+        p=self.producer();await p.open();basis=await p.prepare_rollover()
+        await p.begin_rollover(basis,str(uuid.uuid4()))
+        self.retain();self.provider.lose_next=True
+        task=asyncio.create_task(p.run())
+        with self.assertRaises(ProviderUnavailable):await task
+        before=len(self.provider.calls)
+        await p.close()
+        self.assertEqual([c['action'] for c in self.provider.calls[before:]],['rollover_abort'])
+        self.assertEqual(p.status,'needs_review')
+        self.assertEqual(len(self.history.context_pending(p.record)),1)
 
     async def test_terminal_transaction_and_playback_use_one_semantic_source(self):
         p=self.producer();await p.open()

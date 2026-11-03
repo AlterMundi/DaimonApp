@@ -9,6 +9,7 @@ from dashboard.native_foreground import ForegroundUnavailable
 
 
 class Stream:
+    activity_mode='manual'
     def __init__(self):self.events=[]
     def activity_start(self):self.events.append(('start',))
     def append(self,pcm):self.events.append(('pcm',pcm))
@@ -209,6 +210,21 @@ class Automatic(unittest.IsolatedAsyncioTestCase):
     async def vad(self,kind,offset):
         return await self.session.provider_event({'type':'voice_activity','activity':kind,
             'audio_offset':offset,'source':'provider_automatic_activity'})
+    async def test_successor_rebases_provider_offsets_without_replaying_pcm(self):
+        successor=Stream();successor.activity_mode='automatic'
+        with self.assertRaises(ForegroundUnavailable):self.session.replace_stream(successor)
+        await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Previous'})
+        await self.vad('ACTIVITY_END','2s')
+        async with self.session.lock:self.session.replace_stream(successor)
+        pcm=b'\3\0'*16000
+        await self.session.feed(pcm)
+        await self.vad('ACTIVITY_START','0.25s');await self.vad('ACTIVITY_END','1s')
+        await self.session.provider_event({'type':'input_transcript','text':'Next'})
+        self.assertEqual(self.bridge.captures[-1][1],pcm)
+        self.assertEqual(successor.events,[('pcm',pcm)])
+        self.assertEqual(self.session.provider_offset_base,64000)
+        self.assertEqual(self.session.boundary,96000)
     async def test_continuous_noise_and_early_final_keep_exact_original_and_event_identity(self):
         ident=await self.vad('ACTIVITY_START','0.75s')
         self.assertEqual(self.bridge.pending_acoustic,ident)

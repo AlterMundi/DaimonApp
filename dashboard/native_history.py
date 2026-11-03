@@ -131,21 +131,29 @@ class NativeHistory:
             if row['phase']!='open':raise ValueError('Live producer is closing')
             if row['rollover'] is not None and json.loads(row['rollover'])!=intent:
                 raise ValueError('Inspect the retained Live generation transition first')
-            db.execute('UPDATE foreground_context_producers SET rollover=? WHERE dialogue=?',
+            db.execute('UPDATE foreground_context_producers SET rollover=?,rollover_settled=NULL WHERE dialogue=?',
                 (json.dumps(intent,separators=(',',':')),record['dialogue']))
         return intent
 
     def context_rollover_settle(self,record,intent,*,committed):
         """Observe native generation before clearing a local transition intent."""
         if type(committed) is not bool:raise ValueError('Select an observed generation outcome')
+        receipt={**intent,'committed':committed}
+        generation=intent['next'] if committed else intent['previous']
         with self.database() as db:
-            db.execute('BEGIN IMMEDIATE');self._context_owned(db,record)
+            db.execute('BEGIN IMMEDIATE')
             row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone()
+            if (row is None or any(row[k]!=record[k] for k in ('human','scope','binding'))
+                    or record['scope']!=self.scope):
+                raise ValueError('Live context producer ownership changed')
+            if (row['rollover'] is None and row['rollover_settled'] is not None
+                    and json.loads(row['rollover_settled'])==receipt and row['generation']==generation):
+                return dict(row)
+            self._context_owned(db,record)
             if row['rollover'] is None or json.loads(row['rollover'])!=intent or intent['previous']!=record['generation']:
                 raise ValueError('Live generation transition changed')
-            generation=intent['next'] if committed else intent['previous']
-            db.execute('UPDATE foreground_context_producers SET generation=?,rollover=NULL WHERE dialogue=?',
-                (generation,record['dialogue']))
+            db.execute('UPDATE foreground_context_producers SET generation=?,rollover=NULL,rollover_settled=? WHERE dialogue=?',
+                (generation,json.dumps(receipt,separators=(',',':')),record['dialogue']))
             return dict(db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(record['dialogue'],)).fetchone())
 
     def _context_owned(self,db,record):

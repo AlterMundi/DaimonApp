@@ -18,7 +18,7 @@ class NativeContext:
         self.history,self.provider,self.human=history,provider,human
         self.dialogue,self.binding,self.owner=dialogue,binding,owner
         self.dirty=asyncio.Event();self.record=None
-        self.runner=None;self.stopping=False;self.failed=False;self.status='not_started'
+        self.runner=None;self.stopping=False;self.failed=False;self.failed_sync=False;self.status='not_started'
         self.guidance_lock=asyncio.Lock();self.guidance_attempts=set()
         self.operation_lock=asyncio.Lock()
 
@@ -53,7 +53,13 @@ class NativeContext:
     async def prepare_rollover(self):
         async with self.operation_lock:
             if self.stopping or self.failed or self.record.get('rollover') is not None:return None
-            await self._sync_unlocked(self.record)
+            # Catch up actual pending terminal sources once. An idle failed
+            # checkpoint read must not write sync repeatedly and wake its own
+            # database watcher while waiting for Sol incorporation.
+            if await asyncio.to_thread(self.history.context_pending,self.record):
+                try:await self._sync_unlocked(self.record)
+                except BaseException:
+                    self.failed=True;self.failed_sync=True;self.status='needs_review';raise
             try:value=await self._call(self.record,'rollover_read')
             except ProviderUnavailable:return None
             return value.get('rollover_basis')
@@ -62,7 +68,8 @@ class NativeContext:
         """Retain the exact candidate intent BEFORE opening a replacement."""
         async with self.operation_lock:
             if self.stopping or self.failed or self.record.get('rollover') is not None:return None
-            current=await self._call(self.record,'rollover_read')
+            try:current=await self._call(self.record,'rollover_read')
+            except ProviderUnavailable:return None
             if current.get('rollover_basis')!=basis:return None
             intent=await asyncio.to_thread(self.history.context_rollover_intent,self.record,next_generation,basis['revision'])
             self.record['rollover']=json.dumps(intent,separators=(',',':'))
@@ -131,7 +138,7 @@ class NativeContext:
             await self.dirty.wait();self.dirty.clear()
             try:await self._sync(self.record)
             except BaseException:
-                self.failed=True;self.status='needs_review';raise
+                self.failed=True;self.failed_sync=True;self.status='needs_review';raise
             if self.stopping:return
 
     async def _sync(self,record):
@@ -204,7 +211,17 @@ class NativeContext:
     async def close(self):
         if self.record is None:return
         await asyncio.to_thread(self.history.context_phase,self.record,'closing')
-        self.stopping=True;self.notify()
+        self.stopping=True
+        if self.record.get('rollover') is not None:
+            try:
+                async with self.operation_lock:
+                    await self._resolve_rollover(self.record,json.loads(self.record['rollover']))
+                # Resolving a transition is not permission to retry an unknown
+                # source-retention write. Preserve that separate failure.
+                if not self.failed_sync:self.failed=False
+            except BaseException:
+                self.failed=True;self.status='needs_review'
+        self.notify()
         if self.runner is not None:
             try:await asyncio.wait_for(asyncio.shield(self.runner),18)
             except BaseException:
@@ -234,8 +251,10 @@ def install_schema(db):
         CREATE INDEX IF NOT EXISTS foreground_context_pending ON foreground_context_outbox(dialogue,phase);
         CREATE TRIGGER IF NOT EXISTS foreground_context_source_deleted AFTER DELETE ON foreground_utterances
         BEGIN DELETE FROM foreground_context_outbox WHERE source=OLD.id; END;''')
-    if 'rollover' not in {r[1] for r in db.execute('PRAGMA table_info(foreground_context_producers)')}:
-        db.execute('ALTER TABLE foreground_context_producers ADD COLUMN rollover TEXT')
+    columns={r[1] for r in db.execute('PRAGMA table_info(foreground_context_producers)')}
+    for column in ('rollover','rollover_settled'):
+        if column not in columns:
+            db.execute(f'ALTER TABLE foreground_context_producers ADD COLUMN {column} TEXT')
 
 
 def enqueue(db,row):
