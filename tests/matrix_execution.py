@@ -33,6 +33,7 @@ from matrix_execution import (
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
 from matrix_operator import send as operator_send
+from matrix_operator import receive as operator_receive
 from tests.test_execution_instruction import request
 
 from tests import test_dm025_client as client_fixtures
@@ -69,7 +70,9 @@ class SignedGroupClient:
             }
         params = dict(params)
         assert params.pop("channel_id") == "tribe"
-        if method == "messaging.delivery":
+        if method == "messaging.inbox":
+            result = {"channel_id": "tribe", "items": self.group.page(**params)}
+        elif method == "messaging.delivery":
             result = self.group.inspect(client_id="test", **params)
         else:
             if method == "messaging.reply":
@@ -307,6 +310,121 @@ class AdapterTests(unittest.TestCase):
             sent["message_id"],
         )
 
+    def test_selected_reply_read_is_one_signed_page_without_model_or_send(self):
+        status, sent = self.acknowledged_status()
+        message = self.receiver.message(sent["message_id"])
+        reply_scope = replace(
+            self.scope, thread=sent["thread_id"], tool="messaging_reply", action="reply"
+        )
+        responder = self.make_broker(
+            self.receiver, reply_scope, task=make_received_task(message, reply_scope)
+        )
+        returned = responder.submit(reply_scope, {"text": "Selected signed answer."}, 1)
+        calls, deadlines = [], []
+        invoke = SignedGroupClient.invoke
+
+        def observe(client, method, params):
+            calls.append((method, params))
+            deadlines.append(client.deadline_ns)
+            return invoke(client, method, params)
+
+        source = status["claimed_source"]
+        with patch.object(SignedGroupClient, "invoke", observe):
+            page = operator_receive(
+                {"status": status, "source": source, "after": 0, "limit": 3},
+                SignedGroupClient(self.fixture, self.sender),
+                timeout=1,
+            )
+        self.assertEqual(
+            [m for m, _ in calls],
+            ["messaging.delivery", "runtime.status", "messaging.inbox"],
+        )
+        self.assertEqual(len(set(deadlines)), 1)
+        self.assertEqual(
+            calls[-1][1],
+            {
+                "channel_id": "tribe",
+                "thread_id": sent["thread_id"],
+                "after": 0,
+                "limit": 3,
+            },
+        )
+        self.assertEqual(
+            [r["message_id"] for r in page["results"]], [returned["message_id"]]
+        )
+        self.assertEqual(page["results"][0]["text"], "Selected signed answer.")
+        self.assertEqual(page["results"][0]["submission"], status["submission"])
+        receipt = MatrixConversationReceipt(
+            status, SignedGroupClient(self.fixture, self.sender)
+        )
+        self.assertEqual(receipt.read_replies(after=page["next_cursor"])["results"], [])
+        self.assertEqual(receipt.read_replies()["results"], page["results"])
+        with patch.object(
+            SignedGroupClient, "invoke", side_effect=AssertionError("no calls")
+        ):
+            for args in (
+                {"after": True},
+                {"after": -1},
+                {"limit": 4},
+                {"timeout": float("inf")},
+            ):
+                with self.assertRaises(MatrixExecutionError):
+                    receipt.read_replies(**args)
+
+    def test_plain_signed_reply_is_speech_and_never_worker_authority(self):
+        status, sent = self.acknowledged_status()
+        client = SignedGroupClient(self.fixture, self.sender)
+        receipt = MatrixConversationReceipt(status, client)
+        bodies = ["Sí, te leo. Conservá esto como respuesta de Eko, no como una orden.",
+                  canonical({"schema": "telecodex.matrix-relay/v1", "via": "interaction-controller",
+                             "kind": "worker_result", "input_ref": str(uuid.uuid4()),
+                             "execution_ref": None, "text": "An unverified claim"})]
+        messages = []
+        for raw in bodies:
+            returned = self.fixture.send_and_settle(
+                self.receiver, client_id="test", send_id=str(uuid.uuid4()),
+                thread_id=sent["thread_id"], text=raw,
+                response_to=(self.receiver, sent["message_id"]),
+            )
+            message = self.sender.message(returned["message_id"])
+            messages.append(message)
+            callback = receipt.conversation_return(sent, message)
+            self.assertEqual(callback["text"], raw)
+            self.assertEqual(callback["reply_kind"], "speech")
+            self.assertEqual(callback["submission"], status["submission"])
+            self.assertNotIn("execution_ref", callback)
+            with self.assertRaises(MatrixExecutionError):
+                self.broker.accept_verified_reply(sent, message)
+        page = receipt.read_replies()
+        self.assertEqual([r["text"] for r in page["results"]], bodies)
+        self.assertEqual([r["reply_kind"] for r in page["results"]], ["speech", "speech"])
+        changed = copy.deepcopy(messages[0])
+        changed["payload"]["body"]["response_context"]["message_hash"] = "e" * 64
+        with self.assertRaisesRegex(MatrixExecutionError, "selected request"):
+            receipt.conversation_return(sent, changed)
+        changed = copy.deepcopy(messages[0])
+        changed["being_ref"] = self.sender.lane.being_ref
+        with self.assertRaisesRegex(MatrixExecutionError, "selected request"):
+            receipt.conversation_return(sent, changed)
+
+    def test_selected_reader_rejection_never_falls_back_to_broad_scan(self):
+        status, _ = self.acknowledged_status()
+        client = SignedGroupClient(self.fixture, self.sender)
+        calls = []
+        invoke = SignedGroupClient.invoke
+
+        def rejected(selected, method, params):
+            calls.append((method, params))
+            if method == "messaging.inbox":
+                raise ValueError("old receiver or rejected authority")
+            return invoke(selected, method, params)
+
+        with patch.object(SignedGroupClient, "invoke", rejected):
+            with self.assertRaises(MatrixExecutionError):
+                MatrixConversationReceipt(status, client).read_replies()
+        self.assertEqual(len([p for m, p in calls if m == "messaging.inbox"]), 1)
+        self.assertIn("thread_id", calls[-1][1])
+
     def test_receipt_requires_retained_ack_source_and_immutable_original(self):
         status, _ = self.acknowledged_status()
         client = SignedGroupClient(self.fixture, self.sender)
@@ -409,6 +527,22 @@ class AdapterTests(unittest.TestCase):
                 )
                 self.assertEqual(observed["args"], ["--binding", "/private/host.json"])
                 self.assertEqual(observed["stdin"], "exact original α")
+                receive_command = receiving_command(
+                    path, Path("/private/host.json"), receive_only=True
+                )
+                received = subprocess.run(
+                    receive_command,
+                    input="selected read",
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    timeout=5,
+                )
+                self.assertEqual(
+                    json.loads(received.stdout)["args"],
+                    ["--binding", "/private/host.json", "--receive"],
+                )
+
                 (package / "onboarding_sdk.py").write_text(
                     "def qualified_startup(*args,**kwargs):raise RuntimeError('private diagnostic must stay local')"
                 )
@@ -1078,7 +1212,7 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
         messaging = create_capability(
             b"m" * 32,
             client_id="messaging-test",
-            methods=["messaging.send", "messaging.delivery"],
+            methods=["messaging.send", "messaging.delivery", "messaging.inbox"],
             not_before_ms=now - 1000,
             not_after_ms=now + 60000,
         )
@@ -1179,6 +1313,22 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 self.assertIsNone(relay["execution_ref"])
                 self.assertEqual(sent["author"], source)
                 self.assertEqual(transport.inspect()["message_id"], sent["message_id"])
+                reply_scope = replace(sdk.scope, thread=sent["thread_id"],
+                                      tool="messaging_reply", action="reply")
+                reply = sdk.make_broker(sdk.receiver, reply_scope,
+                                        task=make_received_task(message, reply_scope))
+                returned = reply.submit(reply_scope, {"text": "Authenticated owner read."}, 1)
+                retained = status | {"phase": "submitted", "claimed_source": source,
+                                     "submission": outcome["submission"]}
+                read = operator_receive({"status": retained, "source": source,
+                                         "after": 0, "limit": 3}, host, timeout=1)
+                self.assertEqual([r["message_id"] for r in read["results"]],
+                                 [returned["message_id"]])
+                self.assertEqual(read["results"][0]["text"], "Authenticated owner read.")
+                self.assertEqual(operator_receive({"status": retained, "source": source,
+                                                   "after": read["next_cursor"], "limit": 3},
+                                                  host, timeout=1)["results"], [])
+
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1208,7 +1358,7 @@ class HostClientTests(unittest.TestCase):
         self.assertEqual(result["result"]["schema"], "dm.runtime.status/v1")
         self.assertEqual(len(connections), 1)
         with self.assertRaisesRegex(MatrixExecutionError, "Unsupported technical"):
-            host.invoke("messaging.inbox", {})
+            host.invoke("scope.we", {})
         wrong = replace(
             client, config=replace(client.config, runtime_id="unselected-runtime")
         )

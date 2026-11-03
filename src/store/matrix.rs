@@ -388,6 +388,12 @@ pub struct MatrixSubmission {
     pub author: MatrixAuthor,
     pub destination: MatrixDestination,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixReplyKind {
+    Speech,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatrixReturn {
@@ -398,6 +404,10 @@ pub struct MatrixReturn {
     pub message_hash: String,
     pub author: MatrixAuthor,
     pub text: String,
+    // Absent keeps exact historical typed-worker callback bytes. Never infer
+    // completion from absence; the canonical presentation remains completed:null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_kind: Option<MatrixReplyKind>,
 }
 impl Store {
     /// Trusted receiving host only, after SDK signature/parent verification.
@@ -493,15 +503,17 @@ pub(super) fn result_on(
         .as_i64()
         .context("Matrix source logical entry unavailable")?;
     let correction:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_matrix_requests m JOIN json_each(m.doc,'$.relation.requests') parent WHERE m.human_id=?1 AND m.entry_session=?2 AND json_extract(m.doc,'$.relation.kind')='amends' AND parent.value=?3)",params![human,session,request_id],|r|r.get(0))?;
-    Ok(Some(
-        json!({"id":format!("matrix:{id}"),"kind":"matrix_result","text":result.text,
+    let mut source = json!({"id":format!("matrix:{id}"),"kind":"matrix_result","text":result.text,
         "label":format!("#{}",selected["request"]["label"].as_str().unwrap_or("Matrix")),
         "request_id":request_id,"current":selected["current"]==true && !correction,
         "correction_pending":correction,"completed":Value::Null,
         "native_binding_current":selected["current"],"delivery_phase":"retained",
         "source_author":result.author,"matrix_message_hash":result.message_hash,
-        "verification":"Receiving host reports SDK-verified event and exact reply parent; no native incorporation or task completion claimed"}),
-    ))
+        "verification":"Receiving host reports SDK-verified event and exact reply parent; no native incorporation or task completion claimed"});
+    if let Some(kind) = result.reply_kind {
+        source["reply_kind"] = json!(kind);
+    }
+    Ok(Some(source))
 }
 
 #[cfg(test)]
@@ -592,8 +604,57 @@ mod tests {
                 embodiment_id: "embodiment:receiver".into(),
             },
             text: "The actual canonical external answer".into(),
+            reply_kind: None,
         }
     }
+    #[test]
+    fn signed_speech_retains_provenance_without_completion_and_survives_reopen() {
+        let (file, store, entry) = setup();
+        let reference = original(&store, entry, 80);
+        let selected = prepare(&store, entry, &reference);
+        let mut callback = reply(&selected["request"]);
+        assert!(
+            serde_json::to_value(&callback)
+                .unwrap()
+                .get("reply_kind")
+                .is_none()
+        );
+        callback.reply_kind = Some(MatrixReplyKind::Speech);
+        let received = store
+            .interaction_matrix_return(100, entry, &callback)
+            .unwrap();
+        assert_eq!(received["results"][0]["result"]["reply_kind"], "speech");
+        let conn = store.conn.lock().unwrap();
+        let source = result_on(&conn, 100, entry, &callback.message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source["reply_kind"], "speech");
+        assert_eq!(source["completed"], Value::Null);
+        assert_eq!(
+            source["source_author"],
+            serde_json::to_value(&callback.author).unwrap()
+        );
+        drop(conn);
+        drop(store);
+        let reopened =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        reopened
+            .interaction_matrix_return(100, entry, &callback)
+            .unwrap();
+        assert_eq!(
+            reopened
+                .interaction_matrix_status(100, entry, &callback.request)
+                .unwrap()["results"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut invalid = serde_json::to_value(&callback).unwrap();
+        invalid["reply_kind"] = json!("human_approval");
+        assert!(serde_json::from_value::<MatrixReturn>(invalid).is_err());
+    }
+
     #[test]
     fn technical_claim_survives_duplicates_restart_and_uncertain_outcome() {
         let (file, store, entry) = setup();

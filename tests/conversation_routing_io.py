@@ -67,6 +67,7 @@ topic_id=8
         return super().handle_extra_rpc(message, send)
 
     def call(self, ident, operation, arguments, *, ok=True):
+        assert ident.startswith('route-'), 'Fixture tool IDs must match the route- response collector'
         send = next(send for selected, send in self.clients.values() if selected == self.web_thread)
         send({'id': ident, 'method': 'item/tool/call', 'params': {
             'threadId': self.web_thread, 'turnId': self.web_turn,
