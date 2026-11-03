@@ -213,9 +213,26 @@ writer releases its slot. Selection requires its owned, acknowledged,
 unincorporated foreground receipt and unchanged binding/epoch; the attachment
 transfers the existing context-only publication fence. The existing heartbeat is
 a process-replacement fallback. Neither path starts another model input, changes
-a goal, replays a return or starts peer attention. These synthetic proofs do not
-establish actual provider ASR accuracy, real Sol semantic uptake, device hearing
-or full acceptance. Receiving566 remains stable during qualification.
+a goal, replays a return or starts peer attention.
+
+A distinct bounded actual Sol6.1/openai/medium readback on3November incorporated
+both a synthetic unknown-audio source and its separate ASR-draft source, read the
+full closed producer, and wrote its semantic checkpoint in15.694seconds. It
+preserved the parent/hash/bytecount/draft provenance and the new control datum,
+with zero human originals, work or ordinary publication. An earlier continuation
+had acknowledged input but no event subscriber on its new Core connection and
+timed out; only that test root was interrupted. The corrected bridge performs
+actual thread/resume before admission. Retained failed sources were not replayed.
+This is semantic handling of synthetic caption evidence, not conversational
+response latency or physical hearing.
+
+The configured file-ASR helper also processed7.895seconds of locally synthesized
+Spanish through the actual recovery module. One submitted/delivered source, no
+uncertain/deferred outcome, durable draft and WAV retirement were observed. Its
+expected control word comino became domino: exact-word accuracy FAILED and this
+result remains a draft. The configured route was not changed or retried. No
+claim of universal ASR accuracy, device acceptance or recovered old unretained
+words follows. Receiving566 remains stable during qualification.
 
 A related native terminal race now drains already-written internal-return ACKs
 for at most two seconds before its transport closes. New input is rejected as
