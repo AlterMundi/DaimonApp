@@ -559,7 +559,7 @@ class Provider:
 
     def conversation_live_context(self,body):
         """Server-owned semantic producer; one request, never an audio/work retry."""
-        if not isinstance(body,dict) or body.get('action') not in ('open','sync','close','guidance','guidance_begin','guidance_outcome','rollover_read','rollover_commit','rollover_status','rollover_abort'):
+        if not isinstance(body,dict) or body.get('action') not in ('open','sync','close','checkpoint_needed','guidance','guidance_begin','guidance_outcome','rollover_read','rollover_commit','rollover_status','rollover_abort'):
             raise ValueError('Select a server-owned Live context operation')
         self.input_id(body.get('dialogue'));self.input_id(body.get('generation'))
         if len(json.dumps(body,ensure_ascii=False).encode())>131072:

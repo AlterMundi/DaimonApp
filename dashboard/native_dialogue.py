@@ -6,6 +6,7 @@ bridge must bind proposals to durable originals before any integrator effect.
 """
 import base64
 import json
+import math
 import re
 import threading
 import time
@@ -18,11 +19,17 @@ class DialogueUnavailable(Exception):
     """A lost stream or tool response is not permission to replay it."""
 
 
+class DialogueCapacity(DialogueUnavailable):
+    """Local admission refused this write before touching the provider socket."""
+    known_unsent=True
+
+
 class NativeDialogue:
     endpoint = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
     model = 'gemini-3.8-live'
     max_seconds = 300
     max_context_tokens = 128000
+    context_input_reserve = 8192
     max_input_bytes = 300 * 32000
     max_output_bytes = 300 * 48000
     max_event_bytes = 262144
@@ -67,6 +74,8 @@ class NativeDialogue:
         self.tool_responses = 0
         self.failure_code = None
         self.context_usage = None
+        self.context_estimate=0
+        self._pressure_notified=False
         self.turns_finished=0
         self.guidance_attempts=set();self.guidance_bytes=0
         try:
@@ -190,7 +199,7 @@ class NativeDialogue:
         except Exception:
             self._fail('native-dialogue-open-unconfirmed')
 
-    def _fail(self, reason):
+    def _fail(self, reason, *, known_unsent=False):
         # Keep the first fixed internal code when another thread subsequently
         # sees only a terminal phase. Never store provider payload/error text.
         if self.failure_code is None:self.failure_code=reason
@@ -200,7 +209,7 @@ class NativeDialogue:
                 self._socket.close()
             except Exception:
                 pass
-        raise DialogueUnavailable(reason) from None
+        raise (DialogueCapacity if known_unsent else DialogueUnavailable)(reason) from None
 
     def successor(self,basis,*,pending_effects=None):
         """Prepare one socket from attributed continuity, without retiring this one.
@@ -212,9 +221,11 @@ class NativeDialogue:
         """
         if (not isinstance(basis,dict) or set(basis)!={'revision','through','content'}
                 or not re.fullmatch('[a-f0-9]{64}',str(basis['revision']))
-                or type(basis['through']) is not int or not 0<basis['through']<=2**63-1
+                or type(basis['through']) is not int or not 0<=basis['through']<=2**63-1
                 or not isinstance(basis['content'],dict)
                 or basis['content'].get('kind')!='internal_integrator_checkpoint'
+                or not isinstance(basis['content'].get('checkpoint',{}).get('text'),str)
+                or not basis['content']['checkpoint']['text'].strip()
                 or len(json.dumps(basis['content'],ensure_ascii=False).encode())>24576):
             raise ValueError('Select an exact bounded Sol checkpoint seed')
         if pending_effects is None:pending_effects=[]
@@ -250,14 +261,22 @@ class NativeDialogue:
             raise
 
     @property
-    def rollover_due(self):
-        """Early handover request, not a token admission/compression claim."""
+    def checkpoint_pressure(self):
+        """Early pressure report; missing provider usage remains unknown."""
         # This hint is read on the async owner loop. Never wait there for a
         # provider send holding the thread lock; the final gate below owns it.
-        usage=max((self.context_usage or {}).values(),default=0)
-        return (usage>=102400 or self._clock()-self._started>=240
-            or len(self.tools)>=24 or self.tool_responses>=128
-            or self.text_bytes>=98304 or self.guidance_bytes>=49152)
+        observed=max((self.context_usage or {}).values(),default=0)
+        usage=max(observed,self.context_estimate)
+        reason=('tokens' if usage>=102400 else 'lifetime' if self._clock()-self._started>=240
+            else 'tools' if len(self.tools)>=24 or self.tool_responses>=128
+            else 'text' if self.text_bytes>=98304 else 'guidance' if self.guidance_bytes>=49152 else None)
+        if reason is None:return None
+        return {'reason':reason,'tokens':usage,
+            'usage_kind':'observed' if self.context_usage and observed>=self.context_estimate else 'conservative'}
+
+    @property
+    def rollover_due(self):
+        return self.checkpoint_pressure is not None
 
     def handover_ready(self,idle_watch=None):
         """Final locked transport observation; caller invokes off the async loop."""
@@ -277,8 +296,27 @@ class NativeDialogue:
             self._fail('native-dialogue-session-bound')
 
     def _send(self, value):
+        # Live has no countTokens endpoint. This is an intentionally generous
+        # local estimate, not an exact tokenizer or a provider-usage receipt:
+        # one UTF-8 byte per text/protocol token, 64 tokens/s for PCM (the
+        # documented audio rate is ~25/s), plus each generation's 512-token
+        # output allowance. Lower provider observations never release reserve.
+        encoded=json.dumps(value,ensure_ascii=False)
+        audio=value.get('realtimeInput',{}).get('audio')
+        cost=(math.ceil(len(base64.b64decode(audio['data']))*64/32000)
+            if audio is not None else len(encoded.encode()))
+        generates=('toolResponse' in value or value.get('clientContent',{}).get('turnComplete') is True
+            or 'activityEnd' in value.get('realtimeInput',{}))
+        cost+=512 if generates else 0
+        # Phrase-end/stop controls may consume the already reserved margin.
+        ending=('activityEnd' in value.get('realtimeInput',{})
+            or value.get('realtimeInput',{}).get('audioStreamEnd') is True)
+        limit=self.max_context_tokens-(512 if ending else self.context_input_reserve)
+        if self.context_estimate+cost>limit:
+            self._fail('native-dialogue-context-input-bound',known_unsent=True)
+        self.context_estimate+=cost
         try:
-            self._socket.send(json.dumps(value))
+            self._socket.send(encoded)
         except Exception:
             self._fail('native-dialogue-send-unconfirmed')
 
@@ -422,6 +460,9 @@ class NativeDialogue:
                 raw = self._socket.recv()
             except self._timeouts:
                 self._active(ready=False)
+                if self.phase=='ready' and not self._pressure_notified and self.checkpoint_pressure is not None:
+                    self._pressure_notified=True
+                    return [{'type':'context_pressure'}]
                 return []
             except Exception:
                 self._fail('native-dialogue-receive-unconfirmed')
@@ -446,9 +487,15 @@ class NativeDialogue:
         if not isinstance(value, str) or len(value.encode()) > 16384:
             raise ValueError('Invalid transcript')
         self.text_bytes += len(value.encode())
+        self._context_output(len(value.encode()))
         if self.text_bytes > self.max_text_bytes:
             self._fail('native-dialogue-text-bound')
         return value
+
+    def _context_output(self,cost):
+        self.context_estimate+=cost
+        if self.context_estimate>self.max_context_tokens:
+            self._fail('native-dialogue-context-output-bound')
 
     def _events(self, value):
         events = []
@@ -463,6 +510,8 @@ class NativeDialogue:
                 for key,count in selected.items():peak[key]=max(peak.get(key,0),count)
                 if peak!=self.context_usage:
                     self.context_usage=peak
+                    self.context_estimate=max(self.context_estimate,max(peak.values()))
+                    self._context_output(0)
                     events.append({'type':'context_usage','usage':dict(peak)})
         if 'setupComplete' in value:
             if self.phase != 'opening' or not isinstance(value['setupComplete'], dict):
@@ -516,6 +565,7 @@ class NativeDialogue:
                     raise ValueError('Invalid generated PCM')
                 self.response_pending=True
                 self.output_bytes += len(pcm)
+                self._context_output(math.ceil(len(pcm)*64/48000))
                 if self.output_bytes > self.max_output_bytes:
                     self._fail('native-dialogue-output-bound')
                 # An interruption clears playback; do not enqueue audio from
@@ -524,6 +574,7 @@ class NativeDialogue:
                     events.append({'type': 'audio', 'pcm': pcm, 'sample_rate': 24000})
         self._validation_stage="tool-envelope"
         for call in calls:
+            self._context_output(len(json.dumps(call,ensure_ascii=False).encode()))
             ident, args, name = call['id'], call['args'], call['name']
             if (not isinstance(ident,str) or not ident or len(ident)>256
                     or ident in self.tools or len(self.tools)>=self.max_tools

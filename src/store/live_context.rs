@@ -40,6 +40,13 @@ pub(crate) enum LiveContextCommand {
         #[serde(default)]
         assistant: Vec<LiveAssistantSource>,
     },
+    CheckpointNeeded {
+        dialogue: String,
+        generation: String,
+        reason: String,
+        tokens: Option<u64>,
+        usage_kind: String,
+    },
     Read {
         dialogue: String,
         full: bool,
@@ -147,6 +154,18 @@ struct Frozen {
     body: String,
     supplied: usize,
     full: bool,
+    #[serde(default)]
+    checkpoint_generation: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CheckpointRequest {
+    generation: String,
+    reason: String,
+    tokens: Option<u64>,
+    usage_kind: String,
+    requested_through: u64,
+    acknowledged: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -202,6 +221,8 @@ struct Projection {
     rollover: Option<RolloverReceipt>,
     #[serde(default)]
     generations: Vec<String>,
+    #[serde(default)]
+    checkpoint_request: Option<CheckpointRequest>,
 }
 
 fn hash(value: &impl Serialize) -> Result<String> {
@@ -285,6 +306,7 @@ fn save(conn: &Connection, p: &Projection) -> Result<()> {
         body,
         supplied: 0,
         full: true,
+        checkpoint_generation: p.checkpoint_request.as_ref().map(|q| q.generation.clone()),
     })?;
     let reserved_bytes = serde_json::to_vec(&reserved)?.len().max(raw.len());
     let (count, total, previous): (usize, usize, usize) = conn.query_row(
@@ -313,6 +335,7 @@ fn snapshot(p: &Projection, full: bool) -> Result<String> {
     Ok(serde_json::to_string(
         &json!({"dialogue":p.dialogue,"from":from,"through":p.high,
         "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,"guidance":guidance,
+        "checkpoint_request":p.checkpoint_request,
         "policy":"Attributed language context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid."}),
     )?)
 }
@@ -321,6 +344,7 @@ fn view(p: &Projection) -> Value {
         "entry_binding":[p.human,p.entry,p.session,p.native],"generation":p.generation,
         "high":p.high,"incorporated":p.incorporated,"checkpointed":p.checkpoint.through,
         "checkpoint_revision":p.checkpoint.revision,"closed":p.closed,
+        "checkpoint_request":p.checkpoint_request,
         "rollover":p.rollover,
         "rollover_meaning":"Owner-reported projection generation transition; not provider readiness, application, audio playback or work replay.",
         "work_admission":"not_requested"})
@@ -328,10 +352,13 @@ fn view(p: &Projection) -> Value {
 
 fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     if p.closed
-        || p.high == 0
+        || p.checkpoint.text.is_empty()
         || p.checkpoint.through != p.high
         || p.incorporated != p.high
         || p.range.is_some()
+        || p.checkpoint_request
+            .as_ref()
+            .is_some_and(|r| !r.acknowledged)
         || p.guidance
             .iter()
             .any(|g| matches!(g.phase.as_str(), "pending" | "submitting"))
@@ -372,6 +399,7 @@ fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
             body,
             supplied: 0,
             full,
+            checkpoint_generation: p.checkpoint_request.as_ref().map(|q| q.generation.clone()),
         });
     }
     let mut result = view(p);
@@ -384,6 +412,7 @@ fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
         json!({"from":r.from,"through":r.through,"revision":r.revision,"full":r.full,
                     "complete":false,"characters":r.body.chars().count(),"offset":0})
     };
+    result["range"]["checkpoint_generation"] = json!(r.checkpoint_generation);
     Ok(result)
 }
 
@@ -404,6 +433,7 @@ fn page(p: &mut Projection, revision: &str, offset: usize) -> Result<Value> {
     r.supplied = r.supplied.max(next);
     result["range"] = json!({"from":r.from,"through":r.through,"revision":r.revision,
         "full":r.full,"offset":offset,"text":text,"next":next,"more":next<size,
+        "checkpoint_generation":r.checkpoint_generation,
         "encoding":"JSON; concatenate exact pages before interpreting"});
     Ok(result)
 }
@@ -504,6 +534,7 @@ impl Store {
                 guidance: vec![],
                 rollover: None,
                 generations: vec![generation.clone()],
+                checkpoint_request: None,
             };
             save(&tx, &p)?;
             tx.commit()?;
@@ -514,6 +545,7 @@ impl Store {
             LiveContextCommand::Append { dialogue, .. }
             | LiveContextCommand::Close { dialogue, .. }
             | LiveContextCommand::Sync { dialogue, .. }
+            | LiveContextCommand::CheckpointNeeded { dialogue, .. }
             | LiveContextCommand::Read { dialogue, .. }
             | LiveContextCommand::Part { dialogue, .. }
             | LiveContextCommand::Incorporate { dialogue, .. }
@@ -532,6 +564,38 @@ impl Store {
         let abort = matches!(&command, LiveContextCommand::RolloverAbort { .. });
         let result = match command {
             LiveContextCommand::Open { .. } => unreachable!(),
+            LiveContextCommand::CheckpointNeeded {
+                generation,
+                reason,
+                tokens,
+                usage_kind,
+                ..
+            } => {
+                if p.closed
+                    || generation != p.generation
+                    || !matches!(
+                        reason.as_str(),
+                        "tokens" | "lifetime" | "tools" | "text" | "guidance" | "unknown_usage"
+                    )
+                    || !matches!(usage_kind.as_str(), "observed" | "conservative" | "unknown")
+                    || tokens.is_some_and(|n| n > i32::MAX as u64)
+                    || ((usage_kind == "unknown") != tokens.is_none())
+                {
+                    bail!("Select bounded current Live checkpoint pressure");
+                }
+                if p.checkpoint_request.is_some() {
+                    return Ok(view(&p));
+                }
+                p.checkpoint_request = Some(CheckpointRequest {
+                    generation,
+                    reason,
+                    tokens,
+                    usage_kind,
+                    requested_through: p.high,
+                    acknowledged: false,
+                });
+                view(&p)
+            }
             LiveContextCommand::RolloverStatus {
                 generation,
                 next_generation,
@@ -637,6 +701,7 @@ impl Store {
                     committed: true,
                 });
                 p.generation = next_generation;
+                p.checkpoint_request = None;
                 p.generations.push(p.generation.clone());
                 view(&p)
             }
@@ -915,6 +980,11 @@ impl Store {
                     bail!("Live incorporation requires the complete contiguous frozen range");
                 }
                 p.incorporated = r.through;
+                if let Some(request) = p.checkpoint_request.as_mut()
+                    && r.checkpoint_generation.as_ref() == Some(&request.generation)
+                {
+                    request.acknowledged = true;
+                }
                 for receipt in &mut p.native_returns {
                     if receipt.envelope["revision"] == revision {
                         receipt.reported_revision = Some(revision.clone());
@@ -981,7 +1051,13 @@ pub(in crate::store) fn reserve_on(
     instance: &str,
 ) -> Result<Option<Value>> {
     let mut p = load(conn, dialogue, human, entry)?;
-    if p.incorporated >= p.high || p.range.as_ref().is_some_and(|r| r.full) {
+    if (p.incorporated >= p.high
+        && p
+            .checkpoint_request
+            .as_ref()
+            .is_none_or(|q| q.acknowledged))
+        || p.range.as_ref().is_some_and(|r| r.full)
+    {
         return Ok(None);
     }
     let evidence = freeze(&mut p, false)?;
@@ -1086,6 +1162,81 @@ mod tests {
                 "revision":basis["checkpoint_revision"],"through":through,
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn checkpoint_pressure_is_once_per_generation_and_not_acknowledged_by_an_older_range() {
+        let f = Fixture::new();
+        f.append(
+            &Uuid::now_v7().to_string(),
+            "Exact language before pressure",
+        )
+        .unwrap();
+        let old = f.read(false);
+        let request = json!({"action":"checkpoint_needed","dialogue":f.dialogue,
+            "generation":f.generation,"reason":"tokens","tokens":105000,"usage_kind":"observed"});
+        let pressure = f.call(request.clone()).unwrap();
+        let changes = f.store.conn.lock().unwrap().total_changes();
+        assert_eq!(f.call(request).unwrap(), pressure);
+        assert_eq!(f.store.conn.lock().unwrap().total_changes(), changes);
+        assert_eq!(
+            f.ack(&old).unwrap()["checkpoint_request"]["acknowledged"],
+            false
+        );
+        let r = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let output: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(output["checkpoint_request"]["generation"], f.generation);
+        assert_eq!(output["checkpoint_basis"]["through"], 1);
+        let l = local(&f, "");
+        linked(&f, &r, l);
+        assert!(!f.store.workflow_native_visible(l).unwrap());
+        f.call(output["after_incorporation"]["arguments"].clone())
+            .unwrap();
+        assert!(
+            f.store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .unwrap()
+                .is_none()
+        );
+        let full = f.read(true);
+        assert_eq!(
+            full["range"]["content"]["events"][0]["text"],
+            "Exact language before pressure"
+        );
+        let ack = f.ack(&full).unwrap();
+        f.checkpoint(&ack, 1);
+        let basis = f
+            .call(json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let next = Uuid::now_v7().to_string();
+        let new = f
+            .call(
+                json!({"action":"rollover_commit","dialogue":f.dialogue,"generation":f.generation,
+            "next_generation":next,"revision":basis["rollover_basis"]["revision"]}),
+            )
+            .unwrap();
+        assert!(new["checkpoint_request"].is_null());
+    }
+
+    #[test]
+    fn empty_dialogue_requires_an_explicit_semantic_checkpoint_before_handover() {
+        let f = Fixture::new();
+        let read =
+            json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation});
+        assert!(f.call(read.clone()).is_err());
+        f.call(json!({"action":"checkpoint_needed","dialogue":f.dialogue,
+            "generation":f.generation,"reason":"lifetime","usage_kind":"unknown"}))
+            .unwrap();
+        let batch = f.read(false);
+        f.ack(&batch).unwrap();
+        let full = f.read(true);
+        let ack = f.ack(&full).unwrap();
+        f.checkpoint(&ack, 0);
+        assert_eq!(f.call(read).unwrap()["rollover_basis"]["through"], 0);
     }
 
     #[test]

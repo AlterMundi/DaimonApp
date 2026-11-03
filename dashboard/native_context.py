@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 from .provider import ProviderUnavailable
+from .native_dialogue import DialogueCapacity
 
 
 class NativeContext:
@@ -21,6 +22,7 @@ class NativeContext:
         self.runner=None;self.stopping=False;self.failed=False;self.failed_sync=False;self.status='not_started'
         self.guidance_lock=asyncio.Lock();self.guidance_attempts=set()
         self.operation_lock=asyncio.Lock()
+        self.checkpoint_requested_generation=None
 
     async def open(self):
         # Called only for an authenticated explicit avatar open, after the
@@ -49,6 +51,24 @@ class NativeContext:
             # exact transition, never reopen/replay the candidate or tool calls.
             await self._resolve_rollover(record,json.loads(record['rollover']))
         return await self._call(record,'open',binding=record['binding'])
+
+    async def request_checkpoint(self,pressure):
+        """One owner-local request per physical generation, including quiet speech.
+
+        The native projection freezes the exact range/control packet for Sol.
+        A request receipt is not a semantic checkpoint or handover approval.
+        """
+        if pressure is None:return False
+        async with self.operation_lock:
+            if (self.stopping or self.failed or self.record is None
+                    or self.record.get('rollover') is not None
+                    or self.checkpoint_requested_generation==self.record['generation']):return False
+            value=await self._call(self.record,'checkpoint_needed',**pressure)
+            request=value.get('checkpoint_request')
+            if not isinstance(request,dict) or request.get('generation')!=self.record['generation']:
+                raise ValueError('Live checkpoint pressure receipt changed generation')
+            self.checkpoint_requested_generation=self.record['generation']
+            return True
 
     async def prepare_rollover(self):
         async with self.operation_lock:
@@ -199,8 +219,9 @@ class NativeContext:
             try:
                 sent=await deliver(frame)
                 if type(sent) is not bool:raise ValueError('Live guidance send outcome unavailable')
-            except BaseException:
-                try:await asyncio.shield(self._call(self.record,'guidance_outcome',id=ident,outcome='uncertain'))
+            except BaseException as error:
+                outcome='unsent' if isinstance(error,DialogueCapacity) else 'uncertain'
+                try:await asyncio.shield(self._call(self.record,'guidance_outcome',id=ident,outcome=outcome))
                 except (ProviderUnavailable,ValueError):pass
                 raise
             if not sent:self.guidance_attempts.discard(ident)

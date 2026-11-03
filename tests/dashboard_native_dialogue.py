@@ -7,7 +7,7 @@ import tempfile
 import unittest
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dashboard.native_dialogue import NativeDialogue, DialogueUnavailable
+from dashboard.native_dialogue import NativeDialogue, DialogueUnavailable, DialogueCapacity
 
 
 class Socket:
@@ -170,10 +170,47 @@ class Dialogue(unittest.TestCase):
             [{'type':'context_usage','usage':{'promptTokenCount':105000,'totalTokenCount':105100}}])
         self.assertEqual(self.stream.context_usage,{'promptTokenCount':105000,'totalTokenCount':105100})
         self.assertTrue(self.stream.rollover_due)
+        self.assertEqual(self.stream.checkpoint_pressure,{'reason':'tokens','tokens':105100,'usage_kind':'observed'})
         self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':100,'totalTokenCount':200}}),[],'A lower observation cannot authorize context discard')
         self.assertEqual(self.event({'usageMetadata':{'promptTokenCount':True,'totalTokenCount':-1}}),[])
         self.assertEqual(self.stream.phase,'ready')
         self.assertEqual(self.stream.input_bytes,0)
+
+    def test_quiet_transport_requests_checkpoint_without_inventing_provider_usage_or_speech(self):
+        self.ready()
+        self.stream._clock=lambda:self.stream._started+241
+        self.assertEqual(self.stream.checkpoint_pressure,{'reason':'lifetime','tokens':self.stream.context_estimate,'usage_kind':'conservative'})
+        self.assertEqual(self.stream.receive(),[{'type':'context_pressure'}])
+        self.assertEqual(self.stream.receive(),[])
+        self.assertEqual(len(self.socket.sent),1)
+
+    def test_context_reserve_rejects_before_write_and_allows_the_owned_phrase_end(self):
+        self.stream.close();self.socket=Socket()
+        self.stream=NativeDialogue(self.key,activity_mode='manual',connect=self.connect,clock=lambda:self.now)
+        self.ready();self.stream.activity_start()
+        self.stream.context_estimate=120000
+        before=len(self.socket.sent)
+        self.stream.activity_end()
+        self.assertEqual(len(self.socket.sent),before+1,'Phrase end uses the reserved margin')
+        self.stream.response_pending=False
+        with self.assertRaises(DialogueCapacity):self.stream.activity_start()
+        self.assertEqual(len(self.socket.sent),before+1,'A refused input never touches the socket')
+        self.assertTrue(self.socket.closed)
+
+    def test_missing_usage_uses_conservative_media_text_and_tool_accounting(self):
+        self.ready();initial=self.stream.context_estimate
+        self.assertGreater(initial,0,'Setup identity and tool context consume reserve')
+        self.stream.append(b'\0\0'*1600)
+        self.assertGreaterEqual(self.stream.context_estimate,initial+7)
+        before=self.stream.context_estimate
+        self.event({'serverContent':{'outputTranscription':{'text':'α reply'}}})
+        self.assertGreaterEqual(self.stream.context_estimate,before+len('α reply'.encode()))
+        self.event({'usageMetadata':{'totalTokenCount':102500}})
+        self.assertTrue(self.stream.rollover_due)
+        self.event({'usageMetadata':{'totalTokenCount':1}})
+        self.assertGreaterEqual(self.stream.context_estimate,102500)
+        with self.assertRaisesRegex(DialogueUnavailable,'context-output-bound'):
+            self.event({'usageMetadata':{'totalTokenCount':128001}})
 
     def test_recent_results_tool_only_offers_bounded_read_cursors(self):
         self.ready()

@@ -137,6 +137,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 | crate::store::LiveContextCommand::Append { .. }
                 | crate::store::LiveContextCommand::Close { .. }
                 | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::CheckpointNeeded { .. }
                 | crate::store::LiveContextCommand::Guidance { .. }
                 | crate::store::LiveContextCommand::GuidanceBegin { .. }
                 | crate::store::LiveContextCommand::GuidanceOutcome { .. }
@@ -152,6 +153,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             | crate::store::LiveContextCommand::Append { dialogue, .. }
             | crate::store::LiveContextCommand::Close { dialogue, .. }
             | crate::store::LiveContextCommand::Sync { dialogue, .. }
+            | crate::store::LiveContextCommand::CheckpointNeeded { dialogue, .. }
             | crate::store::LiveContextCommand::Guidance { dialogue, .. }
             | crate::store::LiveContextCommand::GuidanceBegin { dialogue, .. }
             | crate::store::LiveContextCommand::GuidanceOutcome { dialogue, .. }
@@ -167,6 +169,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 | crate::store::LiveContextCommand::Append { .. }
                 | crate::store::LiveContextCommand::Sync { .. }
                 | crate::store::LiveContextCommand::Close { .. }
+                | crate::store::LiveContextCommand::CheckpointNeeded { .. }
         );
         let result = app
             .shared

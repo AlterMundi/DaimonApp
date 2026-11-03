@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from dashboard.native_context import NativeContext
+from dashboard.native_dialogue import DialogueCapacity
 from dashboard.native_history import NativeHistory
 from dashboard.provider import ProviderUnavailable
 
@@ -47,6 +48,10 @@ class Journal:
                 assert p['generation']==body['generation'];self.fenced.add(body['next_generation'])
             return {k:p[k] for k in ('dialogue','generation','closed')}|{'rollover':p.get('rollover'),'rollover_committed':committed,'rollover_fenced':not committed}
         assert p['generation']==body['generation']
+        if body['action']=='checkpoint_needed':
+            request=p.setdefault('checkpoint_request',{'generation':p['generation'],
+                **{k:body[k] for k in ('reason','tokens','usage_kind')}})
+            return {k:p[k] for k in ('dialogue','generation','closed')}|{'checkpoint_request':request}
         receipts=[]
         guide=p.get('guidance')
         if body['action']=='guidance':
@@ -93,6 +98,19 @@ class Context(unittest.IsolatedAsyncioTestCase):
 
     def retain(self,text='Terminal language α.',*,closed=True,source=None):
         return self.history.retain(100,self.dialogue,self.binding,source or str(uuid.uuid4()),text,'b'*64,640,closed=closed)
+
+    async def test_checkpoint_pressure_requests_once_per_generation_without_sync_or_source_replay(self):
+        p=self.producer();await p.open()
+        pressure={'reason':'tokens','tokens':105000,'usage_kind':'observed'}
+        before=len(self.provider.calls)
+        self.assertTrue(await p.request_checkpoint(pressure))
+        self.assertFalse(await p.request_checkpoint(pressure))
+        self.assertEqual([v['action'] for v in self.provider.calls[before:]],['checkpoint_needed'])
+        self.assertEqual(self.provider.fresh,[])
+        basis=await p.prepare_rollover();intent=await p.begin_rollover(basis,str(uuid.uuid4()))
+        self.assertTrue(await p.commit_rollover(intent))
+        self.provider.producers[p.dialogue].pop('checkpoint_request')
+        self.assertTrue(await p.request_checkpoint(pressure))
 
     async def test_lost_local_settle_ack_reconciles_the_same_exact_transition(self):
         for committed in (False,True):
@@ -284,6 +302,10 @@ class Context(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OSError):await p.offer_guidance(lost)
         self.assertEqual(unknown['phase'],'uncertain')
         self.assertFalse(await p.offer_guidance(send));self.assertEqual(len(calls),2)
+        refused=guide()
+        async def full(frame):raise DialogueCapacity('Synthetic known-unsent input reserve')
+        with self.assertRaises(DialogueCapacity):await p.offer_guidance(full)
+        self.assertEqual(refused['phase'],'pending','Local admission refusal is known unsent, not socket uncertainty')
         await p.close()
 
 

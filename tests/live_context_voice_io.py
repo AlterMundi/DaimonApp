@@ -61,6 +61,12 @@ class VoiceContext(Returning):
         if method is None and str(ident).startswith('route-voice-context-'):
             assert message['result']['success'],message
             output=self.context_outputs[ident]
+            if output.get('checkpoint_request') is not None:
+                self.checkpoint_output=output
+                send({'id':'route-pressure-read','method':'item/tool/call','params':{
+                    'threadId':self.web_thread,'turnId':self.web_turn,'callId':'route-pressure-read',
+                    'tool':'interaction_controller','arguments':output['checkpoint_reader']}})
+                return True
             if self.context_roles=={'human','assistant'} and output['evidence']['through']%2==0:
                 view=json.loads(message['result']['contentItems'][0]['text'])
                 if self.guide_id is None:
@@ -71,13 +77,25 @@ class VoiceContext(Returning):
                             'action':'guide','dialogue':output['dialogue'],'generation':output['generation'],
                             'basis':output['evidence']['through'],'id':self.guide_id,'mode':'context_only',
                             'text':'Use the confirmed shared memory without claiming an unconfirmed saved note.'}}}})
-                else:self.checkpoint(send,view)
+            return True
+        if method is None and ident=='route-pressure-read':
+            assert message['result']['success'],message
+            view=json.loads(message['result']['contentItems'][0]['text'])
+            assert view['range']['complete'] and view['range']['full']
+            self.context_roles.update(e['role'] for e in view['range']['content']['events'])
+            send({'id':'route-pressure-incorporate','method':'item/tool/call','params':{
+                'threadId':self.web_thread,'turnId':self.web_turn,'callId':'route-pressure-incorporate',
+                'tool':'interaction_controller','arguments':{'operation':'live_context','arguments':{
+                    'action':'incorporate','dialogue':view['dialogue'],'revision':view['range']['revision']}}}})
+            return True
+        if method is None and ident=='route-pressure-incorporate':
+            assert message['result']['success'],message
+            self.checkpoint(send,json.loads(message['result']['contentItems'][0]['text']))
             return True
         if method is None and ident=='route-voice-guide':
             assert message['result']['success'],message
             receipt=json.loads(message['result']['contentItems'][0]['text'])
             assert receipt['guidance']['phase']=='pending'
-            self.checkpoint(send,self.guide_checkpoint)
             return True
         if method is None and str(ident).startswith('route-voice-checkpoint-'):
             assert message['result']['success'],message
@@ -160,12 +178,13 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
                             if event['type']=='assistant_utterance' and event['utterance']['closed']:utterance=event['utterance']
                             if event['type']=='original_completed':original=event['id']
                         through=2*(cycle+1)
-                        j.wait(lambda:j.row("SELECT json_extract(doc,'$.checkpoint.through') FROM live_context WHERE dialogue=?",(dialogue,))==[(through,)])
+                        j.wait(lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(through,)])
                         j.wait(lambda:j.row("SELECT json_extract(doc,'$.guidance[0].phase') FROM live_context WHERE dialogue=?",(dialogue,))==[('sent',)])
                         if cycle==0:
                             assert len(stream.guidance)==1 and stream.guidance[0]['id']==j.guide_id
                             assert stream.guidance[0]['dialogue']==dialogue and stream.guidance[0]['mode']=='context_only'
                         stream.rollover_due=True
+                        stream.checkpoint_pressure={'reason':'tokens','tokens':105000,'usage_kind':'observed'}
                         ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
                         j.wait(lambda:stream.closed_event.is_set())
                         assert len(Stream.opened)==cycle+2
@@ -178,6 +197,11 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
         doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
         assert doc['closed'] and doc['incorporated']==doc['high']==doc['checkpoint']['through']==4
         assert len(doc['sources'])==4 and not doc['events']
+        pressure_packets=[json.loads(p['toolOutput']['output']) for p in j.internal_packets
+            if json.loads(p['toolOutput']['output']).get('checkpoint_request') is not None]
+        assert len(pressure_packets)==2
+        assert all(p['evidence']['from']==p['evidence']['through']+1
+            and p['evidence']['content']['events']==[] for p in pressure_packets)
         assert j.row('SELECT phase,local_turn FROM conversation_inputs')==[('foreground',None)]*2
         assert j.row('SELECT count(*) FROM interaction_instructions')==[(0,)]
         assert j.row('SELECT count(*) FROM interaction_workflows')==[(0,)]

@@ -150,6 +150,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     return await asyncio.to_thread(stream.guide,frame)
             await context_producer.offer_guidance(deliver,ready)
         async def control_if_idle():
+            if context_producer is not None:
+                await context_producer.request_checkpoint(getattr(stream,'checkpoint_pressure',None))
             await guide_if_idle()
             await rollover_if_idle()
             # Existing pending tools already stream returns. A new session or
@@ -272,7 +274,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             await actor()
             for event in events:
                 kind=event['type']
-                if kind=='context_usage':continue  # Owner control hint, not conversation/UI content.
+                if kind in ('context_usage','context_pressure'):continue  # Owner control hint, not conversation/UI content.
                 if kind in ('tool_rejected','recent_results_query','session_pending_query','source_query','session_status_query','integrating_source_query','delegation_proposed','integrator_watch'):
                     proposals[event['call_id']]=launch(bridge.tool(event));continue
                 if kind=='proposal_cancelled':

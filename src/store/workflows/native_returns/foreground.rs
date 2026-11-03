@@ -11,6 +11,9 @@ pub(super) struct ForegroundParent {
     pub epoch: String,
     pub incorporated: u64,
     pub generation: String,
+    pub checkpoint: Value,
+    #[serde(default)]
+    pub checkpoint_request: Option<Value>,
     pub range: Option<Value>,
     #[serde(default)]
     pub native_returns: Vec<WorkflowReturn>,
@@ -69,9 +72,13 @@ pub(super) fn current(
             && p.range
                 .as_ref()
                 .is_some_and(|range| range["revision"] == r.envelope["revision"])
-            && r.envelope["through"]
+            && (r.envelope["through"]
                 .as_u64()
-                .is_some_and(|n| n > p.incorporated)))
+                .is_some_and(|n| n > p.incorporated)
+                || p.checkpoint_request.as_ref().is_some_and(|q| {
+                    q["acknowledged"] == false
+                        && r.envelope["checkpoint_generation"] == q["generation"]
+                }))))
 }
 pub(super) fn retained(
     conn: &Connection,

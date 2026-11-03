@@ -539,7 +539,50 @@ That privacy/retention verifier now allows a finite30seconds; all its exact scal
 and no-private-content assertions remain. This is not a claimed audio or latency
 improvement, nor a finding of the underlying timing cause.
 
-Remaining before adoption: token/headroom checkpoint signaling and admission,
+CI41565184983 completed successfully for published217c, including native text,
+mounted dashboard and joined voice/controller journeys.
+
+### Early checkpoint pressure and conservative input reserve
+
+The owner reports pressure once per physical generation through
+`checkpoint_needed`. The native projection freezes that control with the next
+internal context range, including an empty range when all language was already
+incorporated. A previously frozen range cannot acknowledge a later request.
+Repeated pressure does not write/wake another return. Sol receives an executable
+full reader and must incorporate the complete active checkpoint plus all exact
+tail pages before writing its new semantic checkpoint. A pressure ACK alone is
+not semantic compression or handover approval. Handover requires its request to
+be acknowledged and the existing complete checkpoint/idle/effect gates. The next
+committed generation resets the single request slot. A quiet receive timeout
+surfaces pressure once through the existing event loop; no new timer or poller.
+
+The selected model's read-only catalog reports131072 input tokens; the user cap
+remains128000. Live does not support `countTokens`, so local accounting is
+explicitly an estimate, not an exact provider tokenizer: UTF-8 text/protocol
+bytes,64tokens/second for each PCM direction and a512token allowance per requested
+generation. It anchors upward to valid monotonic provider prompt/total usage and
+never releases reserve on a lower or missing observation. The64token estimate
+has margin over the documented approximate25audio tokens/second, but is not a
+provider guarantee for every text normalization, hidden accounting or event.
+Before writes it keeps8192tokens of input reserve; owned phrase-end/stop controls
+can use that reserved space. Crossing the local128000estimate or an observed
+provider total above the cap closes to retained review. A locally refused write
+is known unsent, including guidance; an attempted socket write remains uncertain.
+No unconditional provider context discard or second model/counting call is added.
+Sources: [Live token counting](https://firebase.google.com/docs/ai-logic/count-tokens),
+[Live session audio accounting](https://firebase.google.com/docs/ai-logic/live-api/sessions)
+and [Live wire reference](https://aistudio.google.com/api-reference/live).
+
+Qualification:17projection tests,42transport tests,14producer tests and49mounted
+voice tests pass. The joined actual owner/controller/SQLite journey now requests
+pressure after both roles' language is already incorporated, dispatches an empty
+control range, reads and incorporates full active context, writes a semantic
+checkpoint and performs two active handovers. Sources/work/audio remain once-only
+and internal bookkeeping stays unpublished. Core reasoning, provider audio and
+detector remain synthetic. Actual-provider token accounting and continuity are
+still unqualified; these results do not establish hearing or receiving adoption.
+
+Remaining before adoption: actual-provider token/accounting qualification,
 completed transport/media/guidance metadata retirement, actual Core/provider
 continuity/performance and receiving/device acceptance. PR560 stays draft,
 receiving558 is unchanged and the five-minute pilot is not lifted.
