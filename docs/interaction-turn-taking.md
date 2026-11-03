@@ -437,6 +437,16 @@ Browser/helper/worklet, quiet resident/unsent-span close retention, legacy-clien
 narrowing and incompatible-worker cleanup have separate bounded checks. This is
 logical audio-duration qualification, not ten minutes of actual provider wall
 time, physical hearing, latency or full product/device acceptance.
+
+The existing full-browser qualifier accepts `--session-seconds 600` to verify the actual shipped shell, shared-cookie
+bootstrap, three synthetic-source voice cycles and600second negotiation through
+the real capture helper. It also executes the shipped worklet in Chromium's
+OfflineAudioContext:6000packets/19,200,000PCM bytes, maximum3200bytes per packet,
+then `session_limit` and a closed offline context. No PCM history or physical
+capture/playback is retained. Use a new task-owned `--out` directory and the
+existing installed Playwright module; the qualifier owns its bounded server,
+browser, temporary state and closure receipts. This complements the mounted
+two-successor/worker-return check; it is not a real-provider ten-minute trial.
 Raw original recovery and existing ASR/TTS retention remain separately owned.
 
 One real pinned-model child qualified ready/PCM/close with a silent100ms chunk:

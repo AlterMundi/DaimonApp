@@ -9,7 +9,10 @@ parser.add_argument('--out',type=Path,required=True,help='New absolute output di
 parser.add_argument('--runtime',type=Path,help='Selected immutable app bundle; defaults to this checkout')
 parser.add_argument('--case',choices=('baseline','paced'),default='baseline')
 parser.add_argument('--activity-mode',choices=('manual','automatic'),default='manual')
-args=parser.parse_args();runtime=(args.runtime or repo).resolve();assert (runtime/'dashboard/app.py').is_file()
+parser.add_argument('--session-seconds',type=int,choices=(300,600),default=300)
+args=parser.parse_args()
+if args.activity_mode!='manual' and args.session_seconds!=300:parser.error('Extended fixture selects manual activity')
+runtime=(args.runtime or repo).resolve();assert (runtime/'dashboard/app.py').is_file()
 assert args.out.is_absolute() and not args.out.exists();args.out.mkdir(parents=True,mode=0o700)
 identity_delay=.03 if args.case=='paced' else 0
 sys.path[:0]=[str(runtime),str(repo/'tests')]
@@ -32,10 +35,11 @@ def counted_install(app,config,provider,origins,bind_voice,detector_command,acti
   session,recheck,actor=await bind_voice(*args)
   async def counted_actor():
    task=asyncio.current_task();name=task.get_name() if task else 'unknown';name=name if name.startswith('native-') else 'native-input';state['actor_checks'][name]=state['actor_checks'].get(name,0)+1;return await actor()
+  counted_actor.snapshot=actor.snapshot
   return session,recheck,counted_actor
  return original_install(app,config,provider,origins,bind,detector_command,active)
 op=args.out;assert not (op/'intent.json').exists()
-state={'state':'prepared','scope':'Full actual index/app.js/modules, standalone shared cookie/CSRF bootstrap, SSE refresh and native voice owner. Synthetic identity/provider/detector/MediaStream only; no real native/model/human/hardware capture.','bounds':'One isolated HTTPS listener/browser;<=75s browser/100s server,<=4MiB retained metadata/screenshots. Ephemeral key/profile/cache/SQLite removed after closure. No production selector/config changes or recurring attention.','source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'http':{},'identity_checks':0,'faults':0,'provider_opened':0,'provider_closed':0,'events':{},'actor_checks':{},'identity_paths':{},'conditions':{'activity_mode':args.activity_mode,'identity_delay_ms':round(identity_delay*1000),'output_pcm_frame_ms':20 if args.case=='paced' else 1000}}
+state={'state':'prepared','scope':'Full actual index/app.js/modules, standalone shared cookie/CSRF bootstrap, SSE refresh and native voice owner. Synthetic identity/provider/detector/MediaStream only; no real native/model/human/hardware capture.','bounds':'One isolated HTTPS listener/browser;<=75s browser/100s server,<=4MiB retained metadata/screenshots. Ephemeral key/profile/cache/SQLite removed after closure. No production selector/config changes or recurring attention.','source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'http':{},'identity_checks':0,'faults':0,'provider_opened':0,'provider_closed':0,'events':{},'actor_checks':{},'identity_paths':{},'conditions':{'session_seconds':args.session_seconds,'activity_mode':args.activity_mode,'identity_delay_ms':round(identity_delay*1000),'output_pcm_frame_ms':20 if args.case=='paced' else 1000}}
 state['qualifier_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 state['browser_driver_sha256']=hashlib.sha256((repo/'tests/dashboard_native_bootstrap_browser.js').read_bytes()).hexdigest()
 state['runtime_application_files']={str(p.relative_to(runtime)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (runtime/'dashboard').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
@@ -123,6 +127,7 @@ try:
   config={'state_dir':str(root/'web'),'origin':origin,'prefix':'/interaction','bot_id':123,'daimon_name':'Synthetic fixture',
    'shared_auth':{'enabled':True,'home_origin':origin,'entry_path':'/interaction/'},
    'streaming_transcription':{'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,'native_activity_mode':args.activity_mode,'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent','credential_file':str(root/'synthetic-key'),'cache_root':str(root/'prepared'),'turn_detection':{'enabled':True,'continuous':True,'command':['/synthetic/python','capture-turn']}}}
+  if args.session_seconds>300:config['streaming_transcription']['native_session_seconds']=args.session_seconds
   with patch('dashboard.native_voice.install',side_effect=counted_install):app=create_app(config,owner,lambda raw,bot:int(raw))
   def identity(home,token):
    assert home==origin and token=='s'*43;state['identity_checks']+=1;name=identity_path.get();state['identity_paths'][name]=state['identity_paths'].get(name,0)+1;time.sleep(identity_delay)
@@ -155,7 +160,7 @@ try:
    thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True);thread.start();deadline=time.monotonic()+10
    while not server.started:assert thread.is_alive() and time.monotonic()<deadline;time.sleep(.05)
    state['state']='full-bootstrap-browser-running';save()
-   node=subprocess.Popen(['node',str(repo/'tests/dashboard_native_bootstrap_browser.js')],env={**os.environ,'FIXTURE_ORIGIN':origin,'QUALIFICATION_OUTPUT':str(op)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+   node=subprocess.Popen(['node',str(repo/'tests/dashboard_native_bootstrap_browser.js')],env={**os.environ,'FIXTURE_ORIGIN':origin,'QUALIFICATION_OUTPUT':str(op),'QUALIFICATION_SECONDS':str(args.session_seconds)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
    out,err=node.communicate(timeout=75);(op/'browser-run.log').write_text(out+'\n'+err);assert node.returncode==0,'Inspect retained full-bootstrap browser outcome'
   server.should_exit=True;thread.join(timeout=8);assert not thread.is_alive()
   state['originals']=[{'id':v['id'],'phase':v['phase'],'audio_sha256':v['voice']['audio_sha256']} for v in owner.inputs.values()];state['history']=[{k:v[k] for k in ('id','generated_bytes','played_bytes','closed')} for v in app.state.native_history.page(100,binding=owner.binding)['items']];state['delegations']=len(owner.delegations)
