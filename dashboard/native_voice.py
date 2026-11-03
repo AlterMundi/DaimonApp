@@ -432,6 +432,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 if (capabilities.get('binding')!=meta['binding'] or capabilities.get('foreground_retention')!='v1'
                         or capabilities.get('foreground_completed_reader') is not True
                         or capabilities.get('foreground_context')!='v1'
+                        or capabilities.get('foreground_audio_observations')!='v1'
                         or capabilities.get('foreground_guidance')!='v1'
                         or capabilities.get('foreground_rollover')!='v1'):
                     raise ForegroundUnavailable('Selected listener does not support native foreground originals')

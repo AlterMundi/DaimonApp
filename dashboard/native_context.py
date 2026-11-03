@@ -174,7 +174,7 @@ class NativeContext:
         for _ in range(self.max_sources+1):
             sources=await asyncio.to_thread(self.history.context_pending,record)
             if not sources and sent:return
-            payload=[{'source':s['source'],'text':s['text'],'interrupted':s['interrupted']} for s in sources]
+            payload=[{k:s[k] for k in ('source','text','interrupted','audio_without_transcript') if k in s} for s in sources]
             result=await self._call(record,'sync',assistant=payload)
             receipts=result.get('assistant_receipts')
             if not isinstance(receipts,list) or len(receipts)!=len(sources):
@@ -257,8 +257,10 @@ class NativeContext:
 
 
 def semantic_revision(row):
-    """Language/state identity only, independent of generated/played PCM."""
+    """Language/state or missing-caption evidence; independent of playback."""
     data=[row['id'],row['dialogue'],row['binding'],row['text'],bool(row['interrupted']),bool(row['closed'])]
+    if not row['text'] and row['closed'] and row['generated_bytes']:
+        data.append({'pcm_sha256':row['audio_sha256'],'generated_bytes':row['generated_bytes']})
     return hashlib.sha256(json.dumps(data,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
 
@@ -279,7 +281,7 @@ def install_schema(db):
 
 
 def enqueue(db,row):
-    if not row['closed'] or not row['text']:return
+    if not row['closed'] or not row['text'] and not row['generated_bytes']:return
     registered=db.execute('SELECT phase FROM foreground_context_producers WHERE dialogue=? AND human=? AND scope=? AND binding=?',
         (row['dialogue'],row['human'],row['scope'],row['binding'])).fetchone()
     if registered is None:return
