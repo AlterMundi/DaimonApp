@@ -31,6 +31,10 @@ pub(super) async fn attach_active(app: &App, human: i64, args: &str) -> Result<s
         .tribu
         .as_ref()
         .is_some_and(|p| p.key() == key)
+        && app
+            .shared
+            .store
+            .tribu_native_writer_held(key, native, physical)?
     {
         bail!("Bounded I/O work requires its retained deadline/reconciliation route");
     }

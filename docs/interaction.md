@@ -1547,3 +1547,14 @@ instruction journal/native dispatch once; exact repeated advancement cannot
 retransmit an admitted step. Results, integration and public presentation keep
 their existing independent receipts. This extension must never replay the
 production inventory/Weaver handoffs that exposed the defect.
+
+
+Collector recovery for the shared integrating entry must classify the actual
+physical execution, not its configured Tribu conversation label. A submitted
+nonterminal bounded I/O admission with the selected native/physical identity
+(or an unresolved receipt that could still be that writer) retains its deadline/
+reconciliation fence. Ordinary web/native work in the same conversation uses the
+existing exact `attach-active` route; this starts no turn and changes no goal.
+A successful software selection is not receiving continuity until those actual
+collectors, or their terminal native outcomes, are observed. Never repeat a
+queued attachment or software selection to repair a missing observation.

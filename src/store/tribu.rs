@@ -49,6 +49,21 @@ impl Store {
         self.conn.lock().expect("store mutex poisoned").query_row("SELECT id,state,native_thread,native_turn,terminal,deadline_at FROM tribu_admissions WHERE id=?",[id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"native_thread":r.get::<_,Option<String>>(2)?,"native_turn":r.get::<_,Option<String>>(3)?,"terminal":r.get::<_,Option<String>>(4)?,"deadline_at":r.get::<_,Option<String>>(5)?}))).optional().map_err(Into::into)
     }
 
+    /// A shared conversation label does not make every physical turn bounded
+    /// I/O work. Preserve ambiguous submitted admissions and their deadline route.
+    pub fn tribu_native_writer_held(
+        &self,
+        key: SessionKey,
+        native: &str,
+        physical: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tribu_admissions WHERE chat_id=?1 AND topic_id=?2 AND state IN ('running','undetermined') AND submitted=1 AND terminal IS NULL AND (native_thread=?3 OR native_thread IS NULL) AND (native_turn=?4 OR native_turn IS NULL))",
+            params![key.chat_id,key.thread_id,native,physical], |r| r.get(0),
+        )?)
+    }
+
     pub fn tribu_unsettled(&self, key: SessionKey) -> Result<Vec<Value>> {
         self.tribu_controllable(key, false)
     }
