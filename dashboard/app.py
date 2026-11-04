@@ -174,7 +174,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if request.headers.get('origin') not in allowed:
                 return JSONResponse({'detail': 'Wrong request origin'}, status_code=403)
             # Bound chunked bodies as well as Content-Length before parsing them.
-            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/visual','/api/interaction/files'):
+            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
                 try:
                     selected = await authorize_async(request)
                     if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), selected['csrf']):
@@ -764,6 +764,44 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         except (ValueError,ProviderUnavailable,OSError):raise HTTPException(409,'Selected image unavailable; do not substitute another view') from None
         await authorize_async(request)
         return Response(content=data,media_type='image/png')
+
+    voice_recovery_lock=asyncio.Lock()
+
+    @app.post('/api/interaction/voice/recover')
+    async def conversation_voice_recover(request: Request):
+        session=await authorize_async(request)
+        if not secrets.compare_digest(request.headers.get('x-dashboard-csrf',''),session['csrf']):
+            raise HTTPException(403,'Action token missing')
+        if voice_recovery_lock.locked():
+            raise HTTPException(503,'Another recording recovery is still running; check status')
+        metadata={key:request.headers.get(header,'') for key,header in
+            (('id','x-input-id'),('binding','x-input-binding'),('audio_sha256','x-audio-sha256'),('mime','content-type'))}
+        dialogue=request.headers.get('x-foreground-dialogue','')
+        try:
+            scope=request.headers.get('x-capture-questions')
+            if scope is not None:
+                if len(scope)>4096:raise ValueError('Capture scope exceeds bound')
+                metadata['capture_questions']=json.loads(scope)
+                Provider.check_capture_questions(metadata['capture_questions'])
+            data=await request.body()
+            if not 0<len(data)<=20*1024*1024:raise ValueError('Original exceeds bound')
+            from starlette.concurrency import run_in_threadpool
+            if voice_recovery_lock.locked():raise ProviderUnavailable('Another original recovery is still running')
+            async with voice_recovery_lock:
+                plan=await run_in_threadpool(provider.conversation_voice_recover,metadata,data,dialogue)
+                result=plan['current']
+                if 'command' in plan:
+                    from .native_caption_recovery import execute_asr
+                    await execute_asr(plan['command'],plan['media'],plan['timeout'])
+                    await authorize_async(request)
+                    result=await run_in_threadpool(provider.conversation_foreground_complete,
+                        metadata['id'],metadata['binding'],dialogue)
+        except (ValueError,UnicodeError):
+            raise HTTPException(400,'Recording interpretation unconfirmed; keep the same original') from None
+        except (ProviderUnavailable,OSError,TimeoutError):
+            raise HTTPException(503,'Recording recovery unconfirmed; keep the original and check status') from None
+        await authorize_async(request)
+        return result
 
     @app.post('/api/interaction/voice')
     @app.post('/api/interaction/voice/limited')

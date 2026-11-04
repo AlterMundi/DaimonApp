@@ -210,27 +210,7 @@ class CaptionRecovery:
         return {k: value[k] for k in ('text', 'final', 'streaming_model') if k in value}
 
     async def execute(self, command, media):
-        process = None
-        opening = asyncio.create_task(asyncio.create_subprocess_exec(*command, str(media),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True))
-        try:
-            async with asyncio.timeout(self.timeout):
-                process = await asyncio.shield(opening)
-                raw = bytearray()
-                while True:
-                    chunk = await process.stdout.read(min(4096, 32769 - len(raw)))
-                    if not chunk: break
-                    raw.extend(chunk)
-                    if len(raw) > 32768: raise ValueError('ASR result exceeds its bound')
-                if await process.wait() != 0: raise ValueError('ASR outcome unconfirmed')
-                return self.result(json.loads(raw))
-        finally:
-            # The child group belongs solely to this operation, never native work.
-            if process is None:
-                with suppress(Exception): process = await asyncio.shield(opening)
-            if process is not None and process.returncode is None:
-                with suppress(ProcessLookupError): os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
+        return await execute_asr(command,media,self.timeout)
 
     async def run(self, initial):
         source = initial['source']; state, media = self.paths(source)
@@ -278,3 +258,27 @@ class CaptionRecovery:
         if pending: await asyncio.gather(*pending, return_exceptions=True)
         for task in done:
             if not task.cancelled(): task.exception()
+
+
+async def execute_asr(command, media, timeout):
+    process = None
+    opening = asyncio.create_task(asyncio.create_subprocess_exec(*command, str(media),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True))
+    try:
+        async with asyncio.timeout(timeout):
+            process = await asyncio.shield(opening)
+            raw = bytearray()
+            while True:
+                chunk = await process.stdout.read(min(4096, 32769 - len(raw)))
+                if not chunk: break
+                raw.extend(chunk)
+                if len(raw) > 32768: raise ValueError('ASR result exceeds its bound')
+            if await process.wait() != 0: raise ValueError('ASR outcome unconfirmed')
+            return CaptionRecovery.result(json.loads(raw))
+    finally:
+        # The child group belongs solely to this operation, never native work.
+        if process is None:
+            with suppress(Exception): process = await asyncio.shield(opening)
+        if process is not None and process.returncode is None:
+            with suppress(ProcessLookupError): os.killpg(process.pid, signal.SIGKILL)
+            await process.wait()

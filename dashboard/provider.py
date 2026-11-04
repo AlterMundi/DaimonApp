@@ -736,6 +736,45 @@ class Provider:
                        or not isinstance(v,str) or not re.fullmatch('[a-f0-9]{64}',v) for k,v in value.items())):
             raise ValueError('Invalid bounded capture question restriction')
 
+    def conversation_voice_recover(self, metadata, data, dialogue):
+        """Prepare explicit exact-original ASR; the existing adapter owns intent."""
+        self.input_id(dialogue);self.input_id(metadata.get('id'))
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Voice recovery unavailable')
+        # Existence is not inferred from an unavailable native status read.
+        with closing(readonly(self.receiver['db_path'])) as db:
+            exists=db.execute('SELECT 1 FROM conversation_inputs WHERE id=?',(metadata['id'],)).fetchone()
+        if exists:
+            current=self.conversation_input_status(metadata['id'])
+            if (current.get('foreground_dialogue')!=dialogue
+                    or current.get('voice',{}).get('audio_sha256')!=metadata.get('audio_sha256')):
+                raise ValueError('Retained Avatar original changed')
+            if self.presentation('input list 0 before').get('binding')!=metadata.get('binding'):
+                raise ProviderUnavailable('Original conversation binding changed')
+        else:
+            current=self.conversation_voice_submit(metadata,data,foreground_dialogue=dialogue,defer_foreground=True)
+        if current.get('phase') not in ('foreground_captured','preparation_unconfirmed'):
+            return {'current':current}  # Already preparing/completed: no ASR replay.
+        # Restore missing server media only from the exact hash-checked local copy.
+        if (not isinstance(data,bytes) or not 0<len(data)<=20*1024*1024
+                or hashlib.sha256(data).hexdigest()!=metadata.get('audio_sha256')):
+            raise ValueError('Original recovery bytes changed')
+        directory=Path(str(self.receiver['db_path'])+'.voice')
+        directory.mkdir(mode=0o700,parents=False,exist_ok=True)
+        info=directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077:
+            raise ProviderUnavailable('Original recording storage changed')
+        sync_directory(directory.parent)
+        self.retain_voice_capture(directory,metadata['id'],data,metadata['audio_sha256'])
+        voice=self.receiver.get('voice',{})
+        from .native_caption_recovery import CaptionRecovery
+        command,_,timeout=CaptionRecovery.configuration(voice)
+        # Only the maintained identity-locked adapter has the required uncertain-
+        # outcome contract. Never replay a generic configured transcriber here.
+        if len(command)!=4 or Path(command[1]).name!='interaction_asr.py' or command[2]!='--binding':
+            raise ProviderUnavailable('Explicit recovery requires the maintained ASR adapter')
+        return {'current':current,'command':command,'media':directory/metadata['id'],'timeout':timeout}
+
     def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
         import re
         if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop'}:

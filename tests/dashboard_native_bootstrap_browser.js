@@ -67,6 +67,16 @@ try{
  }
  await page.locator('dialog.voice-mode').getByRole('button',{name:'Back to conversation',exact:true}).click();
  await page.waitForFunction(stops=>!fixture.engine.active&&fixture.trackStops===stops&&fixture.inputContext.state==='closed'&&fixture.contexts.every(c=>c.state==='closed'),process.env.QUALIFICATION_RECONNECT==='1'?2:1,{timeout:10000});
+ if(process.env.QUALIFICATION_RECOVER==='1'){
+  await page.waitForFunction(()=>!document.querySelector('#conversation-voice-save').hidden,{},{timeout:10000});
+  await page.locator('#conversation-voice-check').click();
+  await page.waitForFunction(()=>document.querySelector('#conversation-voice-state').textContent.includes('interpretation is not confirmed'));
+  assert.equal(await page.evaluate(()=>fixture.engine.originals.length),1,'Status does not pretend that retention completed interpretation');
+  await page.locator('#conversation-send').click();
+  await page.waitForFunction(()=>document.querySelector('#conversation-voice-save').hidden&&fixture.engine.originals.length===0,{},{timeout:10000});
+  assert.equal(await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('daimon-voice-recovery',1);r.onsuccess=()=>{const db=r.result,tx=db.transaction('capture','readonly'),q=tx.objectStore('capture').get('pending');q.onsuccess=()=>{resolve(q.result===undefined);db.close();};q.onerror=reject;};r.onerror=reject;})),true,'Only completed interpretation clears the exact local queue');
+  await page.screenshot({path:path.join(root,'recovered-original-390.png')});
+ }
  save('browser.json',{finiteWorklet,state:'actual-shell-shared-cookie-native-cycles-observed',cycles,before,after:await page.evaluate(()=>fixture.report()),http,errors,limits:'Synthetic identity/provider/detector/MediaStream. Actual shipped app bootstrap, worklet, output/IndexedDB, sockets/HTTP/SSE. No real account login/provider/native work/physical hearing qualified.'});
 }catch(error){if(page)try{save('browser-progress.json',await page.evaluate(()=>fixture.report()));}catch{}save('browser-error.json',{error:String(error),http,errors});throw error;}
 finally{if(page)try{await page.evaluate(()=>fixture.engine?.hold('Synthetic full-bootstrap cleanup'));}catch{}if(context)await context.close();if(browser)await browser.close();save('browser-closure.json',{closed:true});}
