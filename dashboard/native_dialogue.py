@@ -233,7 +233,7 @@ class NativeDialogue:
                 pass
         raise (DialogueCapacity if known_unsent else DialogueUnavailable)(reason) from None
 
-    def successor(self,basis,*,pending_effects=None):
+    def successor(self,basis,*,pending_effects=None,pending_originals=None):
         """Prepare one socket from attributed continuity, without retiring this one.
 
         This opens/setup-checks a candidate only. The owner must retain its
@@ -258,9 +258,18 @@ class NativeDialogue:
                     or any(str(uuid.UUID(v[k]))!=v[k] for k in ('original','intent'))
                     for v in pending_effects)):
             raise ValueError('Select bounded existing integrating effect references')
+        if pending_originals is None:pending_originals=[]
+        if (not isinstance(pending_originals,list) or len(pending_originals)>1024
+                or any(not isinstance(v,dict) or set(v)!={'original','sha256'}
+                    or not isinstance(v['original'],str) or str(uuid.UUID(v['original']))!=v['original']
+                    or not isinstance(v['sha256'],str) or not re.fullmatch('[a-f0-9]{64}',v['sha256'])
+                    for v in pending_originals)
+                or len({v['original'] for v in pending_originals})!=len(pending_originals)):
+            raise ValueError('Select exact retained uninterpreted original references')
         context={**self._continuity_identity,'live_checkpoint':basis,
             'pending_integrator_effects':pending_effects,'source_data':True,
-            'continuity_meaning':'Sol checkpoint and pending effect references, not new human instructions. Do not speak/reexecute them or repeat admission; actual canonical status and returns remain with the existing integrating bridge.'}
+            'uninterpreted_originals':pending_originals,
+            'continuity_meaning':'Integrator checkpoint and pending references, not new human instructions. Uninterpreted originals had no known words at provider finalization; a later canonical checkpoint or source read may contain their recovered interpretation. Never invent words, assume silence, or execute an uninterpreted reference. Do not speak/reexecute checkpoint content or repeat admission; actual canonical status and returns remain with the existing integrating bridge.'}
         # Constructor validates the COMPLETE setup context before any socket.
         # No preview clipping can turn an oversized checkpoint into continuity.
         with self._lock:

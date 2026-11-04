@@ -43,8 +43,9 @@ class Stream:
     def handover_ready(self,watch=None):
         self.handover_checks.append(watch)
         return not self.input_active and not self.response_pending
-    def successor(self,basis,*,pending_effects=None):
-        value=type(self)(context={'live_checkpoint':basis,'pending_integrator_effects':pending_effects})
+    def successor(self,basis,*,pending_effects=None,pending_originals=None):
+        value=type(self)(context={'live_checkpoint':basis,'pending_integrator_effects':pending_effects,
+            'uninterpreted_originals':pending_originals or []})
         value.receive()  # setupComplete belongs to candidate preparation.
         return value
     def receive(self):
@@ -354,6 +355,64 @@ class Mounted(unittest.TestCase):
             _,result=successor.tool_results.get(timeout=2)
             self.assertEqual(result['text'],'Canonical integrating return.')
             self.assertEqual(len(self.owner.inputs),2);self.assertEqual(len(self.owner.delegations),1)
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_retained_empty_final_does_not_prevent_two_provider_successors(self):
+        class Repeated(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm);generation=(self.total+6399)//6400;first=self.total%6400==3200
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':generation,
+                    'speaking':first,'speech_seen':True,
+                    'onset' if first else 'endpoint':{'generation':generation,'audio_bytes':self.total,
+                        **({} if first else {'authority':'analysis_only','probability':.9})}})
+        ends=[]
+        class QwenEmpty(Stream):
+            model='qwen-audio-3.0-realtime-plus'
+            def activity_start(self):self.started=self.total;self.start_sent.set()
+            def activity_end(self):
+                first=not ends;ends.append(True)
+                self.queue.put([{'type':'input_committed','source':'provider_qwen_commit','item_id':str(len(ends)),
+                    'stream_start':self.started,'stream_end':self.total},
+                    {'type':'input_transcript','text':'' if first else 'Exact later human words.','finished':True},
+                    *([] if first else [{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                        {'type':'output_transcript','text':'Useful later spoken answer.'}]),{'type':'turn_complete'}])
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription'].update(native_provider='qwen',
+            native_credential_file=str(self.root/'qwen-key'),native_voice_name='longanqian')
+        qwen_patch=patch('dashboard.qwen_dialogue.QwenDialogue',QwenEmpty)
+        self.patches.append(qwen_patch);qwen_patch.start()
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+        with patch('dashboard.native_voice.Detector',Repeated),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            raw=None;retained=None
+            while raw is None or retained is None:
+                event=ws.receive_json();self.assertNotEqual(event['type'],'review',event)
+                if event['type']=='input_uninterpreted':raw=event['id']
+                if event['type']=='original_retained':retained=event
+            self.assertEqual(raw,retained['id'])
+            for cycle in range(2):
+                old=Stream.opened[-1]
+                ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+                utterance=completed=None
+                while utterance is None or completed is None:
+                    event=ws.receive_json();self.assertNotEqual(event['type'],'review',event)
+                    if event['type']=='original_completed':completed=event['id']
+                    if event['type']=='assistant_utterance' and event['utterance']['closed']:utterance=event['utterance']
+                old.rollover_due=True
+                ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+                self.assertTrue(old.closed_event.wait(3),'Durably retained empty final must not permanently block renewal')
+                self.assertEqual(len(Stream.opened),cycle+2)
+                self.assertEqual(Stream.opened[-1].context['uninterpreted_originals'],
+                    [{'original':raw,'sha256':retained['sha256']}])
+                self.assertEqual(self.owner.inputs[raw]['phase'],'foreground_captured')
+                self.assertNotIn('text',self.owner.inputs[raw])
+            self.assertEqual([s.total for s in Stream.opened],[12800,6400,0],'Old PCM must never be replayed')
+            self.assertEqual(self.owner.delegations,[])
             ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
 
     def test_new_speech_during_successor_setup_preserves_pending_work_and_late_return(self):
@@ -994,11 +1053,12 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','owner_operation','provider_controls','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures','provider_context'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','owner_operation','provider_controls','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','provider_renewal','candidate_setup_failures','provider_context'})
         self.assertGreater(result['actor_checks']['fresh_checks'],0)
         self.assertEqual(result['acoustic_queues'],{'peak_analysis_audio_ms':0,
             'peak_unsent_span_audio_ms':0,'peak_input_confirmation_wait_ms':0})
         self.assertEqual(result['provider_rollovers'],0)
+        self.assertEqual(result['provider_renewal'],{'phase':'not_requested','blocked':None,'uninterpreted_originals':0})
         self.assertIn(result['context_producer'],('not_started','active','needs_review','closed'))
         self.assertEqual(self.owner.delegations,[])
 

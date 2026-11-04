@@ -312,6 +312,11 @@ bounds unchanged while repairing continuity; compare OpenAI voice; make Avatar
 the same daimon's approachable face, with model-independent integrating roles.
 These are selected design requirements, not a claim of new runtime delivery.
 
+Later4November priority: finish Qwen workflow first, then OpenAI GPT-Live.
+Gemini qualification, including Extended Thinking and its distinct lifecycle,
+is deferred for lack of account balance in #599. Do not run Gemini trials while
+that hold applies. The current diagnostic context/visit bounds remain unchanged.
+
 The Qwen integrating-model experiment is completed historical work, not a
 pending migration. The human rejected that model for the integrating role.
 Preserve the supported ability to change integrator provider/model deliberately;
