@@ -129,6 +129,8 @@ def qualify_inbox(binary):
     import importlib.util
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from unittest.mock import patch
+    from daimon_matrix import synthetic_relationships
 
     spec = importlib.util.spec_from_file_location(
         "heartbeat_matrix_fixtures", Path(__file__).with_name("matrix_execution.py")
@@ -137,13 +139,18 @@ def qualify_inbox(binary):
     sys.modules[spec.name] = adapter
     spec.loader.exec_module(adapter)
     sdk = adapter.AdapterTests()
-    sdk.setUp()
+    # Keep the signed fixture's operational epoch compatible with real backend
+    # absolute deadlines. Its default year2027 epoch correctly rejects our2026
+    # expiry before authoring; do not weaken that native deadline check.
+    with patch.object(synthetic_relationships, "NOW", int(datetime.now(timezone.utc).timestamp()*1000)):
+        sdk.setUp()
     j = HeartbeatJourney(str(Path(binary).resolve()))
     source = {
         "being_ref": sdk.sender.lane.being_ref,
         "embodiment_id": sdk.sender.lane.local_embodiment_id,
     }
-    calls, errors, cursors = [], [], []
+    calls, errors, cursors, response_calls = [], [], [], []
+    lost_ack = {"next": False}
     hold = {"enabled": False}
     entered, released = threading.Event(), threading.Event()
 
@@ -157,12 +164,26 @@ def qualify_inbox(binary):
                 assert size <= 65536 and len(calls) < 8
                 value = json.loads(self.rfile.read(size))
                 assert value["source"] == source and value["channel_id"] == "tribe"
-                calls.append(value["after"])
-                result = adapter.operator_inbox(
-                    value, adapter.SignedGroupClient(sdk.fixture, sdk.sender), timeout=1
-                )
-                cursors.append(result["next_cursor"])
-                if hold["enabled"]:
+                mode = self.headers.get("x-matrix-mode", "--inbox")
+                if mode in ("--respond", "--response-status"):
+                    response_calls.append((mode, value["send_id"]))
+                    result = adapter.operator_respond(
+                        value, adapter.SignedGroupClient(sdk.fixture, sdk.sender), timeout=1,
+                        inspect_only=mode == "--response-status",
+                    )
+                    if mode == "--respond" and lost_ack["next"]:
+                        lost_ack["next"] = False
+                        self.send_error(503, "Synthetic lost authoring ACK; native journal retained")
+                        return
+                else:
+                    assert mode == "--inbox"
+                    calls.append(value["after"])
+                    result = adapter.operator_inbox(
+                        value, adapter.SignedGroupClient(sdk.fixture, sdk.sender), timeout=1
+                    )
+                if mode == "--inbox":
+                    cursors.append(result["next_cursor"])
+                if hold["enabled"] and mode == "--inbox":
                     entered.set()
                     assert released.wait(timeout=8), (
                         "Paused source read was not released"
@@ -244,7 +265,7 @@ def qualify_inbox(binary):
         command.write_text(
             "import sys,urllib.request\nraw=sys.stdin.buffer.read(65537)\nrequest=urllib.request.Request("
             + repr("http://127.0.0.1:" + str(host.server_port))
-            + ',data=raw,headers={"content-type":"application/json"})\nwith urllib.request.urlopen(request,timeout=12)as response:sys.stdout.buffer.write(response.read(65537))\n'
+            + ',data=raw,headers={"content-type":"application/json","x-matrix-mode":sys.argv[1]})\nwith urllib.request.urlopen(request,timeout=12)as response:sys.stdout.buffer.write(response.read(65537))\n'
         )
         options = (
             'matrix_inbox_channel="tribe"\nmatrix_transport={command='
@@ -329,6 +350,12 @@ def qualify_inbox(binary):
             exact["source_author"]["being_ref"] == sdk.receiver.lane.being_ref
             and exact["completed"] is None
         )
+        deferred = j.call("route-inbox-defer", "matrix_response", {
+            "action": "defer", "message_id": first["message_id"],
+            "revision": offered["revision"], "reason": "Wait for the next relevant observation.",
+            "condition": "Review the next original from this peer.",
+        })
+        assert deferred["handling"]["phase"] == "deferred"
         finish(packet)
         due()
         j.wait(lambda: len(calls) >= 2, seconds=45)
@@ -373,6 +400,22 @@ def qualify_inbox(binary):
             if o["evidence"]["reason"] == "matrix_original_available"
         )
         assert offered["source"] == "matrix-inbox:" + second["message_id"]
+        pending = j.call("route-pending-native", "matrix_response", {"action": "pending"})
+        assert any(p["handling"]["phase"] == "deferred" for p in pending["items"])
+        reply = {"action": "reply", "message_id": first["message_id"],
+                 "revision": deferred["revision"], "text": "The integrator is replying to your original."}
+        lost_ack["next"] = True
+        answered = j.call("route-answer-native", "matrix_response", reply)
+        assert answered["handling"]["phase"] == "uncertain"
+        repeated = j.call("route-answer-again", "matrix_response", reply)
+        assert repeated["submit"] is False and len(response_calls) == 1
+        observed = j.call("route-answer-observe", "matrix_response", {
+            "action": "inspect", "message_id": first["message_id"],
+        })
+        assert observed["handling"]["intent"]["send_id"] == answered["handling"]["intent"]["send_id"]
+        assert observed["handling"]["phase"] in ("submitted", "recipient_copy_proved")
+        assert response_calls == [("--respond", answered["handling"]["intent"]["send_id"]),
+                                  ("--response-status", answered["handling"]["intent"]["send_id"])]
         finish(packet)
         final = j.read("heartbeat", "pause")["result"]
         assert (
@@ -392,7 +435,7 @@ def qualify_inbox(binary):
             for i in presentation["items"]
         )
         print(
-            "PASS signed new Matrix originals -> finite shared producer -> bounded idle native -> exact source read -> canonical Conversation report; no-news quiet; held read pause/restart rejects late cursor, explicit resume retains counters and account6/12; Telegram disabled, no fabricated human input or real provider/model call. Synthetic native; live receiving/model/device acceptance remains separate."
+            "PASS signed new Matrix originals -> finite shared producer -> bounded idle native -> exact source read -> durable defer -> canonical Conversation report; no-news quiet; held read pause/restart rejects late cursor; later exact native reply loses ACK, duplicate does not resend, delivery-only inspection recovers same intent; checks/account6of12 conserved; Telegram disabled, no fabricated human input or real provider/model call. Synthetic native; live receiving/model/device acceptance remains separate."
         )
     except Exception:
         print("INBOX_FIXTURE_DIAGNOSTICS", {"calls":calls,"errors":errors,"bounded":len(j.bounded)},file=sys.stderr)

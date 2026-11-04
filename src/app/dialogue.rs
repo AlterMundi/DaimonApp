@@ -270,6 +270,7 @@ pub(super) fn tool_call(
                 "dispatch" => "interaction_dispatch",
                 "matrix_request" => "interaction_matrix_request",
                 "matrix_status" => "interaction_matrix_status",
+                "matrix_response" => "interaction_matrix_response",
                 "heartbeat_control" => "interaction_heartbeat_control",
                 "pending_routes" => "interaction_pending_routes",
                 "resolve_route" => "interaction_resolve_route",
@@ -325,6 +326,9 @@ pub(super) fn tool_call(
             }
             if matches!(request.tool.as_str(),"interaction_matrix_request"|"interaction_matrix_status") {
                 return super::matrix::tool(&app,key,human,&request.thread_id,request.arguments,&closed,request.tool=="interaction_matrix_request").await;
+            }
+            if request.tool=="interaction_matrix_response" {
+                return super::matrix::response_tool(&app,key,human,&request.thread_id,&request.turn_id,request.arguments,&closed).await;
             }
             if request.tool=="interaction_companion_hint" {
                 return super::presentation::companion_hint(&app,key,human,&request,request.arguments.clone(),&closed).await;

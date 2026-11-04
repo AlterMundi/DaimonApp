@@ -175,6 +175,8 @@ def inbox(value, client, *, timeout=10):
     ):
         raise MatrixExecutionError("Bounded owner-selected inbox page required")
     deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+    if client.deadline_ns is not None:
+        deadline = min(deadline, client.deadline_ns)
     selected = replace(client, timeout_seconds=timeout, deadline_ns=deadline)
     _, observed = selected.invoke("runtime.status", {})
     runtime = observed.get("result", {}) if observed.get("ok") is True else {}
@@ -252,15 +254,151 @@ def inbox(value, client, *, timeout=10):
     return result
 
 
-def receiving_command(connection, binding, *, receive_only=False, inbox_only=False):
+def respond(value, client, *, timeout=10, inspect_only=False):
+    """Execute/inspect one already retained response intent, never make a new one.
+
+    The application must persist its intent before invoking this adapter. Native
+    Matrix retains the send identity, verifies the parent and determines the
+    group/direct audience. A failed/ambiguous result is never retried here.
+    """
+    closed(
+        value,
+        ("source", "channel_id", "parent", "send_id", "text", "effect_not_after_ms"),
+    )
+    parent = value["parent"]
+    if not isinstance(parent, dict):
+        raise MatrixExecutionError("Retained native parent required")
+    sequence = parent.get("inbox_sequence")
+    identifier(parent.get("message_id"))
+    identifier(parent.get("thread_id"))
+    identifier(value["send_id"])
+    closed(value["source"], ("being_ref", "embodiment_id"))
+    destination({"kind": "body", **value["source"]})
+    if (
+        type(sequence) is not int
+        or not 1 <= sequence <= 2**53 - 1
+        or type(value["effect_not_after_ms"]) is not int
+        or value["effect_not_after_ms"] <= 0
+        or not isinstance(value["text"], str)
+        or not value["text"].strip()
+        or len(value["text"].encode()) > MAX_TEXT_BYTES
+        or type(timeout) not in (int, float)
+        or not math.isfinite(timeout)
+        or not 0.05 <= timeout <= 60
+    ):
+        raise MatrixExecutionError("Bounded retained response intent required")
+    # Reuse the same owner/signature/audience reader and absolute deadline. A
+    # group parent is valid: do not apply the directed-only private-relay helper.
+    deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+    selected = replace(client, timeout_seconds=timeout, deadline_ns=deadline)
+    if not inspect_only:
+        page = inbox(
+            {
+                "source": value["source"],
+                "channel_id": value["channel_id"],
+                "after": sequence - 1,
+                "limit": 1,
+            },
+            selected,
+            timeout=timeout,
+        )
+        if page["items"] != [parent]:
+            raise MatrixExecutionError(
+                "Selected native original differs from retained parent"
+            )
+        method = "messaging.reply"
+        params = {
+            "channel_id": value["channel_id"],
+            "received_channel_id": value["channel_id"],
+            "message_id": parent["message_id"],
+            "send_id": value["send_id"],
+            "text": value["text"],
+            "effect_not_after_ms": value["effect_not_after_ms"],
+        }
+    else:
+        # Inspection cannot author or replay, including after the authoring
+        # deadline. Still bind the observation to the actual current body.
+        _, observed = selected.invoke("runtime.status", {})
+        status = observed.get("result", {}) if observed.get("ok") is True else {}
+        if (
+            status.get("being_ref") != value["source"]["being_ref"]
+            or status.get("local_origin", {}).get("embodiment_id")
+            != value["source"]["embodiment_id"]
+        ):
+            raise MatrixExecutionError("Authenticated response owner changed")
+        method = "messaging.delivery"
+        params = {"channel_id": value["channel_id"], "send_id": value["send_id"]}
+    _, response = selected.invoke(method, params)
+    result = response.get("result", {}) if response.get("ok") is True else {}
+    expected_parent = {
+        "message_id": parent["message_id"],
+        "message_hash": parent["message_hash"],
+        "sender_being_ref": parent["author"]["being_ref"],
+        "sender_embodiment_id": parent["author"]["embodiment_id"],
+    }
+    if (
+        result.get("schema")
+        not in ("dm.tribe.delivery/v1", "dm.tribe.direct-delivery/v1")
+        or result.get("send_id") != value["send_id"]
+        or result.get("author") != value["source"]
+        or result.get("thread_id") != parent["thread_id"]
+        or result.get("response_context") != expected_parent
+    ):
+        raise MatrixExecutionError("Native response differs from retained intent")
+    identifier(result.get("message_id"))
+    if not isinstance(result.get("message_hash"), str) or not re.fullmatch(
+        r"[0-9a-f]{64}", result["message_hash"]
+    ):
+        raise MatrixExecutionError("Immutable response digest required")
+    original_destination = parent.get("destination")
+    if original_destination is None:
+        if result.get("destination") is not None:
+            raise MatrixExecutionError(
+                "A group reply cannot silently narrow its audience"
+            )
+    else:
+        kind = original_destination.get("kind")
+        expected = {"kind": kind, "being_ref": parent["author"]["being_ref"]}
+        if kind == "body":
+            expected["embodiment_id"] = parent["author"]["embodiment_id"]
+        destination(expected)
+        if not isinstance(result.get("destination"), dict) or any(
+            result["destination"].get(k) != v for k, v in expected.items()
+        ):
+            raise MatrixExecutionError(
+                "A direct reply must preserve its native recipient kind"
+            )
+    output = {
+        "schema": "daimon.matrix-response-outcome/v1",
+        "send_id": value["send_id"],
+        "parent_message_id": parent["message_id"],
+        "delivery": result,
+        "meaning": "Native authored/receipt evidence, not model incorporation, task completion or human hearing",
+    }
+    if len(canonical(output).encode()) > 65536:
+        raise MatrixExecutionError(
+            "Bounded response receipt required; inspect retained native outcome"
+        )
+    return output
+
+
+def receiving_command(
+    connection,
+    binding,
+    *,
+    receive_only=False,
+    inbox_only=False,
+    respond_only=False,
+    response_status_only=False,
+):
     """Bootstrap this host module in the existing receiving owner's SDK context.
 
     This is owner configuration, never request/model JSON. Read the current
     native connection each invocation so an SDK successor cannot leave a cached
     host interpreter/import selection. Do not execute a connection's code string.
     """
-    if receive_only and inbox_only:
-        raise MatrixExecutionError("Select one read mode")
+    if sum((receive_only, inbox_only, respond_only, response_status_only)) > 1:
+        raise MatrixExecutionError("Select one host mode")
     with connection.open("rb") as stream:
         raw = stream.read(65537)
     if len(raw) > 65536:
@@ -307,7 +445,7 @@ def receiving_command(connection, binding, *, receive_only=False, inbox_only=Fal
         " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
         " raise SystemExit(1)\n"
         "sys.path.insert(0,os.path.dirname(script))\n"
-        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'send':[]}[receive_mode])\n"
+        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'send':[]}[receive_mode])\n"
         "runpy.run_path(script,run_name='__main__')\n"
     )
     return [
@@ -322,7 +460,15 @@ def receiving_command(connection, binding, *, receive_only=False, inbox_only=Fal
         command[13],
         script,
         str(binding),
-        "inbox" if inbox_only else "receive" if receive_only else "send",
+        "respond"
+        if respond_only
+        else "response-status"
+        if response_status_only
+        else "inbox"
+        if inbox_only
+        else "receive"
+        if receive_only
+        else "send",
     ]
 
 
@@ -345,6 +491,16 @@ def main():
         action="store_true",
         help="Read one owner-selected new-message page; never send",
     )
+    modes.add_argument(
+        "--respond",
+        action="store_true",
+        help="Submit one owner-retained response intent",
+    )
+    modes.add_argument(
+        "--response-status",
+        action="store_true",
+        help="Inspect that retained intent; never send",
+    )
     args = parser.parse_args()
     if args.native_connection is not None:
         command = receiving_command(
@@ -352,6 +508,8 @@ def main():
             args.binding,
             receive_only=args.receive,
             inbox_only=args.inbox,
+            respond_only=args.respond,
+            response_status_only=args.response_status,
         )
         os.execv(command[0], command)
     raw = sys.stdin.buffer.read(65537)
@@ -359,15 +517,33 @@ def main():
         raise MatrixExecutionError("Bounded controller status required")
     value = closed(
         strict_json(raw),
-        ("source", "channel_id", "after", "limit")
+        ("source", "channel_id", "parent", "send_id", "text", "effect_not_after_ms")
+        if args.respond or args.response_status
+        else ("source", "channel_id", "after", "limit")
         if args.inbox
         else ("status", "source", "after", "limit")
         if args.receive
         else ("status", "source"),
     )
-    operation = inbox if args.inbox else receive if args.receive else send
+    operation = (
+        (
+            lambda value, client: respond(
+                value, client, inspect_only=args.response_status
+            )
+        )
+        if args.respond or args.response_status
+        else inbox
+        if args.inbox
+        else receive
+        if args.receive
+        else send
+    )
     required = (
-        ("messaging.inbox",)
+        ("messaging.inbox", "messaging.reply")
+        if args.respond
+        else ("messaging.delivery",)
+        if args.response_status
+        else ("messaging.inbox",)
         if args.inbox
         else ("messaging.inbox", "messaging.delivery")
         if args.receive

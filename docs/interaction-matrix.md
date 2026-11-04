@@ -152,10 +152,54 @@ failure state. Own-body echoes and already canonical correlated Matrix replies
 are excluded from new-original offers. Exact native sources use the existing
 reader; unsupported payload/status metadata is explicit inline evidence.
 
-Correlated replies, durable response/defer completion and actual receiving/model/
-spoken acceptance remain unfinished. Batch review alone is not a response,
-message delivery, task completion or permission to reinterpret peer speech as
-human instructions. The finite producer remains unconfigured in production.
+### Original handling and correlated native responses
+
+The same integrator's `matrix_response` controller operation reads `pending`
+(at most eight descriptors per row cursor) or `status`, retains an explicit
+`defer` reason/next condition, or submits a selected `reply`. Deferral is still
+unresolved; it creates no timer, worker or new authority. Source revisions remain
+the immutable original's revisions, independent of handling state. Pending views
+exclude own-body echoes and already canonical correlated returns. Their paging
+is a bounded current view, not an immutable remote snapshot.
+
+Reply supplies the exact original UUID/revision and at most8000bytes of this
+integrator's own speech. One transaction freezes the response text, native parent,
+owner/channel, fresh send UUID and authoring deadline before calling the existing
+SDK. A later identical request returns retained state without another send;
+changed text refuses. The host re-reads the selected signed parent under the same
+absolute deadline and uses native `messaging.reply`, preserving a group parent's
+group audience or a direct parent's sender and recipient kind. It does not use
+the directed-only worker-relay parser or invent a human original. The native
+parent retains its immutable hash, author and thread.
+
+The existing authenticated physical caller selects attention ownership. An owned
+execution must still have its exact live generation; authoring expiry cannot
+exceed its reserved execution deadline. Pause closes further mutation. Already
+in-flight work may have an uncertain effect: the response intent remains
+`submitting`/`uncertain`, with no automatic retry. `inspect` calls only native
+`messaging.delivery`, including after the authoring deadline; it can retain a
+late observed result without admitting a new send. Native event/hash identity is
+immutable across later inspections. The API never resets a reservation or an
+intent to manufacture another attempt.
+
+`submitted` means a native authored outcome. It remains pending until native
+member receiving-copy receipts prove the distinct intended members' copies;
+`recipient_copy_proved` does not mean all-body uptake, model incorporation, task
+completion or human hearing. A weaker/failed later observation cannot erase the
+retained stronger proof. Complete native evidence stays in the SDK journal;
+controller status exposes bounded metadata and at most eight member summaries.
+
+Storage reuses one handling column per retained original. At most32response
+intents per logical entry are admitted, each at most128KiB including its receipt;
+the remaining original rows hold only bounded latest deferral metadata. These
+bounds are not reset by restart, pause/resume or source generations. Capacity
+leaves originals/intents inspectable rather than deleting history or resending.
+There is no new scheduler, reasoner, credential or model call in this adapter.
+
+Batch review alone is not a response or permission to reinterpret peer speech as
+human instructions. Attention-origin worker dispatch, selected task/DMK/editorial
+follow-through and actual combined receiving/model/spoken acceptance remain
+unfinished. The finite producer remains unconfigured in production.
 
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 

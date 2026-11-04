@@ -1,6 +1,7 @@
 //! Retained cross-body correlation. Matrix owns transport and receiving execution;
 //! this store neither signs execution approvals nor schedules/activates a peer.
 pub(in crate::store) mod inbox;
+pub(in crate::store) mod response;
 use super::*;
 use crate::interaction::{InputReference, MatrixDestination, RequestRelation};
 use anyhow::bail;
@@ -119,6 +120,7 @@ impl Store {
                PRIMARY KEY(entry_session,human_id,message_id));"
         )?;
         let conn = self.conn.lock().expect("store mutex poisoned");
+        super::add_column_if_missing(&conn, "interaction_matrix_inbox", "handling", "TEXT")?;
         super::add_column_if_missing(
             &conn,
             "interaction_matrix_requests",
