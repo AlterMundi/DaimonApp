@@ -5,6 +5,44 @@ implemented. Human selection, 2026-10-26: move from the accepted single-chat bas
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
 
+## Shared attention backend —4November2026
+
+Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
+authorized session progress/results, presentation and iteration through Avatar,
+and selected experience/discovery evidence for Bitácora. The continuing native
+integrator owns judgment and routing; there is no second I/O reasoning session.
+The [single Matrix310 plan](https://github.com/AlterMundi/daimon-matrix/issues/310#issuecomment-6621485717)
+records that path under the full Matrix437 foundation goal.
+
+The backend separation already belongs to #452. Core attention, state and
+single-writer admission must work independently of Telegram credentials,
+polling, topics and API availability. Web, Avatar and Telegram are client/adapters,
+not core prerequisites. Reuse the existing journals, observer, owner controls and
+native return path; do not introduce another scheduler or task/goal store.
+
+The initial extraction moves the existing maintenance runner into transport-neutral
+`src/backend.rs`, with receiving callbacks in `src/app/backend.rs`. Ownership
+renewal, native-output recovery, known-unsent returns and retained artifacts keep
+their existing journals. Optional Telegram projection remains an adapter callback.
+Idle cancellation now exits the wait immediately; a journal recovery already in
+flight retains its existing outcome rather than being abandoned halfway through
+an external effect. This extraction does not activate new inbox discovery,
+model turns, attention policies or Bitácora publication. Native goal/history,
+uncertain operations and current configuration remain authoritative.
+
+Future selected discovery must batch only new source-linked revisions with durable
+cursors, backpressure, pause/stop and enforced inference/cost limits. The timer's
+no-news path requires no model. A light model may classify genuinely new evidence
+or draft a summary; execution and deeper work use the existing selected sessions.
+Evaluate Nicolas's Instant suggestion against actual client availability and
+account limits; Chat availability is not proof of a free backend model route.
+Do not change ordinary worker/integrator models to implement this role.
+
+Qualification must include tokenless/Telegram-disabled operation, loss of the
+owner fence, cancellation between recovery operations, exact-once retained returns,
+and the actual Matrix→integrator→worker→Avatar/Bitácora path as each part lands.
+The extracted runner and tests do not establish that complete receiving loop.
+
 ## Native voice foreground — human correction,1November2026
 
 The next implementation is a native speech-to-speech conversational layer

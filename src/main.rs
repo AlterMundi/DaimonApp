@@ -1,5 +1,6 @@
 mod app;
 mod ascii;
+mod backend;
 mod codex;
 mod codex_history;
 mod commands;

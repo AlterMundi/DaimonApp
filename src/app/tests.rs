@@ -440,6 +440,51 @@ fn sample_app() -> (App, NamedTempFile) {
 }
 
 #[tokio::test]
+async fn shared_backend_heartbeat_needs_no_telegram_and_preserves_native_binding() {
+    let (mut app, _db) = sample_app();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let shared = Arc::get_mut(&mut app.shared).unwrap();
+    shared.config.telegram.enabled = false;
+    shared.telegram = TelegramClient::new(
+        String::new(),
+        format!("http://{}", listener.local_addr().unwrap()),
+    );
+    let key = SessionKey::new(100, Some(7));
+    shared
+        .store
+        .ensure_session(key, 100, &shared.session_defaults)
+        .unwrap();
+    shared
+        .store
+        .set_session_codex_thread(key, "existing-native")
+        .unwrap();
+    let before = shared.store.get_session(key).unwrap().unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::backend::tick(&app, &app.shared.shutdown),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(!app.shared.shutdown.is_cancelled());
+    let after = app.shared.store.get_session(key).unwrap().unwrap();
+    assert_eq!(after.codex_thread_id, before.codex_thread_id);
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.reasoning_effort, before.reasoning_effort);
+    assert_eq!(after.busy, before.busy);
+    assert!(app.workers.lock().await.is_empty());
+    app.shared.store.release_instance_lock().unwrap();
+    crate::backend::tick(&app, &app.shared.shutdown).await;
+    assert!(app.shared.shutdown.is_cancelled());
+}
+
+#[tokio::test]
 async fn integrated_tribu_keeps_an_existing_native_binding_without_legacy_feature_profile() {
     let (mut app, _db) = sample_app();
     let key = SessionKey::new(100, Some(7));
