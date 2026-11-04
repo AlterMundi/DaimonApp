@@ -25,6 +25,7 @@ from dashboard.app import create_app
 from dashboard.provider import Provider
 from dashboard.provider import ProviderUnavailable
 from dashboard.native_context import NativeContext
+from dashboard.qwen_dialogue import QwenDialogue
 from dashboard.native_history import NativeHistory
 from dashboard_native_voice import Stream, Detector
 from workflow_native_returns_io import Returning
@@ -246,7 +247,11 @@ print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streamin
                             assert len(stream.guidance)==1 and stream.guidance[0]['id']==j.guide_id
                             assert stream.guidance[0]['dialogue']==dialogue and stream.guidance[0]['mode']=='context_only'
                         stream.rollover_due=True
-                        stream.checkpoint_pressure={'reason':'tokens','tokens':105000,'usage_kind':'observed'}
+                        # Exercise the adapter's actual pressure contract against the native Store.
+                        qwen=QwenDialogue.__new__(QwenDialogue)
+                        qwen.context_estimate=48000;qwen.turns_finished=0
+                        qwen.input_bytes=0;qwen.output_bytes=0
+                        stream.checkpoint_pressure=qwen.checkpoint_pressure
                         ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
                         j.wait(lambda:stream.closed_event.is_set())
                         assert len(Stream.opened)==cycle+2

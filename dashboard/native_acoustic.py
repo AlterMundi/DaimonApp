@@ -225,9 +225,15 @@ class NativeAcousticSession:
         if span.end_ack and span.text is not None:
             # One finalized input transcript plus its exact manual-end ACK.
             # Output completion/generation does not finalize a human original.
-            self.bridge.transcript(span.ident,span.text)
             self.spans.pop(0);self.provider=None
-            await self.notify({'type':'input_interpreted','id':span.ident,'text':span.text})
+            if span.text.strip():
+                self.bridge.transcript(span.ident,span.text)
+                await self.notify({'type':'input_interpreted','id':span.ident,'text':span.text})
+            else:
+                # Qwen can commit a noise/unclear span with no words. Keep
+                # that exact original unconfirmed; do not end unrelated speech.
+                await self.notify({'type':'input_uninterpreted','id':span.ident,
+                    'reason':'empty_final_transcript'})
             await self._pump()
 
     async def watch_transcripts(self):
@@ -261,9 +267,24 @@ class NativeAcousticSession:
         async with self.lock:
             if self.closed:raise ForegroundUnavailable('Native acoustic conversation ended')
             kind=event['type'];span=self.provider
-            if kind not in ('voice_activity','input_transcript'):return
+            if kind not in ('voice_activity','input_transcript','input_committed'):return
             if span is None:raise ForegroundUnavailable('Uncorrelated native input event')
-            if kind=='voice_activity':
+            if kind=='input_committed':
+                # Qwen acknowledges the explicit buffered input item, not VAD.
+                # Compare the locally retained exact range to the adapter's
+                # one outstanding commit; never invent provider sample offsets.
+                if ((getattr(self.stream,'model',None),event.get('source')) not in (
+                            ('qwen-audio-3.0-realtime-plus','provider_qwen_commit'),
+                            ('gpt-realtime-2.1','provider_openai_commit'))
+                        or span.stream_end is None or span.start_ack or span.end_ack
+                        or type(event.get('stream_start')) is not int
+                        or type(event.get('stream_end')) is not int
+                        or event['stream_start']+self.provider_offset_base!=span.stream_start
+                        or event['stream_end']+self.provider_offset_base!=span.stream_end
+                        or not isinstance(event.get('item_id'),str) or not event['item_id']):
+                    raise ForegroundUnavailable('Provider input commitment does not match the captured phrase')
+                span.start_ack=span.end_ack=True
+            elif kind=='voice_activity':
                 if event.get('source')!='provider_manual_activity_ack':
                     raise ForegroundUnavailable('Native activity is not the selected manual protocol')
                 start=event.get('activity')=='ACTIVITY_START'
@@ -297,7 +318,10 @@ class NativeAcousticSession:
                         raise ForegroundUnavailable('Input transcript exceeds its live bound')
                     span.transcript_parts=combined;span.fragmented=True
                     if event['finished']:
-                        if not combined.strip():raise ForegroundUnavailable('Input transcript is empty')
+                        if not combined.strip() and not (
+                                getattr(self.stream,'model',None)=='qwen-audio-3.0-realtime-plus'
+                                and span.end_ack and span.stream_end is not None):
+                            raise ForegroundUnavailable('Input transcript is empty')
                         span.text=combined
                     await self.notify({'type':'input_caption','id':span.ident,'text':combined})
                 else:

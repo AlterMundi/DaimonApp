@@ -32,13 +32,27 @@ from .turn_detection import Detector, DetectionUnavailable
 def failure_site(error):
     """Source location only: never exception text, locals or absolute paths."""
     site=None;trace=error.__traceback__
-    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription','dashboard.native_context'}
+    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription','dashboard.native_context','dashboard.provider'}
     while trace is not None:
         module=trace.tb_frame.f_globals.get('__name__')
         if module in modules:
             site=f"{module.rsplit('.',1)[-1]}.{trace.tb_frame.f_code.co_name}:{trace.tb_lineno}"
         trace=trace.tb_next
     return site
+
+
+def owner_operation(error):
+    """Fixed receiving operation only, without payload, arguments or error text."""
+    operation=None;trace=error.__traceback__
+    known={'conversation_voice_submit','conversation_foreground_complete','conversation_input_status',
+        'conversation_live_context','conversation_foreground_delegate','conversation_foreground_originals',
+        'presentation_part','presentation_list','sonic_activity'}
+    while trace is not None:
+        frame=trace.tb_frame
+        if frame.f_globals.get('__name__')=='dashboard.provider' and frame.f_code.co_name in known:
+            operation=frame.f_code.co_name
+        trace=trace.tb_next
+    return operation
 
 
 def playback_status(value):
@@ -73,6 +87,11 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
     activity_mode=selected.get('native_activity_mode','manual')
     configured_seconds=selected.get('native_session_seconds',300)
+    def dialogue_class():
+        if selected.get('native_provider','gemini')=='qwen':
+            from .qwen_dialogue import QwenDialogue
+            return QwenDialogue
+        return NativeDialogue
     app.state.native_voice_enabled=True
     recovery_slots=asyncio.Semaphore(2);recovery_owned=set()
 
@@ -94,7 +113,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         completion_notifications={}
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
-        started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
+        started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;close_operation=None;first_send_failure=None
         first_playback_status=last_playback_status=None;playback_status_count=0
         def release_owner():
             nonlocal audio_released
@@ -117,7 +136,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             nonlocal utterance,output_text,output_bytes,output_hash
             if utterance is None:return
             record=await asyncio.to_thread(app.state.native_history.retain,owner,meta['id'],meta['binding'],
-                utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed)
+                utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed,model=stream.model)
             if closed:
                 if context_producer is not None:context_producer.notify()
                 if caption_audio is not None:
@@ -134,6 +153,19 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await actor()
                     await send({'type':'original_retained','id':capture.ident,'sha256':capture.digest})
                 raw_notifications[capture.ident]=launch(retained())
+            elif value['type']=='input_uninterpreted':
+                # Resolve waiting source reads without manufacturing a complete
+                # transcript. The original reservation/review remains intact.
+                capture=bridge.captures[value['id']]
+                capture.interpretation_ready.set()
+                async def reviewed():
+                    await asyncio.shield(capture.reservation)
+                    await actor()
+                    # The raw original is durably retained, but its words are
+                    # unconfirmed. It no longer occupies an in-flight slot;
+                    # total original/PCM bounds and explicit recovery remain.
+                    capture.phase='unconfirmed'
+                launch(reviewed())
             elif value['type']=='input_interpreted':
                 capture=bridge.captures[value['id']]
                 async def completed():
@@ -307,10 +339,11 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         cancelled_proposals.add(proposal);proposal.cancel()
                         await asyncio.gather(proposal,return_exceptions=True)
                     await send(event);continue
-                if kind in ('voice_activity','input_transcript'):
+                if kind in ('voice_activity','input_transcript','input_committed'):
                     original=acoustic.provider.ident if acoustic.provider else None
                     owned=await acoustic.provider_event(event)
                     if owned is not None:original=owned
+                    if kind=='input_committed':continue
                     event={**event,'id':original}
                     # Explicit transcription fragments are rendered as
                     # the acoustic owner's accumulated caption; an empty
@@ -506,7 +539,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600,
                         **({'session_seconds':session_seconds} if session_seconds>300 else {}))
                 await recheck()
-                opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode=activity_mode,
+                opening=asyncio.create_task(asyncio.to_thread(dialogue_class(),selected.get('native_credential_file',selected['credential_file']),activity_mode=activity_mode,
                     voice_name=selected.get('native_voice_name'),context=context))
                 stream=await asyncio.shield(opening)
                 # Provider readiness is actual setupComplete, not successful connect().
@@ -623,10 +656,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             await asyncio.to_thread(app.state.native_history.played,owner,meta['id'],value['id'],value['played_bytes'])
                             await notice_if_idle()
         except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect) as error:
-            close_error=type(error).__name__;close_site=failure_site(error)
+            close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error)
             with suppress(Exception):await send({'type':'review','message':'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.'})
         except BaseException as error:
-            close_error=type(error).__name__;close_site=failure_site(error);raise
+            close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error);raise
         finally:
             stopping=True
             if stream:
@@ -673,7 +706,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # Existing bounded service journal only. No exception detail,
                 # transcript, provider payload, identity/header or raw audio.
                 summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,'failure_site':close_site,
-                    'provider_failure_code':getattr(stream,'failure_code',None),
+                    'provider_failure_code':getattr(stream,'failure_code',None),'owner_operation':close_operation,'provider_controls':getattr(stream,'control_diagnostics',None),
                     'first_send_failure':first_send_failure,
                     'client_playback':{'source':'untrusted_client_observation','count':playback_status_count,
                         'first':first_playback_status,'last':last_playback_status},

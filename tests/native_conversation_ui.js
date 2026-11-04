@@ -109,7 +109,7 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   }
   // A provider may generate PCM before its manual-end ACK. Preserve the
   // beginning while waiting for that ACK instead of hearing only a late tail.
-  for(const native of [false,true]){
+  for(const confirmation of ['voice_activity','input_interpreted','input_uninterpreted'])for(const native of [false,true]){
     const early=boot(native),earlySocket=await ready(early,false,'automatic'),input=crypto.randomUUID(),output=crypto.randomUUID();
     early.sources[0].emit({pcm:new Uint8Array(3200).buffer});
     earlySocket.push({type:'capture_started',id:input,start:0});earlySocket.push({type:'phrase_end',id:input,start:0,end:3200});
@@ -118,7 +118,12 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
     earlySocket.push(packet(640));earlySocket.push(packet(1280));await until(()=>early.engine.hasAudio);
     assert.equal(early.engine.paused,true,'Fresh response waits for the matching manual-end ACK');
     assert.equal(early.timings.some(t=>t.id===output&&t.stage==='output_progress'),false);
-    earlySocket.push({type:'voice_activity',id:input,activity:'ACTIVITY_END'});await until(()=>!early.engine.paused);
+    if(confirmation!=='input_uninterpreted')earlySocket.push({type:confirmation,id:crypto.randomUUID(),activity:'ACTIVITY_END',text:'Old phrase',reason:'empty_final_transcript'});await tick();
+    assert.equal(early.engine.paused,true,'An unrelated input confirmation cannot release output');
+    early.engine.pause();earlySocket.push({type:confirmation,id:input,activity:'ACTIVITY_END',text:'Exact phrase',reason:'empty_final_transcript'});await tick();
+    assert.equal(early.engine.paused,true,'Input confirmation cannot override the human Pause');
+    early.engine.resume();await until(()=>!early.engine.paused);
+    if(!native)assert.equal(early.contexts[0].state,'running');
     if(native){await until(()=>early.nativeCommands.filter(v=>v.command==='pcm_chunk').length===2);early.nativeEvent({type:'pcm_progress',positions:[{utterance:output,played_bytes:1280}]});}
     else{assert.equal(early.contexts[0].nodes.length,2,'Both pre-ACK buffers survive');for(const node of early.contexts[0].nodes)node.finish();}
     assert(earlySocket.sent.some(v=>v.type==='playback'&&v.id===output&&v.played_bytes===1280),'Playback includes the first PCM, not only a post-ACK tail');
@@ -137,6 +142,7 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   value.engine.pause();await tick();assert.equal(value.engine.paused,true);value.engine.resume();await tick();assert.equal(value.engine.paused,false);
   const second=crypto.randomUUID();value.sources[0].emit({pcm:frame()});socket.push({type:'capture_started',id:second,start:6400});socket.push(audio(1280));
   await tick();assert.equal(value.contexts[0].nodes[0].stopped,true);assert.equal(value.contexts[0].nodes.length,1,'Queued old output cannot restart during interruption');
+  socket.push({type:'input_interpreted',id:first,text:'Late previous phrase'});await tick();assert.equal(value.engine.paused,true,'Late interpretation cannot resume during a newer capture');
   socket.push({type:'phrase_end',id:second,start:6400,end:9600});await until(()=>value.retained.length===2);
   socket.push({type:'voice_activity',id:first,activity:'ACTIVITY_END'});socket.push(audio(1920));await tick();assert.equal(value.contexts[0].nodes.length,1,'An earlier phrase ACK cannot release stale audio');
   socket.push({type:'voice_activity',id:second,activity:'ACTIVITY_END'});socket.push({type:'audio',id:crypto.randomUUID(),end:640,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});await until(()=>value.contexts[0].nodes.length===2);
@@ -144,7 +150,7 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   assert.equal(value.states.at(-1).pending,true,'Stopping with an unconfirmed original must expose review in the avatar');
   assert.equal(value.handoffs.at(-1).gate,'review','The detector badge must not keep claiming Voice detected after recovery begins');
   assert.ok(value.timers.every(t=>t.cleared),'Readiness/session timers are cleared');
-  assert.deepEqual(value.timings.filter(t=>t.id===first).map(t=>t.stage),['capture_started','phrase_end','local_retained','original_confirmed']);
+  assert.deepEqual(value.timings.filter(t=>t.id===first).map(t=>t.stage),['capture_started','phrase_end','local_retained','original_confirmed','input_interpreted']);
   assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_handled'));assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_scheduled'));assert.ok(value.timings.some(t=>t.id===output&&t.stage==='output_retired'));
   assert.equal(value.timings.some(t=>t.id===output&&t.stage==='output_buffer_ended'),false,'A retired queued source cannot report a completed buffer');
   // Upload backlog, a remote close and invalid capture bytes are distinct

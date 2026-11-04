@@ -193,6 +193,32 @@ function boot(live=false,recovery,status404=false){
  await nativeCopy.check();await until(()=>nativeCopy.received.length===1);
  assert.equal(nativeRecovery.values.size,0);assert.equal(nativeCopy.uploads.length,0,'Checking the completed original never resends it');
 
+ // Native review keeps exact local bytes and uses a versioned bounded queue.
+ const reviewStore=memoryRecovery(),reviewOwner=boot(true,reviewStore);
+ await until(()=>reviewOwner.ui.canStartContinuous());reviewOwner.ui.continuousOwner(true);
+ const dialogue=crypto.randomUUID(),reviewed=[];
+ const makeReview=()=>({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:dialogue,mime:'audio/wav',blob:new Blob(['review original'])});
+ for(let n=0;n<3;n++){
+   const original=await reviewOwner.ui.retainContinuous(makeReview());reviewed.push(original);
+   await assert.rejects(reviewOwner.ui.reviewNativeContinuous({...original,audio_sha256:'0'.repeat(64)}));
+   await reviewOwner.ui.reviewNativeContinuous(original);
+ }
+ assert.equal(reviewStore.values.get('pending').schema,'telecodex.voice-recovery/v3');
+ assert.equal(reviewStore.values.get('pending').items.length,3);
+ assert.equal(reviewOwner.uploads.length,0,'Review never submits an original');
+ const reviewReload=boot(false,reviewStore,true);
+ await until(()=>reviewReload.state().startsWith('An unfinished recording was recovered'));
+ assert.equal(reviewReload.uploads.length,0);assert.equal(reviewReload.mediaRequests(),0);
+ assert.equal(reviewStore.values.get('pending').items.length,3,'Reload cannot retire a review original');
+ await assert.rejects(reviewOwner.ui.retainContinuous({...makeReview(),blob:new Blob([new Uint8Array(20*1024*1024)])}));
+ assert.equal(reviewStore.values.get('pending').items.length,3,'Combined byte refusal preserves all records');
+ await reviewOwner.ui.releaseContinuous(reviewed[0],reviewed[0].audio_sha256);
+ assert.equal(reviewStore.values.get('pending').schema,'telecodex.voice-recovery/v2','Compatible shape returns after matching completion');
+ assert.deepEqual(Array.from(reviewStore.values.get('pending').items,v=>v.id),reviewed.slice(1).map(v=>v.id));
+ for(let n=2;n<128;n++){const original=await reviewOwner.ui.retainContinuous(makeReview());await reviewOwner.ui.reviewNativeContinuous(original);}
+ await assert.rejects(reviewOwner.ui.retainContinuous(makeReview()));
+ assert.equal(reviewStore.values.get('pending').items.length,128,'Reviewed recordings retain an explicit record ceiling');
+
  const discardStore=memoryRecovery();discardStore.values.set('pending',{schema:'telecodex.voice-recovery/v2',items:[first,second]});
  const queueReview=boot(false,discardStore);await until(()=>queueReview.state().startsWith('An unfinished recording was recovered'));
  queueReview.cancel();await until(()=>queueReview.state().startsWith('An unfinished recording was recovered'));

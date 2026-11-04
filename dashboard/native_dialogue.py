@@ -116,7 +116,7 @@ class NativeDialogue:
                     'Converse naturally in the human\'s language, clarify and formulate requests. '
                     'Your primary role is conversation and constructing faithful request language together. '
                     'The Sol integrator owns deliberate planning, memory research, routing and coordination of persistent work sessions. '
-                    'Keep spoken replies brief, usually one or two sentences; expand when asked. '
+                    'Speak briefly, efficiently and with a light poetic touch when it fits. Default to one short sentence, at most two unless the human asks for more. Lead with the useful answer; omit repeated acknowledgments, recaps and filler. Poetry should sharpen meaning, not add length. '
                     'When actually consulting memory or Sol, describe it naturally in the first person, such as trying to recall or checking a detail; do not narrate internal session routing unless it helps the human or they ask. Natural phrasing must never fabricate a recollection or conceal an unconfirmed consultation. '
                     'A conversational style adjustment is temporary context, not a durable saved note. Never say a preference or lesson was saved or will persist unless the actual memory write is confirmed. Ask Sol to preserve a requested lasting lesson through the existing original-bound delegation. '
                     'A question about the most meaningful projects in our shared history is different from current priorities or active task status; preserve that distinction when consulting Sol. '
@@ -566,7 +566,19 @@ class NativeDialogue:
         with self._reader:
             self._active(ready=False)
             try:
-                raw = self._socket.recv()
+                if hasattr(self._socket,'recv_data'):
+                    opcode,raw=self._socket.recv_data(control_frame=True)
+                    if opcode==8:
+                        # websocket.recv() turns a close frame into an empty
+                        # string, hiding even the distinction from malformed JSON.
+                        # Keep only a fixed category; never log the close reason.
+                        reason=raw[2:].decode('utf-8','replace').lower() if isinstance(raw,bytes) and len(raw)>=2 else ''
+                        self._fail('native-dialogue-provider-billing' if any(word in reason for word in
+                            ('billing','credit','balance')) else 'native-dialogue-provider-closed')
+                    if opcode not in (1,2):return []
+                else:raw = self._socket.recv()
+            except DialogueUnavailable:
+                raise
             except self._timeouts:
                 self._active(ready=False)
                 if self.phase=='ready' and not self._pressure_notified and self.checkpoint_pressure is not None:
@@ -584,13 +596,18 @@ class NativeDialogue:
                 try:
                     self._validation_stage="envelope"
                     value = json.loads(raw)
-                    if not isinstance(value, dict) or 'error' in value:
-                        raise ValueError()
+                    if not isinstance(value, dict):raise ValueError()
+                    if 'error' in value:return self._provider_error(value)
                     return self._events(value)
                 except DialogueUnavailable:
                     raise
                 except Exception:
                     self._fail('native-dialogue-invalid-provider-event-'+self._validation_stage)
+
+    def _provider_error(self,value):
+        # Provider adapters may recognize a narrowly correlated harmless control
+        # result. The default protocol retains its existing refusal behavior.
+        raise ValueError('Provider error envelope')
 
     def _text(self, value):
         if not isinstance(value, str) or len(value.encode()) > 16384:

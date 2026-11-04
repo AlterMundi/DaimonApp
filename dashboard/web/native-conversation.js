@@ -3,9 +3,9 @@
 window.NativeConversation=(()=>{
   const nativePcm=()=>window.NativeSpeechAudio?.pcm===true&&typeof window.NativeSpeechAudio.openPcm==='function';
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&(!window.NativeSpeechAudio?.backgroundPlayback||nativePcm()));
-  function create({headers,getBinding,getQuestions,retain,release,onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
+  function create({headers,getBinding,getQuestions,retain,release,reviewOriginal=async()=>{},onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
-    let parts=[],bytes=0,originals=new Map(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
+    let parts=[],bytes=0,originals=new Map(),rawRetained=new Set(),uninterpreted=new Set(),markedReview=new Set(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
     let playbackReporting=false,playbackReports=0,playbackCounts;
     let sessionSeconds=300,pcmBase=0,originalRanges=new Map();
     const emitState=value=>onState({...value,audioPaused:userPaused,audioEnabled:audible});
@@ -73,12 +73,20 @@ window.NativeConversation=(()=>{
     }
     function keep(span){
       if(originals.has(span.id))return originals.get(span.id);
-      if(originals.size>=2)throw Error('Two originals await confirmation');
+      if([...originals.keys()].filter(id=>!rawRetained.has(id)||!uninterpreted.has(id)).length>=2)throw Error('Two originals await confirmation');
+      // Retained review originals are distinct from in-flight confirmations.
+      // Keep the server's128-original ceiling and the same session PCM bound.
+      if(originals.size>=128)throw Error('Review recording capacity reached');
       const value={id:span.id,binding,foreground_dialogue:dialogue,capture_started:Date.now(),captureQuestions:span.questions,
         blob:window.StreamingVoice.wav(slice(span.start,span.end)),mime:'audio/wav',submissionRequested:false};
       const promise=writing.then(()=>retain(value)).then(frozen=>{originals.set(span.id,frozen);return frozen;});
       // Reserve capacity before an asynchronous IndexedDB write completes.
       originals.set(span.id,value);originalRanges.set(span.id,{start:span.start,end:span.end});writing=promise.then(()=>{},()=>{});return promise;
+    }
+    async function markReviewed(id){
+      if(rawRetained.has(id)&&uninterpreted.has(id)&&!markedReview.has(id)){
+        await reviewOriginal(originals.get(id));markedReview.add(id);
+      }
     }
     function hold(message='Voice ended. Your unconfirmed originals are kept for review.',recoverUnassigned=false){
       if(stopped)return;diagnosePlayback();stopped=true;active=starting=floor=false;clearTimeout(timer);silence();
@@ -111,11 +119,11 @@ window.NativeConversation=(()=>{
         }
         case 'original_retained':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256)throw Error('Retained original differs');
-          onHandoff({id:value.id,gate:'foreground_saved'});break;
+          rawRetained.add(value.id);await markReviewed(value.id);onHandoff({id:value.id,gate:uninterpreted.has(value.id)?'review':'foreground_saved'});break;
         }
         case 'original_completed':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256||value.phase!=='foreground')throw Error('Completed original differs');
-          onTiming(value.id,'original_confirmed');await release(original,value.sha256);originals.delete(value.id);
+          onTiming(value.id,'original_confirmed');await release(original,value.sha256);originals.delete(value.id);rawRetained.delete(value.id);uninterpreted.delete(value.id);markedReview.delete(value.id);
           const range=originalRanges.get(value.id);originalRanges.delete(value.id);
           if(range){
             if(current&&current.start<range.end)throw Error('Confirmed PCM overlaps live capture');
@@ -130,13 +138,22 @@ window.NativeConversation=(()=>{
         case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded){blocked=false;resumeOutput();}break;
         case 'turn_activity':
           if(current)onHandoff({id:current.id,gate:value.activity.speaking?'speaking':'waiting_endpoint'});break;
-        case 'input_interpreted':onTiming(value.id,'input_interpreted');onCaption(value.text);break;
+        case 'input_uninterpreted':
+          if(!originals.has(value.id)||value.reason!=='empty_final_transcript')throw Error('Unknown original review');
+          uninterpreted.add(value.id);await markReviewed(value.id);
+          if(value.id===lastEnded&&!floor){blocked=false;resumeOutput();}
+          onHandoff({id:value.id,gate:'review'});state('No words confirmed. Recording kept for review; you can keep talking.');break;
+        case 'input_interpreted':
+          // Exact input confirmation is provider-neutral. Qwen commits an
+          // input item instead of emitting Gemini's ACTIVITY_END event.
+          if(value.id===lastEnded&&!floor){blocked=false;resumeOutput();}
+          onTiming(value.id,'input_interpreted');onCaption(value.text);break;
         case 'review':case 'closing':hold(value.message||'Voice session ended.');break;
       }
     }
     async function start(){
       if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
-      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
+      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;rawRetained=new Set();uninterpreted=new Set();markedReview=new Set();received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       playbackReporting=false;playbackReports=0;playbackCounts={handled:0,scheduled:0,ended:0,skipped_floor:0,skipped_muted:0,skipped_retired:0};
       sessionSeconds=300;pcmBase=0;originalRanges=new Map();const requestedSeconds=nativePcm()?300:1800;
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
@@ -209,7 +226,7 @@ window.NativeConversation=(()=>{
       pause:(reason='manual')=>{userPaused=true;pauseOutput();diagnosePlayback();emitState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
       resume:()=>{userPaused=false;resumeOutput();},
       get hasAudio(){return !!nativeOutput?.hasAudio||nodes.size>0;},get paused(){return nativeOutput?.paused||context?.state==='suspended';},
-      release:id=>originals.delete(id),get active(){return active||starting;},get floor(){return floor;},get originals(){return [...originals.values()];}};
+      release:id=>{rawRetained.delete(id);uninterpreted.delete(id);markedReview.delete(id);return originals.delete(id);},get active(){return active||starting;},get floor(){return floor;},get originals(){return [...originals.values()];}};
   }
   return {supported,create};
 })();

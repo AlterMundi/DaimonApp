@@ -220,11 +220,23 @@ def install(app, config, provider, authorize, origins):
     mode=selected.get('mode','prepared')
     if (mode not in ('prepared','captions')
             or selected.get('provider','qwen') not in ('qwen','gemini')
-            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name','native_caption_recovery','native_session_seconds'}
+            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name','native_caption_recovery','native_session_seconds','native_provider','native_credential_file'}
             or not {'enabled','endpoint','credential_file','cache_root'}<=set(selected)
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
         raise ValueError('Explicit private streaming-transcription binding required')
+    native_provider=selected.get('native_provider','gemini')
+    if native_provider not in ('gemini','qwen'):
+        raise ValueError('Select a supported native conversation provider')
+    if native_provider=='qwen' and (selected.get('native_dialogue') is not True
+            or selected.get('native_activity_mode','manual')!='manual'
+            or not isinstance(selected.get('native_credential_file'),str)
+            or not Path(selected['native_credential_file']).is_absolute()):
+        raise ValueError('Native provider dialogue needs explicit private credentials and manual activity')
+    if 'native_credential_file' in selected and (native_provider!='qwen'
+            or not isinstance(selected['native_credential_file'],str)
+            or not Path(selected['native_credential_file']).is_absolute()):
+        raise ValueError('Select explicit private native provider credentials')
     fallback=selected.get('fallback')
     if fallback is not None and (selected.get('provider')!='gemini'
             or not isinstance(fallback,dict) or set(fallback)!={'provider','endpoint','credential_file'}
@@ -676,7 +688,7 @@ def install(app, config, provider, authorize, origins):
     if selected.get('native_dialogue') is True:
         if (selected.get('provider')!='gemini' or mode!='prepared'
                 or selected.get('native_activity_mode','manual')=='manual' and not detector_command):
-            raise ValueError('Native dialogue requires the selected Gemini credential and acoustic detector')
+            raise ValueError('Native dialogue requires prepared transcription and the selected acoustic detector')
         from .native_voice import install as install_native_voice
         install_native_voice(app,config,provider,origins,bind_voice,detector_command,analysis_active)
     return True

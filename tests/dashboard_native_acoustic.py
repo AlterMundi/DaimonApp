@@ -48,6 +48,41 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         await self.ack('ACTIVITY_START','0s')
         await self.session.feed(b'\0\0'*1600)
         await self.session.activity(self.activity(6400,endpoint=True))
+    async def test_qwen_commit_ack_matches_only_the_owned_exact_range(self):
+        self.bridge.stream.model='qwen-audio-3.0-realtime-plus'
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(6400,endpoint=True))
+        event={'type':'input_committed','source':'provider_qwen_commit','item_id':'qwen-item',
+               'stream_start':0,'stream_end':6400}
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({**event,'stream_end':6398})
+        self.assertFalse(self.session.provider.end_ack)
+        await self.session.provider_event(event)
+        self.assertTrue(self.session.provider.start_ack);self.assertTrue(self.session.provider.end_ack)
+        await self.session.provider_event({'type':'input_transcript','text':'Hola.','finished':True})
+        self.assertEqual(self.bridge.transcripts[0][1],'Hola.')
+
+    async def test_empty_committed_qwen_original_stays_unconfirmed_and_next_phrase_continues(self):
+        self.bridge.stream.model='qwen-audio-3.0-realtime-plus'
+        for n,text in enumerate(['  ', 'Next exact phrase.']):
+            start=n*6400
+            await self.session.feed(b'\1\0'*1600)
+            await self.session.activity(self.activity(start+3200,generation=n+1,onset=start+3072))
+            await self.session.feed(b'\0\0'*1600)
+            await self.session.activity(self.activity(start+6400,generation=n+1,endpoint=True))
+            await self.session.provider_event({'type':'input_committed','source':'provider_qwen_commit',
+                'item_id':str(n),'stream_start':start,'stream_end':start+6400})
+            await self.session.provider_event({'type':'input_transcript','text':text,'finished':True})
+            self.assertIsNone(self.session.provider)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[1][0],'Next exact phrase.')])
+        reviewed=[e for e in self.events if e['type']=='input_uninterpreted']
+        self.assertEqual(reviewed,[{'type':'input_uninterpreted','id':self.bridge.captures[0][0],
+                                  'reason':'empty_final_transcript'}])
+        self.assertFalse(self.session.closed)
+
     async def test_first_local_marker_freezes_each_phrase_question_scope(self):
         selected={'c'*32:'d'*64}
         await self.session.marker(640,selected)

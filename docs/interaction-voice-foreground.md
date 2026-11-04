@@ -1647,3 +1647,249 @@ of the final61tail observations indicated speech despite continuing noise.
 The12/6dB mixtures clipped two/four samples respectively. This qualifies only
 these controlled signals; arbitrary road noise, competing voices, echo, the
 actual person's microphone and useful phone/hearing latency remain unqualified.
+
+## Explicit Qwen native pilot and prepared OpenAI transport — 4 November 2026
+
+`streaming_transcription.native_provider` now selects `gemini` (unchanged default)
+or `qwen` for the foreground conversation, independently of prepared ASR and its
+existing fallback. Qwen requires an explicit absolute `native_credential_file`,
+manual local acoustic ownership and a matching voice such as `longanqian`.
+Changing providers never replays a retained original or switches an open dialogue.
+The configured finite logical session and shared identity/Sol/source policy remain.
+Ordinary TTS, file ASR, shared login and the native integrator stay independent.
+
+Qwen's `input_audio_buffer.committed` acknowledges one buffered input item. The
+adapter binds its ID to its one outstanding exact original PCM range; it does
+not invent a provider VAD event or provider-reported sample offsets. Only that
+item's final transcript can complete the original. Duplicate/unowned commitment
+or final transcription closes for review. PCM remains16kHz input/24kHz output.
+Provider function calls retain the existing tool validation and source-bound
+Sol admission. Qwen has one function output per call; later admitted streaming
+returns become explicitly attributed internal context on that same retained
+call, never another tool execution or new human speech. Controls wait for the
+provider/acoustic floor, with at most64 queued controls/256KiB. Interruption
+cancels voice generation only, preserving independent work and pending tools.
+Assistant history records the actual generating model rather than labeling all
+speech Gemini. Existing rows keep their original attribution.
+
+The pilot uses a conservative64k context ceiling, requests50 retained turns, and
+signals checkpoint pressure at48k estimated tokens,40 completed response turns,
+240seconds cumulative generated/input audio, or the existing physical lifetime
+and tool bounds. The existing Sol checkpoint/successor owner handles continuity;
+these are bounds, not a measured long-session/device acceptance result.
+
+Observed qualification: one real Qwen synthetic text/tool/audio exchange; then
+one adapter audio-input/final-transcript/read-only-tool/audio-output exchange;
+then one mounted actual Qwen/local CPU/native Sol composition. The last completed
+in26.439seconds total with one provider socket, zero forced rollovers, retained
+originals and integrating context. No production human input, worker dispatch,
+physical microphone/speaker, hearing or useful-latency claim. The earlier
+600second Gemini capacity qualification is not Qwen duration acceptance.
+
+OpenAI's `OpenAIDialogue` is a prepared transport candidate, not a selectable
+receiving provider yet: it targets the GA `gpt-realtime-2.1` WebSocket contract,
+explicit API credentials, `gpt-transcribe` input interpretation and a prebuilt
+`cedar` voice. Its streaming16→24kHz PCM phase, GA event/tool mapping and original
+coordinates have isolated tests only. Actual account access, model/tool/audio
+qualification and the native completed-reader allowlist still need closure.
+The existing ChatGPT login and historical native WebRTC sample do not establish
+an API key. Do not repurpose that login token, advertise this candidate as live,
+or bypass the compatible-reader requirement to select it. A native-login/WebRTC
+integration is a separate transport option, not an API credential substitution.
+
+Five real phone attempts on4November closed during Gemini preflight before any
+PCM input/output. One bounded setup-only inspection observed close code1011
+with a billing/credit category; no exact balance was read. `recv()` had collapsed
+the close frame into an empty string, producing the misleading invalid-envelope
+code. The reader now distinguishes a fixed billing category from an ordinary
+provider close without retaining provider reason text or retrying a session.
+Subsequent human recovery and renewed immediate failure are retained separately;
+no phone success is inferred from a successful independent Qwen sample.
+
+Official contracts, retrieved4November:
+[Qwen Token Plan voice](https://docs.qwencloud.com/token-plan/best-practices/realtime-voice),
+[Qwen client events](https://docs.qwencloud.com/api-reference/qwen-audio-realtime/client-events),
+[Qwen native audio/context](https://docs.qwencloud.com/developer-guides/speech/qwen-audio-realtime),
+[OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime),
+[OpenAI GA events](https://developers.openai.com/api/reference/resources/realtime/client-events).
+Voces retains the expanded listening comparison. Grok and MiniMax have no
+receiving conversation adapter from this change; MiniMax TTS streaming alone is
+not full audio-to-audio conversation. Receiving selection and device acceptance
+remain distinct from these source/qualification observations.
+
+One initial standalone interruption fixture stopped with a local ValueError and
+did not retain enough boundary metadata to establish its cause. A separately
+instrumented two-original interruption observed an actual provider cancellation
+and subsequent audio. The cancellation control was then narrowed to Qwen's
+documented `response.cancel` shape, and the original synthetic script content
+completed with two committed originals, cancellation and subsequent audio. This
+is regression evidence, not proof of the earlier fixture's cause or general
+physical interruption acceptance. No uncertain human input or work was replayed.
+
+
+### Qwen browser playback confirmation — 4 November 2026
+
+The first phone pilot received fast text but no audible response. Receiving
+playback observations showed generated/scheduled PCM with zero ended buffers,
+`blocked=true` and a suspended browser AudioContext. The client released that
+block only for Gemini's matching `ACTIVITY_END`; Qwen's distinct committed-input
+protocol intentionally does not manufacture that event. Server-only digital
+qualification did not exercise this client gate and was insufficient to establish
+playback.
+
+The client now also releases output on the existing exact-original
+`input_interpreted` notification. The acoustic owner emits it only after both
+the correlated input commitment and finalized transcript. It must match the
+last ended phrase and cannot override a newer active capture, explicit Pause,
+or mute. Partial captions, generated text and output completion grant no floor.
+The Gemini release path remains supported.
+
+Qualification: mounted browser/native-PCM controls preserve the initial queued
+audio, reject unrelated/late confirmations and preserve explicit Pause. The
+existing full-shell Chromium fixture now accepts `--input-confirmation qwen`:
+it exercises Qwen commitment/final-transcript events without Gemini VAD, actual
+AudioContext playback completion and three consecutive retained/released
+originals. Provider, detector and capture input are synthetic; physical hearing,
+phone acceptance and sustained useful latency remain separate. Run the fixture
+with the existing Playwright module through `PLAYWRIGHT_MODULE` when it is not
+installed in the checkout. A separate phone attempt also ended with an empty
+final input transcript; playback repair does not establish that failure resolved.
+
+
+### Empty Qwen input is an original-level review, not a voice-session failure
+
+A4November phone conversation played native Qwen speech, then closed after
+118seconds when Qwen finalized a committed input with no words. The failing
+site was the explicit empty-final rejection in the acoustic owner; this is
+separate from the earlier suspended playback gate. It does not establish
+whether the captured span contained noise, unclear speech or an ASR omission.
+
+For the manual Qwen protocol only, an empty finalized transcript following the
+exact commitment now keeps that original unconfirmed for review and releases
+the acoustic slot for the next phrase. No empty transcript is completed,
+delegated or substituted with generated words. The existing raw reservation,
+original quotas and PCM bounds remain. Matching original-level review also
+releases the browser playback gate without overriding newer capture, Pause or
+mute. Partial/uncommitted/uncorrelated input and other providers retain their
+existing refusal behavior. A source read waiting on the unresolved original is
+released to the existing no-completion refusal, never rebound to older input.
+
+Use the existing full-shell fixture with `--input-confirmation qwen
+--empty-input-once --case paced` to verify a retained unconfirmed first original,
+two subsequent completed originals, continuous output and zero work dispatch.
+The initial verifier still expected every original to complete; its retained
+browser evidence already showed the intended one-review/two-complete result,
+and that assertion was corrected to the explicit expected phases.
+
+The ordinary receiving TTS base voice is `longanlufeng`; the current3.0 realtime
+model also supports that system voice in its initial session configuration.
+Matching this voice ID does not imply identical prosody, rate or pitch between
+TTS and realtime models. A voice change applies to newly opened provider
+sessions and must not interrupt an existing human conversation.
+
+The4November human listening feedback also requests brief, efficient, poetic
+speech. The shared avatar instruction now defaults to one short sentence, at
+most two unless asked for more, with useful content first and a light poetic
+touch that adds meaning rather than length. It avoids repeated acknowledgments,
+recaps and filler. This is prompting, not a guarantee of provider compliance or
+a truncation rule for tool arguments or canonical work results.
+
+A later phone dialogue closed after175seconds during a receiving owner call,
+with `ProviderUnavailable` at the generic foreground thread wait; the existing
+record did not retain which receiving operation or underlying provider source
+location failed. Its last original remains captured/unconfirmed, with no work
+replay. This is a distinct unresolved incident, not proof of another empty
+transcript or a session-duration limit. Close diagnostics now include the
+receiving provider source location and an allowlisted original-reservation,
+completion or status operation, without exception text, arguments or payloads.
+
+After the reviewed original's raw reservation succeeds, its local phase becomes
+`unconfirmed`, using the existing review state. It no longer consumes one of
+the four in-flight completion slots; otherwise four individually reviewed noise
+spans would end an otherwise healthy conversation. Total original/PCM limits,
+private raw retention, explicit recovery and no-replay rules remain unchanged.
+The full-shell fixture also supports `--empty-input-count 5`: five retained
+unconfirmed originals followed by two completed phrases, without exhaustion of
+the in-flight slots or any fabricated transcript/work admission.
+
+The browser likewise separates these durably retained review originals from its
+two in-flight confirmations only after matching raw-retention and review events.
+It retains each local original for explicit recovery, with a128-original ceiling
+matching the acoustic owner and the existing session-wide PCM bound. The first
+five-empty browser qualifier exposed the old two-original client guard on its
+third span; that was an actual client gap, distinct from the earlier verifier
+assertion, and the guard now distinguishes review from in-flight confirmation.
+
+Recovery envelopes with three or more originals use `telecodex.voice-recovery/v3`
+in the existing IndexedDB pending key, at most128 records/20MiB combined. A
+matching review mark updates metadata only; reload performs no submission and
+retains every blob. Reducing the queue returns to the v2 two-item or legacy
+single-item representation. Previous readers refuse unknown v3 without mutation.
+A rollback after activation must retain the v3-compatible `microphone.js` reader;
+restore the retained compatibility rollback bundle, not the older reader or any
+journal/database snapshot. The receiving preparation preserves that bundle
+before selection. Expanded recovery had an independent focused read-only review;
+source review is distinct from actual Chromium/device acceptance.
+
+The extended fixture also exposed an old driver race: waiting for all currently
+scheduled buffers to end could inject the next phrase before the previous
+response finished streaming. Its evidence retained interrupted playback offsets.
+The driver now waits for the complete known synthetic PCM frame count and
+non-stopped ended sources before each next phrase; partial/cancelled playback
+is no longer mistaken for a full response.
+
+
+### Late Qwen cancellation is not a conversation failure —4November2026
+
+The next phone test confirmed the selected ordinary/realtime base voice, but
+closed after43.152seconds with a generic invalid-provider-envelope code. The
+human associated some cuts with nearby speech/noise. That timing is a reported
+clue, not proof of the specific provider error hidden by the previous reader.
+
+A separate bounded synthetic provider sample reproduced a cancellation race:
+the server completed a response before its local completion event was applied;
+a new activity onset sent `response.cancel`, and the server returned
+`invalid_request_error` / `invalid_value` with a no-active-response message.
+Qwen documents an error for cancellation when no inference is in progress. The
+shared reader previously treated every error envelope as fatal.
+
+The adapter now tolerates only that specific no-active-response result within
+10seconds of one of its own outstanding cancellation commands. It consumes the
+receipt without retrying a command, replaying input/work or clearing a newer
+response/commit. At most8 cancellation receipts are retained, duplicate cancels
+for the same outstanding response are avoided, and a successful cancelled
+response retires its matching receipt. Unrequested/expired/other errors still
+close with a fixed Qwen-provider-error code. Only a scalar tolerated-noop count
+is added to existing close diagnostics; no provider error text is retained.
+The wire wrapper also preserves actual WebSocket CLOSE frames so they cannot
+collapse into an empty JSON-envelope diagnosis.
+
+This resolves the reproduced race; it does not establish that the earlier
+phone closure was the same event, identify a foreground speaker, or close the
+separate receiving-owner-call incident. Existing exact-original review, native
+writer/Core/current work and128-record/20MiB recovery bounds remain unchanged.
+
+### Qwen checkpoint and observer follow-up — 4 November 2026
+
+Qwen checkpoint pressure now uses the receiving Store's existing reason vocabulary:
+`tokens` at 48k conservative tokens, `tools` at 40 finished responses, and
+`lifetime` at 240 cumulative input/output audio seconds. The adapter previously
+sent `qwen_context`, which the native Store rejects. That rejection propagated
+from the idle control task and ended voice; a consultation could coincide with
+the failure without causing it. The mounted voice/actual-native-Store regression
+now obtains pressure from the real Qwen adapter property rather than supplying
+an independently valid mock reason. The old adapter fails this regression; the
+corrected adapter completes the two checkpoint/successor cycles. Provider audio,
+detector and Core reasoning remain synthetic; this does not establish phone
+continuity. No native wire vocabulary or retained original is changed.
+
+Fixed-name close diagnostics also identify Live context, canonical source reads,
+observer reads and foreground delegation, without logging arguments or content.
+An owner rejection still retains its uncertainty; no work or audio is replayed.
+
+A configured observer can legitimately report `unknown` when its existing activity
+unit is stopped or its snapshot is stale. Check the owning unit and fresh
+`sonic_activity` data before attributing this to the voice model. `PartOf` alone
+does not start an inactive dependent when its owner starts. Receiving operators
+should retain the existing observer dependency from the native owner's `Wants`
+without restarting native conversations just to repair an inactive observer.
