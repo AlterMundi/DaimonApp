@@ -1304,17 +1304,27 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
             not_before_ms=now - 1000,
             not_after_ms=now + 60000,
         )
+        inbox_reader = create_capability(
+            b"r" * 32,
+            client_id="inbox-reader-test",
+            methods=["messaging.inbox"],
+            not_before_ms=now - 1000,
+            not_after_ms=now + 60000,
+        )
         service = HostedWeave(
             ledger=group.ledger,
             signer=group.signer,
-            capabilities={c.capability_id: c for c in (observe, messaging)},
+            capabilities={c.capability_id: c for c in (observe, messaging, inbox_reader)},
             clock=group.lane.clock,
             runtime_id="dm:runtime:v1:" + "T" * 43,
             runtime_label="matrix-host-test",
             messaging=MessagingServiceContext(
                 channels={"tribe": group},
                 deliveries={"tribe": group},
-                client_channels={messaging.client_id: frozenset({"tribe"})},
+                client_channels={
+                    messaging.client_id: frozenset({"tribe"}),
+                    inbox_reader.client_id: frozenset({"tribe"}),
+                },
             ),
         )
 
@@ -1421,6 +1431,33 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 self.assertEqual(operator_receive({"status": retained, "source": source,
                                                    "after": read["next_cursor"], "limit": 3},
                                                   host, timeout=1)["results"], [])
+
+                # The new read-only mode consumes an actual inbox-only grant;
+                # it does not require or add native message-send permission.
+                config_path = Path(references["messaging"]["client_config"])
+                key_path = Path(references["messaging"]["client_key"])
+                read_config = json.loads(config_path.read_text())
+                read_config["capability"] = inbox_reader.descriptor
+                config_path.write_text(canonical(read_config))
+                key_path.write_bytes(inbox_reader.key)
+                loaded = configured_client(
+                    binding, source, required_methods=("messaging.inbox",)
+                )
+                reader = replace(
+                    loaded,
+                    messaging=replace(loaded.messaging, clock=group.lane.clock),
+                    observation=replace(loaded.observation, clock=group.lane.clock),
+                )
+                only_read = operator_inbox(
+                    {"source": source, "channel_id": "tribe", "after": 0, "limit": 3},
+                    reader,
+                    timeout=1,
+                )
+                self.assertEqual(
+                    only_read["items"][0]["message_id"], returned["message_id"]
+                )
+                with self.assertRaisesRegex(MatrixExecutionError, "messaging-only capability"):
+                    configured_client(binding, source)
 
             finally:
                 server.shutdown()

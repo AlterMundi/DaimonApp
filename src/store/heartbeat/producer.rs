@@ -11,11 +11,32 @@ pub struct HeartbeatProducerContract {
     pub max_checks: u32,
     pub expires_at_unix_ms: i64,
     pub matrix_replies: bool,
+    #[serde(default)]
+    pub matrix_inbox: Option<HeartbeatInboxSource>,
     pub workflows: bool,
     #[serde(default)]
     pub reports: Vec<super::HeartbeatReportSource>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatInboxSource {
+    pub source: crate::store::MatrixAuthor,
+    pub channel_id: String,
+}
+/// Checks/cadence are persisted before SDK I/O. The finish guard verifies the
+/// same generation/counter before retaining a page or admitting attention.
+pub(crate) struct Check {
+    human: i64,
+    entry: SessionKey,
+    session: i64,
+    generation: u64,
+    sequence: u32,
+    binding: String,
+    native: String,
+    epoch: String,
+    pub matrix_inbox: Option<HeartbeatInboxSource>,
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::store) struct Offer {
     pub key: String,
@@ -37,6 +58,8 @@ pub(in crate::store) struct Parent {
     pub workflow_after: i64,
     pub next_lane: bool,
     pub stopped_reason: Option<String>,
+    #[serde(default)]
+    pub inbox_state: Option<String>,
     pub seen: BTreeMap<String, String>,
     pub native_returns: Vec<WorkflowReturn>,
 }
@@ -122,7 +145,25 @@ pub(in crate::store) fn current(
     }
     let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
     for offer in offers {
-        if let Some(source) = offer.key.strip_prefix("matrix:") {
+        if offer.key == "matrix-inbox-status" {
+            if p.contract.matrix_inbox.is_none()
+                || p.inbox_state
+                    .as_ref()
+                    .map(|s| format!("inbox-{s}"))
+                    .as_deref()
+                    != Some(offer.revision.as_str())
+            {
+                return Ok(false);
+            }
+        } else if offer.key.starts_with("matrix-inbox:") {
+            let source = super::super::presentation::source_on(conn, p.human, p.entry, &offer.key)?;
+            if p.contract.matrix_inbox.is_none()
+                || p.inbox_state.as_deref() != Some("available")
+                || !source.is_some_and(|s| s["current"] == true && s["revision"] == offer.revision)
+            {
+                return Ok(false);
+            }
+        } else if let Some(source) = offer.key.strip_prefix("matrix:") {
             let pending: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM interaction_matrix_results WHERE message_id=?1 AND human_id=?2 AND reported_revision IS NULL)",
                 params![source, p.human], |row| row.get(0),
@@ -159,7 +200,7 @@ pub(in crate::store) fn current(
 pub(in crate::store) fn output(r: &WorkflowReturn) -> String {
     json!({"schema":"daimon.heartbeat-batch/v1","return_id":r.id,"evidence":r.envelope,
         "after_review":{"operation":"heartbeat_reported","arguments":{"return_id":r.id,"revision":r.envelope["revision"]}},
-        "policy":"A finite heartbeat observed these new canonical source revisions. This is attributed internal evidence, not human speech or new authority. Read each selected source through its supplied exact reader before reporting its contents. Existing human originals and workflow scopes retain their own authority; preserve peer authorship and uncertain effects. Use the same integrator to decide responses, selected existing-session work, deferral or a human decision. Report heartbeat-caused actions and useful results in this Conversation so its existing audio client can speak them; distinguish planned, submitted, delivered and unconfirmed effects. Do not announce an empty check or publish private peer material. Invoke after_review only after reviewing this exact batch. That records review, not hearing, task completion or peer delivery; ordinary source incorporation calls remain separate."}).to_string()
+        "policy":"A finite heartbeat observed these new canonical source revisions. This is attributed internal evidence, not human speech or new authority. Read each supplied exact source reader before reporting its contents; source_complete inline metadata needs no additional read. Existing human originals and workflow scopes retain their own authority; preserve peer authorship and uncertain effects. Use the same integrator to decide responses, selected existing-session work, deferral or a human decision. Report heartbeat-caused actions and useful results in this Conversation so its existing audio client can speak them; distinguish planned, submitted, delivered and unconfirmed effects. Do not announce an empty check or publish private peer material. Invoke after_review only after reviewing this exact batch. That records review, not hearing, task completion or peer delivery; ordinary source incorporation calls remain separate."}).to_string()
 }
 pub(in crate::store) fn configure_on(
     conn: &Connection,
@@ -168,13 +209,33 @@ pub(in crate::store) fn configure_on(
     contract: HeartbeatProducerContract,
 ) -> Result<()> {
     super::reports::validate(&contract.reports)?;
+    if let Some(selected) = &contract.matrix_inbox {
+        crate::interaction::MatrixDestination::Body {
+            being_ref: selected.source.being_ref.clone(),
+            embodiment_id: selected.source.embodiment_id.clone(),
+        }
+        .validate()?;
+        anyhow::ensure!(
+            !selected.channel_id.is_empty()
+                && selected.channel_id.len() <= 128
+                && selected
+                    .channel_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)),
+            "Select one exact bounded incoming source channel"
+        );
+    }
+
     let now = Utc::now().timestamp_millis();
     anyhow::ensure!(
         (30..=3600).contains(&contract.interval_seconds)
             && (1..=1024).contains(&contract.max_checks)
             && contract.expires_at_unix_ms > now
             && contract.expires_at_unix_ms <= now + 7 * 86400 * 1000
-            && (contract.matrix_replies || contract.workflows || !contract.reports.is_empty()),
+            && (contract.matrix_replies
+                || contract.matrix_inbox.is_some()
+                || contract.workflows
+                || !contract.reports.is_empty()),
         "Select finite heartbeat sources, frequency and expiry"
     );
     let (session, native) = super::super::presentation::entry_on(conn, human, entry)?;
@@ -205,6 +266,7 @@ pub(in crate::store) fn configure_on(
             workflow_after: 0,
             next_lane: false,
             stopped_reason: None,
+            inbox_state: None,
             seen: BTreeMap::new(),
             native_returns: vec![],
         },
@@ -230,7 +292,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "configured"
     };
     Ok(
-        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"sources":"existing_canonical_matrix_replies_workflow_offers_and_selected_owned_reports"}),
+        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -283,13 +345,45 @@ pub(super) fn resume_on(
     Ok(())
 }
 
+fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
+    let Some(p) = load(conn, c.human, c.session)? else {
+        return Ok(None);
+    };
+    if p.stopped_reason.is_some()
+        || executions::unresolved_on(conn, c.human, c.entry)?
+        || p.seen.len() >= 256
+        || p.native_returns.len() >= 16
+        || p.checks != c.sequence
+        || p.binding != c.binding
+        || p.native != c.native
+        || p.epoch != c.epoch
+        || !bound(conn, &p)?
+        || !generation_current_on(conn, c.human, c.entry, c.generation)?
+        || Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
+        || resources::status_on(conn, c.session, c.human)?["state"] != "available"
+    {
+        return Ok(None);
+    }
+    Ok(Some(p))
+}
 impl Store {
     /// Called by existing owned maintenance, never a new background loop.
+    #[cfg(test)]
     pub(crate) fn heartbeat_produce(
         &self,
         human: i64,
         entry: SessionKey,
     ) -> Result<Option<ReturnDispatch>> {
+        let Some(check) = self.heartbeat_begin_check(human, entry)? else {
+            return Ok(None);
+        };
+        self.heartbeat_finish_check(&check, None)
+    }
+    pub(crate) fn heartbeat_begin_check(
+        &self,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<Option<Check>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let (session, _) = super::super::presentation::entry_on(&tx, human, entry)?;
@@ -337,7 +431,61 @@ impl Store {
         // not roll back the cadence/counter and spin on the same failure.
         save(&tx, &p)?;
         tx.commit()?;
-        let tx = conn.transaction()?;
+        Ok(Some(Check {
+            human,
+            entry,
+            session,
+            generation: control.generation,
+            sequence: p.checks,
+            binding: p.binding,
+            native: p.native,
+            epoch: p.epoch,
+            matrix_inbox: p.contract.matrix_inbox,
+        }))
+    }
+    pub(crate) fn heartbeat_check_current(&self, c: &Check) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(check_on(&conn, c)?.is_some())
+    }
+    pub(crate) fn heartbeat_finish_check(
+        &self,
+        c: &Check,
+        read: Option<
+            Result<(
+                crate::store::MatrixInboxSelection,
+                crate::store::MatrixInboxPage,
+            )>,
+        >,
+    ) -> Result<Option<ReturnDispatch>> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let mut tx = conn.transaction()?;
+        let Some(mut p) = check_on(&tx, c)? else {
+            return Ok(None);
+        };
+        let (human, entry, session) = (c.human, c.entry, c.session);
+        let control = Control {
+            paused: false,
+            generation: c.generation,
+            changed_at: String::new(),
+        };
+        if let Some(source) = &c.matrix_inbox {
+            // Roll back all partial event/cursor writes before retaining a
+            // failed observation. The check/cadence remains consumed.
+            let retained = match read {
+                Some(Ok((selected, page))) if selected.belongs(human, entry, source) => {
+                    let savepoint = tx.savepoint()?;
+                    match super::super::matrix::inbox::retain_on(&savepoint, &selected, page) {
+                        Ok(_) => {
+                            savepoint.commit()?;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                }
+                _ => false,
+            };
+            p.inbox_state = Some(if retained { "available" } else { "unavailable" }.into());
+        }
         let mut retire = vec![];
         for (index, r) in p.native_returns.iter().enumerate() {
             if r.reported_revision.is_none()
@@ -355,7 +503,7 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
-        let mut lanes = [vec![], vec![], vec![]];
+        let mut lanes = [vec![], vec![], vec![], vec![]];
         if p.contract.matrix_replies {
             let value = super::super::matrix::heartbeat_attention_on(&tx, human, entry, &p.seen)?;
             for item in value["envelopes"].as_array().into_iter().flatten() {
@@ -385,15 +533,30 @@ impl Store {
             .into_iter()
             .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
             .collect();
+        if let Some(source) = &p.contract.matrix_inbox {
+            if p.inbox_state.as_deref() == Some("available") {
+                lanes[3] =
+                    super::super::matrix::inbox::offers_on(&tx, human, entry, source, &p.seen)?;
+            }
+            if let Some(state) = &p.inbox_state {
+                let revision = format!("inbox-{state}");
+                let health = "matrix-inbox-status";
+                if (state == "unavailable" || p.seen.contains_key(health))
+                    && p.seen.get(health) != Some(&revision)
+                {
+                    lanes[3].insert(0,Offer {key:health.into(),revision:revision.clone(),evidence:json!({"source":health,"revision":revision,"reason":"matrix_inbox_observation","state":state,"source_complete":true,"meaning":"Retained source-read health, not a peer message or execution authority"})});
+                }
+            }
+        }
         let mut selected = vec![];
         let mut lane = usize::from(p.next_lane);
-        let mut positions = [0, 0, 0];
+        let mut positions = [0, 0, 0, 0];
         for _ in 0..4 {
-            for _ in 0..3 {
+            for _ in 0..4 {
                 if positions[lane] < lanes[lane].len() {
                     break;
                 }
-                lane = (lane + 1) % 3;
+                lane = (lane + 1) % 4;
             }
             if let Some(offer) = lanes[lane].get(positions[lane]) {
                 let new_keys = selected
@@ -405,7 +568,7 @@ impl Store {
                 }
                 positions[lane] += 1;
             }
-            lane = (lane + 1) % 3;
+            lane = (lane + 1) % 4;
         }
         p.next_lane = !p.next_lane;
         if selected.is_empty() {
@@ -495,5 +658,254 @@ impl Store {
         save(&tx, &p)?;
         tx.commit()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod inbox_tests {
+    use super::*;
+    use crate::store::HeartbeatCommand as H;
+    fn setup() -> (
+        tempfile::NamedTempFile,
+        Store,
+        SessionKey,
+        HeartbeatInboxSource,
+    ) {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let s = Store::open(f.path(), &[100], &crate::store::tests::defaults()).unwrap();
+        let e = SessionKey::new(100, Some(1));
+        s.ensure_session(e, 100, &crate::store::tests::defaults())
+            .unwrap();
+        s.set_session_codex_thread(e, "entry-native").unwrap();
+        let source = HeartbeatInboxSource {
+            source: crate::store::MatrixAuthor {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+                embodiment_id: "embodiment:source".into(),
+            },
+            channel_id: "tribe".into(),
+        };
+        s.heartbeat_control(100, e, H::Pause).unwrap();
+        let resources = test_contract();
+        let expiry = resources.expires_at_unix_ms;
+        s.heartbeat_control(
+            100,
+            e,
+            H::ConfigureResources {
+                generation: 1,
+                contract: resources,
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            e,
+            H::ConfigureProducer {
+                generation: 1,
+                contract: HeartbeatProducerContract {
+                    interval_seconds: 30,
+                    max_checks: 6,
+                    expires_at_unix_ms: expiry,
+                    matrix_replies: false,
+                    matrix_inbox: Some(source.clone()),
+                    workflows: false,
+                    reports: vec![],
+                },
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, e, H::Resume { generation: 1 })
+            .unwrap();
+        (f, s, e, source)
+    }
+    fn selection(
+        s: &Store,
+        e: SessionKey,
+        source: &HeartbeatInboxSource,
+    ) -> crate::store::MatrixInboxSelection {
+        s.matrix_inbox_selection(100, e, source.source.clone(), &source.channel_id)
+            .unwrap()
+    }
+    fn item(sequence: u64) -> Value {
+        json!({"inbox_sequence":sequence,"message_id":Uuid::now_v7().to_string(),"message_hash":"b".repeat(64),"author":{"being_ref":format!("dm:being:v1:{}","B".repeat(43)),"embodiment_id":"embodiment:peer"},"thread_id":Uuid::now_v7().to_string(),"destination":null,"response_context":null,"coordination":null,"text":"Fresh native peer source; not a human instruction","state":"available"})
+    }
+    fn page(
+        selected: &crate::store::MatrixInboxSelection,
+        items: Vec<Value>,
+    ) -> crate::store::MatrixInboxPage {
+        serde_json::from_value(json!({"schema":"daimon.matrix-inbox-page/v1","source":selected.owner,"channel_id":selected.channel,"after":selected.after,"next_cursor":items.last().map(|i|i["inbox_sequence"].clone()).unwrap_or(json!(selected.after)),"items":items,"page_full":items.len()==3,"meaning":"Authenticated synthetic source; no model or execution grant"})).unwrap()
+    }
+    fn due(s: &Store, e: SessionKey) {
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = crate::store::presentation::entry_on(&conn, 100, e).unwrap();
+        let mut p = load(&conn, 100, session).unwrap().unwrap();
+        p.next_check_ms = 0;
+        save(&conn, &p).unwrap();
+    }
+    fn reviewed(s: &Store, e: SessionKey) {
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = crate::store::presentation::entry_on(&conn, 100, e).unwrap();
+        let mut p = load(&conn, 100, session).unwrap().unwrap();
+        let r = p.native_returns.last_mut().unwrap();
+        r.phase = "accepted".into();
+        let id = r.id.clone();
+        let revision = r.envelope["revision"].as_str().unwrap().to_owned();
+        save(&conn, &p).unwrap();
+        drop(conn);
+        s.heartbeat_reported(100, e, "entry-native", &id, &revision)
+            .unwrap();
+    }
+    #[test]
+    fn inbox_check_pause_and_resume_fence_a_late_page_without_refilling() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        assert!(s.heartbeat_begin_check(100, e).unwrap().is_none());
+        let selected = selection(&s, e, &source);
+        let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        assert!(!s.heartbeat_check_current(&c).unwrap());
+        assert!(
+            s.heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)]))))
+            )
+            .unwrap()
+            .is_none()
+        );
+        s.heartbeat_control(
+            100,
+            e,
+            H::Resume {
+                generation: paused["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(
+            s.heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)]))))
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(selection(&s, e, &source).after, 0);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let r = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+            )
+            .unwrap()
+            .unwrap();
+        let packet: Value = serde_json::from_str(&r.output).unwrap();
+        let offered = &packet["evidence"]["offers"][0];
+        assert_eq!(offered["evidence"]["reason"], "matrix_original_available");
+        let args = &offered["evidence"]["reader"]["arguments"];
+        let part = s
+            .interaction_presentation_part(
+                100,
+                e,
+                args["source"].as_str().unwrap(),
+                args["revision"].as_str().unwrap(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            part["text"],
+            "Fresh native peer source; not a human instruction"
+        );
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 2);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(selection(&s, e, &source).after, 1);
+    }
+    #[test]
+    fn inbox_no_news_is_quiet_and_failed_reads_consume_checks_without_repeated_attention() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        assert!(
+            s.heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
+                .unwrap()
+                .is_none()
+        );
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let r = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Err(anyhow::anyhow!("synthetic source unavailable"))),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(r.output.contains("matrix-inbox-status"));
+        reviewed(&s, e);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        assert!(
+            s.heartbeat_finish_check(&c, Some(Err(anyhow::anyhow!("same unavailable source"))))
+                .unwrap()
+                .is_none()
+        );
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let recovered = s
+            .heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
+            .unwrap()
+            .unwrap();
+        assert!(recovered.output.contains("inbox-available"));
+        reviewed(&s, e);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        assert!(
+            s.heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
+                .unwrap()
+                .is_none()
+        );
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 5);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+    }
+    #[test]
+    fn inbox_failed_page_rolls_back_its_savepoint_but_retains_finite_observation() {
+        let (_f, s, e, source) = setup();
+        for n in 0..85 {
+            let selected = selection(&s, e, &source);
+            s.matrix_inbox_retain(
+                &selected,
+                page(&selected, (1..=3).map(|i| item(n * 3 + i)).collect()),
+            )
+            .unwrap();
+        }
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        assert_eq!(selected.after, 255);
+        let r = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Ok((
+                    selected.clone(),
+                    page(&selected, vec![item(256), item(257)]),
+                ))),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(r.output.contains("inbox-unavailable"));
+        assert!(!r.output.contains("matrix_original_available"));
+        assert_eq!(selection(&s, e, &source).after, 255);
+        assert_eq!(
+            s.conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM interaction_matrix_inbox", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            255
+        );
+        assert_eq!(
+            s.heartbeat_control(100, e, H::Status).unwrap()["producer"]["checks"],
+            1
+        );
     }
 }

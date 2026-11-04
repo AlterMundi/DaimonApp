@@ -71,7 +71,7 @@ class NativeOwnerClient:
         ).invoke(method, params)
 
 
-def configured_client(path, source):
+def configured_client(path, source, *, required_methods=("messaging.send",)):
     from daimon_matrix.client import ClientConfig, LocalClient
     from daimon_matrix.messaging_config import protected_read
 
@@ -102,7 +102,7 @@ def configured_client(path, source):
 
     messaging, observation = load(binding["messaging"]), load(binding["observation"])
     methods = set(messaging.config.capability.methods)
-    if "messaging.send" not in methods or not methods <= {
+    if not set(required_methods) <= methods or not methods <= {
         "messaging.send",
         "messaging.reply",
         "messaging.inbox",
@@ -366,7 +366,17 @@ def main():
         else ("status", "source"),
     )
     operation = inbox if args.inbox else receive if args.receive else send
-    result = operation(value, configured_client(args.binding, value["source"]))
+    required = (
+        ("messaging.inbox",)
+        if args.inbox
+        else ("messaging.inbox", "messaging.delivery")
+        if args.receive
+        else ("messaging.send",)
+    )
+    result = operation(
+        value,
+        configured_client(args.binding, value["source"], required_methods=required),
+    )
     output = canonical(result)
     if len(output.encode()) > 65536:
         raise MatrixExecutionError("Bounded host outcome required")

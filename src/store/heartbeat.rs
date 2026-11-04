@@ -6,7 +6,7 @@ pub(in crate::store) use delegation::{
     AttentionOwner, claim_delegate_on, owner_current_on, owner_for_turn_on,
 };
 pub(in crate::store) mod producer;
-pub use producer::HeartbeatProducerContract;
+pub use producer::{HeartbeatInboxSource, HeartbeatProducerContract};
 mod reports;
 pub use reports::HeartbeatReportSource;
 mod resources;

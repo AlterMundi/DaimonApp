@@ -31,7 +31,10 @@ pub(crate) use goal_retries::GoalRetry;
 mod heartbeat;
 #[cfg(test)]
 pub use heartbeat::HeartbeatReportSource;
-pub use heartbeat::{HeartbeatCommand, HeartbeatProducerContract, HeartbeatResources};
+pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
+pub use heartbeat::{
+    HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatResources,
+};
 mod interaction;
 mod interactions;
 mod live_context;

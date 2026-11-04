@@ -134,9 +134,28 @@ remains available during heartbeat pause; it starts no model or automatic work.
 
 This source component belongs to the single combined candidate. It is not
 selected or invoked by the deployed heartbeat. Existing selected-reply reads
-keep their exact thread/correlation behavior. Automatic finite producer
-intake/cancellation/accounting and the correlated reply lifecycle still need
-integration before new-message attention can be activated.
+keep their exact thread/correlation behavior. The finite producer can additionally freeze
+`matrix_inbox = {source = {being_ref = "...", embodiment_id = "..."}, channel_id = "tribe"}`
+in its existing contract. It must exactly match the current owner channel/body;
+configuration or restart cannot silently widen that source. Each page spends the
+existing persisted check/cadence before I/O. The finish transaction verifies its
+same counter, binding, generation, expiry and remaining resources, then retains
+sources/cursor and uses the existing bounded batch/attention account. An admitted
+read may finish during pause, but cannot commit a late page or start attention.
+There is no second scheduler, queue, resource refill or producer.
+
+No-news reads are silent. Failed source reads consume checks and produce one
+revision-bound availability notice, with a separate recovery notice; unchanged
+failures do not repeatedly activate the integrator. Page retention uses a
+savepoint so capacity/identity failure cannot commit partial events before the
+failure state. Own-body echoes and already canonical correlated Matrix replies
+are excluded from new-original offers. Exact native sources use the existing
+reader; unsupported payload/status metadata is explicit inline evidence.
+
+Correlated replies, durable response/defer completion and actual receiving/model/
+spoken acceptance remain unfinished. Batch review alone is not a response,
+message delivery, task completion or permission to reinterpret peer speech as
+human instructions. The finite producer remains unconfigured in production.
 
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 
@@ -231,8 +250,10 @@ this example is not an enrollment or activation. The owner-only binding uses
 `observation`. Each reference has only absolute `socket`, `client_config` and
 `client_key` paths to existing owner-local SDK material. The SDK verifies their
 capabilities; the host requires matching runtime ID, expected server and socket.
-The messaging capability stays messaging-only and permits `messaging.send`;
-observation separately permits `runtime.status`. The adapter never loads the
+The messaging capability stays messaging-only and permits the selected operation:
+`messaging.inbox` for a new-message page, inbox/delivery for selected-reply
+inspection, or `messaging.send` for submission. An inbox-only grant can read
+without acquiring send authority. Observation separately permits `runtime.status`. The adapter never loads the
 runtime outside its daemon or creates credentials. Its two calls share one
 absolute deadline. Do not use a combined capability: the SDK rejects mixed
 messaging and observation profiles.

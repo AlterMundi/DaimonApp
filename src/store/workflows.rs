@@ -3886,6 +3886,7 @@ mod tests {
             H::ConfigureProducer {
                 generation: 1,
                 contract: HeartbeatProducerContract {
+                    matrix_inbox: None,
                     interval_seconds: 30,
                     max_checks,
                     expires_at_unix_ms: expiry,

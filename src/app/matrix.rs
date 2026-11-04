@@ -85,29 +85,24 @@ pub(super) async fn tool(
             else {
                 bail!("Inbox owner body required")
             };
-            let selected: crate::store::MatrixInboxSelection =
-                app.shared.store.matrix_inbox_selection(
-                    human,
-                    key,
-                    crate::store::MatrixAuthor {
-                        being_ref: being_ref.clone(),
-                        embodiment_id: embodiment_id.clone(),
-                    },
-                    channel,
-                )?;
-            let input = json!({"source":selected.owner,"channel_id":selected.channel,"after":selected.after,"limit":3});
-            let raw = tokio::select! {
+            let source = crate::store::HeartbeatInboxSource {
+                source: crate::store::MatrixAuthor {
+                    being_ref: being_ref.clone(),
+                    embodiment_id: embodiment_id.clone(),
+                },
+                channel_id: channel.into(),
+            };
+            let (selected, page) = tokio::select! {
                 biased;
                 _=closed.cancelled()=>bail!("Inbox read closed; retained cursor unchanged"),
                 _=app.shared.shutdown.cancelled()=>bail!("Inbox read shutdown; retained cursor unchanged"),
-                result=host_command_mode(transport,&input,Some("--inbox"))=>result?,
+                result=read_inbox(app,human,key,&source)=>result?,
             };
             super::observer::tool_owner(&app.shared, key, human, native)?;
             anyhow::ensure!(
                 !closed.is_cancelled(),
                 "Inbox closed before canonical retention"
             );
-            let page: crate::store::MatrixInboxPage = serde_json::from_value(raw)?;
             return app.shared.store.matrix_inbox_retain(&selected, page);
         }
         if args.receive_next
@@ -292,6 +287,62 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             .interaction_matrix_return(human, cfg.entry(), &value);
     }
     bail!("Expected Matrix status UUID or trusted-host return JSON")
+}
+
+pub(super) fn inbox_matches(
+    cfg: &crate::interaction::InteractionConfig,
+    source: &crate::store::HeartbeatInboxSource,
+) -> Result<()> {
+    let transport = cfg
+        .matrix_transport
+        .as_ref()
+        .context("Inbox host is not configured")?;
+    let MatrixDestination::Body {
+        being_ref,
+        embodiment_id,
+    } = &transport.source
+    else {
+        bail!("Inbox owner body required")
+    };
+    anyhow::ensure!(
+        cfg.matrix_inbox_channel.as_deref() == Some(source.channel_id.as_str())
+            && being_ref == &source.source.being_ref
+            && embodiment_id == &source.source.embodiment_id,
+        "Frozen incoming source differs from current owner configuration"
+    );
+    Ok(())
+}
+pub(super) async fn read_inbox(
+    app: &App,
+    human: i64,
+    entry: SessionKey,
+    source: &crate::store::HeartbeatInboxSource,
+) -> Result<(
+    crate::store::MatrixInboxSelection,
+    crate::store::MatrixInboxPage,
+)> {
+    let cfg = super::routing::profile(&app.shared)?;
+    anyhow::ensure!(
+        cfg.human_id == human && cfg.entry() == entry,
+        "Inbox integrating owner differs"
+    );
+    inbox_matches(&cfg, source)?;
+    let selected = app.shared.store.matrix_inbox_selection(
+        human,
+        entry,
+        source.source.clone(),
+        &source.channel_id,
+    )?;
+    let input = json!({"source":selected.owner,"channel_id":selected.channel,"after":selected.after,"limit":3});
+    let raw = host_command_mode(
+        cfg.matrix_transport
+            .as_ref()
+            .context("Inbox host unavailable")?,
+        &input,
+        Some("--inbox"),
+    )
+    .await?;
+    Ok((selected, serde_json::from_value(raw)?))
 }
 
 #[derive(Deserialize)]

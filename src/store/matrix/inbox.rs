@@ -41,6 +41,19 @@ pub(crate) struct Page {
     page_full: bool,
     meaning: String,
 }
+impl Selection {
+    pub(in crate::store) fn belongs(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        source: &crate::store::HeartbeatInboxSource,
+    ) -> bool {
+        self.human == human
+            && self.entry == entry
+            && self.owner == source.source
+            && self.channel == source.channel_id
+    }
+}
 fn key(s: &Selection) -> String {
     format!(
         "matrix-inbox-cursor:{}",
@@ -111,97 +124,111 @@ impl Store {
             after: 0,
         };
         anyhow::ensure!(current(&conn, &selected)?, "Inbox owner unavailable");
+        let (count,bytes):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(doc AS BLOB))),0) FROM interaction_matrix_inbox WHERE entry_session=?1",[session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        anyhow::ensure!(
+            count < 256 && bytes < 4 * 1024 * 1024,
+            "Inbox source capacity reached; no new source read"
+        );
         selected.after = cursor(&conn, &selected)?;
         Ok(selected)
     }
     /// One SQLite transaction owns immutable events and cursor. A failed page,
     /// changed owner, capacity failure or conflicting identity advances neither.
     pub(crate) fn matrix_inbox_retain(&self, selected: &Selection, page: Page) -> Result<Value> {
-        anyhow::ensure!(
-            page.schema == "daimon.matrix-inbox-page/v1"
-                && page.source == selected.owner
-                && page.channel_id == selected.channel
-                && page.after == selected.after
-                && page.items.len() <= 3
-                && page.page_full == (page.items.len() == 3)
-                && page.meaning.len() <= 256,
-            "Inbox page differs from selected owner/channel/cursor"
-        );
-        let mut sequence = page.after;
-        for item in &page.items {
-            author(&item.author)?;
-            anyhow::ensure!(
-                item.inbox_sequence > sequence
-                    && item.inbox_sequence <= 9_007_199_254_740_991
-                    && canonical_uuid(&item.message_id)
-                    && hash(&item.message_hash)
-                    && canonical_uuid(&item.thread_id)
-                    && ((item.state == "available"
-                        && item
-                            .text
-                            .as_ref()
-                            .is_some_and(|t| !t.trim().is_empty() && t.len() <= 16384))
-                        || (item.state == "unsupported_payload" && item.text.is_none()))
-                    && serde_json::to_vec(item)?.len() <= 65536,
-                "Invalid bounded native inbox event"
-            );
-            sequence = item.inbox_sequence;
-        }
-        anyhow::ensure!(
-            page.next_cursor == sequence,
-            "Inbox page cursor omits retained events"
-        );
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        anyhow::ensure!(
-            current(&tx, selected)?,
-            "Inbox entry retired during source read"
-        );
-        let prior = cursor(&tx, selected)?;
-        anyhow::ensure!(
-            prior == page.after || prior == page.next_cursor,
-            "Inbox cursor changed; inspect current selection"
-        );
-        for item in &page.items {
-            let doc = serde_json::to_string(item)?;
-            let previous:Option<String>=tx.query_row("SELECT doc FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2 AND message_id=?3",params![selected.session,selected.human,item.message_id],|r|r.get(0)).optional()?;
-            if let Some(previous) = previous {
-                let previous: Item = serde_json::from_str(&previous)?;
-                anyhow::ensure!(
-                    identity(&previous)? == identity(item)?,
-                    "Native inbox identity changed"
-                );
-                continue;
-            }
-            anyhow::ensure!(
-                prior == page.after,
-                "Retried page contains an unretained event"
-            );
-            let (count,bytes):(i64,i64)=tx.query_row("SELECT count(*),COALESCE(sum(length(CAST(doc AS BLOB))),0) FROM interaction_matrix_inbox WHERE entry_session=?1",[selected.session],|r|Ok((r.get(0)?,r.get(1)?)))?;
-            anyhow::ensure!(
-                count < 256 && bytes + doc.len() as i64 <= 4 * 1024 * 1024,
-                "Inbox source capacity reached; native originals and cursor preserved"
-            );
-            tx.execute("INSERT INTO interaction_matrix_inbox(entry_session,human_id,message_id,binding,epoch,native,channel,owner,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![selected.session,selected.human,item.message_id,selected.binding,selected.epoch,selected.native,selected.channel,serde_json::to_string(&selected.owner)?,doc,now_string()])?;
-        }
-        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key(selected),page.next_cursor.to_string()])?;
-        let mut items = vec![];
-        for item in &page.items {
-            let source = super::super::presentation::source_on(
-                &tx,
-                selected.human,
-                selected.entry,
-                &format!("matrix-inbox:{}", item.message_id),
-            )?
-            .context("Retained inbox source missing")?;
-            items.push(json!({"source":source["id"],"revision":source["revision"],"current":source["current"],"payload_state":source["payload_state"]}));
-        }
+        let value = retain_on(&tx, selected, page)?;
         tx.commit()?;
-        Ok(
-            json!({"schema":"daimon.matrix-inbox-retained/v1","after":page.after,"next_cursor":page.next_cursor,"items":items,"page_full":page.page_full,"model_started":false,"peer_reply_sent":false}),
-        )
+        Ok(value)
     }
 }
+pub(in crate::store) fn retain_on(
+    conn: &Connection,
+    selected: &Selection,
+    page: Page,
+) -> Result<Value> {
+    anyhow::ensure!(
+        page.schema == "daimon.matrix-inbox-page/v1"
+            && page.source == selected.owner
+            && page.channel_id == selected.channel
+            && page.after == selected.after
+            && page.items.len() <= 3
+            && page.page_full == (page.items.len() == 3)
+            && page.meaning.len() <= 256,
+        "Inbox page differs from selected owner/channel/cursor"
+    );
+    let mut sequence = page.after;
+    for item in &page.items {
+        author(&item.author)?;
+        anyhow::ensure!(
+            item.inbox_sequence > sequence
+                && item.inbox_sequence <= 9_007_199_254_740_991
+                && canonical_uuid(&item.message_id)
+                && hash(&item.message_hash)
+                && canonical_uuid(&item.thread_id)
+                && ((item.state == "available"
+                    && item
+                        .text
+                        .as_ref()
+                        .is_some_and(|t| !t.trim().is_empty() && t.len() <= 16384))
+                    || (item.state == "unsupported_payload" && item.text.is_none()))
+                && serde_json::to_vec(item)?.len() <= 65536,
+            "Invalid bounded native inbox event"
+        );
+        sequence = item.inbox_sequence;
+    }
+    anyhow::ensure!(
+        page.next_cursor == sequence,
+        "Inbox page cursor omits retained events"
+    );
+    anyhow::ensure!(
+        current(conn, selected)?,
+        "Inbox entry retired during source read"
+    );
+    let prior = cursor(conn, selected)?;
+    anyhow::ensure!(
+        prior == page.after || prior == page.next_cursor,
+        "Inbox cursor changed; inspect current selection"
+    );
+    for item in &page.items {
+        let doc = serde_json::to_string(item)?;
+        let previous:Option<String>=conn.query_row("SELECT doc FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2 AND message_id=?3",params![selected.session,selected.human,item.message_id],|r|r.get(0)).optional()?;
+        if let Some(previous) = previous {
+            let previous: Item = serde_json::from_str(&previous)?;
+            anyhow::ensure!(
+                identity(&previous)? == identity(item)?,
+                "Native inbox identity changed"
+            );
+            continue;
+        }
+        anyhow::ensure!(
+            prior == page.after,
+            "Retried page contains an unretained event"
+        );
+        let (count,bytes):(i64,i64)=conn.query_row("SELECT count(*),COALESCE(sum(length(CAST(doc AS BLOB))),0) FROM interaction_matrix_inbox WHERE entry_session=?1",[selected.session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        anyhow::ensure!(
+            count < 256 && bytes + doc.len() as i64 <= 4 * 1024 * 1024,
+            "Inbox source capacity reached; native originals and cursor preserved"
+        );
+        conn.execute("INSERT INTO interaction_matrix_inbox(entry_session,human_id,message_id,binding,epoch,native,channel,owner,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![selected.session,selected.human,item.message_id,selected.binding,selected.epoch,selected.native,selected.channel,serde_json::to_string(&selected.owner)?,doc,now_string()])?;
+    }
+    conn.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key(selected),page.next_cursor.to_string()])?;
+    let mut items = vec![];
+    for item in &page.items {
+        let source = super::super::presentation::source_on(
+            conn,
+            selected.human,
+            selected.entry,
+            &format!("matrix-inbox:{}", item.message_id),
+        )?
+        .context("Retained inbox source missing")?;
+        items.push(json!({"source":source["id"],"revision":source["revision"],"current":source["current"],"payload_state":source["payload_state"]}));
+    }
+    Ok(
+        json!({"schema":"daimon.matrix-inbox-retained/v1","after":page.after,"next_cursor":page.next_cursor,"items":items,"page_full":page.page_full,"model_started":false,"peer_reply_sent":false}),
+    )
+}
+
 pub(in crate::store) fn source_on(
     conn: &Connection,
     human: i64,
@@ -223,6 +250,46 @@ pub(in crate::store) fn source_on(
     Ok(Some(
         json!({"id":format!("matrix-inbox:{id}"),"kind":"matrix_inbox","text":item.text.unwrap_or_default(),"payload_state":item.state,"source_author":item.author,"matrix_message_hash":item.message_hash,"thread_id":item.thread_id,"destination":item.destination,"response_context":item.response_context,"coordination":item.coordination,"current":current,"native_binding_current":current,"completed":Value::Null,"observed_at":observed,"verification":"Owner host reports a native SDK-authenticated source; raw peer text is not human speech, receiving execution approval or a response receipt"}),
     ))
+}
+
+pub(in crate::store) fn offers_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    selected: &crate::store::HeartbeatInboxSource,
+    seen: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<crate::store::heartbeat::producer::Offer>> {
+    let (session, native) = super::super::presentation::entry_on(conn, human, entry)?;
+    let binding = super::super::presentation::entry_binding(conn, human, entry, session)?;
+    let epoch = super::super::stopping::admission_epoch_on(conn, entry)?;
+    let mut query=conn.prepare("SELECT m.message_id FROM interaction_matrix_inbox m WHERE m.entry_session=?1 AND m.human_id=?2 AND m.binding=?3 AND m.epoch=?4 AND m.native=?5 AND m.owner=?6 AND m.channel=?7 AND NOT EXISTS(SELECT 1 FROM json_each(?8) x WHERE x.key='matrix-inbox:'||m.message_id) AND NOT EXISTS(SELECT 1 FROM interaction_matrix_results r WHERE r.message_id=m.message_id AND r.human_id=m.human_id) AND NOT(json_extract(m.doc,'$.author.being_ref')=?9 AND json_extract(m.doc,'$.author.embodiment_id')=?10) ORDER BY m.rowid LIMIT 16")?;
+    let ids = query
+        .query_map(
+            params![
+                session,
+                human,
+                binding,
+                epoch,
+                native,
+                serde_json::to_string(&selected.source)?,
+                selected.channel_id,
+                serde_json::to_string(seen)?,
+                selected.source.being_ref,
+                selected.source.embodiment_id
+            ],
+            |r| r.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut offers = vec![];
+    for id in ids {
+        let key = format!("matrix-inbox:{id}");
+        let source = super::super::presentation::source_on(conn, human, entry, &key)?
+            .context("Native inbox source unavailable")?;
+        anyhow::ensure!(source["current"] == true, "Native inbox source retired");
+        let unavailable = source["payload_state"] == "unsupported_payload";
+        offers.push(crate::store::heartbeat::producer::Offer {key:key.clone(),revision:source["revision"].as_str().context("Native inbox source revision")?.into(),evidence:json!({"source":key,"revision":source["revision"],"author":source["source_author"],"message_hash":source["matrix_message_hash"],"payload_state":source["payload_state"],"text_characters":source["text_characters"],"reason":"matrix_original_available","completed":Value::Null,"source_complete":unavailable,"reader":if unavailable {Value::Null}else{json!({"operation":"conversation_part","arguments":{"source":key,"revision":source["revision"],"offset":0}})},"meaning":"Raw SDK-authenticated peer original, not human speech or execution authority; batch review is not a response or completion"})});
+    }
+    Ok(offers)
 }
 
 #[cfg(test)]

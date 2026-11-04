@@ -13,6 +13,11 @@ pub(super) async fn execute(
     if cfg.human_id != human || cfg.entry() != entry {
         bail!("Heartbeat control belongs to the configured integrating entry");
     }
+    if let HeartbeatCommand::ConfigureProducer { contract, .. } = &command {
+        if let Some(source) = &contract.matrix_inbox {
+            super::matrix::inbox_matches(&cfg, source)?;
+        }
+    }
     let pause = matches!(&command, HeartbeatCommand::Pause);
     // Persist the fence before attempting cancellation or any native read.
     let mut value = app.shared.store.heartbeat_control(human, entry, command)?;
@@ -126,11 +131,26 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     if session.busy || session.codex_thread_id.is_none() {
         return Ok(());
     }
-    if let Some(selected) = app
+    let Some(check): Option<crate::store::HeartbeatCheck> = app
         .shared
         .store
-        .heartbeat_produce(cfg.human_id, cfg.entry())?
-    {
+        .heartbeat_begin_check(cfg.human_id, cfg.entry())?
+    else {
+        return Ok(());
+    };
+    let read = if let Some(source) = &check.matrix_inbox {
+        if !app.shared.store.heartbeat_check_current(&check)? {
+            return Ok(());
+        }
+        Some(tokio::select! {
+            biased;
+            _=app.shared.shutdown.cancelled()=>return Ok(()),
+            result=super::matrix::read_inbox(app,cfg.human_id,cfg.entry(),source)=>result,
+        })
+    } else {
+        None
+    };
+    if let Some(selected) = app.shared.store.heartbeat_finish_check(&check, read)? {
         let id = selected.id.clone();
         let attempt = selected.attempts;
         if app.shared.shutdown.is_cancelled()
