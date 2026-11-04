@@ -111,6 +111,54 @@ impl Store {
         tx.commit()?;
         Ok(records)
     }
+    /// Read the already-reserved allocation at the last submission boundary.
+    /// Reading never charges/refills it or establishes new execution ownership.
+    pub(crate) fn heartbeat_inference_allowance(
+        &self,
+        local: i64,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<Option<crate::codex::NativeInferenceAllowance>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let Some(record) = load(&conn, local)? else {
+            return Ok(None);
+        };
+        let (session, _) = super::super::presentation::entry_on(&conn, human, entry)?;
+        let bound:bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.status='running' AND s.codex_thread_id=?4)",
+            params![local,session,human,record["native"].as_str().context("Missing heartbeat native binding")?],|r|r.get(0))?;
+        anyhow::ensure!(
+            bound && record["phase"] == "owned" && record["physical"].is_null(),
+            "Heartbeat allocation no longer owns a fresh execution"
+        );
+        anyhow::ensure!(
+            generation_current_on(
+                &conn,
+                human,
+                entry,
+                record["generation"]
+                    .as_u64()
+                    .context("Missing heartbeat generation")?
+            )?,
+            "Heartbeat admission is paused or stale"
+        );
+        let allocation = &record["inference_allowance"];
+        Ok(Some(crate::codex::NativeInferenceAllowance {
+            max_provider_attempts: u32::try_from(
+                allocation["max_provider_attempts"]
+                    .as_u64()
+                    .context("Missing reserved provider attempts")?,
+            )?,
+            max_request_bytes: u32::try_from(
+                allocation["max_request_bytes"]
+                    .as_u64()
+                    .context("Missing reserved request byte limit")?,
+            )?,
+            deadline_unix_ms: allocation["deadline_unix_ms"]
+                .as_i64()
+                .context("Missing reserved inference deadline")?,
+        }))
+    }
+
     /// Called at the actual shared native steer boundary, before any external
     /// input/goal/internal-return packet can join this physical execution.
     pub(crate) fn heartbeat_external_input(&self, local: i64) -> Result<()> {
@@ -254,6 +302,52 @@ mod tests {
         tx.commit()?;
         Ok(())
     }
+    #[test]
+    fn inference_reservation_read_is_exact_nonrefilling_and_fenced_by_owner_and_pause() {
+        let (_file, s, entry) = setup();
+        let local = fresh(&s, &entry, "");
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, entry.key)
+                .unwrap()
+                .is_none()
+        );
+        own(&s, &entry, local).unwrap();
+        let before = s
+            .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+            .unwrap()["resources"]
+            .clone();
+        let first = s
+            .heartbeat_inference_allowance(local, 100, entry.key)
+            .unwrap()
+            .unwrap();
+        let second = s
+            .heartbeat_inference_allowance(local, 100, entry.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.max_provider_attempts, 3);
+        assert_eq!(first.deadline_unix_ms, second.deadline_unix_ms);
+        assert!(
+            s.heartbeat_inference_allowance(local, 101, entry.key)
+                .is_err()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"],
+            before
+        );
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, entry.key)
+                .is_err()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            3
+        );
+    }
+
     #[test]
     fn pause_wins_before_external_input_and_late_identity_is_not_lost() {
         let (file, s, entry) = setup();

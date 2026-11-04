@@ -48,9 +48,12 @@ The contract supplies total/per-execution attempts, complete request bytes,
 execution seconds and a fixed expiry. Status labels these as reserved request
 attempts, never token or monetary spend. Configuration neither resumes attention
 nor changes native goals or a provider account. No receiving account is created
-by this source work. Native bounded-turn admission, descendant/tool allocation
-and producer/receiving acceptance remain unfinished; do not activate this
-increment as a complete heartbeat.
+by this source work. The last native-submission callback now reads the exact
+already-reserved allocation after owner/generation checks, without charging it
+again. Tagged work requires `turn/startBoundedIfIdle` with that allocation;
+missing/expired allocations and old servers refuse without an unbounded fallback.
+Native descendant/tool allocation, producer and receiving acceptance remain
+unfinished; do not activate this increment as a complete heartbeat.
 
 
 Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
@@ -444,14 +447,17 @@ entry/native owner, current generation, absence of human ingress/collection or
 other source bindings, and at most one unresolved heartbeat execution. Ownership
 is retained beside the existing turn in the state store, with the exact physical
 native ID added on its callback. Tagged execution requires native
-`turn/startIfIdle`, with no fallback to `turn/start`: a local idle observation is
-not an atomic native ownership fence. Older servers reject before submission.
-Core source4dc51af25, now proposed in compaii/codex#10, exposes the existing
-atomic StartIfIdle through that method. Actual App Server mocked-provider busy
-refusal/independent internal-turn and legacy-permission regressions plus317
-protocol/export/schema tests pass. It is not yet receiving-selected and remains
-a prerequisite for actual cancellation qualification; ordinary `toolOutput`
-uses start-or-steer and cannot establish this ownership by itself. Retain at most sixteen records (one live owner
+`turn/startBoundedIfIdle`, with no fallback to `turn/start` or the unbounded
+`turn/startIfIdle`: a local idle observation is not an atomic native ownership
+fence or a resource reservation. Core PR11 extends merged PR10's idle primitive
+with the required allocation. The bridge supplies its conserved attempts, bytes
+and absolute deadline; it cannot refresh them during preparation. Socket tests
+cover exact parameter serialization, unsupported servers, and missing/expired
+allocations without input submission. The actual Core mocked-provider journey
+refuses a busy human writer, then exhausts a one-request allocation locally
+without a second bounded provider request. Native source/receiving selection
+remain distinct; ordinary `toolOutput` uses start-or-steer and cannot establish
+this ownership or these bounds by itself. Retain at most sixteen records (one live owner
 plus fifteen prior terminal/transferred records); pruning never deletes native
 history, source receipts or an uncertain execution. Turn deletion removes only
 its matching ownership metadata.

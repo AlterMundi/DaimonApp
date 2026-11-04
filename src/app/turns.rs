@@ -1023,7 +1023,10 @@ pub(super) async fn process_turn(
                                     bail!("Native writer held during controlled maintenance; input retained without submission");
                                 }
                                 if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
-                                Ok(CodexEventOutcome::None)
+                                Ok(match shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)? {
+                                    Some(allowance)=>CodexEventOutcome::InferenceAllowance(allowance),
+                                    None=>CodexEventOutcome::None,
+                                })
                             }
                             CodexEvent::NativeGoalBlocked { turn_id: native_turn, goal } => {
                                 if shared.store.goal_recovery_block_observed(session_key,requester_user_id,&goal.thread_id,&native_turn,&goal).is_err() {

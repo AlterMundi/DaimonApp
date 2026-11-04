@@ -300,9 +300,36 @@ pub enum CodexApprovalDecision {
     Cancel,
 }
 
+/// A reservation already conserved by the owning journal, never a new grant.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeInferenceAllowance {
+    pub max_provider_attempts: u32,
+    pub max_request_bytes: u32,
+    pub deadline_unix_ms: i64,
+}
+impl NativeInferenceAllowance {
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.max_provider_attempts > 0
+                && (1..=64 * 1024 * 1024).contains(&self.max_request_bytes),
+            "Invalid reserved native inference limits"
+        );
+        let remaining = self
+            .deadline_unix_ms
+            .checked_sub(chrono::Utc::now().timestamp_millis());
+        anyhow::ensure!(
+            remaining.is_some_and(|remaining| (1..=600_000).contains(&remaining)),
+            "Reserved native inference deadline expired or exceeds600seconds"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub enum CodexEventOutcome {
     None,
+    InferenceAllowance(NativeInferenceAllowance),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
     DynamicTool(oneshot::Receiver<Value>),
@@ -1563,7 +1590,15 @@ where
         params["additionalContext"]["telecodex.tribu.deadline"] =
             json!({"kind":"application","value":awareness});
     }
-    let _ = on_event(CodexEvent::NativeTurnSubmitting).await?;
+    let admission = on_event(CodexEvent::NativeTurnSubmitting).await?;
+    let inference_allowance = match admission {
+        CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
+            allowance.validate()?;
+            Some(allowance)
+        }
+        CodexEventOutcome::None if !idle_only => None,
+        _ => bail!("Fresh heartbeat requires its exact retained inference reservation"),
+    };
     // Inputs already queued during preparation belong in the initial packet,
     // before a fast model can finish the earlier request without seeing them.
     let mut initial_steers = Vec::new();
@@ -1614,8 +1649,13 @@ where
     let turn_request_id = if adopted_turn.is_some() {
         None
     } else {
+        let (method, params) = if let Some(allowance) = inference_allowance {
+            // Mandatory method: old servers must reject before inference. No fallback.
+            allowance.validate()?;
+            ("turn/startBoundedIfIdle",json!({"turn":params,"allowance":allowance}))
+        } else { ("turn/start",params) };
         initial_write_possible = true;
-        Some(process.send_request(if idle_only {"turn/startIfIdle"} else {"turn/start"}, params).await?)
+        Some(process.send_request(method, params).await?)
     };
     let mut goal_activation_id = None;
     let mut goal_activation_pending = false;
@@ -3906,6 +3946,37 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn heartbeat_idle_only_refuses_unsupported_native_without_start_or_steer_fallback() {
+        heartbeat_inference_fixture(
+            Some(NativeInferenceAllowance {
+                max_provider_attempts: 2,
+                max_request_bytes: 1024,
+                deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
+            }),
+            true,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn heartbeat_idle_only_requires_reservation_before_native_write() {
+        heartbeat_inference_fixture(None, false).await;
+        heartbeat_inference_fixture(
+            Some(NativeInferenceAllowance {
+                max_provider_attempts: 2,
+                max_request_bytes: 1024,
+                deadline_unix_ms: 1,
+            }),
+            false,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    async fn heartbeat_inference_fixture(
+        allowance: Option<NativeInferenceAllowance>,
+        expected_send: bool,
+    ) {
         let root = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
@@ -3916,7 +3987,7 @@ mod tests {
             while let Some(message) = socket.next().await {
                 let message = match message {
                     Ok(message)=>message,
-                    Err(tokio_tungstenite::tungstenite::Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) if requests==1=>break,
+                    Err(tokio_tungstenite::tungstenite::Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) if requests==usize::from(expected_send)=>break,
                     Err(error)=>panic!("Unexpected native fixture close: {error}"),
                 };
                 if message.is_close() {
@@ -3927,15 +3998,17 @@ mod tests {
                     Some("initialize")=>socket.send(WsMessage::Text(json!({"id":request["id"],"result":{}}).to_string().into())).await.unwrap(),
                     Some("initialized")=>{},
                     Some("thread/start")=>socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"thread":{"id":"idle-only-thread"},"model":"synthetic-model"}}).to_string().into())).await.unwrap(),
-                    Some("turn/startIfIdle")=>{
+                    Some("turn/startBoundedIfIdle")=>{
                         requests+=1;
-                        assert_eq!(request["params"]["input"],json!([]));assert_eq!(request["params"]["toolOutput"]["name"],"heartbeat_attention");
+                        assert_eq!(request["params"]["turn"]["input"],json!([]));assert_eq!(request["params"]["turn"]["toolOutput"]["name"],"heartbeat_attention");
+                        assert_eq!(request["params"]["allowance"]["maxProviderAttempts"],2);
+                        assert_eq!(request["params"]["allowance"]["maxRequestBytes"],1024);
                         socket.send(WsMessage::Text(json!({"id":request["id"],"error":{"code":-32601,"message":"Unsupported method"}}).to_string().into())).await.unwrap();
                     }
                     other=>panic!("No start-or-steer fallback or goal activation allowed: {other:?}"),
                 }
             }
-            assert_eq!(requests, 1);
+            assert_eq!(requests, usize::from(expected_send));
         });
         let runner = CodexRunner::new(binary)
             .with_shared_app_server(true)
@@ -3962,12 +4035,27 @@ mod tests {
                     if matches!(event, CodexEvent::NativeInputRejected) {
                         observed.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
-                    async { Ok(CodexEventOutcome::None) }
+                    let allocation = allowance.clone();
+                    async move {
+                        Ok(if matches!(event, CodexEvent::NativeTurnSubmitting) {
+                            allocation
+                                .map(CodexEventOutcome::InferenceAllowance)
+                                .unwrap_or(CodexEventOutcome::None)
+                        } else {
+                            CodexEventOutcome::None
+                        })
+                    }
                 },
             )
             .await;
         assert!(result.is_err());
-        assert!(rejected.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            rejected.load(std::sync::atomic::Ordering::SeqCst),
+            expected_send
+        );
+        if !expected_send {
+            assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
+        }
         server.await.unwrap();
     }
 
