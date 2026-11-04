@@ -237,6 +237,20 @@ class Provider:
         """All owned session metadata, without opening native/model processes."""
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
+        destinations={};destinations_state='unavailable'
+        try:
+            selected=self.presentation('input workspace')
+        except ProviderUnavailable:
+            selected=None  # Older readers retain the metadata-only workspace.
+        if selected is not None:
+            if selected.get('schema')!='daimon.session-destinations/v1' or not isinstance(selected.get('items'),list) or len(selected['items'])>128:
+                raise ProviderUnavailable('Session destination receipt unavailable')
+            for item in selected['items']:
+                if not isinstance(item,dict) or not isinstance(item.get('audio_key'),str):raise ProviderUnavailable('Invalid session destination')
+                self.check_reply(item.get('destination'))
+                if not item.get('destination',{}).get('source','').startswith('session:'):raise ProviderUnavailable('Missing session destination reference')
+                destinations[item['audio_key']]=item['destination']
+            destinations_state='available'
         directory=self.config.get('activity_state_dir')
         with closing(readonly(self.receiver['db_path'])) as db:
             inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
@@ -252,12 +266,12 @@ class Provider:
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
                     'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
-                    'results_review':'unknown'})
+                    'results_review':'unknown','destination':destinations.get(row['key'])})
         items.sort(key=lambda v:(-(v['last_activity_at'] or 0),v['id']))
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience changed')
         return {'schema':'daimon.session-workspace/v1','observed_at':time.time(),'sessions':items,
-            'connected':inventory['connected'],'truncated':False,
+            'connected':inventory['connected'],'truncated':False,'destinations_state':destinations_state,
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
 
@@ -693,7 +707,7 @@ class Provider:
         if value is None: return
         if (not isinstance(value, dict) or set(value) not in ({'source', 'revision'}, {'source', 'revision', 'context_only'})
                 or 'context_only' in value and value['context_only'] is not True
-                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'task:', 'native:'))
+                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'task:', 'native:', 'session:'))
                 or not isinstance(value['revision'], str) or not re.fullmatch('[a-f0-9]{64}', value['revision'])):
             raise ValueError('Select one retained original or worker result')
         if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:', 'task:', 'native:')):
@@ -701,7 +715,7 @@ class Provider:
         if value['source'].startswith(('matrix:','task:')) and not value.get('context_only'):
             raise ValueError('Matrix/task references are selected contextual evidence')
         ident=value['source'].split(':', 1)[1]
-        if value['source'].startswith('native:'):
+        if value['source'].startswith(('native:','session:')):
             if not re.fullmatch('[1-9][0-9]{0,18}',ident) or int(ident)>2**63-1:
                 raise ValueError('Select one retained native message')
         elif value['source'].startswith(('request:','task:')):

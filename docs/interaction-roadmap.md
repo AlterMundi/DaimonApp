@@ -72,8 +72,17 @@ remain unchanged and require an explicit supported workspace grant path before
 phone rollout. Unreviewed-result status is currently unknown, not inferred from
 work completion. The adaptive header candidate has static actual-shell Chromium
 coverage at1280px/390px and interaction/focus tests; it is not deployed or phone
-acceptance. Sidebar rendering, direct admission, device grants, technical events
-and complete combined experience remain unfinished.
+acceptance. The next native candidate adds exact generation-bound session destination references
+through the existing retained reply field. A pin can select an owned native
+session without enrolling it as a router target; literal selector-like words do
+not override that explicit destination. Text and recorded voice retain their
+original words and destination through preparation. Shared queued submission and
+final steer admission revalidate the pin; a replaced native binding refuses
+submission rather than redirecting it. Existing routing journals, return
+registration and known-unsent recovery remain in use. The workspace API joins
+only native-owned descriptors; an older listener exposes metadata without pins.
+This contract is not selected on the receiver. Sidebar rendering, device grants,
+technical events and the complete combined experience remain unfinished.
 
 ## Shared attention backend —4November2026
 
