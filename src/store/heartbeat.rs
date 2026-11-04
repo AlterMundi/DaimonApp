@@ -67,7 +67,7 @@ impl Store {
     ) -> Result<Value> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let (session, native) = super::presentation::entry_on(&tx, human, entry)?;
         let key = format!("heartbeat_control:{human}:{session}");
         let raw: Option<String> = tx
             .query_row("SELECT value FROM bot_state WHERE key=?1", [&key], |r| {
@@ -123,6 +123,15 @@ impl Store {
                 control.generation = control.generation.saturating_add(1).min(MAX_GENERATION);
                 control.changed_at = now_string();
                 tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(&control)?])?;
+                if !paused {
+                    super::workflows::resume_attention_on(
+                        &tx,
+                        human,
+                        entry,
+                        &native,
+                        control.generation,
+                    )?;
+                }
             }
         }
         tx.commit()?;

@@ -362,6 +362,54 @@ fn attention_workflow_on(
     Ok(Some(w))
 }
 
+/// Explicit owner Resume advances only retained workflow authority and returns
+/// that have never crossed a native submission boundary. It creates no input,
+/// allocation or retry, and preserves all accepted/uncertain execution evidence.
+pub(in crate::store) fn resume_attention_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    native: &str,
+    generation: u64,
+) -> Result<()> {
+    let mut q = conn.prepare("SELECT doc FROM interaction_workflows WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND phase='active' AND json_extract(doc,'$.attention') IS NOT NULL ORDER BY rowid LIMIT 257")?;
+    let rows = q
+        .query_map(params![human, entry.chat_id, entry.thread_id], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        rows.len() <= 256,
+        "Retained attention workflow capacity exceeded"
+    );
+    for raw in rows {
+        let mut w: Workflow = serde_json::from_str(&raw)?;
+        let Some(owner) = w.attention.as_ref() else {
+            continue;
+        };
+        if owner.entry != entry
+            || owner.native != native
+            || owner.generation >= generation
+            || !live_on(conn, &w)?
+        {
+            continue;
+        }
+        w.attention.as_mut().unwrap().generation = generation;
+        for r in &mut w.native_returns {
+            if r.attention_generation.is_some()
+                && matches!(r.phase.as_str(), "reserved" | "retained_unsent")
+                && r.local.is_none()
+                && r.native_turn.is_none()
+                && r.collection_local.is_none()
+            {
+                r.attention_generation = Some(generation);
+            }
+        }
+        save_on(conn, &w)?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub(super) fn init_workflows(&self) -> Result<()> {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
@@ -3731,6 +3779,179 @@ mod tests {
             &CancellationToken::new(),
         )
     }
+    #[test]
+    fn heartbeat_resume_recovers_queued_workflow_without_refilling_or_replaying_submitted_returns()
+    {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        let parent = attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        let worker = accept(&s, &i);
+        answer(
+            &s,
+            &i,
+            worker,
+            "checkpoint",
+            vec![i.id.clone()],
+            "Checkpoint ready",
+        );
+        let reserved = s.workflow_native_reserve(100, entry.key).unwrap();
+        assert!(!reserved.is_empty());
+        let id = view["id"].as_str().unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut w = load_on(&conn, 100, entry.key, id).unwrap();
+            let template = w.native_returns[0].clone();
+            w.native_returns.clear();
+            for (position, phase) in [
+                "reserved",
+                "retained_unsent",
+                "submitting",
+                "accepted",
+                "uncertain",
+                "retained_unsent",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let mut r = template.clone();
+                r.id = format!("resume-receipt-{position}");
+                r.phase = (*phase).into();
+                if position >= 2 {
+                    r.local = Some(parent);
+                }
+                if position >= 3 && position != 5 {
+                    r.native_turn = Some(format!("exact-physical-{position}"));
+                }
+                w.native_returns.push(r);
+            }
+            save_on(&conn, &w).unwrap();
+        }
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(
+            s.heartbeat_workflow_delegation(100, i.target, &i.id)
+                .is_err()
+        );
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Resume { generation: 3 })
+            .unwrap();
+        let conn = s.conn.lock().unwrap();
+        let w = load_on(&conn, 100, entry.key, id).unwrap();
+        assert_eq!(w.attention.as_ref().unwrap().generation, 4);
+        assert_eq!(
+            w.native_returns
+                .iter()
+                .map(|r| r.attention_generation)
+                .collect::<Vec<_>>(),
+            vec![Some(4), Some(4), Some(2), Some(2), Some(2), Some(2)]
+        );
+        assert_eq!(w.native_returns[2].phase, "submitting");
+        assert_eq!(
+            w.native_returns[3].native_turn.as_deref(),
+            Some("exact-physical-3")
+        );
+        assert_eq!(w.native_returns[4].phase, "uncertain");
+        assert_eq!(w.native_returns[5].local, Some(parent));
+        let record: String = conn
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [format!("heartbeat_execution:{parent}")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&record).unwrap()["generation"],
+            2
+        );
+        drop(conn);
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            3
+        );
+        // An ordinary control read cannot change the explicit Resume selection.
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+            .unwrap();
+        assert!(
+            s.heartbeat_workflow_delegation(100, i.target, &i.id)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn heartbeat_resume_admits_the_same_queued_step_with_a_new_conserved_allocation() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(
+            s.heartbeat_workflow_delegation(100, i.target, &i.id)
+                .is_err()
+        );
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Resume { generation: 3 })
+            .unwrap();
+        assert_eq!(
+            s.interaction_instruction(&i.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            P::Queued
+        );
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let local = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+            .unwrap();
+        assert!(
+            s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+                .unwrap()
+        );
+        assert_eq!(
+            s.heartbeat_inference_allowance(local, 100, i.target)
+                .unwrap()
+                .unwrap()
+                .max_provider_attempts,
+            3
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            6
+        );
+        // The retained instruction identity/scope is unchanged, not replayed as
+        // another workflow leg or silently assigned a new independent account.
+        assert_eq!(
+            s.interaction_instruction(&i.id, 100).unwrap().unwrap().text,
+            i.text
+        );
+    }
+
+    #[test]
+    fn heartbeat_resume_keeps_retired_native_workflow_ownership_stale() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        s.set_session_codex_thread(entry.key, "replacement-native")
+            .unwrap();
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Resume { generation: 3 })
+            .unwrap();
+        assert!(
+            s.heartbeat_workflow_delegation(100, i.target, &i.id)
+                .is_err()
+        );
+        let conn = s.conn.lock().unwrap();
+        let w = load_on(&conn, 100, entry.key, view["id"].as_str().unwrap()).unwrap();
+        assert_eq!(w.attention.as_ref().unwrap().generation, 2);
+        assert_eq!(w.attention.as_ref().unwrap().native, "native-1");
+    }
+
     #[test]
     fn heartbeat_workflow_delegate_charges_original_account_and_pause_selects_children() {
         use crate::store::HeartbeatCommand;
