@@ -18,6 +18,8 @@ pub struct HeartbeatProducerContract {
     pub matrix_inbox: Option<HeartbeatInboxSource>,
     pub workflows: bool,
     #[serde(default)]
+    pub session_progress: bool,
+    #[serde(default)]
     pub reports: Vec<super::HeartbeatReportSource>,
 }
 
@@ -116,12 +118,55 @@ pub(in crate::store) struct Parent {
     pub checks: u32,
     pub next_check_ms: i64,
     pub workflow_after: i64,
+    #[serde(default)]
+    pub progress_start: i64,
+    #[serde(default)]
+    pub progress_after: i64,
     pub next_lane: bool,
     pub stopped_reason: Option<String>,
     #[serde(default)]
     pub inbox_state: Option<String>,
     pub seen: BTreeMap<String, String>,
     pub native_returns: Vec<WorkflowReturn>,
+}
+
+fn select_batch(p: &mut Parent, lanes: &[Vec<Offer>; 5], progress_next: Option<i64>) -> Vec<Offer> {
+    let mut selected = vec![];
+    let mut lane = usize::from(p.next_lane);
+    let mut positions = [0, 0, 0, 0, 0];
+    for _ in 0..4 {
+        for _ in 0..lanes.len() {
+            if positions[lane] < lanes[lane].len() {
+                break;
+            }
+            lane = (lane + 1) % lanes.len();
+        }
+        if let Some(offer) = lanes[lane].get(positions[lane]) {
+            let new_keys = selected
+                .iter()
+                .filter(|offer: &&Offer| !p.seen.contains_key(&offer.key))
+                .count();
+            if p.seen.contains_key(&offer.key) || p.seen.len() + new_keys < 256 {
+                selected.push(offer.clone());
+            }
+            positions[lane] += 1;
+        }
+        lane = (lane + 1) % lanes.len();
+    }
+    p.next_lane = !p.next_lane;
+    // Scanning is not consumption. Keep this page until every unseen progress
+    // offer has a slot (or was already reviewed); otherwise lane/page phase can
+    // starve one page while repeatedly visiting its successor.
+    if let Some(next) = progress_next
+        && lanes[4].iter().all(|offer| {
+            selected
+                .iter()
+                .any(|s| s.key == offer.key && s.revision == offer.revision)
+        })
+    {
+        p.progress_after = next;
+    }
+    selected
 }
 
 fn key(human: i64, session: i64) -> String {
@@ -243,6 +288,17 @@ pub(in crate::store) fn current(
             if !source.is_some_and(|s| s["current"] == true && s["revision"] == offer.revision) {
                 return Ok(false);
             }
+        } else if let Some(id) = offer.key.strip_prefix("progress:") {
+            let source = super::super::presentation::source_on(conn, p.human, p.entry, id)?;
+            if !p.contract.session_progress
+                || !source.is_some_and(|s| {
+                    s["kind"] == "worker_progress"
+                        && s["native_binding_current"] == true
+                        && s["revision"] == offer.revision
+                })
+            {
+                return Ok(false);
+            }
         } else if offer.key.starts_with("report:") {
             if !super::reports::current(p, &offer.key, &offer.revision)? {
                 return Ok(false);
@@ -298,6 +354,7 @@ pub(in crate::store) fn configure_on(
             && (contract.matrix_replies
                 || contract.matrix_inbox.is_some()
                 || contract.workflows
+                || contract.session_progress
                 || !contract.reports.is_empty()),
         "Select finite heartbeat sources, frequency and expiry"
     );
@@ -321,6 +378,11 @@ pub(in crate::store) fn configure_on(
         load(conn, human, session)?.is_none(),
         "Heartbeat producer already configured; counters and cursors were not reset"
     );
+    let progress_start: i64 = conn.query_row(
+        "SELECT coalesce(max(rowid),0) FROM interaction_native_messages",
+        [],
+        |r| r.get(0),
+    )?;
     save(
         conn,
         &Parent {
@@ -335,6 +397,8 @@ pub(in crate::store) fn configure_on(
             checks: 0,
             next_check_ms: 0,
             workflow_after: 0,
+            progress_start,
+            progress_after: progress_start,
             next_lane: false,
             stopped_reason: None,
             inbox_state: None,
@@ -577,7 +641,7 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
-        let mut lanes = [vec![], vec![], vec![], vec![]];
+        let mut lanes = [vec![], vec![], vec![], vec![], vec![]];
         if p.contract.matrix_replies {
             let value = super::super::matrix::heartbeat_attention_on(&tx, human, entry, &p.seen)?;
             for item in value["envelopes"].as_array().into_iter().flatten() {
@@ -607,6 +671,21 @@ impl Store {
             .into_iter()
             .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
             .collect();
+        let mut progress_next = None;
+        if p.contract.session_progress {
+            let (after, offers) = super::super::presentation::heartbeat_progress_on(
+                &tx,
+                human,
+                entry,
+                p.progress_start,
+                p.progress_after,
+            )?;
+            progress_next = Some(after);
+            lanes[4] = offers
+                .into_iter()
+                .filter(|o| p.seen.get(&o.key) != Some(&o.revision))
+                .collect();
+        }
         if let Some(source) = &p.contract.matrix_inbox {
             if p.inbox_state.as_deref() == Some("available") {
                 lanes[3] =
@@ -622,29 +701,7 @@ impl Store {
                 }
             }
         }
-        let mut selected = vec![];
-        let mut lane = usize::from(p.next_lane);
-        let mut positions = [0, 0, 0, 0];
-        for _ in 0..4 {
-            for _ in 0..4 {
-                if positions[lane] < lanes[lane].len() {
-                    break;
-                }
-                lane = (lane + 1) % 4;
-            }
-            if let Some(offer) = lanes[lane].get(positions[lane]) {
-                let new_keys = selected
-                    .iter()
-                    .filter(|offer: &&Offer| !p.seen.contains_key(&offer.key))
-                    .count();
-                if p.seen.contains_key(&offer.key) || p.seen.len() + new_keys < 256 {
-                    selected.push(offer.clone());
-                }
-                positions[lane] += 1;
-            }
-            lane = (lane + 1) % 4;
-        }
-        p.next_lane = !p.next_lane;
+        let selected = select_batch(&mut p, &lanes, progress_next);
         if selected.is_empty() {
             save(&tx, &p)?;
             tx.commit()?;
@@ -785,6 +842,7 @@ mod inbox_tests {
                     matrix_replies: false,
                     matrix_inbox: Some(source.clone()),
                     workflows: false,
+                    session_progress: false,
                     reports: vec![],
                 },
             },
@@ -794,6 +852,48 @@ mod inbox_tests {
             .unwrap();
         (f, s, e, source)
     }
+    #[test]
+    fn progress_pages_do_not_advance_past_unselected_rows_under_five_lane_contention() {
+        let (_f, s, e, _) = setup();
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+        let mut p = load(&conn, 100, session).unwrap().unwrap();
+        let offer = |key: String| Offer {
+            key,
+            revision: "r1".into(),
+            evidence: json!({}),
+        };
+        let mut observed = std::collections::BTreeSet::new();
+        for check in 0..16 {
+            let mut lanes: [Vec<Offer>; 5] = std::array::from_fn(|lane| {
+                if lane == 4 {
+                    vec![]
+                } else {
+                    vec![offer(format!("other:{lane}:{check}"))]
+                }
+            });
+            let start = p.progress_after;
+            let page_start = if start >= 8 { 0 } else { start };
+            let page_end = (page_start + 4).min(8);
+            lanes[4] = ((page_start + 1)..=page_end)
+                .map(|row| offer(format!("progress:{row}")))
+                .filter(|o| p.seen.get(&o.key) != Some(&o.revision))
+                .collect();
+            let batch = select_batch(&mut p, &lanes, Some(page_end));
+            assert!(batch.len() <= 4);
+            if check == 0 {
+                assert_eq!(p.progress_after, 0, "Unselected first page was skipped");
+            }
+            for selected in batch {
+                if selected.key.starts_with("progress:") {
+                    observed.insert(selected.key.clone());
+                }
+                p.seen.insert(selected.key, selected.revision);
+            }
+        }
+        assert_eq!(observed, (1..=8).map(|n| format!("progress:{n}")).collect());
+    }
+
     fn selection(
         s: &Store,
         e: SessionKey,

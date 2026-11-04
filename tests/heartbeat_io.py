@@ -332,6 +332,7 @@ def qualify_inbox(binary):
             "expires_at_unix_ms": expiry,
             "matrix_replies": False,
             "workflows": False,
+            "session_progress": True,
             "matrix_inbox": {"source": source, "channel_id": "tribe"},
             "purpose": {"input_ref": purpose_original["id"], "channel": "conversation"},
         }
@@ -341,6 +342,7 @@ def qualify_inbox(binary):
             str(paused["generation"]),
             json.dumps(contract),
         )
+        j.answer_worker(8, "The original owner is still progressing.", finish=False, phase="commentary")
         j.read("heartbeat", "resume", str(paused["generation"]))
         j.wait(lambda: len(j.bounded) == 1, seconds=45)
         j.wait(
@@ -358,6 +360,10 @@ def qualify_inbox(binary):
             if o["evidence"]["reason"] == "matrix_original_available"
         )
         assert offered["source"] == "matrix-inbox:" + first["message_id"]
+        progress = next(o["evidence"] for o in packet["evidence"]["offers"]
+                        if o["evidence"]["reason"] == "worker_progress_available")
+        progress_source = j.call("route-periodic-worker-progress", progress["reader"]["operation"], progress["reader"]["arguments"])
+        assert progress_source["text"] == "The original owner is still progressing."
         read = offered["reader"]
         exact = j.call(
             "route-periodic-inbox-source", read["operation"], read["arguments"]

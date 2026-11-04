@@ -144,6 +144,20 @@ sources/cursor and uses the existing bounded batch/attention account. An admitte
 read may finish during pause, but cannot commit a late page or start attention.
 There is no second scheduler, queue, resource refill or producer.
 
+The optional `session_progress = true` source observes new worker commentary
+already visible to this integrating Conversation. It reuses the canonical
+presentation audience captured with the native item, exact source revision and
+`conversation_part` reader; a later session switch cannot widen that audience.
+The initial cursor starts at configuration's existing high-water mark, avoiding
+historical narration replay. Each check reads at most four new eligible rows,
+with a persisted bounded cursor and ordinary seen-revision deduplication across
+pause/restart. Integrator commentary and private/direct worker output are not
+new offers. This source shares the same four-offer batch and conserved execution
+account with inbox, workflows and reports. Commentary is evidence of an update,
+not task completion or permission to resume a paused/blocked goal. Existing
+canonical result/question callbacks and workflow milestones remain their owning
+paths; this adds no observer-model refresh or parallel task coordinator.
+
 The optional finite contract `purpose = {input_ref = "ACTUAL_ORIGINAL_UUID",
 channel = "conversation"}` selects an already accepted human operating request
 in this same native entry. Integer Telegram originals retain this receiver's

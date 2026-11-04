@@ -4219,6 +4219,7 @@ mod tests {
                     expires_at_unix_ms: expiry,
                     matrix_replies: true,
                     workflows: true,
+                    session_progress: false,
                     reports,
                 },
             },
@@ -4496,6 +4497,7 @@ mod tests {
             matrix_replies: false,
             matrix_inbox: None,
             workflows: true,
+            session_progress: false,
             reports: vec![],
         };
         assert!(
