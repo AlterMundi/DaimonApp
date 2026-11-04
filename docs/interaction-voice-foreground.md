@@ -1725,3 +1725,32 @@ documented `response.cancel` shape, and the original synthetic script content
 completed with two committed originals, cancellation and subsequent audio. This
 is regression evidence, not proof of the earlier fixture's cause or general
 physical interruption acceptance. No uncertain human input or work was replayed.
+
+
+### Qwen browser playback confirmation — 4 November 2026
+
+The first phone pilot received fast text but no audible response. Receiving
+playback observations showed generated/scheduled PCM with zero ended buffers,
+`blocked=true` and a suspended browser AudioContext. The client released that
+block only for Gemini's matching `ACTIVITY_END`; Qwen's distinct committed-input
+protocol intentionally does not manufacture that event. Server-only digital
+qualification did not exercise this client gate and was insufficient to establish
+playback.
+
+The client now also releases output on the existing exact-original
+`input_interpreted` notification. The acoustic owner emits it only after both
+the correlated input commitment and finalized transcript. It must match the
+last ended phrase and cannot override a newer active capture, explicit Pause,
+or mute. Partial captions, generated text and output completion grant no floor.
+The Gemini release path remains supported.
+
+Qualification: mounted browser/native-PCM controls preserve the initial queued
+audio, reject unrelated/late confirmations and preserve explicit Pause. The
+existing full-shell Chromium fixture now accepts `--input-confirmation qwen`:
+it exercises Qwen commitment/final-transcript events without Gemini VAD, actual
+AudioContext playback completion and three consecutive retained/released
+originals. Provider, detector and capture input are synthetic; physical hearing,
+phone acceptance and sustained useful latency remain separate. Run the fixture
+with the existing Playwright module through `PLAYWRIGHT_MODULE` when it is not
+installed in the checkout. A separate phone attempt also ended with an empty
+final input transcript; playback repair does not establish that failure resolved.

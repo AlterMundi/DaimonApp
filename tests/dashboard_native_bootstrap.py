@@ -7,6 +7,7 @@ repo=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out',type=Path,required=True,help='New absolute output directory, bounded to4MiB')
 parser.add_argument('--runtime',type=Path,help='Selected immutable app bundle; defaults to this checkout')
+parser.add_argument('--input-confirmation',choices=('gemini','qwen'),default='gemini')
 parser.add_argument('--case',choices=('baseline','paced'),default='baseline')
 parser.add_argument('--activity-mode',choices=('manual','automatic'),default='manual')
 parser.add_argument('--session-seconds',type=int,choices=(300,600),default=300)
@@ -39,7 +40,7 @@ def counted_install(app,config,provider,origins,bind_voice,detector_command,acti
   return session,recheck,counted_actor
  return original_install(app,config,provider,origins,bind,detector_command,active)
 op=args.out;assert not (op/'intent.json').exists()
-state={'state':'prepared','scope':'Full actual index/app.js/modules, standalone shared cookie/CSRF bootstrap, SSE refresh and native voice owner. Synthetic identity/provider/detector/MediaStream only; no real native/model/human/hardware capture.','bounds':'One isolated HTTPS listener/browser;<=75s browser/100s server,<=4MiB retained metadata/screenshots. Ephemeral key/profile/cache/SQLite removed after closure. No production selector/config changes or recurring attention.','source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'http':{},'identity_checks':0,'faults':0,'provider_opened':0,'provider_closed':0,'events':{},'actor_checks':{},'identity_paths':{},'conditions':{'session_seconds':args.session_seconds,'activity_mode':args.activity_mode,'identity_delay_ms':round(identity_delay*1000),'output_pcm_frame_ms':20 if args.case=='paced' else 1000}}
+state={'state':'prepared','scope':'Full actual index/app.js/modules, standalone shared cookie/CSRF bootstrap, SSE refresh and native voice owner. Synthetic identity/provider/detector/MediaStream only; no real native/model/human/hardware capture.','bounds':'One isolated HTTPS listener/browser;<=75s browser/100s server,<=4MiB retained metadata/screenshots. Ephemeral key/profile/cache/SQLite removed after closure. No production selector/config changes or recurring attention.','source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'http':{},'identity_checks':0,'faults':0,'provider_opened':0,'provider_closed':0,'events':{},'actor_checks':{},'identity_paths':{},'conditions':{'input_confirmation':args.input_confirmation,'session_seconds':args.session_seconds,'activity_mode':args.activity_mode,'identity_delay_ms':round(identity_delay*1000),'output_pcm_frame_ms':20 if args.case=='paced' else 1000}}
 state['qualifier_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 state['browser_driver_sha256']=hashlib.sha256((repo/'tests/dashboard_native_bootstrap_browser.js').read_bytes()).hexdigest()
 state['runtime_application_files']={str(p.relative_to(runtime)):hashlib.sha256(p.read_bytes()).hexdigest() for p in (runtime/'dashboard').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc'}
@@ -60,6 +61,7 @@ class FullOwner(Owner):
  def sonic_activity(self):return {**descriptor({}),'configured':False,'connected':True,'sources':[]}
  def conversation_foreground_delegate(self,*a):raise AssertionError('No native work permitted in this synthetic bootstrap qualification')
 class FullStream(Stream):
+ model='qwen-audio-3.0-realtime-plus' if args.input_confirmation=='qwen' else Stream.model
  def __init__(self,*a,**kw):
   super().__init__(*a,**kw);state['provider_opened']+=1;self.input_bytes=0
   self.activity_mode=kw['activity_mode'];self.speaking=False;self.quiet=0
@@ -78,11 +80,19 @@ class FullStream(Stream):
    self.quiet+=len(pcm)
    if self.quiet>=22400:
     self.speaking=False;self.activity_end()
- def activity_start(self):self.input_active=True;super().activity_start()
+ def activity_start(self):
+  self.input_active=True
+  if args.input_confirmation=='qwen':
+   self.model='qwen-audio-3.0-realtime-plus';self.committed_start=self.total;self.start_sent.set()
+  else:super().activity_start()
  def activity_end(self):
   self.input_active=False;self.response_pending=True
   pcm=b''.join(struct.pack('<h',int(3000*__import__('math').sin(i*2*__import__('math').pi*220/24000))) for i in range(24000))
-  self.queue.put([{'type':'input_transcript','text':'Synthetic captured phrase.'},
+  if args.input_confirmation=='qwen':
+   self.queue.put([{'type':'input_committed','source':'provider_qwen_commit','item_id':str(self.total),'stream_start':self.committed_start,'stream_end':self.total},
+    {'type':'input_transcript','text':'Synthetic captured phrase.','finished':True}])
+  else:
+   self.queue.put([{'type':'input_transcript','text':'Synthetic captured phrase.'},
     {'type':'voice_activity','activity':'ACTIVITY_END','audio_offset':f'{self.total/32000:.9f}s','source':'provider_manual_activity_ack' if self.activity_mode=='manual' else 'provider_automatic_activity'}])
   def produce():
    frame=960 if args.case=='paced' else len(pcm)
@@ -127,6 +137,7 @@ try:
   config={'state_dir':str(root/'web'),'origin':origin,'prefix':'/interaction','bot_id':123,'daimon_name':'Synthetic fixture',
    'shared_auth':{'enabled':True,'home_origin':origin,'entry_path':'/interaction/'},
    'streaming_transcription':{'enabled':True,'provider':'gemini','mode':'prepared','native_dialogue':True,'native_activity_mode':args.activity_mode,'endpoint':'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent','credential_file':str(root/'synthetic-key'),'cache_root':str(root/'prepared'),'turn_detection':{'enabled':True,'continuous':True,'command':['/synthetic/python','capture-turn']}}}
+  if args.input_confirmation=='qwen':config['streaming_transcription'].update(native_provider='qwen',native_credential_file=str(root/'synthetic-key'))
   if args.session_seconds>300:config['streaming_transcription']['native_session_seconds']=args.session_seconds
   with patch('dashboard.native_voice.install',side_effect=counted_install):app=create_app(config,owner,lambda raw,bot:int(raw))
   state['runtime_imports']={}
@@ -162,7 +173,7 @@ try:
    await app(scope,receive,observed)
   key=root/'tls.key';cert=root/'tls.crt';subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),'-days','1','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=8)
   server=uvicorn.Server(uvicorn.Config(gateway,host='127.0.0.1',port=port,ssl_keyfile=str(key),ssl_certfile=str(cert),log_level='warning',timeout_graceful_shutdown=5))
-  with patch('dashboard.native_voice.NativeDialogue',FullStream),patch('dashboard.native_voice.Detector',FullDetector),patch('dashboard.home_auth.identity_response',side_effect=identity),patch.object(HomeAuth,'authenticate',counted_authenticate):
+  with patch('dashboard.qwen_dialogue.QwenDialogue',FullStream),patch('dashboard.native_voice.NativeDialogue',FullStream),patch('dashboard.native_voice.Detector',FullDetector),patch('dashboard.home_auth.identity_response',side_effect=identity),patch.object(HomeAuth,'authenticate',counted_authenticate):
    thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True);thread.start();deadline=time.monotonic()+10
    while not server.started:assert thread.is_alive() and time.monotonic()<deadline;time.sleep(.05)
    state['state']='full-bootstrap-browser-running';save()

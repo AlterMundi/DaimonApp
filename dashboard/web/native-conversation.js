@@ -130,7 +130,11 @@ window.NativeConversation=(()=>{
         case 'voice_activity':if(value.activity==='ACTIVITY_END'&&value.id===lastEnded){blocked=false;resumeOutput();}break;
         case 'turn_activity':
           if(current)onHandoff({id:current.id,gate:value.activity.speaking?'speaking':'waiting_endpoint'});break;
-        case 'input_interpreted':onTiming(value.id,'input_interpreted');onCaption(value.text);break;
+        case 'input_interpreted':
+          // Exact input confirmation is provider-neutral. Qwen commits an
+          // input item instead of emitting Gemini's ACTIVITY_END event.
+          if(value.id===lastEnded&&!floor){blocked=false;resumeOutput();}
+          onTiming(value.id,'input_interpreted');onCaption(value.text);break;
         case 'review':case 'closing':hold(value.message||'Voice session ended.');break;
       }
     }
