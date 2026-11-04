@@ -163,13 +163,16 @@ class Dialogue(unittest.TestCase):
             'checkpoint':{'text':'Keep the current purpose, correction and unresolved request.'}}}
         successor=Socket();successor.received=[{'setupComplete':{},'usageMetadata':{'promptTokenCount':40}}]
         self.stream._connect=lambda *a,**k:successor
-        candidate=self.stream.successor(basis,pending_effects=[{'original':self.original,'intent':str(uuid.uuid4()),'phase':'unconfirmed'}])
+        candidate=self.stream.successor(basis,pending_effects=[{'original':self.original,'intent':str(uuid.uuid4()),'phase':'unconfirmed'}],
+            pending_originals=[{'original':self.original,'sha256':'c'*64}])
         self.assertFalse(self.socket.closed);self.assertEqual(self.stream.phase,'ready')
         self.assertEqual(candidate.phase,'ready');self.assertEqual(len(successor.sent),1)
         self.assertEqual(set(successor.sent[0]),{'setup'})
         setup=successor.sent[0]['setup'];context=json.dumps(setup)
         self.assertIn('internal_integrator_checkpoint',context)
         self.assertIn('unconfirmed',context)
+        self.assertIn('uninterpreted_originals',context)
+        self.assertIn('no known words',context)
         self.assertNotIn('toolResponse',successor.sent[0]);self.assertNotIn('realtimeInput',successor.sent[0])
         candidate.close()
 

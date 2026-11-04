@@ -125,6 +125,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         reader_paused=asyncio.Event();reader_resume=asyncio.Event();reader_resume.set()
         successor_opening=None;rollover_count=0;retired_output_bytes=0;logical_output_bytes=0
         candidate_setup_failures=0
+        renewal={'phase':'not_requested','blocked':None,'uninterpreted_originals':0}
         attempted_rollover_basis=None;retiring=None
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         completion_notifications={}
@@ -247,40 +248,61 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await control_if_idle()
             control_task=launch(controls())
 
-        def rollover_floor():
+        def task_completed(task):
+            return task is not None and task.done() and not task.cancelled() and task.exception() is None
+        def uninterpreted_originals():
+            return [{'original':c.ident,'sha256':c.digest} for c in bridge.captures.values()
+                if c.phase=='unconfirmed']
+        def rollover_blocker():
             if (retiring is not None or not guidance_floor() or utterance is not None or output_batch_pending
-                    or bridge.pending_acoustic is not None or output_queue is None):return False
-            if output_pending or output_queue.items:return False
+                    or bridge.pending_acoustic is not None or output_queue is None):return 'active_floor'
+            if output_pending or output_queue.items:return 'output_pending'
             if stream.activity_mode=='manual':
-                if acoustic.analyzed!=acoustic.captured:return False
-            elif acoustic.boundary!=acoustic.sent or acoustic.unassigned:return False
-            if any(c.phase!='foreground' or c.completion is None or not c.completion.done()
-                or c.completion.cancelled() or c.completion.exception() is not None for c in bridge.captures.values()):return False
+                if acoustic.analyzed!=acoustic.captured:return 'acoustic_analysis'
+            elif acoustic.boundary!=acoustic.sent or acoustic.unassigned:return 'acoustic_unassigned'
+            for c in bridge.captures.values():
+                if c.phase=='unconfirmed':
+                    # An explicitly empty final is terminal for this provider
+                    # span, not an input still in flight. The exact raw original
+                    # and its review stay owned; never infer silence or words.
+                    if (not task_completed(c.reservation) or c.completion is not None
+                            or not task_completed(raw_notifications.get(c.ident))):return 'original_retention'
+                elif c.phase!='foreground' or not task_completed(c.completion):return 'original_interpretation'
             watch,_=bridge.idle_watch
-            return all(t is watch or t.done() and not t.cancelled() and t.exception() is None
-                for t in proposals.values())
+            if any(t is not watch and not task_completed(t) for t in proposals.values()):return 'tool_pending'
+            return None
+        def rollover_floor():
+            reason=rollover_blocker()
+            renewal['blocked']=reason
+            return reason is None
 
         async def rollover_if_idle():
             nonlocal stream,reader_pause,successor_opening,rollover_count,retired_output_bytes,attempted_rollover_basis,retiring,candidate_setup_failures
-            if (context_producer is None or not getattr(stream,'rollover_due',False)
-                    or not rollover_floor()):return False
-            if await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return False
+            if context_producer is None or not getattr(stream,'rollover_due',False):return False
+            renewal['phase']='waiting';renewal['uninterpreted_originals']=len(uninterpreted_originals())
+            if not rollover_floor():return False
+            if await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):
+                renewal['blocked']='playback_pending';return False
             basis=await context_producer.prepare_rollover()
-            if basis is None:return False
+            if basis is None:
+                renewal['blocked']='checkpoint_unavailable';return False
             attempt=(basis['revision'],getattr(stream,'turns_finished',0))
             if attempt==attempted_rollover_basis or not rollover_floor():return False
             intent=await context_producer.begin_rollover(basis,str(uuid.uuid4()))
             if intent is None:return False
             attempted_rollover_basis=attempt
             old=stream;candidate=None;installed=False;watch=None;watch_ident=None
-            effects=bridge.pending_effects()
+            effects=bridge.pending_effects();originals=uninterpreted_originals()
+            renewal['phase']='preparing'
             try:
                 await actor()
-                successor_opening=asyncio.create_task(asyncio.to_thread(old.successor,basis,pending_effects=effects))
+                successor_opening=asyncio.create_task(asyncio.to_thread(old.successor,basis,
+                    pending_effects=effects,pending_originals=originals))
                 try:candidate=await asyncio.shield(successor_opening)
                 except (DialogueUnavailable,ValueError,TimeoutError,OSError):
                     if getattr(old,'phase','ready')!='ready':raise
                     candidate_setup_failures+=1
+                    renewal['blocked']='successor_setup'
                     return False
                 except BaseException:
                     if not successor_opening.done():
@@ -300,7 +322,8 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     if output_batch_pending or output_pending or output_queue.items:return False
                     async with acoustic.lock:
                         await actor()
-                        if not rollover_floor() or bridge.pending_effects()!=effects:return False
+                        if (not rollover_floor() or bridge.pending_effects()!=effects
+                                or uninterpreted_originals()!=originals):return False
                         if await asyncio.to_thread(app.state.native_history.pending_audio,owner,meta['id']):return False
                         watch,watch_ident=bridge.idle_watch
                         if hasattr(old,'handover_ready'):
@@ -323,10 +346,12 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             del completion_notifications[ident];del raw_notifications[ident]
                         retiring=old
                         stream=candidate;installed=True;rollover_count+=1
+                        renewal['phase']='installed';renewal['blocked']=None
                         retired_output_bytes+=getattr(old,'output_bytes',0)
             finally:
                 reader_pause=False;reader_resume.set()
                 if not installed:
+                    renewal['phase']='waiting'
                     if candidate is not None:candidate.close()
                     if context_producer.record.get('rollover') is not None:
                         if await context_producer.abort_rollover(intent):
@@ -750,6 +775,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         'completed_turns':getattr(stream,'turns_finished',0),
                         'checkpoint_requested':bool(context_producer and context_producer.checkpoint_requested_generation)},
                     'provider_rollovers':rollover_count,
+                    'provider_renewal':renewal,
                     'candidate_setup_failures':candidate_setup_failures,
                     'cleanup':'cancelled' if task.cancelled() else 'failed' if task.exception() is not None else 'completed'}
                 closures.append((owner,meta['binding'],meta['id'],summary))

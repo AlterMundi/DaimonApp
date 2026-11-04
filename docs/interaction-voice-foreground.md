@@ -1650,6 +1650,11 @@ actual person's microphone and useful phone/hearing latency remain unqualified.
 
 ## Explicit Qwen native pilot and prepared OpenAI transport — 4 November 2026
 
+Current human priority is Qwen continuity first, then GPT-Live. Gemini native
+compression/resumption and Extended Thinking remain deferred without account
+balance in #599. Provider-specific workflows must preserve each provider's
+capabilities; neither model names nor manual-turn semantics are interchangeable.
+
 `streaming_transcription.native_provider` now selects `gemini` (unchanged default)
 or `qwen` for the foreground conversation, independently of prepared ASR and its
 existing fallback. Qwen requires an explicit absolute `native_credential_file`,
@@ -1981,3 +1986,32 @@ The shipped Chromium fixture supports `--recover-original` with one empty-final
 original; it exercises read-only Check then explicit Retry and actual IndexedDB
 retirement. Synthetic ASR/owners do not establish physical hearing or recognition
 quality. The separate provider context-limit/automatic-rollover gap remains open.
+
+### Retained empty-final originals across provider renewal —4November2026
+
+A mounted Qwen regression reproduced a permanent renewal barrier: after an
+explicit empty final, the original was safely retained and its capture marked
+unconfirmed, but the renewal floor required a completed interpretation for every
+capture. Later complete/checkpointed speech could therefore never replace that
+provider connection. This establishes a concrete blocking path; the historical
+close logs alone do not establish that it was the only barrier in every trial.
+
+The floor now distinguishes a terminal, successfully raw-retained empty final
+from in-flight or failed capture/interpretation. It requires successful original
+reservation and raw-notification completion, with no interpretation task. The
+same bridge retains that original, digest, question scope and recovery route.
+The successor receives only its ID/digest reference alongside the acknowledged
+semantic checkpoint and pending integrating effects. No raw PCM, invented words,
+new admission or implicit file-ASR is sent. A later canonical recovery can supply
+its interpretation; the historical empty final does not override that source.
+References and the acoustic/output/effect floor are rechecked under the existing
+commit locks. Failed retention/completion still prevents renewal. Oversized
+successor context is refused rather than clipped or admitted beyond its bound.
+
+The existing bounded close summary also reports `provider_renewal`: phase,
+fixed blocker category and uninterpreted-original count. It contains no source
+IDs, transcript, audio or provider error body and uses existing log retention.
+This distinguishes a pending acoustic/output/source floor, unavailable checkpoint
+and failed successor setup from actual installation. It is diagnostic evidence,
+not a success/hearing receipt. Keep the64k local ceiling,48k checkpoint trigger,
+physical/600second logical bounds, source/PCM quotas and compatible readers.
