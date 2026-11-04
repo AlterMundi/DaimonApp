@@ -94,6 +94,33 @@ to repair observation. This installs no poller, hook, model turn, new inbox/stor
 or native session. Automatic return attachment, receiving native work and real
 human acceptance remain separate unfinished integration outcomes.
 
+## Bounded new-message page for the combined heartbeat candidate
+
+The same owner host now supports `matrix_operator.py --inbox` with closed
+`{source, channel_id, after, limit}` input. This reads one explicitly selected
+existing incoming channel, at most three events, under one absolute deadline.
+The current owner connection and its existing messaging/observation capabilities
+remain authoritative. Runtime identity is checked before the inbox call. Native
+Matrix verifies message signatures and current membership/audience; this adapter
+is a bounded reader/projection, not another signature verifier or inbox engine.
+
+The projection preserves immutable message ID/digest, signed author/body,
+thread, destination, response context, coordination metadata and raw native text.
+Even text containing an Interaction relay stays verbatim peer source; this
+reader never extracts embedded instructions or upgrades claims to human speech,
+work approval or completion. An unsupported text payload remains explicit with
+its native identity. Cursor order, owner/channel, page and64KiB output bounds
+are checked before a page is returned. Exact rereads have the same source
+identity; the consuming backend must retain accepted items before advancing its
+cursor. Failed reads return no successful cursor. This interface sends nothing,
+never retries a mutation, and creates no timer, execution or model call.
+
+This source component belongs to the single combined candidate. It is not
+selected or invoked by the deployed heartbeat. Existing selected-reply reads
+keep their exact thread/correlation behavior. The consuming store, finite
+producer/cursor/accounting, same-integrator source reader and correlated reply
+lifecycle still need integration before new-message attention can be activated.
+
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 
 A finite approved purpose and a later received original are separate inputs.

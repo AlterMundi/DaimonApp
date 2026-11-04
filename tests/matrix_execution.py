@@ -32,8 +32,9 @@ from matrix_execution import (
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
-from matrix_operator import send as operator_send
+from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
+from matrix_operator import send as operator_send
 from tests.test_execution_instruction import request
 
 from tests import test_dm025_client as client_fixtures
@@ -310,6 +311,82 @@ class AdapterTests(unittest.TestCase):
             sent["message_id"],
         )
 
+    def test_new_inbox_reads_actual_signed_original_without_human_or_work_claim(self):
+        sent = self.broker.submit(
+            self.scope, {"text": "Fresh peer question; no human instruction."}, 1
+        )
+        source = {
+            "being_ref": self.receiver.lane.being_ref,
+            "embodiment_id": self.receiver.lane.local_embodiment_id,
+        }
+        client = SignedGroupClient(self.fixture, self.receiver)
+        calls, deadlines = [], []
+        invoke = SignedGroupClient.invoke
+
+        def observe(selected, method, params):
+            calls.append((method, params))
+            deadlines.append(selected.deadline_ns)
+            return invoke(selected, method, params)
+
+        request = {"source": source, "channel_id": "tribe", "after": 0, "limit": 3}
+        with patch.object(SignedGroupClient, "invoke", observe):
+            page = operator_inbox(request, client, timeout=1)
+        self.assertEqual(
+            [method for method, _ in calls], ["runtime.status", "messaging.inbox"]
+        )
+        self.assertEqual(len(set(deadlines)), 1)
+        self.assertEqual(calls[-1][1], {"channel_id": "tribe", "after": 0, "limit": 3})
+        self.assertEqual(page["schema"], "daimon.matrix-inbox-page/v1")
+        self.assertEqual(page["items"][0]["message_id"], sent["message_id"])
+        self.assertEqual(page["items"][0]["message_hash"], sent["message_hash"])
+        self.assertEqual(
+            page["items"][0]["author"],
+            {
+                "being_ref": self.sender.lane.being_ref,
+                "embodiment_id": self.sender.lane.local_embodiment_id,
+            },
+        )
+        self.assertEqual(
+            page["items"][0]["text"],
+            self.receiver.message(sent["message_id"])["payload"]["body"]["text"]
+        )
+        self.assertNotIn("human", page["items"][0])
+        self.assertNotIn("execution_ref", page["items"][0])
+        self.assertEqual(operator_inbox(request, client, timeout=1), page)
+        self.assertEqual(
+            operator_inbox(
+                {**request, "after": page["next_cursor"]}, client, timeout=1
+            )["items"],
+            [],
+        )
+
+    def test_new_inbox_bounds_owner_and_failed_pages_do_not_supply_a_cursor(self):
+        source = {
+            "being_ref": self.receiver.lane.being_ref,
+            "embodiment_id": self.receiver.lane.local_embodiment_id,
+        }
+        client = SignedGroupClient(self.fixture, self.receiver)
+        request = {"source": source, "channel_id": "tribe", "after": 0, "limit": 3}
+        for change in (
+            {"after": True},
+            {"after": -1},
+            {"limit": 4},
+            {"limit": 0},
+            {"channel_id": ""},
+            {"source": {**source, "embodiment_id": "another"}},
+        ):
+            with (
+                self.subTest(change=change),
+                patch.object(SignedGroupClient, "invoke") as invoke,
+            ):
+                with self.assertRaises(MatrixExecutionError):
+                    operator_inbox({**request, **change}, client, timeout=1)
+                invoke.assert_not_called()
+        with patch.object(
+            SignedGroupClient, "invoke", return_value=({}, {"ok": False})
+        ), self.assertRaises(MatrixExecutionError):
+            operator_inbox(request, client, timeout=1)
+
     def test_selected_reply_read_is_one_signed_page_without_model_or_send(self):
         status, sent = self.acknowledged_status()
         message = self.receiver.message(sent["message_id"])
@@ -542,6 +619,17 @@ class AdapterTests(unittest.TestCase):
                     json.loads(received.stdout)["args"],
                     ["--binding", "/private/host.json", "--receive"],
                 )
+
+                inbox_command = receiving_command(
+                    path, Path("/private/host.json"), inbox_only=True
+                )
+                incoming = subprocess.run(inbox_command, input="selected page",
+                                          text=True, capture_output=True, check=True, timeout=5)
+                self.assertEqual(json.loads(incoming.stdout)["args"],
+                                 ["--binding", "/private/host.json", "--inbox"])
+                with self.assertRaises(MatrixExecutionError):
+                    receiving_command(path, Path("/private/host.json"),
+                                      inbox_only=True, receive_only=True)
 
                 (package / "onboarding_sdk.py").write_text(
                     "def qualified_startup(*args,**kwargs):raise RuntimeError('private diagnostic must stay local')"
@@ -1325,6 +1413,11 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 self.assertEqual([r["message_id"] for r in read["results"]],
                                  [returned["message_id"]])
                 self.assertEqual(read["results"][0]["text"], "Authenticated owner read.")
+                incoming = operator_inbox({"source": source, "channel_id": "tribe",
+                                           "after": 0, "limit": 3}, host, timeout=1)
+                self.assertEqual(incoming["items"][0]["message_id"], returned["message_id"])
+                self.assertEqual(incoming["items"][0]["text"],
+                                 sdk.sender.message(returned["message_id"])["payload"]["body"]["text"])
                 self.assertEqual(operator_receive({"status": retained, "source": source,
                                                    "after": read["next_cursor"], "limit": 3},
                                                   host, timeout=1)["results"], [])
