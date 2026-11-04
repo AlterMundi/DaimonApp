@@ -320,7 +320,7 @@ pub(super) async fn process_turn(
         )?,
     };
     if let Some(id) = queued.workflow_return.as_deref() {
-        shared.store.workflow_native_link(id, turn_id)?;
+        shared.store.workflow_native_link_fresh(id, turn_id)?;
     }
     if let Some(scope) = queued
         .goal
@@ -750,12 +750,14 @@ pub(super) async fn process_turn(
     let runner = runner.with_client_message_id(client_message_id.clone());
     let runner = if let Some(id) = queued.workflow_return.as_deref() {
         let selected = shared.store.workflow_native_dispatch(id)?;
-        runner.with_tool_output(crate::codex::NativeToolOutput {
-            name: selected.name.into(),
-            namespace: None,
-            output: selected.output,
-            retain: true,
-        })
+        runner
+            .with_idle_only(selected.attention_generation.is_some())
+            .with_tool_output(crate::codex::NativeToolOutput {
+                name: selected.name.into(),
+                namespace: None,
+                output: selected.output,
+                retain: true,
+            })
     } else {
         runner
     };
@@ -900,6 +902,7 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::Approval(receiver))
                             }
                             CodexEvent::NativeInputRejected => {
+                                shared.store.heartbeat_native_not_submitted(turn_id)?;
                                 if let (Some(id),Some(attempt))=(workflow_return.as_deref(),workflow_return_attempt) {shared.store.workflow_native_outcome_attempt(id,attempt,"rejected",None)?;}
                                 shared.store.native_collection_rejected(turn_id)?;
                                 if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Rejected{local_turn:turn_id})?;}
@@ -979,7 +982,12 @@ pub(super) async fn process_turn(
                                 }
                                 Ok(CodexEventOutcome::None)
                             }
+                            CodexEvent::NativeExternalInputSubmitting => {
+                                shared.store.heartbeat_external_input(turn_id)?;
+                                Ok(CodexEventOutcome::None)
+                            }
                             CodexEvent::NativeTurnStarted(native_id) => {
+                                if shared.store.heartbeat_native_started(turn_id,&native_id)? {cancel.cancel();}
                                 if let Some(native)=attach_native.as_deref() {shared.store.record_collector_attachment(turn_id,session_key,requester_user_id,native,&native_id)?;}
                                 super::routing::native_started(&routing_app,session_key,turn_id,&native_id)?;
                                 shared.store.native_collection_started(turn_id,&native_id)?;
@@ -1035,6 +1043,7 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeTurnTerminal {id:native_id,status} => {
+                                shared.store.heartbeat_native_terminal(turn_id,&native_id,&status)?;
                                 let _=shared.store.clear_response_draft(turn_id,&native_id,None);
                                 if let Ok(native)=shared.store.controller_native_turn(turn_id,session_key,requester_user_id) {
                                     let _=shared.store.goal_retry_native_terminal(requester_user_id,session_key,&native,&native_id,&status);
@@ -1134,6 +1143,13 @@ pub(super) async fn process_turn(
         }
     }
 
+    if run_result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.is::<crate::codex::NativeInputNotSubmitted>())
+    {
+        shared.store.heartbeat_native_not_submitted(turn_id)?;
+    }
     shared
         .pending_questions
         .lock()
@@ -1791,6 +1807,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeSteerAccepted { .. }
             | CodexEvent::NativeTurnStarted(_)
             | CodexEvent::NativeTurnSubmitting
+            | CodexEvent::NativeExternalInputSubmitting
             | CodexEvent::NativeTurnTerminal { .. }
             | CodexEvent::NativeGoalBlocked { .. }
             | CodexEvent::NativeTurnFailure { .. }

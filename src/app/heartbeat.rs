@@ -3,7 +3,7 @@ use super::*;
 use crate::store::HeartbeatCommand;
 use serde_json::Value;
 
-pub(super) fn execute(
+pub(super) async fn execute(
     app: &App,
     human: i64,
     entry: SessionKey,
@@ -13,9 +13,55 @@ pub(super) fn execute(
     if cfg.human_id != human || cfg.entry() != entry {
         bail!("Heartbeat control belongs to the configured integrating entry");
     }
-    app.shared.store.heartbeat_control(human, entry, command)
+    let pause = matches!(&command, HeartbeatCommand::Pause);
+    // Persist the fence before attempting cancellation or any native read.
+    let mut value = app.shared.store.heartbeat_control(human, entry, command)?;
+    let records = app.shared.store.heartbeat_executions(human, entry, pause)?;
+    let mut observations = Vec::new();
+    for r in records.iter().filter(|r| r["phase"] == "stopping" && pause) {
+        let Some(physical) = r["physical"].as_str() else {
+            observations.push(serde_json::json!({"local":r["local"],"state":"unconfirmed","reason":"physical_identity_not_yet_observed"}));
+            continue;
+        };
+        let native = r["native"]
+            .as_str()
+            .context("Heartbeat native identity missing")?;
+        let acknowledged = app
+            .shared
+            .codex
+            .interrupt_selected_turn(native, physical)
+            .await
+            .is_ok();
+        let terminal = app
+            .shared
+            .codex
+            .admitted_turn_status(native, Some(physical), "")
+            .await
+            .ok()
+            .flatten()
+            .filter(|(id, status)| {
+                id == physical && matches!(status.as_str(), "completed" | "failed" | "interrupted")
+            });
+        if let Some((_, status)) = terminal {
+            app.shared.store.heartbeat_native_terminal(
+                r["local"]
+                    .as_i64()
+                    .context("Heartbeat local identity missing")?,
+                physical,
+                &status,
+            )?;
+            observations.push(serde_json::json!({"local":r["local"],"state":"terminal","status":status,"interrupt_acknowledged":acknowledged}));
+        } else {
+            observations.push(serde_json::json!({"local":r["local"],"state":"unconfirmed","interrupt_acknowledged":acknowledged}));
+        }
+    }
+    value["owned_execution_control"] = serde_json::json!("exact_native_interrupt");
+    value["executions"] =
+        serde_json::to_value(app.shared.store.heartbeat_executions(human, entry, false)?)?;
+    value["cancellation_observations"] = serde_json::to_value(observations)?;
+    Ok(value)
 }
-pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     let fields = args.split_whitespace().collect::<Vec<_>>();
     let command = match fields.as_slice() {
         ["status"] => HeartbeatCommand::Status,
@@ -31,4 +77,5 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         super::routing::profile(&app.shared)?.entry(),
         command,
     )
+    .await
 }

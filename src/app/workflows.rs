@@ -460,6 +460,10 @@ async fn deliver(app: &App, selected: crate::store::ReturnDispatch) -> Result<()
         retain: true,
     };
     if let Some(active) = active {
+        anyhow::ensure!(
+            selected.attention_generation.is_none(),
+            "Heartbeat waits for an idle integrator; it cannot steer human work"
+        );
         app.shared
             .store
             .workflow_native_link(&selected.id, active.turn_id)?;

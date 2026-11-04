@@ -182,6 +182,7 @@ impl Store {
             name: context.name(),
             id: r.id.clone(),
             attempts: r.attempts,
+            attention_generation: r.attention_generation,
             human,
             entry,
             native: context.native.clone(),

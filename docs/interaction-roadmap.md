@@ -361,14 +361,13 @@ pause invalidates older resume generations. One small record per configured
 entry uses the existing state store; no growing operation log or second queue
 is added. Human access needs no live native turn.
 
-This is the first control primitive, not the complete emergency stop contract.
-The status explicitly reports `attention_engine: not_implemented` and
-`owned_execution_control: not_implemented`: automatic attention, its actual
-admission/provider gates, physical execution ownership and exact interruption
-still require implementation before activation. Do not present this flag as
-proof that an already-running provider call stopped. Ordinary human contact,
-shared maintenance, goals and funding remain unchanged. The same paired-human
-visible/audio work-trail requirement remains pending alongside owned execution.
+The control reports `attention_engine: not_implemented`; it does not activate
+periodic attention or grant funding. Its `owned_execution_control` now exposes
+exact native interruption for server-owned executions, as described below.
+Admission-paused is not provider quiescence: inspect each execution and its
+terminal/unconfirmed observation. Ordinary human contact, shared maintenance,
+goals and funding remain unchanged. Paired-human visible/audio reporting still
+requires its own source publication binding.
 
 ### Heartbeat generation at existing native return boundaries
 
@@ -381,11 +380,54 @@ never invalidates presentation/history reads or drops a late canonical native
 ACK. Resume never reopens a previous submitting/uncertain generation.
 
 This adds no public source-tagging API or funding grant. The heartbeat producer,
-idle-only physical ownership, bounded/coalesced admission and exact owned
-interruption still need implementation before activation. A tagged receipt alone
+bounded/coalesced idle admission and publication still need implementation
+before activation. Fresh physical ownership and scoped interruption are supported
+below; no public producer or automatic attention is enabled. A tagged receipt alone
 is not proof that its physical turn is exclusively owned; do not use it as
 permission to interrupt a human execution.
 An RPC already between final validation and its ACK remains a retained
 submitting/uncertain operation; exact ownership, interruption and terminal
 observation must close that race before automatic attention is selected. These
 checks do not establish provider quiescence.
+
+### Exact heartbeat execution ownership and scoped pause
+
+Only the serialized entry worker may link a tagged return to a fresh empty local
+turn. Ordinary active-writer steering rejects that tag. The store verifies the
+entry/native owner, current generation, absence of human ingress/collection or
+other source bindings, and at most one unresolved heartbeat execution. Ownership
+is retained beside the existing turn in the state store, with the exact physical
+native ID added on its callback. Tagged execution requires native
+`turn/startIfIdle`, with no fallback to `turn/start`: a local idle observation is
+not an atomic native ownership fence. Older servers reject before submission.
+That new native method is not yet implemented in the receiving Core and remains
+a prerequisite for actual cancellation qualification; ordinary `toolOutput`
+uses start-or-steer and cannot establish this ownership by itself. Retain at most sixteen records (one live owner
+plus fifteen prior terminal/transferred records); pruning never deletes native
+history, source receipts or an uncertain execution. Turn deletion removes only
+its matching ownership metadata.
+
+Human/external steering crosses an ownership handover callback before its actual
+provider write, after ordinary source admission checks. If handover wins, the
+execution becomes transferred and heartbeat pause cannot cancel it, including a
+later human physical successor. If pause wins, the input receives a known-unsent
+rejection rather than entering a turn being interrupted. Prepared coalesced inputs
+and active/queued steering use the same boundary. This ownership is independent
+of canonical publication; transfer does not fabricate a human original.
+
+Pause persists its admission fence before claiming an owned execution as stopping.
+For an observed physical identity it uses existing exact `turn/interrupt`, then
+reads that same native turn's terminal status. An interrupt ACK alone is not
+termination. Missing identity, failed observation or nonterminal status remains
+unconfirmed with its retained ownership; a late native ID asks only that owning
+runner to interrupt its exact turn. Only known native rejection/non-submission
+may release an owner as `not_submitted`. Resume never resets resource counters or
+replays an uncertain input. The control never invokes session/global Stop.
+
+This is source-level execution control, not a complete running heartbeat.
+The trusted bounded producer, actual resource admission, descendant/successor
+ownership and paired-human canonical/audio publication remain to be implemented
+and qualified before automatic activation. Native socket fixtures prove prepared
+and active ownership refusal prevents provider writes while original work still
+finishes; SQLite tests cover both race winners, late identity, restart and bounded
+retention. They do not prove actual receiving-model cancellation or device hearing.
