@@ -84,17 +84,19 @@ fn owned_on(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Resul
         bail!("Canonical Matrix request UUID required");
     }
     let (session, _) = super::presentation::entry_on(conn, human, entry)?;
-    let (raw,phase,submission,claimed_source):(String,String,Option<String>,Option<String>)=conn.query_row("SELECT doc,phase,submission,claimed_source FROM interaction_matrix_requests WHERE id=?1 AND human_id=?2 AND entry_session=?3",params![id,human,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).context("Selected Matrix request unavailable")?;
+    let (raw,phase,submission,claimed_source,cursor):(String,String,Option<String>,Option<String>,u64)=conn.query_row("SELECT doc,phase,submission,claimed_source,inspection_cursor FROM interaction_matrix_requests WHERE id=?1 AND human_id=?2 AND entry_session=?3",params![id,human,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).context("Selected Matrix request unavailable")?;
     let request: Value = serde_json::from_str(&raw)?;
     let current = super::presentation::entry_binding(conn, human, entry, session)?
         == request["entry_generation"]
         && super::stopping::admission_epoch_on(conn, entry)? == request["epoch"]
         && !super::stopping::fenced_on(conn, entry)?
         && !super::maintenance_writer_held_on(conn, entry)?;
-    Ok(json!({"request":request,"phase":phase,"current":current,
+    Ok(
+        json!({"request":request,"phase":phase,"current":current,"inspection_cursor":cursor,
         "claimed_source":claimed_source.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,
         "submission":submission.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,
-        "execution":"Not authorized by retention or transport; receiving admission remains Matrix-owned"}))
+        "execution":"Not authorized by retention or transport; receiving admission remains Matrix-owned"}),
+    )
 }
 
 impl Store {
@@ -116,6 +118,12 @@ impl Store {
             "interaction_matrix_requests",
             "claimed_source",
             "TEXT",
+        )?;
+        super::add_column_if_missing(
+            &conn,
+            "interaction_matrix_requests",
+            "inspection_cursor",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
     }
@@ -431,70 +439,130 @@ impl Store {
     ) -> Result<Value> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let selected = owned_on(&tx, human, entry, &value.request)?;
-        let destination: MatrixDestination =
-            serde_json::from_value(selected["request"]["destination"].clone())?;
-        let actual_peer = MatrixDestination::Body {
-            being_ref: value.author.being_ref.clone(),
-            embodiment_id: value.author.embodiment_id.clone(),
-        };
-        actual_peer.validate()?;
-        let source = MatrixDestination::Body {
-            being_ref: value.submission.author.being_ref.clone(),
-            embodiment_id: value.submission.author.embodiment_id.clone(),
-        };
-        source.validate()?;
-        if value.binding != selected["request"]["binding"]
-            || value.submission.destination != destination
-            || value.author.being_ref != destination.being()
-            || matches!(&destination,MatrixDestination::Body{embodiment_id,..} if embodiment_id!=&value.author.embodiment_id)
-            || [
-                &value.message_id,
-                &value.submission.send_id,
-                &value.submission.message_id,
-                &value.submission.thread_id,
-            ]
-            .iter()
-            .any(|id| !canonical_uuid(id))
-            || !hash(&value.message_hash)
-            || !hash(&value.submission.message_hash)
-            || value.text.trim().is_empty()
-            || value.text.len() > 16000
-        {
-            bail!("Matrix return differs from the immutable selected origin and recipient");
-        }
-        if !selected["claimed_source"].is_null() {
-            let expected_send = Uuid::new_v5(
-                &Uuid::NAMESPACE_URL,
-                format!("telecodex.matrix/request:{}", value.request).as_bytes(),
-            )
-            .to_string();
-            if selected["claimed_source"] != serde_json::to_value(&value.submission.author)?
-                || value.submission.send_id != expected_send
-                || value.submission.thread_id != value.request
-            {
-                bail!("Matrix return differs from the retained technical claim");
-            }
-        }
-        let submission = serde_json::to_string(&value.submission)?;
-        if !selected["submission"].is_null()
-            && selected["submission"] != serde_json::to_value(&value.submission)?
-        {
-            bail!("Matrix request submission identity is immutable");
-        }
-        let doc = serde_json::to_string(value)?;
-        if tx.execute("INSERT OR IGNORE INTO interaction_matrix_results(message_id,request_id,human_id,doc,created_at) VALUES(?1,?2,?3,?4,?5)",params![value.message_id,value.request,human,doc,now_string()])?==0 {
-            let previous:String=tx.query_row("SELECT doc FROM interaction_matrix_results WHERE message_id=?",[&value.message_id],|r|r.get(0))?;
-            if previous!=doc {bail!("Canonical Matrix reply identity was reused with different content");}
-        }
-        tx.execute(
-            "UPDATE interaction_matrix_requests SET submission=?2,phase='reply_received' WHERE id=?1",
-            params![value.request, submission],
-        )?;
+        retain_return_on(&tx, human, entry, value)?;
         tx.commit()?;
         drop(conn);
         self.interaction_matrix_status(human, entry, &value.request)
     }
+}
+
+/// One verified selected-thread page. Its cursor and canonical replies commit together.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixReadPage {
+    pub after: u64,
+    pub next_cursor: u64,
+    pub results: Vec<MatrixReturn>,
+    pub page_full: bool,
+}
+
+impl Store {
+    pub fn interaction_matrix_inspection(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        page: &MatrixReadPage,
+    ) -> Result<Value> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let selected = owned_on(&tx, human, entry, id)?;
+        if !matches!(
+            selected["phase"].as_str(),
+            Some("submitted" | "reply_received")
+        ) || page.next_cursor < page.after
+            || page.next_cursor > 9_007_199_254_740_991
+            || page.results.len() > 3
+            || page.results.len() as u64 > page.next_cursor - page.after
+            || page
+                .results
+                .iter()
+                .any(|r| r.request != id || r.binding != selected["request"]["binding"])
+        {
+            bail!("Selected Matrix inspection differs from the retained request");
+        }
+        for reply in &page.results {
+            retain_return_on(&tx, human, entry, reply)?;
+        }
+        // Only a page covering the saved cursor advances contiguous progress.
+        // Explicit historical/future reads cannot regress it or skip a gap.
+        tx.execute("UPDATE interaction_matrix_requests SET inspection_cursor=CASE WHEN ?3<=inspection_cursor THEN MAX(inspection_cursor,?2) ELSE inspection_cursor END WHERE id=?1",
+            params![id, page.next_cursor, page.after])?;
+        tx.commit()?;
+        drop(conn);
+        let mut current = self.interaction_matrix_status(human, entry, id)?;
+        current["inspection"] = json!({"after":page.after,"next_cursor":page.next_cursor,"page_full":page.page_full,"canonical_replies":page.results.len(),"native_input":false});
+        Ok(current)
+    }
+}
+
+fn retain_return_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    value: &MatrixReturn,
+) -> Result<()> {
+    let selected = owned_on(conn, human, entry, &value.request)?;
+    let destination: MatrixDestination =
+        serde_json::from_value(selected["request"]["destination"].clone())?;
+    let actual_peer = MatrixDestination::Body {
+        being_ref: value.author.being_ref.clone(),
+        embodiment_id: value.author.embodiment_id.clone(),
+    };
+    actual_peer.validate()?;
+    let source = MatrixDestination::Body {
+        being_ref: value.submission.author.being_ref.clone(),
+        embodiment_id: value.submission.author.embodiment_id.clone(),
+    };
+    source.validate()?;
+    if value.binding != selected["request"]["binding"]
+        || value.submission.destination != destination
+        || value.author.being_ref != destination.being()
+        || matches!(&destination,MatrixDestination::Body{embodiment_id,..} if embodiment_id!=&value.author.embodiment_id)
+        || [
+            &value.message_id,
+            &value.submission.send_id,
+            &value.submission.message_id,
+            &value.submission.thread_id,
+        ]
+        .iter()
+        .any(|id| !canonical_uuid(id))
+        || !hash(&value.message_hash)
+        || !hash(&value.submission.message_hash)
+        || value.text.trim().is_empty()
+        || value.text.len() > 16000
+    {
+        bail!("Matrix return differs from the immutable selected origin and recipient");
+    }
+    if !selected["claimed_source"].is_null() {
+        let expected_send = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("telecodex.matrix/request:{}", value.request).as_bytes(),
+        )
+        .to_string();
+        if selected["claimed_source"] != serde_json::to_value(&value.submission.author)?
+            || value.submission.send_id != expected_send
+            || value.submission.thread_id != value.request
+        {
+            bail!("Matrix return differs from the retained technical claim");
+        }
+    }
+    let submission = serde_json::to_string(&value.submission)?;
+    if !selected["submission"].is_null()
+        && selected["submission"] != serde_json::to_value(&value.submission)?
+    {
+        bail!("Matrix request submission identity is immutable");
+    }
+    let doc = serde_json::to_string(value)?;
+    if conn.execute("INSERT OR IGNORE INTO interaction_matrix_results(message_id,request_id,human_id,doc,created_at) VALUES(?1,?2,?3,?4,?5)",params![value.message_id,value.request,human,doc,now_string()])?==0 {
+            let previous:String=conn.query_row("SELECT doc FROM interaction_matrix_results WHERE message_id=?",[&value.message_id],|r|r.get(0))?;
+            if previous!=doc {bail!("Canonical Matrix reply identity was reused with different content");}
+        }
+    conn.execute(
+        "UPDATE interaction_matrix_requests SET submission=?2,phase='reply_received' WHERE id=?1",
+        params![value.request, submission],
+    )?;
+    Ok(())
 }
 
 /// SDK-originated canonical text, not a fabricated native turn or human input.
@@ -618,6 +686,107 @@ mod tests {
             reply_kind: None,
         }
     }
+    #[test]
+    fn inspection_page_is_atomic_monotonic_and_resumes_after_migration() {
+        let (file, store, entry) = setup();
+        let reference = original(&store, entry, 79);
+        let selected = prepare(&store, entry, &reference);
+        let first = reply(&selected["request"]);
+        store.interaction_matrix_return(100, entry, &first).unwrap();
+        let mut next = first.clone();
+        next.message_id = Uuid::now_v7().to_string();
+        next.message_hash = "c".repeat(64);
+        next.text = "A later signed reply".into();
+        let mut invalid = next.clone();
+        invalid.message_id = Uuid::now_v7().to_string();
+        invalid.text.clear();
+        let page = MatrixReadPage {
+            after: 0,
+            next_cursor: 10,
+            results: vec![next.clone(), invalid],
+            page_full: false,
+        };
+        assert!(
+            store
+                .interaction_matrix_inspection(100, entry, &first.request, &page)
+                .is_err()
+        );
+        let status = store
+            .interaction_matrix_status(100, entry, &first.request)
+            .unwrap();
+        assert_eq!(status["inspection_cursor"], 0);
+        assert_eq!(status["results"].as_array().unwrap().len(), 1);
+        let page = MatrixReadPage {
+            results: vec![next],
+            ..page
+        };
+        assert!(
+            store
+                .interaction_matrix_inspection(101, entry, &first.request, &page)
+                .is_err()
+        );
+        let status = store
+            .interaction_matrix_inspection(100, entry, &first.request, &page)
+            .unwrap();
+        assert_eq!(status["inspection_cursor"], 10);
+        assert_eq!(status["results"].as_array().unwrap().len(), 2);
+        let historical = MatrixReadPage {
+            after: 0,
+            next_cursor: 3,
+            results: vec![first.clone()],
+            page_full: false,
+        };
+        assert_eq!(
+            store
+                .interaction_matrix_inspection(100, entry, &first.request, &historical)
+                .unwrap()["inspection_cursor"],
+            10
+        );
+        let gap = MatrixReadPage {
+            after: 11,
+            next_cursor: 20,
+            results: vec![],
+            page_full: false,
+        };
+        assert_eq!(
+            store
+                .interaction_matrix_inspection(100, entry, &first.request, &gap)
+                .unwrap()["inspection_cursor"],
+            10
+        );
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        assert_eq!(
+            store
+                .interaction_matrix_status(100, entry, &first.request)
+                .unwrap()["inspection_cursor"],
+            10
+        );
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("ALTER TABLE interaction_matrix_requests DROP COLUMN inspection_cursor")
+            .unwrap();
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        let status = store
+            .interaction_matrix_status(100, entry, &first.request)
+            .unwrap();
+        assert_eq!(status["inspection_cursor"], 0);
+        assert_eq!(status["results"].as_array().unwrap().len(), 2);
+        store
+            .set_session_codex_thread(entry, "retired-native")
+            .unwrap();
+        let historical = store
+            .interaction_matrix_inspection(100, entry, &first.request, &page)
+            .unwrap();
+        assert_eq!(historical["current"], false);
+        assert_eq!(historical["inspection"]["native_input"], false);
+    }
+
     #[test]
     fn signed_speech_retains_provenance_without_completion_and_survives_reopen() {
         let (file, store, entry) = setup();
