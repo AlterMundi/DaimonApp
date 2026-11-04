@@ -1686,7 +1686,7 @@ originals and integrating context. No production human input, worker dispatch,
 physical microphone/speaker, hearing or useful-latency claim. The earlier
 600second Gemini capacity qualification is not Qwen duration acceptance.
 
-OpenAI's `OpenAIDialogue` is a reviewed-transport candidate, not a selectable
+OpenAI's `OpenAIDialogue` is a prepared transport candidate, not a selectable
 receiving provider yet: it targets the GA `gpt-realtime-2.1` WebSocket contract,
 explicit API credentials, `gpt-transcribe` input interpretation and a prebuilt
 `cedar` voice. Its streaming16→24kHz PCM phase, GA event/tool mapping and original
@@ -1716,3 +1716,12 @@ Voces retains the expanded listening comparison. Grok and MiniMax have no
 receiving conversation adapter from this change; MiniMax TTS streaming alone is
 not full audio-to-audio conversation. Receiving selection and device acceptance
 remain distinct from these source/qualification observations.
+
+One initial standalone interruption fixture stopped with a local ValueError and
+did not retain enough boundary metadata to establish its cause. A separately
+instrumented two-original interruption observed an actual provider cancellation
+and subsequent audio. The cancellation control was then narrowed to Qwen's
+documented `response.cancel` shape, and the original synthetic script content
+completed with two committed originals, cancellation and subsequent audio. This
+is regression evidence, not proof of the earlier fixture's cause or general
+physical interruption acceptance. No uncertain human input or work was replayed.

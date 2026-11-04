@@ -63,7 +63,7 @@ class Qwen(unittest.TestCase):
     def test_interruption_cancels_generation_without_cancelling_owned_tools(self):
         self.ready();self.event({'type':'response.created','response':{'id':'r1'}})
         self.event({'type':'response.function_call_arguments.done','call_id':'call1','name':'session_status','arguments':'{}'})
-        self.stream.activity_start();self.assertEqual(self.socket.sent[-1],{'type':'response.cancel','response_id':'r1'})
+        self.stream.activity_start();self.assertEqual(self.socket.sent[-1],{'type':'response.cancel'})
         self.assertEqual(self.stream.tools['call1']['state'],'pending')
         self.stream.append(b'\0\0'*1000);self.stream.activity_end()
         self.event({'type':'input_audio_buffer.committed','item_id':'item1'})
@@ -71,6 +71,19 @@ class Qwen(unittest.TestCase):
         cancelled=self.event({'type':'response.done','response':{'status':'cancelled'}})
         self.assertIn('interrupted',[e['type'] for e in cancelled])
         self.assertEqual(len([x for x in self.socket.sent if x['type']=='response.create']),before+1)
+    def test_successor_preserves_provider_voice_and_conservative_pressure(self):
+        self.ready();successor=Socket();successor.received=[{'type':'session.created'},{'type':'session.updated'}]
+        self.stream._connect=lambda *args,**kwargs:successor
+        basis={'revision':'a'*64,'through':0,'content':{'kind':'internal_integrator_checkpoint',
+            'checkpoint':{'text':'Synthetic semantic continuity.'}}}
+        candidate=self.stream.successor(basis)
+        self.assertEqual(candidate.model,self.stream.model)
+        self.assertEqual(successor.sent[0]['session']['voice'],'longanqian')
+        self.assertIn('Synthetic semantic continuity.',successor.sent[0]['session']['instructions'])
+        self.stream.context_estimate=48000
+        self.assertEqual(self.stream.checkpoint_pressure['reason'],'qwen_context')
+        candidate.close()
+
     def test_incomplete_response_requires_review_instead_of_silent_completion(self):
         self.ready()
         with self.assertRaises(DialogueUnavailable):self.event({'type':'response.done','response':{'status':'incomplete'}})

@@ -108,7 +108,7 @@ class QwenDialogue(NativeDialogue):
                     raise ValueError('Qwen input commitment is still pending')
                 self._qstart=self.input_bytes
                 if self._qgenerating and self._qresponse:
-                    self._raw({'type':'response.cancel','response_id':self._qresponse})
+                    self._raw({'type':'response.cancel'})
                 return
             if 'audio' in data:
                 self._raw({'type':'input_audio_buffer.append','audio':data['audio']['data']});return
