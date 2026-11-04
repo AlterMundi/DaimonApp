@@ -4,7 +4,7 @@ use super::*;
 fn key(local: i64) -> String {
     format!("heartbeat_execution:{local}")
 }
-fn load(conn: &Connection, local: i64) -> Result<Option<Value>> {
+pub(super) fn load(conn: &Connection, local: i64) -> Result<Option<Value>> {
     conn.query_row(
         "SELECT value FROM bot_state WHERE key=?1",
         [key(local)],
@@ -14,16 +14,19 @@ fn load(conn: &Connection, local: i64) -> Result<Option<Value>> {
     .map(|raw| serde_json::from_str(&raw).map_err(Into::into))
     .transpose()
 }
-fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
+pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     conn.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key(local),serde_json::to_string(value)?])?;
     Ok(())
 }
-fn selected(conn: &Connection, human: i64, entry: SessionKey) -> Result<Vec<Value>> {
+pub(super) fn selected(conn: &Connection, human: i64, entry: SessionKey) -> Result<Vec<Value>> {
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
-    let mut q=conn.prepare("SELECT b.value FROM bot_state b JOIN turns t ON b.key='heartbeat_execution:'||t.id WHERE t.session_id=?1 AND t.from_user_id=?2 ORDER BY t.id DESC LIMIT 18")?;
-    q.query_map(params![session, human], |r| r.get::<_, String>(0))?
-        .map(|raw| Ok(serde_json::from_str(&raw?)?))
-        .collect()
+    let mut q=conn.prepare("SELECT b.value FROM bot_state b JOIN turns t ON b.key='heartbeat_execution:'||t.id WHERE t.from_user_id=?2 AND ((t.session_id=?1 AND json_extract(b.value,'$.owner') IS NULL) OR (json_extract(b.value,'$.owner.entry.chat_id')=?3 AND json_extract(b.value,'$.owner.entry.thread_id')=?4)) ORDER BY t.id DESC LIMIT 18")?;
+    q.query_map(
+        params![session, human, entry.chat_id, entry.thread_id],
+        |r| r.get::<_, String>(0),
+    )?
+    .map(|raw| Ok(serde_json::from_str(&raw?)?))
+    .collect()
 }
 
 pub(super) fn unresolved_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<bool> {
@@ -130,17 +133,25 @@ impl Store {
             bound && record["phase"] == "owned" && record["physical"].is_null(),
             "Heartbeat allocation no longer owns a fresh execution"
         );
-        anyhow::ensure!(
-            generation_current_on(
+        if let Some(owner) = record.get("owner") {
+            super::delegation::owner_current_on(
                 &conn,
                 human,
-                entry,
-                record["generation"]
-                    .as_u64()
-                    .context("Missing heartbeat generation")?
-            )?,
-            "Heartbeat admission is paused or stale"
-        );
+                &serde_json::from_value(owner.clone())?,
+            )?;
+        } else {
+            anyhow::ensure!(
+                generation_current_on(
+                    &conn,
+                    human,
+                    entry,
+                    record["generation"]
+                        .as_u64()
+                        .context("Missing heartbeat generation")?
+                )?,
+                "Heartbeat admission is paused or stale"
+            );
+        }
         let allocation = &record["inference_allowance"];
         Ok(Some(crate::codex::NativeInferenceAllowance {
             max_provider_attempts: u32::try_from(

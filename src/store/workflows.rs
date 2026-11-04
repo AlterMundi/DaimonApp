@@ -98,6 +98,8 @@ struct Workflow {
     supersession: Option<Value>,
     #[serde(default)]
     native_returns: Vec<WorkflowReturn>,
+    #[serde(default)]
+    attention: Option<super::heartbeat::AttentionOwner>,
 }
 fn digest(v: &impl Serialize) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(v)?)))
@@ -334,6 +336,32 @@ fn attention_on(conn: &Connection, w: &Workflow) -> Result<Vec<Value>> {
     Ok(envelopes)
 }
 
+fn attention_workflow_on(
+    conn: &Connection,
+    human: i64,
+    target: SessionKey,
+    instruction: &str,
+) -> Result<Option<Workflow>> {
+    let raw:Option<String>=conn.query_row("SELECT w.doc FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id JOIN interaction_workflows w ON w.id=json_extract(a.doc,'$.workflow') WHERE i.id=?1 AND w.human_id=?2 AND json_extract(a.doc,'$.kind')='workflow_step'",params![instruction,human],|r|r.get(0)).optional()?;
+    let Some(raw) = raw else { return Ok(None) };
+    let w: Workflow = serde_json::from_str(&raw)?;
+    let Some(owner) = &w.attention else {
+        return Ok(None);
+    };
+    anyhow::ensure!(live_on(conn, &w)?, "Attention workflow authority retired");
+    let index = w
+        .admissions
+        .iter()
+        .position(|a| a.as_ref().is_some_and(|a| a.instruction == instruction))
+        .context("Instruction is not an admitted workflow step")?;
+    anyhow::ensure!(
+        w.plan.steps[index].owner == target,
+        "Delegated target changed"
+    );
+    super::heartbeat::owner_current_on(conn, human, owner)?;
+    Ok(Some(w))
+}
+
 impl Store {
     pub(super) fn init_workflows(&self) -> Result<()> {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
@@ -480,6 +508,7 @@ impl Store {
             final_checkpoint: None,
             supersession: None,
             native_returns: vec![],
+            attention: None,
         };
         if !live_on(&tx, &w)? || closed.is_cancelled() {
             bail!("Workflow authority is not current");
@@ -523,6 +552,19 @@ impl Store {
         revision: &str,
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<Instruction>> {
+        self.interaction_workflow_advance_at_turn(human, entry, native, None, id, revision, closed)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn interaction_workflow_advance_at_turn(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        physical: Option<&str>,
+        id: &str,
+        revision: &str,
+        closed: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<Instruction>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let mut w = load_on(&tx, human, entry, id)?;
@@ -541,6 +583,20 @@ impl Store {
         else {
             return Ok(None);
         };
+        if let Some(physical) = physical {
+            if let Some(owner) =
+                super::heartbeat::owner_for_turn_on(&tx, human, entry, native, physical)?
+            {
+                anyhow::ensure!(
+                    w.attention.as_ref().is_none_or(|prior| prior == &owner),
+                    "Workflow attention owner changed"
+                );
+                w.attention = Some(owner);
+            }
+        }
+        if let Some(owner) = &w.attention {
+            super::heartbeat::owner_current_on(&tx, human, owner)?;
+        }
         let step = &w.plan.steps[index];
         let (session, _) = owner_on(&tx, human, step.owner)?;
         if super::stopping::fenced_on(&tx, step.owner)?
@@ -601,6 +657,45 @@ impl Store {
         }
         tx.commit()?;
         Ok(Some(i))
+    }
+    /// Select existing workflow provenance; this does not charge or admit a worker.
+    pub(crate) fn heartbeat_workflow_delegation(
+        &self,
+        human: i64,
+        target: SessionKey,
+        instruction: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(attention_workflow_on(&conn, human, target, instruction)?.is_some())
+    }
+    pub(crate) fn heartbeat_claim_workflow_delegate(
+        &self,
+        local: i64,
+        human: i64,
+        target: SessionKey,
+        instruction: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let Some(w) = attention_workflow_on(&tx, human, target, instruction)? else {
+            return Ok(false);
+        };
+        let (_, native) = super::presentation::entry_on(&tx, human, target)?;
+        let owner = w
+            .attention
+            .as_ref()
+            .context("Missing retained attention owner")?;
+        super::heartbeat::claim_delegate_on(
+            &tx,
+            local,
+            human,
+            target,
+            &native,
+            owner,
+            instruction,
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
     /// A committed canonical result is evidence for the integrator's retained
     /// finite plan, never a new worker-authored grant. Select exactly that source
@@ -3589,5 +3684,229 @@ mod tests {
             "withdrawn"
         );
         assert!(!s.interaction_session_input_allowed(&first.id, 100).unwrap());
+    }
+    fn attention_parent(s: &Store, entry: &SessionRecord) -> i64 {
+        use crate::store::HeartbeatCommand;
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        s.heartbeat_control(
+            100,
+            entry.key,
+            HeartbeatCommand::ConfigureResources {
+                generation: 1,
+                contract: crate::store::heartbeat::test_contract(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Resume { generation: 1 })
+            .unwrap();
+        let local = turn(s, entry, "");
+        {
+            let mut conn = s.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            crate::store::heartbeat::execution_claim_on(
+                &tx,
+                local,
+                100,
+                entry.key,
+                "native-1",
+                2,
+                "attention-source",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        s.heartbeat_native_started(local, "attention-parent-physical")
+            .unwrap();
+        local
+    }
+    fn attention_advance(s: &Store, e: &SessionRecord, v: &Value) -> Result<Option<Instruction>> {
+        s.interaction_workflow_advance_at_turn(
+            100,
+            e.key,
+            "native-1",
+            Some("attention-parent-physical"),
+            v["id"].as_str().unwrap(),
+            v["revision"].as_str().unwrap(),
+            &CancellationToken::new(),
+        )
+    }
+    #[test]
+    fn heartbeat_workflow_delegate_charges_original_account_and_pause_selects_children() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        let _parent = attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        assert!(
+            s.heartbeat_workflow_delegation(100, i.target, &i.id)
+                .unwrap()
+        );
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let local = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+            .unwrap();
+        assert!(
+            s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+                .unwrap()
+        );
+        let allocation = s
+            .heartbeat_inference_allowance(local, 100, i.target)
+            .unwrap()
+            .unwrap();
+        assert_eq!(allocation.max_provider_attempts, 3);
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            6
+        );
+        assert_eq!(
+            s.heartbeat_control(100, i.target, HeartbeatCommand::Status)
+                .unwrap()["resources"]["state"],
+            "not_configured"
+        );
+        assert!(
+            s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+                .is_err()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            6
+        );
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, i.target)
+                .is_err()
+        );
+        let records = s.heartbeat_executions(100, entry.key, true).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|r| r["phase"] == "stopping"));
+        assert!(records.iter().any(|r| r["native"] == "native-7"));
+        assert!(
+            s.heartbeat_native_started(local, "late-worker-physical")
+                .unwrap()
+        );
+    }
+    #[test]
+    fn heartbeat_workflow_delegate_pause_before_claim_keeps_parent_charge_only() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let local = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+            .unwrap();
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(
+            s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+                .is_err()
+        );
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, i.target)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            3
+        );
+        assert_eq!(
+            s.heartbeat_executions(100, entry.key, false).unwrap().len(),
+            1
+        );
+    }
+    #[test]
+    fn heartbeat_workflow_result_return_keeps_the_same_attention_account() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        let parent = attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let local = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+            .unwrap();
+        s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+            .unwrap();
+        let physical = format!("turn-{local}");
+        s.heartbeat_native_started(local, &physical).unwrap();
+        s.interaction_transport(&i.id, 100, local, P::Accepted, Some(&physical))
+            .unwrap();
+        let i = s.interaction_instruction(&i.id, 100).unwrap().unwrap();
+        answer(
+            &s,
+            &i,
+            local,
+            "bounded-worker-result",
+            vec![i.id.clone()],
+            "Verified checkpoint",
+        );
+        s.heartbeat_native_terminal(parent, "attention-parent-physical", "completed")
+            .unwrap();
+        s.heartbeat_native_terminal(local, &physical, "completed")
+            .unwrap();
+        let returns = s.workflow_native_reserve(100, entry.key).unwrap();
+        assert!(!returns.is_empty());
+        assert!(
+            returns.iter().all(|r| r.attention_generation == Some(2)),
+            "worker results must not create an unmetered integrator wakeup"
+        );
+        let reflection = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&returns[0].id, reflection)
+            .unwrap();
+        assert_eq!(
+            s.heartbeat_inference_allowance(reflection, 100, entry.key)
+                .unwrap()
+                .unwrap()
+                .max_provider_attempts,
+            3
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            9
+        );
+    }
+    #[test]
+    fn heartbeat_workflow_delegate_capacity_retains_every_owned_cancellation_target() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        attention_parent(&s, &entry);
+        for index in 0..16 {
+            let mut next = plan.clone();
+            next.request_id = format!("attention-step-{index}");
+            for step in &mut next.steps {
+                step.scope
+                    .push_str(&format!(" Selected test subtask {index}."));
+            }
+            let view = declare(&s, &entry, next);
+            let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+            let target = s.get_session(i.target).unwrap().unwrap();
+            let local = turn(&s, &target, &i.text);
+            s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+                .unwrap();
+            let claimed = s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id);
+            if index < 15 {
+                assert!(claimed.unwrap())
+            } else {
+                assert!(claimed.is_err())
+            }
+        }
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            48
+        );
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        let records = s.heartbeat_executions(100, entry.key, true).unwrap();
+        assert_eq!(records.len(), 16);
+        assert!(records.iter().all(|r| r["phase"] == "stopping"));
     }
 }

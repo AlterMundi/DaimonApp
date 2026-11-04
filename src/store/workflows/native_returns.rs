@@ -25,8 +25,8 @@ pub(crate) struct WorkflowReturn {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workflow: String,
-    /// Set only by a future server-owned heartbeat producer, never peer content.
-    /// Ordinary human-authorized returns retain their independent policy.
+    /// Set by server-owned attention admission or its retained workflow provenance.
+    /// Ordinary independent human-authorized returns keep their existing policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -530,7 +530,7 @@ impl Store {
                 let r = WorkflowReturn {
                     id: id.clone(),
                     workflow: w.id.clone(),
-                    attention_generation: None,
+                    attention_generation: w.attention.as_ref().map(|owner| owner.generation),
                     reported_revision: None,
                     envelope: envelope.clone(),
                     phase: "reserved".into(),
@@ -551,7 +551,7 @@ impl Store {
                 selected.push(ReturnDispatch {
                     name: "workflow_attention",
                     attempts: 1,
-                    attention_generation: None,
+                    attention_generation: w.attention.as_ref().map(|owner| owner.generation),
                     id,
                     human,
                     entry,

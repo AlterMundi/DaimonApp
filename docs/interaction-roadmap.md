@@ -52,8 +52,29 @@ by this source work. The last native-submission callback now reads the exact
 already-reserved allocation after owner/generation checks, without charging it
 again. Tagged work requires `turn/startBoundedIfIdle` with that allocation;
 missing/expired allocations and old servers refuse without an unbounded fallback.
-Native descendant/tool allocation, producer and receiving acceptance remain
-unfinished; do not activate this increment as a complete heartbeat.
+Existing immutable workflows now retain their actual attention execution's
+original account and generation. Each fresh delegated worker reserves its own
+allocation in the same transaction that claims its exclusive local execution;
+it cannot create a target account, replenish the original account or reuse a
+physical writer. Busy routed workers retain attention legs in the existing
+pending queue, including across physical turn changes. Both the common steer
+boundary and final native admission refuse attention work. A worker finishing
+between selection and that check reserves a fresh successor instead of using
+the stale handle. The native request carries attributed internal tool context,
+with the human prompt empty; selected attachments currently refuse explicitly
+rather than being discarded. Worker results retain the attention generation,
+so their return to the integrator also needs a fresh reservation. Scoped pause
+selects root and delegated physical executions; the sixteen-record bound counts
+all live cancellation targets and prunes only terminal/transferred details.
+
+Source qualification includes conserved reservations, duplicate-claim refusal,
+pause before/after child admission, bounded result returns and capacity retention.
+The full text suite passes518 tests (one existing ignored). The routing queue
+regression is local qualification, not a native routed-worker journey or live
+receiving acceptance. Explicit-resume recovery of old queued generations,
+known-unsent busy recovery, typed attachments, positive native agent/reviewer
+allocation, external-tool inference, the finite producer and receiving acceptance
+remain unfinished; do not activate this increment as a complete heartbeat.
 
 
 Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
@@ -457,8 +478,9 @@ allocations without input submission. The actual Core mocked-provider journey
 refuses a busy human writer, then exhausts a one-request allocation locally
 without a second bounded provider request. Native source/receiving selection
 remain distinct; ordinary `toolOutput` uses start-or-steer and cannot establish
-this ownership or these bounds by itself. Retain at most sixteen records (one live owner
-plus fifteen prior terminal/transferred records); pruning never deletes native
+this ownership or these bounds by itself. Retain at most sixteen records across
+the root account's executions, including delegated workers; all live cancellation
+targets count toward that bound. Pruning never deletes native
 history, source receipts or an uncertain execution. Turn deletion removes only
 its matching ownership metadata.
 

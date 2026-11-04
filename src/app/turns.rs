@@ -761,6 +761,29 @@ pub(super) async fn process_turn(
     } else {
         runner
     };
+    let runner = if let Some(id) = queued.interaction.as_deref()
+        && shared.store.heartbeat_workflow_delegation(
+            runtime_request.from_user_id,
+            session.key,
+            id,
+        )? {
+        if !runtime_request.attachments.is_empty() {
+            bail!(
+                "Attention workflow attachments require typed internal context; no input was submitted"
+            );
+        }
+        let output = std::mem::take(&mut runtime_request.prompt);
+        runner
+            .with_idle_only(true)
+            .with_tool_output(crate::codex::NativeToolOutput {
+                name: "heartbeat_delegation".into(),
+                namespace: None,
+                output,
+                retain: true,
+            })
+    } else {
+        runner
+    };
     let controller_selected = shared.config.interaction.as_ref().is_some_and(|c| {
         c.human_id == runtime_request.from_user_id
             && ((c.entry() == session.key
@@ -1012,6 +1035,7 @@ pub(super) async fn process_turn(
                                     if let Some(external)=source.tribu_source.as_ref(){super::tribu::validate_integrated_source(&shared,external).await?;}
                                     super::nexus::validate_input_target(&shared,source.update_id,session_key,requester_user_id)?;
                                     shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Submitting,None)?;
+                                    shared.store.heartbeat_claim_workflow_delegate(turn_id,requester_user_id,session_key,id)?;
                                 }
                                 if shared.store.stop_admission_epoch(session_key)? != admission_epoch {anyhow::bail!("Input admission was retired by coordinated Stop; never replay automatically");}
                                 if let Some(id)=stop_resume.as_deref(){shared.store.stop_validate_resume(id,session_key,requester_user_id)?;}else if shared.store.stop_fenced(session_key)? {anyhow::bail!("Coordinated Stop prevents native submission; input retained");}

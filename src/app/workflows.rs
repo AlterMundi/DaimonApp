@@ -96,7 +96,7 @@ pub(super) fn capabilities(value: &mut Value, integrating: bool) {
     value["operations"]["workflow_question"] = json!({"arguments":{"question":"native question ID","revision":"exact capture_version from attention source","offset":"optional character offset"},"description":"Read bounded current workflow-native question evidence. Not an answer/approval API; use existing selected-human question controls."});
     value["operations"]["workflow_supersede"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact workflow_status revision","input_ref":"later accepted human correction original"},"description":"Retire future steps under a later actual human original; preserve accepted and uncertain native effects. Does not cancel unrelated work or transfer ownership."});
     value["operations"]["workflow_status"] = json!({"arguments":{"workflow":"workflow ID"},"description":"Current instruction/coverage/readiness evidence. Final helper completion leaves awaiting_integration, never overall completion."});
-    value["operations"]["workflow_advance"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact workflow_status revision"},"description":"Explicitly admit one ready predeclared step through the existing worker dispatch. Never retransmits an existing queued/accepted/uncertain request. Inspect changed revisions before progressing."});
+    value["operations"]["workflow_advance"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact workflow_status revision"},"description":"Explicitly admit one ready predeclared step through the existing worker dispatch. Never retransmits an existing queued/accepted/uncertain request. Inspect changed revisions before progressing. Attention-origin steps retain the original resource account and scoped pause; each worker needs its own fresh reserved native execution."});
     value["operations"]["matrix_reported"] = json!({"arguments":{"message_id":"exact Matrix message UUID from workflow_attention.matrix","revision":"exact canonical source revision"},"description":"Record actual incorporation of this verified Matrix reply into the existing integrator. Read all conversation_part pages first. No peer reply, hearing, execution approval or task completion is established."});
     value["operations"]["workflow_attention"] = json!({"arguments":{},"description":"Read bounded model-free source envelopes for current workflow results, reconciliation and retained verified Matrix replies. No continuous polling or model wakeup. Read source text on demand."});
     value["operations"]["workflow_reported"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact attention envelope revision"},"description":"Acknowledge an integrated offer. This is neither a hearing receipt, publication grant nor task completion."});
@@ -251,10 +251,11 @@ pub(super) async fn tool(
         "workflow_attention" if arguments == json!({}) => view(app, human, key),
         "workflow_advance" => {
             let args: Advance = serde_json::from_value(arguments)?;
-            let instruction = store.interaction_workflow_advance(
+            let instruction = store.interaction_workflow_advance_at_turn(
                 human,
                 key,
                 &request.thread_id,
+                Some(&request.turn_id),
                 &args.workflow,
                 &args.revision,
                 closed,

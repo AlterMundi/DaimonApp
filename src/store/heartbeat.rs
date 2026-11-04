@@ -1,6 +1,10 @@
 //! Persistent scoped attention control. No scheduler, inference or goal mutation.
 use super::*;
+mod delegation;
 mod executions;
+pub(in crate::store) use delegation::{
+    AttentionOwner, claim_delegate_on, owner_current_on, owner_for_turn_on,
+};
 mod resources;
 pub(super) use executions::claim_on as execution_claim_on;
 pub use resources::HeartbeatResources;
