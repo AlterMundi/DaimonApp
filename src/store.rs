@@ -42,6 +42,7 @@ pub(crate) use live_context::LiveContextCommand;
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
+pub(crate) use matrix::inbox::{Page as MatrixInboxPage, Selection as MatrixInboxSelection};
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routing;
 mod session_requests;

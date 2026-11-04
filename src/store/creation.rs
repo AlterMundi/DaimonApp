@@ -469,6 +469,7 @@ mod tests {
             observer_reasoning_effort: None,
             matrix_targets: vec![],
             matrix_transport: None,
+            matrix_inbox_channel: None,
             targets: vec![Target {
                 name: "Explicit".into(),
                 topic_id: 10,
@@ -850,6 +851,7 @@ mod tests {
             observer_reasoning_effort: None,
             matrix_targets: vec![],
             matrix_transport: None,
+            matrix_inbox_channel: None,
             targets: vec![Target {
                 name: "Alpha".into(),
                 topic_id: 7,

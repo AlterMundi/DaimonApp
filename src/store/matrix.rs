@@ -1,5 +1,6 @@
 //! Retained cross-body correlation. Matrix owns transport and receiving execution;
 //! this store neither signs execution approvals nor schedules/activates a peer.
+pub(in crate::store) mod inbox;
 use super::*;
 use crate::interaction::{InputReference, MatrixDestination, RequestRelation};
 use anyhow::bail;
@@ -110,7 +111,12 @@ impl Store {
              CREATE TABLE IF NOT EXISTS interaction_matrix_results(
                 message_id TEXT PRIMARY KEY,request_id TEXT NOT NULL REFERENCES interaction_matrix_requests(id),
                 human_id INTEGER NOT NULL,doc TEXT NOT NULL,created_at TEXT NOT NULL);
-             CREATE INDEX IF NOT EXISTS interaction_matrix_result_request ON interaction_matrix_results(request_id);"
+             CREATE INDEX IF NOT EXISTS interaction_matrix_result_request ON interaction_matrix_results(request_id);
+             CREATE TABLE IF NOT EXISTS interaction_matrix_inbox(
+               entry_session INTEGER NOT NULL,human_id INTEGER NOT NULL,message_id TEXT NOT NULL,
+               binding TEXT NOT NULL,epoch TEXT NOT NULL,native TEXT NOT NULL,channel TEXT NOT NULL,
+               owner TEXT NOT NULL,doc TEXT NOT NULL,created_at TEXT NOT NULL,
+               PRIMARY KEY(entry_session,human_id,message_id));"
         )?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         super::add_column_if_missing(

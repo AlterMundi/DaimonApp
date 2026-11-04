@@ -39,6 +39,8 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub matrix_targets: Vec<MatrixTarget>,
     pub matrix_transport: Option<MatrixTransportConfig>,
+    /// One owner-selected incoming channel; no automatic reader is enabled.
+    pub matrix_inbox_channel: Option<String>,
     #[serde(default = "default_active_workers")]
     pub max_active_workers: usize,
 }
@@ -192,7 +194,7 @@ impl InteractionConfig {
         if let Some(transport) = &self.matrix_transport {
             transport.source.validate()?;
             if !matches!(transport.source, MatrixDestination::Body { .. })
-                || self.matrix_targets.is_empty()
+                || (self.matrix_targets.is_empty() && self.matrix_inbox_channel.is_none())
                 || transport.command.is_empty()
                 || transport.command.len() > 32
                 || !std::path::Path::new(&transport.command[0]).is_absolute()
@@ -206,6 +208,17 @@ impl InteractionConfig {
             }
             #[cfg(not(unix))]
             bail!("Matrix host transport currently requires Unix process groups");
+        }
+        if let Some(channel) = &self.matrix_inbox_channel {
+            if self.matrix_transport.is_none()
+                || channel.is_empty()
+                || channel.len() > 128
+                || !channel
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            {
+                bail!("Select one bounded owner inbox channel with its existing host transport");
+            }
         }
         if self.matrix_targets.len() > 16 {
             bail!("Too many explicitly selected Matrix targets");
@@ -590,6 +603,7 @@ mod tests {
             observer_reasoning_effort: None,
             matrix_targets: vec![],
             matrix_transport: None,
+            matrix_inbox_channel: None,
             targets: vec![
                 Target {
                     name: "Nexus".into(),
@@ -614,6 +628,22 @@ mod tests {
         assert_eq!(cfg.resolve("t3"), vec![SessionKey::new(100, Some(3))]);
         assert_eq!(cfg.target(1), None);
         assert_eq!(cfg.resolve("T3"), cfg.resolve("t3"));
+        // Incoming-only owner configuration does not require per-peer routing.
+        let mut incoming = cfg.clone();
+        incoming.matrix_inbox_channel = Some("tribe".into());
+        incoming.matrix_transport = Some(MatrixTransportConfig {
+            command: vec!["/bin/true".into()],
+            source: MatrixDestination::Body {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+                embodiment_id: "embodiment:source".into(),
+            },
+            timeout_seconds: 1,
+        });
+        incoming.validate().unwrap();
+        incoming.matrix_inbox_channel = None;
+        assert!(incoming.validate().is_err());
+        incoming.matrix_inbox_channel = Some("not a channel".into());
+        assert!(incoming.validate().is_err());
         cfg.targets[0].name = "t3".into();
         assert!(cfg.validate().is_err());
     }

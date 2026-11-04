@@ -115,11 +115,28 @@ identity; the consuming backend must retain accepted items before advancing its
 cursor. Failed reads return no successful cursor. This interface sends nothing,
 never retries a mutation, and creates no timer, execution or model call.
 
+The same candidate backend supports an optional owner configuration
+`interaction.matrix_inbox_channel = "tribe"` alongside the existing Matrix host.
+Incoming-only selection needs no per-recipient routing targets. With that
+configuration, the integrating `matrix_status` operation accepts
+`{"inbox_next":true}` alone. It reads at most three native events using the
+retained cursor; the model cannot change the channel, source body or cursor.
+
+One SQLite transaction retains immutable native originals and advances their
+cursor. Exact retries deduplicate, conflicting identities roll back, and a
+changed entry/native generation refuses a late read. The existing
+`conversation_part` reader provides `matrix-inbox:EVENT_UUID` sources with exact
+revision and bounded pagination; unsupported payloads stay explicit rather than
+becoming invented peer speech. Retention is capped at256events/4MiB per logical
+entry across generations. At capacity the whole page/cursor remains unchanged;
+no original or historical source is deleted to make room. Human consultation
+remains available during heartbeat pause; it starts no model or automatic work.
+
 This source component belongs to the single combined candidate. It is not
 selected or invoked by the deployed heartbeat. Existing selected-reply reads
-keep their exact thread/correlation behavior. The consuming store, finite
-producer/cursor/accounting, same-integrator source reader and correlated reply
-lifecycle still need integration before new-message attention can be activated.
+keep their exact thread/correlation behavior. Automatic finite producer
+intake/cancellation/accounting and the correlated reply lifecycle still need
+integration before new-message attention can be activated.
 
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 

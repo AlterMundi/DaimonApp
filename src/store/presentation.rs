@@ -666,7 +666,12 @@ pub(super) fn source_on(
     id: &str,
 ) -> Result<Option<Value>> {
     let (entry_session, entry_native) = entry_on(conn, human, entry)?;
-    let mut source = if let Some(matrix) = id.strip_prefix("matrix:") {
+    let mut source = if let Some(matrix) = id.strip_prefix("matrix-inbox:") {
+        let Some(source) = super::matrix::inbox::source_on(conn, human, entry, matrix)? else {
+            return Ok(None);
+        };
+        source
+    } else if let Some(matrix) = id.strip_prefix("matrix:") {
         let Some(source) = super::matrix::result_on(conn, human, entry, matrix)? else {
             return Ok(None);
         };
