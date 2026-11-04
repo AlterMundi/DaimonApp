@@ -1,9 +1,29 @@
-# Daimon Interaction — full roadmap and continuous-voice delivery plan
+# DaimonApp — full roadmap and continuous-voice delivery plan
 
 This is the maintained product roadmap, not a claim that the later stages are
 implemented. Human selection, 2026-10-26: move from the accepted single-chat base
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
+
+## Project name and pending Telegram separation —4November2026
+
+Nicolas selected **DaimonApp** for the project, repository and existing development
+session formerly named Realtime. The app's visible/store name is **Daimon**.
+The existing repository was renamed in place from `AlterMundi/telecodex` to
+`AlterMundi/DaimonApp`, retaining its identity, history, issues and pull requests.
+Existing executable/configuration names and receiving URLs are compatibility
+surfaces; this naming change does not replace native state or deploy new clients.
+
+Keep the already-owned #452 refactor on this roadmap: identify and separate the
+shared backend/native execution, admission, journals and coordination used by
+DaimonApp from Telegram polling, bot credentials, topics and presentation.
+Telegram must remain an optional adapter, with the existing web/mobile app
+working without it. Reuse the extraction already underway; do not create a
+parallel backend or duplicate session/goal stores. Preserve public APIs and
+receiving history, validate both Telegram-disabled app operation and the retained
+Telegram adapter, and document the resulting maintained component boundaries.
+This remaining refactor is explicitly **not the current priority or a new gate**
+for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
 ## Shared attention backend —4November2026
 
