@@ -26,6 +26,19 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def test_close_frame_billing_is_not_misreported_as_invalid_json(self):
+        self.socket.recv_data=lambda **kwargs:(8,b'\x03\xf3billing credit unavailable; synthetic private account detail')
+        with self.assertRaises(DialogueUnavailable):self.stream.receive()
+        self.assertEqual(self.stream.failure_code,'native-dialogue-provider-billing')
+        self.assertTrue(self.socket.closed);self.assertEqual(len(self.socket.sent),1)
+
+    def test_other_close_frame_is_distinct_and_ping_is_not_json(self):
+        self.socket.recv_data=lambda **kwargs:(9,b'private ping')
+        self.assertEqual(self.stream.receive(),[])
+        self.socket.recv_data=lambda **kwargs:(8,b'\x03\xe8private unclassified close detail')
+        with self.assertRaises(DialogueUnavailable):self.stream.receive()
+        self.assertEqual(self.stream.failure_code,'native-dialogue-provider-closed')
+
     def test_selected_prebuilt_voice_is_kept_across_checkpoint_successor(self):
         self.stream.close();self.socket=Socket()
         self.stream=NativeDialogue(self.key,activity_mode='manual',voice_name='Charon',connect=self.connect,clock=lambda:self.now)

@@ -261,9 +261,24 @@ class NativeAcousticSession:
         async with self.lock:
             if self.closed:raise ForegroundUnavailable('Native acoustic conversation ended')
             kind=event['type'];span=self.provider
-            if kind not in ('voice_activity','input_transcript'):return
+            if kind not in ('voice_activity','input_transcript','input_committed'):return
             if span is None:raise ForegroundUnavailable('Uncorrelated native input event')
-            if kind=='voice_activity':
+            if kind=='input_committed':
+                # Qwen acknowledges the explicit buffered input item, not VAD.
+                # Compare the locally retained exact range to the adapter's
+                # one outstanding commit; never invent provider sample offsets.
+                if ((getattr(self.stream,'model',None),event.get('source')) not in (
+                            ('qwen-audio-3.0-realtime-plus','provider_qwen_commit'),
+                            ('gpt-realtime-2.1','provider_openai_commit'))
+                        or span.stream_end is None or span.start_ack or span.end_ack
+                        or type(event.get('stream_start')) is not int
+                        or type(event.get('stream_end')) is not int
+                        or event['stream_start']+self.provider_offset_base!=span.stream_start
+                        or event['stream_end']+self.provider_offset_base!=span.stream_end
+                        or not isinstance(event.get('item_id'),str) or not event['item_id']):
+                    raise ForegroundUnavailable('Provider input commitment does not match the captured phrase')
+                span.start_ack=span.end_ack=True
+            elif kind=='voice_activity':
                 if event.get('source')!='provider_manual_activity_ack':
                     raise ForegroundUnavailable('Native activity is not the selected manual protocol')
                 start=event.get('activity')=='ACTIVITY_START'

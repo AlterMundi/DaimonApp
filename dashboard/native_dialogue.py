@@ -566,7 +566,19 @@ class NativeDialogue:
         with self._reader:
             self._active(ready=False)
             try:
-                raw = self._socket.recv()
+                if hasattr(self._socket,'recv_data'):
+                    opcode,raw=self._socket.recv_data(control_frame=True)
+                    if opcode==8:
+                        # websocket.recv() turns a close frame into an empty
+                        # string, hiding even the distinction from malformed JSON.
+                        # Keep only a fixed category; never log the close reason.
+                        reason=raw[2:].decode('utf-8','replace').lower() if isinstance(raw,bytes) and len(raw)>=2 else ''
+                        self._fail('native-dialogue-provider-billing' if any(word in reason for word in
+                            ('billing','credit','balance')) else 'native-dialogue-provider-closed')
+                    if opcode not in (1,2):return []
+                else:raw = self._socket.recv()
+            except DialogueUnavailable:
+                raise
             except self._timeouts:
                 self._active(ready=False)
                 if self.phase=='ready' and not self._pressure_notified and self.checkpoint_pressure is not None:

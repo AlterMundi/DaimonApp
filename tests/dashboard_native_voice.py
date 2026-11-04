@@ -191,6 +191,43 @@ class Owner(Receiver):
 
 
 class Mounted(unittest.TestCase):
+    def test_qwen_selection_preserves_prepared_asr_and_delivers_committed_audio(self):
+        class QwenStream(Stream):
+            model='qwen-audio-3.0-realtime-plus'
+            def activity_start(self):self.started=self.total;self.start_sent.set()
+            def activity_end(self):
+                self.queue.put([{'type':'input_committed','source':'provider_qwen_commit','item_id':'qwen-item',
+                    'stream_start':self.started,'stream_end':self.total},
+                    {'type':'input_transcript','text':'Exact Qwen interpretation.','finished':True},
+                    {'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000},
+                    {'type':'output_transcript','text':'Qwen native speech.'},{'type':'turn_complete'}])
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription'].update(native_provider='qwen',
+            native_credential_file=str(self.root/'qwen-key'),native_voice_name='longanqian')
+        qwen_patch=patch('dashboard.qwen_dialogue.QwenDialogue',QwenStream)
+        self.patches.append(qwen_patch);qwen_patch.start()
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+        with self.open() as ws:
+            ws.send_json(self.meta());ready=ws.receive_json();self.assertEqual(ready['model'],QwenStream.model)
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            kinds=[]
+            for _ in range(20):
+                v=ws.receive_json();kinds.append(v['type'])
+                if v['type']=='original_completed':break
+            self.assertIn('audio',kinds);self.assertIn('original_completed',kinds)
+            self.assertNotIn('input_committed',kinds)
+            ws.send_json({'type':'close'})
+        self.assertEqual(self.app.state.native_history.page(100)['items'][0]['model'],QwenStream.model)
+        self.assertEqual(self.config['streaming_transcription']['provider'],'gemini')
+        for updates in ({'native_provider':'other'},{'native_activity_mode':'automatic'},
+                        {'native_credential_file':'relative'}):
+            invalid={**self.config,'streaming_transcription':{**self.config['streaming_transcription'],**updates}}
+            with self.assertRaises(ValueError):create_app(invalid,self.owner,lambda raw,bot:int(raw))
+
     def test_owner_selected_voice_reaches_provider_and_invalid_selection_is_refused(self):
         self.config['streaming_transcription']['native_voice_name']='Charon'
         with self.open() as ws:
