@@ -1143,6 +1143,68 @@ mod tests {
         (instruction, delivery)
     }
     #[test]
+    fn heartbeat_generation_fences_native_admission_without_erasing_history_or_ack() {
+        let (_file, s, entry, plan) = setup();
+        let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+        let selected = s
+            .native_routed_result_reserve(100, entry.key, &delivery.id)
+            .unwrap()
+            .unwrap();
+        // The existing ordinary policy is independent of the default-paused gate.
+        s.workflow_native_validate(&selected.id).unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        {
+            // Test-owned server receipt, not a new public tagging or funding API.
+            let conn = s.conn.lock().unwrap();
+            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1",[&delivery.id]).unwrap();
+        }
+        let local = turn(&s, &entry, "");
+        assert!(s.workflow_native_link(&selected.id, local).is_err());
+        assert!(s.workflow_native_submitting(&selected.id).is_err());
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::Resume { generation: 1 },
+        )
+        .unwrap();
+        s.workflow_native_link(&selected.id, local).unwrap();
+        s.workflow_native_validate(&selected.id).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        let revision = packet["evidence"]["revision"].as_str().unwrap();
+        s.native_routed_source(100, entry.key, "native-1", &selected.id, revision, 0)
+            .unwrap();
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::Resume { generation: 3 },
+        )
+        .unwrap();
+        // Resume permits only a new generation; a previously submitting intent
+        // never becomes eligible or known-unsent solely because pause occurred.
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        s.workflow_native_outcome(&selected.id, "accepted", Some("exact-late-physical"))
+            .unwrap();
+        let conn = s.conn.lock().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT native_return FROM interaction_deliveries WHERE id=?1",
+                [&delivery.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let retained: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(retained["returns"][0]["phase"], "accepted");
+        assert_eq!(retained["returns"][0]["native_turn"], "exact-late-physical");
+        assert_eq!(retained["returns"][0]["attention_generation"], 2);
+    }
+
+    #[test]
     fn ordinary_routed_result_returns_exact_source_without_declaring_workflow() {
         let (_f, s, entry, plan) = setup();
         let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);

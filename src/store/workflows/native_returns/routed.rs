@@ -329,6 +329,7 @@ fn reserve(
     let receipt = WorkflowReturn {
         id: return_id.clone(),
         workflow: String::new(),
+        attention_generation: None,
         envelope,
         phase: "reserved".into(),
         local: None,
