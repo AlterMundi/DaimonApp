@@ -1793,3 +1793,12 @@ most two unless asked for more, with useful content first and a light poetic
 touch that adds meaning rather than length. It avoids repeated acknowledgments,
 recaps and filler. This is prompting, not a guarantee of provider compliance or
 a truncation rule for tool arguments or canonical work results.
+
+A later phone dialogue closed after175seconds during a receiving owner call,
+with `ProviderUnavailable` at the generic foreground thread wait; the existing
+record did not retain which receiving operation or underlying provider source
+location failed. Its last original remains captured/unconfirmed, with no work
+replay. This is a distinct unresolved incident, not proof of another empty
+transcript or a session-duration limit. Close diagnostics now include the
+receiving provider source location and an allowlisted original-reservation,
+completion or status operation, without exception text, arguments or payloads.

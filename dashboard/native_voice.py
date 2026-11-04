@@ -32,13 +32,25 @@ from .turn_detection import Detector, DetectionUnavailable
 def failure_site(error):
     """Source location only: never exception text, locals or absolute paths."""
     site=None;trace=error.__traceback__
-    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription','dashboard.native_context'}
+    modules={'dashboard.native_voice','dashboard.native_acoustic','dashboard.native_foreground','dashboard.native_dialogue','dashboard.live_transcription','dashboard.native_context','dashboard.provider'}
     while trace is not None:
         module=trace.tb_frame.f_globals.get('__name__')
         if module in modules:
             site=f"{module.rsplit('.',1)[-1]}.{trace.tb_frame.f_code.co_name}:{trace.tb_lineno}"
         trace=trace.tb_next
     return site
+
+
+def owner_operation(error):
+    """Fixed receiving operation only, without payload, arguments or error text."""
+    operation=None;trace=error.__traceback__
+    known={'conversation_voice_submit','conversation_foreground_complete','conversation_input_status'}
+    while trace is not None:
+        frame=trace.tb_frame
+        if frame.f_globals.get('__name__')=='dashboard.provider' and frame.f_code.co_name in known:
+            operation=frame.f_code.co_name
+        trace=trace.tb_next
+    return operation
 
 
 def playback_status(value):
@@ -99,7 +111,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         tasks=set();tool_tasks=set();proposals={};cancelled_proposals=set();raw_notifications={};sending=asyncio.Lock();stopping=False
         completion_notifications={}
         utterance=None;output_text='';output_bytes=0;output_hash=hashlib.sha256()
-        started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;first_send_failure=None
+        started=time.monotonic();close_stage='preflight';close_error=None;close_site=None;close_operation=None;first_send_failure=None
         first_playback_status=last_playback_status=None;playback_status_count=0
         def release_owner():
             nonlocal audio_released
@@ -633,10 +645,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             await asyncio.to_thread(app.state.native_history.played,owner,meta['id'],value['id'],value['played_bytes'])
                             await notice_if_idle()
         except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect) as error:
-            close_error=type(error).__name__;close_site=failure_site(error)
+            close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error)
             with suppress(Exception):await send({'type':'review','message':'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.'})
         except BaseException as error:
-            close_error=type(error).__name__;close_site=failure_site(error);raise
+            close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error);raise
         finally:
             stopping=True
             if stream:
@@ -683,7 +695,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 # Existing bounded service journal only. No exception detail,
                 # transcript, provider payload, identity/header or raw audio.
                 summary={'id':meta['id'],'stage':close_stage,'error_type':close_error,'failure_site':close_site,
-                    'provider_failure_code':getattr(stream,'failure_code',None),
+                    'provider_failure_code':getattr(stream,'failure_code',None),'owner_operation':close_operation,
                     'first_send_failure':first_send_failure,
                     'client_playback':{'source':'untrusted_client_observation','count':playback_status_count,
                         'first':first_playback_status,'last':last_playback_status},

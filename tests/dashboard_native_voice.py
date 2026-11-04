@@ -965,7 +965,7 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','owner_operation','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures'})
         self.assertGreater(result['actor_checks']['fresh_checks'],0)
         self.assertEqual(result['acoustic_queues'],{'peak_analysis_audio_ms':0,
             'peak_unsent_span_audio_ms':0,'peak_input_confirmation_wait_ms':0})
