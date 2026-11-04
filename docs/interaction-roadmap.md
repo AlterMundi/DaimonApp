@@ -622,3 +622,22 @@ canonical source read/review, reserved workflow child, recurrence, an active
 provider request held during exact owner pause, and ordinary contact afterward
 without replenishing the account. It owns/terminates its temporary servers and
 state; this is not a live model, phone or receiving deployment acceptance.
+
+
+Known-unsent attention steps use the existing `workflow_advance` and exact current
+workflow revision. An `admission_attention_required` heartbeat offer points to the
+owned workflow status. The integrator may then recover that same instruction only
+when its prior exclusive execution has an exact native `not_submitted` receipt
+with no physical turn, matching actor/source and a live original attention owner.
+A retained label alone, paused/retired authority, changed predecessor or uncertain/
+accepted/queued instruction never permits this recovery. It preserves the original
+plan, scope and instruction identity through the existing recovery/dispatch path;
+a fresh worker conservatively reserves another execution from the original account.
+There is no refund, refill, replacement UUID or separate retry timer.
+
+The actual-Core fixture's `--busy` variant holds ordinary native work on the
+selected worker. Atomic admission refuses the first delegated attempt before
+provider work; after release, a later finite heartbeat reads the retained status
+and recovers that exact step. It also qualifies recurrence, exact pause and
+ordinary contact afterward. Whole-journey local HTTP observations include setup
+and ordinary work; conservative resource reservations are recorded separately.

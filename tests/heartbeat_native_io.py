@@ -62,13 +62,14 @@ class ActualJourney(HeartbeatJourney):
             self.process = None
 
 
-def qualify(binary, native_binary):
+def qualify(binary, native_binary, *, busy=False):
     j = ActualJourney(str(Path(binary).resolve()))
     native = client = None
     native_log = None
     errors, requests = [], []
     original = batch = None
     pause_entered, pause_release = threading.Event(), threading.Event()
+    busy_entered, busy_release = threading.Event(), threading.Event()
     def call(ident, operation, arguments):
         return {'type': 'response.output_item.done', 'item': {'type': 'function_call',
                 'call_id': ident, 'name': 'interaction_controller',
@@ -89,7 +90,7 @@ def qualify(binary, native_binary):
             nonlocal batch
             try:
                 size = int(self.headers['content-length'])
-                assert size <= 2 * 1024 * 1024 and len(requests) < 20
+                assert size <= 2 * 1024 * 1024 and len(requests) < 24
                 value = json.loads(self.rfile.read(size))
                 texts = list(strings(value.get('input', [])))
                 outputs = {item.get('call_id'): item.get('output') for item in value.get('input', [])
@@ -112,7 +113,8 @@ def qualify(binary, native_binary):
                         break
                 if any(text == 'AFTER_PAUSE_CONTACT' or text.endswith('AFTER_PAUSE_CONTACT') for text in texts):
                     events, stage = [message('Ordinary contact preserved after pause.')], 'human-after-pause'
-                elif packet and batch is not None and packet['return_id'] != batch['return_id']:
+                elif (packet and batch is not None and packet['return_id'] != batch['return_id']
+                      and packet['evidence']['offers'][0]['evidence']['reason'] != 'admission_attention_required'):
                     # Hold a real provider response while the shared owner
                     # control interrupts this exact newly reserved root.
                     stage = 'heartbeat-held-for-pause'
@@ -120,6 +122,13 @@ def qualify(binary, native_binary):
                     pause_entered.set()
                     assert pause_release.wait(timeout=25), 'Pause control did not return'
                     events = [message('Late cancelled fixture response.')]
+                elif (busy and not controller and not packet
+                      and any(text == 'BUSY_NATIVE_WORKER' for text in texts)):
+                    stage = 'ordinary-busy-worker'
+                    requests.append({'stage': stage, 'bytes': size, 'held': True})
+                    busy_entered.set()
+                    assert busy_release.wait(timeout=120), 'Busy native worker was not released'
+                    events = [message('Ordinary native work finished.')]
                 elif (not controller and not packet
                         and not any('QUALIFY_NATIVE_HEARTBEAT' in text for text in texts)
                         and any(text == 'QUALIFY_NATIVE_BOOTSTRAP' for text in texts)):
@@ -132,25 +141,35 @@ def qualify(binary, native_binary):
                     stage = 'worker'
                 elif packet:
                     batch = packet
-                    if 'hb-reviewed' in outputs:
-                        assert output('hb-reviewed').get('reviewed') is True, output('hb-reviewed')
-                        events = [message('Native heartbeat read the checkpoint and delegated the selected verification.')]
+                    prefix = 'hb-' + packet['return_id'].rsplit(':', 1)[-1]
+                    read_id, declare_id, advance_id, reviewed_id = [prefix+'-'+kind for kind in ('read', 'declare', 'advance', 'reviewed')]
+                    if reviewed_id in outputs:
+                        assert output(reviewed_id).get('reviewed') is True, output(reviewed_id)
+                        events = [message('Native heartbeat read the checkpoint and selected the verification; retained outcomes remain separate.')]
                         stage = 'heartbeat-final'
-                    elif 'hb-advance' in outputs:
-                        events = [call('hb-reviewed', 'heartbeat_reported', {
+                    elif advance_id in outputs:
+                        events = [call(reviewed_id, 'heartbeat_reported', {
                             'return_id': packet['return_id'], 'revision': packet['evidence']['revision']})]
                         stage = 'heartbeat-review'
-                    elif 'hb-declare' in outputs:
-                        assert output('hb-read')['text'].startswith('Native worker checkpoint.'), output('hb-read')
-                        selected = output('hb-declare')
-                        events = [call('hb-advance', 'workflow_advance', {
+                    elif declare_id in outputs:
+                        assert output(read_id)['text'].startswith('Native worker checkpoint.'), output(read_id)
+                        selected = output(declare_id)
+                        events = [call(advance_id, 'workflow_advance', {
                             'workflow': selected['id'], 'revision': selected['revision']})]
                         stage = 'heartbeat-advance'
+                    elif read_id in outputs:
+                        selected = output(read_id)
+                        assert selected['steps'][0]['phase'] == 'retained_unsent', selected
+                        events = [call(advance_id, 'workflow_advance', {
+                            'workflow': selected['id'], 'revision': selected['revision']})]
+                        stage = 'heartbeat-recover-known-unsent'
                     else:
-                        reader = packet['evidence']['offers'][0]['evidence']['reader']
-                        events = [call('hb-read', reader['operation'], reader['arguments']),
-                                  call('hb-declare', 'workflow_declare', plan('verify-native', 't8',
-                                      'Verify the exact selected native checkpoint.'))]
+                        offer = packet['evidence']['offers'][0]['evidence']
+                        reader = offer['reader']
+                        events = [call(read_id, reader['operation'], reader['arguments'])]
+                        if offer['reason'] != 'admission_attention_required':
+                            events.append(call(declare_id, 'workflow_declare', plan('verify-native', 't8',
+                                'Verify the exact selected native checkpoint.')))
                         stage = 'heartbeat-read-declare'
                 elif 'initial-advance' in outputs:
                     events, stage = [message('Native initial workflow selected; awaiting its result.')], 'initial-final'
@@ -164,7 +183,7 @@ def qualify(binary, native_binary):
                     events = [call('initial-declare', 'workflow_declare', plan('produce-native', 't7',
                         'Produce the selected native checkpoint.'))]
                     stage = 'initial-declare'
-                if stage != 'heartbeat-held-for-pause':
+                if stage not in ('heartbeat-held-for-pause', 'ordinary-busy-worker'):
                     requests.append({'stage': stage, 'bytes': size, 'sha256': hashlib.sha256(json.dumps(value).encode()).hexdigest(),
                         'tools': len(value.get('tools', [])), 'instructions_hint': str(value.get('instructions', ''))[:100],
                         'last_input_types': [item.get('type', item.get('role')) for item in value.get('input', [])[-4:]],
@@ -247,7 +266,13 @@ supports_websockets=false
                     time.sleep(.05)
                 db.execute('UPDATE sessions SET codex_thread_id=?,model=?,force_fresh_thread=0 WHERE thread_id=?',
                            (created['thread']['id'], 'mock-model', topic))
-        client.close(); client = None
+        if busy:
+            target = j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=8')[0][0]
+            actual_rpc(client, 'turn/start', {'threadId': target,
+                'input': [{'type':'text','text':'BUSY_NATIVE_WORKER'}]})
+            assert busy_entered.wait(timeout=10), 'Busy native task never reached its local provider'
+        else:
+            client.close(); client = None
         j.config.write_text(j.config.read_text().replace('[telegram]', '[telegram]\nenabled=false')
             .replace('default_model="fixture-model"', 'default_model="mock-model"') + j.target_config)
         j.start(); j.wait_control_socket(j.socket)
@@ -259,7 +284,7 @@ supports_websockets=false
         assert not errors, errors
         paused = j.read('heartbeat', 'pause')['result']
         expiry = int((datetime.now(timezone.utc)+timedelta(minutes=4)).timestamp()*1000)
-        resources = {'contract_id': str(uuid.uuid4()), 'max_provider_attempts': 24,
+        resources = {'contract_id': str(uuid.uuid4()), 'max_provider_attempts': 48 if busy else 24,
             'provider_attempts_per_execution': 6, 'max_request_bytes': 2*1024*1024,
             'execution_seconds': 60, 'expires_at_unix_ms': expiry}
         j.read('heartbeat', 'configure-resources', str(paused['generation']), json.dumps(resources))
@@ -267,14 +292,24 @@ supports_websockets=false
             'interval_seconds': 30, 'max_checks': 3, 'expires_at_unix_ms': expiry,
             'matrix_replies': False, 'workflows': True}))
         j.read('heartbeat', 'resume', str(paused['generation']))
-        j.wait(lambda: len(j.row('SELECT id FROM interaction_results')) == 2, seconds=75)
+        retained_child = None
+        if busy:
+            j.wait(lambda: j.row("SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8 AND i.phase='retained_unsent'"), seconds=75)
+            retained_child = j.row("SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8 AND i.phase='retained_unsent'")[0][0]
+            assert sum(r['stage']=='worker' for r in requests) == 1, requests
+            busy_release.set()
+        j.wait(lambda: len(j.row('SELECT id FROM interaction_results')) == 2, seconds=105 if busy else 75)
+        if busy:
+            assert j.row("SELECT i.id,i.phase FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8") == [(retained_child,'accepted')]
+            assert any(r['stage']=='heartbeat-recover-known-unsent' for r in requests)
         j.wait(lambda: any(r['stage']=='heartbeat-final' for r in requests), seconds=30)
         j.idle()
         j.wait(lambda: pause_entered.is_set(), seconds=75)
         status = j.read('heartbeat', 'pause')['result']
         pause_release.set()
         assert not errors, errors
-        assert status['resources']['reserved_provider_attempts'] == 18, status
+        expected_reserved = 30 if busy else 18
+        assert status['resources']['reserved_provider_attempts'] == expected_reserved, status
         assert any(o['state']=='terminal' and o['status']=='interrupted'
                    for o in status['cancellation_observations']), status
         j.idle()
@@ -284,15 +319,16 @@ supports_websockets=false
         j.wait(lambda: any(r['stage']=='human-after-pause' for r in requests), seconds=30)
         j.idle()
         final = j.read('heartbeat', 'status')['result']
-        assert final['admission_paused'] and final['resources']['reserved_provider_attempts'] == 18
-        assert batch is not None and len(requests) <= 20, requests
+        assert final['admission_paused'] and final['resources']['reserved_provider_attempts'] == expected_reserved
+        assert batch is not None and len(requests) <= 24, requests
         assert j.row('SELECT count(*) FROM conversation_inputs') == [(2,)]
         print(json.dumps({'result': 'PASS', 'native_sha256': file_sha256(native_binary),
-            'requests': requests, 'reserved_attempts': 18, 'live_provider_calls': 0,
+            'requests': requests, 'reserved_attempts': expected_reserved, 'busy_known_unsent_recovered': busy, 'live_provider_calls': 0,
             'pause_observations': status['cancellation_observations'], 'ordinary_contact_after_pause': True,
             'evidence': 'Actual Core, local HTTP stand-in, real wrapper/controller/store, bounded root/child, source read/canonical report, exact active-root pause and subsequent ordinary contact. Not receiving/model/device acceptance.'}))
     finally:
         pause_release.set()
+        busy_release.set()
         if client: client.close()
         j.stop()
         if native:
@@ -313,4 +349,4 @@ supports_websockets=false
 
 
 if __name__ == '__main__':
-    qualify(sys.argv[1], sys.argv[2])
+    qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:])

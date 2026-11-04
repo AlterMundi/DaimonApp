@@ -686,8 +686,9 @@ impl Store {
         }
         view_on(&conn, &load_on(&conn, human, entry, id)?)
     }
-    /// Exactly one explicit progression under the original grant. No scheduler
-    /// and no retry of an existing queued/uncertain/native-accepted instruction.
+    /// One explicit progression under the original grant. Known-unsent attention
+    /// work may recover its exact instruction after native non-submission proof;
+    /// queued/uncertain/native-accepted work is never replayed.
     #[allow(clippy::too_many_arguments)]
     pub fn interaction_workflow_advance(
         &self,
@@ -721,12 +722,9 @@ impl Store {
         if view["revision"].as_str() != Some(revision) {
             bail!("Workflow revision changed; inspect without replay");
         }
-        let Some(index) = view["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .position(|s| s["phase"] == "ready")
-        else {
+        let Some(index) = view["steps"].as_array().unwrap().iter().position(|s| {
+            s["phase"] == "ready" || (w.attention.is_some() && s["phase"] == "retained_unsent")
+        }) else {
             return Ok(None);
         };
         if let Some(physical) = physical {
@@ -749,6 +747,35 @@ impl Store {
             || super::maintenance_writer_held_on(&tx, step.owner)?
         {
             bail!("Workflow owner admission held");
+        }
+        if view["steps"][index]["phase"] == "retained_unsent" {
+            let admission = w.admissions[index]
+                .as_ref()
+                .context("Missing retained workflow instruction")?;
+            // A retained label alone cannot prove the native never received it.
+            // Keep source, actor and exact local execution tied to the original
+            // terminal not_submitted observation; no UUID replacement or replay.
+            let proven: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN bot_state b ON b.key='heartbeat_execution:'||json_extract(i.doc,'$.local_turn') WHERE i.id=?1 AND s.human_id=?2 AND i.phase='retained_unsent' AND json_extract(i.doc,'$.native_turn') IS NULL AND json_extract(b.value,'$.source')=i.id AND json_extract(b.value,'$.owner') IS NOT NULL AND json_extract(b.value,'$.physical') IS NULL AND json_extract(b.value,'$.phase')='terminal' AND json_extract(b.value,'$.terminal_status')='not_submitted')",
+                params![admission.instruction, human], |row| row.get(0),
+            )?;
+            anyhow::ensure!(proven, "No exact unsubmitted delegated execution proof");
+            anyhow::ensure!(
+                super::interaction::recover_on(
+                    &tx,
+                    &admission.instruction,
+                    human,
+                    &self.instance_id
+                )?,
+                "Retained workflow recovery changed"
+            );
+            let recovered = instruction_on(&tx, human, &admission.instruction)?;
+            anyhow::ensure!(
+                !closed.is_cancelled(),
+                "Workflow recovery closed before commitment"
+            );
+            tx.commit()?;
+            return Ok(Some(recovered));
         }
         let predecessor = index
             .checked_sub(1)
@@ -4410,6 +4437,70 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_workflow_recovery_refuses_label_only_and_paused_authority() {
+        use crate::store::HeartbeatCommand as H;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let mut i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let local = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+            .unwrap();
+        s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+            .unwrap();
+        // A retained marker alone is not the exact native non-submission proof.
+        i = s.interaction_instruction(&i.id, 100).unwrap().unwrap();
+        i.phase = P::RetainedUnsent;
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='retained_unsent',doc=?2 WHERE id=?1",
+                params![i.id, serde_json::to_string(&i).unwrap()],
+            )
+            .unwrap();
+        let current = status(&s, &entry, view["id"].as_str().unwrap());
+        assert!(
+            s.interaction_workflow_advance(
+                100,
+                entry.key,
+                "native-1",
+                view["id"].as_str().unwrap(),
+                current["revision"].as_str().unwrap(),
+                &CancellationToken::new()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unsubmitted")
+        );
+        s.heartbeat_native_not_submitted(local).unwrap();
+        s.heartbeat_control(100, entry.key, H::Pause).unwrap();
+        assert!(
+            s.interaction_workflow_advance(
+                100,
+                entry.key,
+                "native-1",
+                view["id"].as_str().unwrap(),
+                current["revision"].as_str().unwrap(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            s.interaction_instruction(&i.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            P::RetainedUnsent
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            6
+        );
+    }
+
+    #[test]
     fn heartbeat_busy_child_requires_exact_unsent_proof_and_preserves_the_account() {
         use crate::store::HeartbeatCommand;
         let (_file, s, entry, plan) = setup();
@@ -4438,7 +4529,23 @@ mod tests {
                 .unwrap()["resources"]["reserved_provider_attempts"],
             6
         );
-        assert!(s.interaction_recover(&i.id, 100).unwrap());
+        let current = status(&s, &entry, view["id"].as_str().unwrap());
+        assert!(
+            s.interaction_workflow_advance(
+                100,
+                entry.key,
+                "wrong-native",
+                view["id"].as_str().unwrap(),
+                current["revision"].as_str().unwrap(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        let recovered = advance(&s, &entry, &current).unwrap();
+        assert_eq!(recovered.id, i.id);
+        assert_eq!(recovered.text, i.text);
+        let queued = status(&s, &entry, view["id"].as_str().unwrap());
+        assert!(advance(&s, &entry, &queued).is_none());
         let second = turn(&s, &target, &i.text);
         s.interaction_transport(&i.id, 100, second, P::Submitting, None)
             .unwrap();
