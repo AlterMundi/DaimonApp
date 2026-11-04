@@ -1802,3 +1802,20 @@ replay. This is a distinct unresolved incident, not proof of another empty
 transcript or a session-duration limit. Close diagnostics now include the
 receiving provider source location and an allowlisted original-reservation,
 completion or status operation, without exception text, arguments or payloads.
+
+After the reviewed original's raw reservation succeeds, its local phase becomes
+`unconfirmed`, using the existing review state. It no longer consumes one of
+the four in-flight completion slots; otherwise four individually reviewed noise
+spans would end an otherwise healthy conversation. Total original/PCM limits,
+private raw retention, explicit recovery and no-replay rules remain unchanged.
+The full-shell fixture also supports `--empty-input-count 5`: five retained
+unconfirmed originals followed by two completed phrases, without exhaustion of
+the in-flight slots or any fabricated transcript/work admission.
+
+The browser likewise separates these durably retained review originals from its
+two in-flight confirmations only after matching raw-retention and review events.
+It retains each local original for explicit recovery, with a128-original ceiling
+matching the acoustic owner and the existing session-wide PCM bound. The first
+five-empty browser qualifier exposed the old two-original client guard on its
+third span; that was an actual client gap, distinct from the earlier verifier
+assertion, and the guard now distinguishes review from in-flight confirmation.

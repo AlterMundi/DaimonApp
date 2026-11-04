@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const root=process.env.QUALIFICATION_OUTPUT,origin=process.env.FIXTURE_ORIGIN;const emptyInput=Number(process.env.QUALIFICATION_EMPTY_INPUT||0);assert(root&&origin,'Use dashboard_native_bootstrap.py to own the bounded server/output lifecycle');
+const root=process.env.QUALIFICATION_OUTPUT,origin=process.env.FIXTURE_ORIGIN;const emptyInput=Number(process.env.QUALIFICATION_EMPTY_INPUT||0),cycles=Number(process.env.QUALIFICATION_CYCLES||3);assert(root&&origin,'Use dashboard_native_bootstrap.py to own the bounded server/output lifecycle');
 const save=(name,value)=>fs.writeFileSync(path.join(root,name),JSON.stringify(value,null,2));
 (async()=>{let browser,context,page;const errors=[],http=[];
 try{
@@ -32,7 +32,7 @@ try{
  await page.waitForFunction(()=>fixture.engine?.active&&fixture.states.some(v=>v.active===true&&v.starting===false),{},{timeout:15000});
  assert.equal(await page.evaluate(()=>fixture.captureSessionSeconds),Number(process.env.QUALIFICATION_SECONDS||300));
  console.log('Full app cookie/bootstrap/avatar ready');
- for(let n=0;n<3;n++){
+ for(let n=0;n<cycles;n++){
   await page.evaluate(()=>fixture.injectTone());
   await page.waitForFunction(count=>fixture.sources.length>=count,n+1,{timeout:12000});
   if(n===0){
@@ -42,7 +42,7 @@ try{
    const recovered=page.waitForResponse(r=>new URL(r.url()).pathname.endsWith('/api/interaction')&&r.status()===200,{timeout:10000});
    await page.evaluate(()=>fetch('/fixture/control',{method:'POST',body:JSON.stringify({invalidate:true})}));await recovered;
   }
-  await page.waitForFunction(counts=>fixture.retained.length===counts.retained&&fixture.released.length===counts.released&&fixture.sources.every(v=>v.ended),{retained:n+1,released:n+1-emptyInput},{timeout:12000});
+  await page.waitForFunction(counts=>fixture.retained.length===counts.retained&&fixture.released.length===counts.released&&fixture.sources.every(v=>v.ended),{retained:n+1,released:Math.max(0,n+1-emptyInput)},{timeout:12000});
   assert.equal(await page.evaluate(()=>fixture.engine.active),true,'Native voice stays available for the next phrase');
   console.log('Completed full-app native cycle',n+1);
  }
@@ -53,11 +53,11 @@ try{
   assert.equal(finiteWorklet?.actualChromiumWorklet,true,'The browser must execute the fixture, not serialize its function');
   assert.equal(finiteWorklet.bytes,Number(process.env.QUALIFICATION_SECONDS)*32000);
  }
- const before=await page.evaluate(()=>fixture.report());assert.equal(before.engineCreations,1);assert.equal(before.pending,emptyInput);assert(before.captureFrames>0);assert.equal(before.sharedAuth,'true');assert.equal(before.appLoaded,true);assert.equal(before.retained.length,3);assert.equal(before.released.length,3-emptyInput);
+ const before=await page.evaluate(()=>fixture.report());assert.equal(before.engineCreations,1);assert.equal(before.pending,emptyInput);assert(before.captureFrames>0);assert.equal(before.sharedAuth,'true');assert.equal(before.appLoaded,true);assert.equal(before.retained.length,cycles);assert.equal(before.released.length,cycles-emptyInput);
  assert(http.some(v=>v.path.endsWith('/api/interaction/access')&&v.status===200));assert(http.some(v=>v.path.endsWith('/api/interaction/events')&&v.status===200));assert.equal(http.filter(v=>v.status>=500&&v.status!==503).length,0,JSON.stringify(http));assert.equal(errors.length,0,errors.join('\n'));
  await page.locator('dialog.voice-mode').getByRole('button',{name:'Back to conversation',exact:true}).click();
  await page.waitForFunction(()=>!fixture.engine.active&&fixture.trackStops===1&&fixture.inputContext.state==='closed'&&fixture.contexts.every(c=>c.state==='closed'),{},{timeout:10000});
- save('browser.json',{finiteWorklet,state:'actual-shell-shared-cookie-three-native-cycles-observed',before,after:await page.evaluate(()=>fixture.report()),http,errors,limits:'Synthetic identity/provider/detector/MediaStream. Actual shipped app bootstrap, worklet, output/IndexedDB, sockets/HTTP/SSE. No real account login/provider/native work/physical hearing qualified.'});
+ save('browser.json',{finiteWorklet,state:'actual-shell-shared-cookie-native-cycles-observed',cycles,before,after:await page.evaluate(()=>fixture.report()),http,errors,limits:'Synthetic identity/provider/detector/MediaStream. Actual shipped app bootstrap, worklet, output/IndexedDB, sockets/HTTP/SSE. No real account login/provider/native work/physical hearing qualified.'});
 }catch(error){if(page)try{save('browser-progress.json',await page.evaluate(()=>fixture.report()));}catch{}save('browser-error.json',{error:String(error),http,errors});throw error;}
 finally{if(page)try{await page.evaluate(()=>fixture.engine?.hold('Synthetic full-bootstrap cleanup'));}catch{}if(context)await context.close();if(browser)await browser.close();save('browser-closure.json',{closed:true});}
 })().catch(error=>{console.error(error);process.exitCode=1;});

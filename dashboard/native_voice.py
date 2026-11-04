@@ -154,7 +154,16 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             elif value['type']=='input_uninterpreted':
                 # Resolve waiting source reads without manufacturing a complete
                 # transcript. The original reservation/review remains intact.
-                bridge.captures[value['id']].interpretation_ready.set()
+                capture=bridge.captures[value['id']]
+                capture.interpretation_ready.set()
+                async def reviewed():
+                    await asyncio.shield(capture.reservation)
+                    await actor()
+                    # The raw original is durably retained, but its words are
+                    # unconfirmed. It no longer occupies an in-flight slot;
+                    # total original/PCM bounds and explicit recovery remain.
+                    capture.phase='unconfirmed'
+                launch(reviewed())
             elif value['type']=='input_interpreted':
                 capture=bridge.captures[value['id']]
                 async def completed():
