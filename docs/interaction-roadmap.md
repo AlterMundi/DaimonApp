@@ -22,6 +22,16 @@ working without it. Reuse the extraction already underway; do not create a
 parallel backend or duplicate session/goal stores. Preserve public APIs and
 receiving history, validate both Telegram-disabled app operation and the retained
 Telegram adapter, and document the resulting maintained component boundaries.
+Nicolas further clarifies that the existing **Telecodex development session stays
+Telecodex** and owns Telegram-specific work; it is not renamed or retired by the
+repository change. DaimonApp and Telecodex are intended to be independently
+usable domains/clients that can interoperate through a common backend when
+selected. Neither client should require the other. Talking with a daimon through
+the app, including children's use, must not require a Telegram account, bot or
+transport. Preserve both current access paths during this evolution. The common
+backend owns shared native state/coordination through explicit contracts rather
+than one frontend importing or depending on the other frontend's lifecycle.
+
 This remaining refactor is explicitly **not the current priority or a new gate**
 for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
