@@ -14,6 +14,18 @@ pub(super) async fn execute(
         bail!("Heartbeat control belongs to the configured integrating entry");
     }
     if let HeartbeatCommand::ConfigureProducer { contract, .. } = &command {
+        if let Some(purpose) = &contract.purpose {
+            let purpose: &crate::store::HeartbeatPurpose = purpose;
+            if matches!(
+                purpose.input_ref,
+                crate::interaction::InputReference::Telegram(_)
+            ) {
+                anyhow::ensure!(
+                    purpose.channel == format!("telegram:{}", app.shared.bot_id),
+                    "Human purpose must use this receiver's actual Telegram original identity"
+                );
+            }
+        }
         if let Some(source) = &contract.matrix_inbox {
             super::matrix::inbox_matches(&cfg, source)?;
         }

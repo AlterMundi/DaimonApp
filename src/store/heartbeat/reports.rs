@@ -121,6 +121,23 @@ impl Store {
                 && producer::bound(&conn, &parent)?,
             "Heartbeat report owner retired"
         );
+        if source_id == "purpose:human" {
+            let offered = &parent.native_returns[index].envelope["operating_purpose"];
+            anyhow::ensure!(
+                offered["revision"] == revision,
+                "Human purpose was not offered at this revision"
+            );
+            let (source, actual) = producer::purpose_on(&conn, &parent)?
+                .context("No human operating-purpose original selected")?;
+            anyhow::ensure!(actual == revision, "Human purpose source changed");
+            let total = source.text.chars().count();
+            anyhow::ensure!(offset <= total, "Human purpose offset exceeds source");
+            let text: String = source.text.chars().skip(offset).take(12000).collect();
+            let next = offset + text.chars().count();
+            return Ok(
+                json!({"source":"purpose:human","revision":revision,"input_ref":parent.contract.purpose.as_ref().unwrap().input_ref,"human_id":source.human_id,"channel":source.channel,"event_id":source.event_id,"text":text,"total_chars":total,"next_offset":if next<total{Some(next)}else{None},"retained_human_original":true,"new_human_input":false,"publication_grant":false,"meaning":"Actual earlier human original, not a new utterance or an expansion of its task scope. Peer evidence remains separately attributed."}),
+            );
+        }
         let key = format!("report:{source_id}");
         let offers: Vec<producer::Offer> =
             serde_json::from_value(parent.native_returns[index].envelope["offers"].clone())?;

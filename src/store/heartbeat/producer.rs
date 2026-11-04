@@ -2,11 +2,14 @@
 //! One bounded source parent per entry; no additional scheduler or input queue.
 use super::*;
 use crate::store::workflows::{ReturnDispatch, WorkflowReturn};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeartbeatProducerContract {
+    #[serde(default)]
+    pub purpose: Option<HeartbeatPurpose>,
     pub interval_seconds: u32,
     pub max_checks: u32,
     pub expires_at_unix_ms: i64,
@@ -16,6 +19,61 @@ pub struct HeartbeatProducerContract {
     pub workflows: bool,
     #[serde(default)]
     pub reports: Vec<super::HeartbeatReportSource>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatPurpose {
+    pub input_ref: crate::interaction::InputReference,
+    pub channel: String,
+}
+fn purpose_source(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    native: &str,
+    purpose: &HeartbeatPurpose,
+) -> Result<(crate::interaction::SourceInput, String)> {
+    use crate::interaction::InputReference;
+    anyhow::ensure!(
+        match &purpose.input_ref {
+            InputReference::Conversation(_) => purpose.channel == "conversation",
+            InputReference::Telegram(_) => purpose
+                .channel
+                .strip_prefix("telegram:")
+                .is_some_and(|v| v.parse::<u64>().is_ok_and(|n| n > 0)),
+        },
+        "Select the actual retained human original channel"
+    );
+    let (source, _) = crate::store::dialogue::original_owned_on(
+        conn,
+        entry,
+        human,
+        native,
+        &purpose.input_ref,
+        &purpose.channel,
+        false,
+    )?;
+    anyhow::ensure!(
+        !source.text.trim().is_empty() && source.text.len() <= 16384,
+        "Bounded retained human operating purpose required"
+    );
+    let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&source)?));
+    Ok((source, revision))
+}
+pub(super) fn purpose_on(
+    conn: &Connection,
+    p: &Parent,
+) -> Result<Option<(crate::interaction::SourceInput, String)>> {
+    let Some(purpose) = &p.contract.purpose else {
+        return Ok(None);
+    };
+    let (source, revision) = purpose_source(conn, p.human, p.entry, &p.native, purpose)?;
+    anyhow::ensure!(
+        p.purpose_revision.as_deref() == Some(revision.as_str()),
+        "Human operating-purpose original changed or retired"
+    );
+    Ok(Some((source, revision)))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -46,6 +104,8 @@ pub(in crate::store) struct Offer {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::store) struct Parent {
+    #[serde(default)]
+    pub purpose_revision: Option<String>,
     pub human: i64,
     pub entry: SessionKey,
     pub session: i64,
@@ -143,6 +203,9 @@ pub(in crate::store) fn current(
     if !admission {
         return Ok(true);
     }
+    if purpose_on(conn, p).is_err() {
+        return Ok(false);
+    }
     let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
     for offer in offers {
         if offer.key == "matrix-inbox-status" {
@@ -239,6 +302,13 @@ pub(in crate::store) fn configure_on(
         "Select finite heartbeat sources, frequency and expiry"
     );
     let (session, native) = super::super::presentation::entry_on(conn, human, entry)?;
+    let purpose_revision = contract
+        .purpose
+        .as_ref()
+        .map(|purpose| {
+            purpose_source(conn, human, entry, &native, purpose).map(|(_, revision)| revision)
+        })
+        .transpose()?;
     let resources = resources::status_on(conn, session, human)?;
     anyhow::ensure!(
         resources["state"] == "available"
@@ -254,6 +324,7 @@ pub(in crate::store) fn configure_on(
     save(
         conn,
         &Parent {
+            purpose_revision,
             human,
             entry,
             session,
@@ -280,6 +351,8 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "stopped"
     } else if !bound(conn, &p)? {
         "binding_retired"
+    } else if purpose_on(conn, &p).is_err() {
+        "purpose_retired"
     } else if Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms {
         "expired"
     } else if p.checks >= p.contract.max_checks {
@@ -358,6 +431,7 @@ fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
         || p.native != c.native
         || p.epoch != c.epoch
         || !bound(conn, &p)?
+        || purpose_on(conn, &p).is_err()
         || !generation_current_on(conn, c.human, c.entry, c.generation)?
         || Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
         || resources::status_on(conn, c.session, c.human)?["state"] != "available"
@@ -397,7 +471,7 @@ impl Store {
                 |r| r.get::<_, String>(0),
             )
             .map(|raw| serde_json::from_str(&raw))??;
-        if control.paused || !bound(&tx, &p)? {
+        if control.paused || !bound(&tx, &p)? || purpose_on(&tx, &p).is_err() {
             return Ok(None);
         }
         // Restart keeps original uncertainty and the same bounded retry journal.
@@ -576,8 +650,11 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
+        let id = format!("heartbeat:{human}:{session}:{}", Uuid::now_v7());
         let mut envelope = json!({"schema":"daimon.heartbeat-offer/v1","offers":selected,"internal_evidence":true,"publication_grant":false});
-        use sha2::{Digest, Sha256};
+        if let Some((source, revision)) = purpose_on(&tx, &p)? {
+            envelope["operating_purpose"] = json!({"input_ref":p.contract.purpose.as_ref().unwrap().input_ref,"human_id":human,"channel":source.channel,"event_id":source.event_id,"revision":revision,"reader":{"operation":"heartbeat_source","arguments":{"return_id":id,"source":"purpose:human","revision":revision,"offset":0}},"meaning":"Actual retained human operating-purpose original, not new speech or peer authority. Read before selecting an ordinary workflow under this same original and preserve peer source attribution."});
+        }
         envelope["revision"] = json!(format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&envelope)?)
@@ -588,7 +665,6 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
-        let id = format!("heartbeat:{human}:{session}:{}", Uuid::now_v7());
         let r = WorkflowReturn {
             id: id.clone(),
             workflow: String::new(),
@@ -702,6 +778,7 @@ mod inbox_tests {
             H::ConfigureProducer {
                 generation: 1,
                 contract: HeartbeatProducerContract {
+                    purpose: None,
                     interval_seconds: 30,
                     max_checks: 6,
                     expires_at_unix_ms: expiry,

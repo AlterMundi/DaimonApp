@@ -3886,6 +3886,7 @@ mod tests {
             H::ConfigureProducer {
                 generation: 1,
                 contract: HeartbeatProducerContract {
+                    purpose: None,
                     matrix_inbox: None,
                     interval_seconds: 30,
                     max_checks,
@@ -4139,6 +4140,111 @@ mod tests {
         assert_eq!(status["producer"]["checks"], 2);
         assert_eq!(status["producer"]["state"], "check_capacity");
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+    }
+
+    #[test]
+    fn heartbeat_operating_purpose_is_actual_human_original_and_hash_fenced() {
+        use crate::store::{HeartbeatCommand as H, HeartbeatProducerContract, HeartbeatPurpose};
+        let (_file, s, e, plan) = setup();
+        producer_work(&s, &e, plan.clone());
+        s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        let resources = crate::store::heartbeat::test_contract();
+        let expiry = resources.expires_at_unix_ms;
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ConfigureResources {
+                generation: 1,
+                contract: resources,
+            },
+        )
+        .unwrap();
+        let mut contract = HeartbeatProducerContract {
+            purpose: Some(HeartbeatPurpose {
+                input_ref: InputReference::Conversation(Uuid::now_v7().to_string()),
+                channel: "conversation".into(),
+            }),
+            interval_seconds: 30,
+            max_checks: 4,
+            expires_at_unix_ms: expiry,
+            matrix_replies: false,
+            matrix_inbox: None,
+            workflows: true,
+            reports: vec![],
+        };
+        assert!(
+            s.heartbeat_control(
+                100,
+                e.key,
+                H::ConfigureProducer {
+                    generation: 1,
+                    contract: contract.clone()
+                }
+            )
+            .is_err()
+        );
+        contract.purpose.as_mut().unwrap().input_ref = plan.input_ref.clone();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ConfigureProducer {
+                generation: 1,
+                contract,
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, e.key, H::Resume { generation: 1 })
+            .unwrap();
+        let r = s.heartbeat_produce(100, e.key).unwrap().unwrap();
+        let output: Value = serde_json::from_str(&r.output).unwrap();
+        let purpose = &output["evidence"]["operating_purpose"];
+        assert_eq!(
+            purpose["input_ref"],
+            serde_json::to_value(&plan.input_ref).unwrap()
+        );
+        let revision = purpose["revision"].as_str().unwrap();
+        let exact = s
+            .heartbeat_source(100, e.key, "native-1", &r.id, "purpose:human", revision, 0)
+            .unwrap();
+        assert_eq!(exact["retained_human_original"], true);
+        assert_eq!(exact["new_human_input"], false);
+        assert!(
+            exact["text"]
+                .as_str()
+                .unwrap()
+                .contains("A produces a checkpoint")
+        );
+        assert!(
+            s.heartbeat_source(
+                100,
+                e.key,
+                "native-1",
+                &r.id,
+                "purpose:human",
+                "changed-revision",
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_source(101, e.key, "native-1", &r.id, "purpose:human", revision, 0)
+                .is_err()
+        );
+        s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        assert!(
+            s.heartbeat_source(100, e.key, "native-1", &r.id, "purpose:human", revision, 0)
+                .is_ok()
+        );
+        // Deliberate fixture corruption must not silently rebind the purpose.
+        s.conn.lock().unwrap().execute("UPDATE conversation_inputs SET doc=json_set(doc,'$.text','Changed source bytes') WHERE id=?1",[plan.input_ref.event()]).unwrap();
+        let status = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["state"], "purpose_retired");
+        assert_eq!(status["producer"]["checks"], 1);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        assert!(
+            s.heartbeat_source(100, e.key, "native-1", &r.id, "purpose:human", revision, 0)
+                .is_err()
+        );
     }
 
     #[test]

@@ -144,6 +144,27 @@ sources/cursor and uses the existing bounded batch/attention account. An admitte
 read may finish during pause, but cannot commit a late page or start attention.
 There is no second scheduler, queue, resource refill or producer.
 
+The optional finite contract `purpose = {input_ref = "ACTUAL_ORIGINAL_UUID",
+channel = "conversation"}` selects an already accepted human operating request
+in this same native entry. Integer Telegram originals retain this receiver's
+actual `telegram:BOT_ID` provenance; Telegram is not required. Configuration
+looks up the actual retained original and freezes its source hash. Missing,
+foreign, unaccepted, changed or retired originals refuse; no replacement text is
+accepted. A changed purpose prevents further checks/admission and is explicit
+as `purpose_retired`, without erasing already committed history or refilling fuel.
+
+Each nonempty batch carries only its `operating_purpose` reference/revision and
+an exact `heartbeat_source` reader using `purpose:human`. That reader returns
+the earlier human text in bounded parts, including while admission is paused;
+it creates no new input or publication grant. The integrator can use that actual
+`input_ref` with ordinary `workflow_declare`, adding separately attributed peer
+evidence to the bounded step scope. Existing workflow ownership, idle-only child
+admission, conserved account, source/result correlation and scoped pause continue
+to apply. A peer message or metadata offer never becomes the human request.
+The optional purpose supplies context, not a model judgment that its text
+authorizes every proposed task. Existing separately authorized workflows retain
+their actual human originals; this adds no second task/authority engine.
+
 No-news reads are silent. Failed source reads consume checks and produce one
 revision-bound availability notice, with a separate recovery notice; unchanged
 failures do not repeatedly activate the integrator. Page retention uses a
@@ -197,7 +218,7 @@ leaves originals/intents inspectable rather than deleting history or resending.
 There is no new scheduler, reasoner, credential or model call in this adapter.
 
 Batch review alone is not a response or permission to reinterpret peer speech as
-human instructions. Attention-origin worker dispatch, selected task/DMK/editorial
+human instructions. Selected task/DMK/editorial
 follow-through and actual combined receiving/model/spoken acceptance remain
 unfinished. The finite producer remains unconfigured in production.
 
