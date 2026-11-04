@@ -64,7 +64,21 @@ must qualify its actual live/delegation ownership against our existing
 integrating thread and persistence; do not start a second agent that competes
 with the integrator, bypass original admission, or restart an active native
 server just to audition a voice. Keep this route as an explicit alternative
-while the existing API-key request remains pending.
+before requesting a separate API key. Nicolas selected checking the existing
+Codex/ChatGPT login first; the prior key-handoff task is withdrawn, not an access
+or trial completion. A read-only check reports the installed CLI uses ChatGPT
+login. The inspected source separates WebSocket API-key authentication from its
+experimental WebRTC/existing-call path. Protocol/source support does not establish
+that the installed build, selected account and voice service actually accept the
+route. Qualify that supported path without copying login tokens into the public
+API adapter or changing active native sessions.
+
+Official authentication documentation distinguishes subscription Codex login from
+project API use. The public GPT-Live WebRTC guide requires project API access;
+that requirement must not be generalized into a claim that no supported Codex
+voice route can reuse its own login.
+[Codex authentication](https://learn.chatgpt.com/docs/auth),
+[GPT-Live WebRTC](https://developers.openai.com/api/docs/guides/voice-webrtc).
 
 Human correction4November: optimize for the best conversational workflow, not
 minimum changes to our current implementation. GPT-Live's official migration
