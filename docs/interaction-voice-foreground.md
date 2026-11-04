@@ -1819,3 +1819,21 @@ matching the acoustic owner and the existing session-wide PCM bound. The first
 five-empty browser qualifier exposed the old two-original client guard on its
 third span; that was an actual client gap, distinct from the earlier verifier
 assertion, and the guard now distinguishes review from in-flight confirmation.
+
+Recovery envelopes with three or more originals use `telecodex.voice-recovery/v3`
+in the existing IndexedDB pending key, at most128 records/20MiB combined. A
+matching review mark updates metadata only; reload performs no submission and
+retains every blob. Reducing the queue returns to the v2 two-item or legacy
+single-item representation. Previous readers refuse unknown v3 without mutation.
+A rollback after activation must retain the v3-compatible `microphone.js` reader;
+restore the retained compatibility rollback bundle, not the older reader or any
+journal/database snapshot. The receiving preparation preserves that bundle
+before selection. Expanded recovery had an independent focused read-only review;
+source review is distinct from actual Chromium/device acceptance.
+
+The extended fixture also exposed an old driver race: waiting for all currently
+scheduled buffers to end could inject the next phrase before the previous
+response finished streaming. Its evidence retained interrupted playback offsets.
+The driver now waits for the complete known synthetic PCM frame count and
+non-stopped ended sources before each next phrase; partial/cancelled playback
+is no longer mistaken for a full response.

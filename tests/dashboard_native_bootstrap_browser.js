@@ -42,7 +42,7 @@ try{
    const recovered=page.waitForResponse(r=>new URL(r.url()).pathname.endsWith('/api/interaction')&&r.status()===200,{timeout:10000});
    await page.evaluate(()=>fetch('/fixture/control',{method:'POST',body:JSON.stringify({invalidate:true})}));await recovered;
   }
-  await page.waitForFunction(counts=>fixture.retained.length===counts.retained&&fixture.released.length===counts.released&&fixture.sources.every(v=>v.ended),{retained:n+1,released:Math.max(0,n+1-emptyInput)},{timeout:12000});
+  await page.waitForFunction(counts=>fixture.retained.length===counts.retained&&fixture.released.length===counts.released&&fixture.sources.every(v=>v.ended&&!v.stopped)&&fixture.sources.reduce((sum,v)=>sum+v.frames,0)===counts.retained*24000,{retained:n+1,released:Math.max(0,n+1-emptyInput)},{timeout:12000});
   assert.equal(await page.evaluate(()=>fixture.engine.active),true,'Native voice stays available for the next phrase');
   console.log('Completed full-app native cycle',n+1);
  }
