@@ -369,3 +369,23 @@ still require implementation before activation. Do not present this flag as
 proof that an already-running provider call stopped. Ordinary human contact,
 shared maintenance, goals and funding remain unchanged. The same paired-human
 visible/audio work-trail requirement remains pending alongside owned execution.
+
+### Heartbeat generation at existing native return boundaries
+
+An optional server-owned `attention_generation` on the existing native-return
+receipt closes its admission when the shared control is paused, missing or on
+another generation. The existing transactional link/submitting checks and final
+steering/submission validation use that same fence. Ordinary returns omit the
+field, preserving their existing serialized history and separate policy. Pause
+never invalidates presentation/history reads or drops a late canonical native
+ACK. Resume never reopens a previous submitting/uncertain generation.
+
+This adds no public source-tagging API or funding grant. The heartbeat producer,
+idle-only physical ownership, bounded/coalesced admission and exact owned
+interruption still need implementation before activation. A tagged receipt alone
+is not proof that its physical turn is exclusively owned; do not use it as
+permission to interrupt a human execution.
+An RPC already between final validation and its ACK remains a retained
+submitting/uncertain operation; exact ownership, interruption and terminal
+observation must close that race before automatic attention is selected. These
+checks do not establish provider quiescence.

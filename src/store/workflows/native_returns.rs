@@ -25,6 +25,10 @@ pub(crate) struct WorkflowReturn {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workflow: String,
+    /// Set only by a future server-owned heartbeat producer, never peer content.
+    /// Ordinary human-authorized returns retain their independent policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_revision: Option<String>,
     pub envelope: Value,
@@ -197,6 +201,17 @@ fn current_on(
     admission: bool,
 ) -> Result<bool> {
     let r = &context.native_returns[index];
+    if admission
+        && let Some(generation) = r.attention_generation
+        && !super::super::heartbeat::generation_current_on(
+            conn,
+            context.human,
+            context.entry,
+            generation,
+        )?
+    {
+        return Ok(false);
+    }
     match &context.parent {
         ReturnParent::Foreground(parent) => foreground::current(conn, parent, r, admission),
         ReturnParent::Routed(parent) => routed::current(conn, parent, r, admission),
@@ -514,6 +529,7 @@ impl Store {
                 let r = WorkflowReturn {
                     id: id.clone(),
                     workflow: w.id.clone(),
+                    attention_generation: None,
                     reported_revision: None,
                     envelope: envelope.clone(),
                     phase: "reserved".into(),

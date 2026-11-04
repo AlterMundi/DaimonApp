@@ -17,6 +17,29 @@ struct Control {
     generation: u64,
     changed_at: String,
 }
+/// Admission-only fence. Presentation/history remain readable while paused.
+/// A missing control record never authorizes an automatic attention generation.
+pub(super) fn generation_current_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    generation: u64,
+) -> Result<bool> {
+    let (session, _) = super::presentation::entry_on(conn, human, entry)?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let control: Control = serde_json::from_str(&raw)?;
+    Ok(!control.paused && control.generation == generation)
+}
+
 impl Store {
     /// One control record per existing integrating entry. Restart never resumes
     /// attention or replenishes a resource account. Default is paused.
