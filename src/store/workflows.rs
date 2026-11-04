@@ -70,10 +70,24 @@ pub struct WorkflowStep {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_instruction: Option<String>,
     pub request_id: String,
     pub input_ref: InputReference,
     pub expires_at: String,
     pub steps: Vec<WorkflowStep>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PrimaryRouting {
+    instruction: String,
+    input_id: String,
+    target_session: i64,
+    target: SessionKey,
+    native: String,
+    binding: String,
+    requests: Vec<String>,
+    source_hash: String,
+    epoch: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Admission {
@@ -82,6 +96,8 @@ struct Admission {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Workflow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary: Option<PrimaryRouting>,
     id: String,
     human: i64,
     entry: SessionKey,
@@ -151,7 +167,24 @@ fn live_on(conn: &Connection, w: &Workflow) -> Result<bool> {
         &w.source.channel,
         false,
     )?;
-    Ok(original == w.source)
+    if original != w.source {
+        return Ok(false);
+    }
+    if let Some(primary) = &w.primary {
+        if primary_on(conn, w.human, &w.source, &primary.instruction)
+            .ok()
+            .as_ref()
+            != Some(primary)
+        {
+            return Ok(false);
+        }
+        for step in &w.plan.steps {
+            if !primary_target_allowed(conn, w.human, primary, step.owner)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 fn owner_on(conn: &Connection, human: i64, key: SessionKey) -> Result<(i64, String)> {
     Ok(conn.query_row("SELECT s.id,s.codex_thread_id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND s.force_fresh_thread=0 AND s.codex_thread_id IS NOT NULL",params![key.chat_id,key.thread_id,human],|r|Ok((r.get(0)?,r.get(1)?)))?)
@@ -161,6 +194,90 @@ fn instruction_on(conn: &Connection, human: i64, id: &str) -> Result<Instruction
     let mut i: Instruction = serde_json::from_str(&raw)?;
     i.phase = phase.as_str().try_into()?;
     Ok(i)
+}
+fn primary_on(
+    conn: &Connection,
+    human: i64,
+    source: &SourceInput,
+    id: &str,
+) -> Result<PrimaryRouting> {
+    anyhow::ensure!(
+        Uuid::parse_str(id).is_ok_and(|u| u.to_string() == id),
+        "Exact primary instruction UUID required"
+    );
+    let i = instruction_on(conn, human, id)?;
+    let (session, native) = owner_on(conn, human, i.target)?;
+    let epoch = super::stopping::admission_epoch_on(conn, i.target)?;
+    let withdrawn:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_session_withdrawals WHERE parent_instruction=?1) OR EXISTS(SELECT 1 FROM interaction_session_authors WHERE input_id=?2)",params![id,i.input_id],|r|r.get(0))?;
+    anyhow::ensure!(
+        !withdrawn
+            && i.human_id == human
+            && i.target_session == session
+            && i.phase == crate::interaction::TransportPhase::Accepted
+            && i.native_thread.as_deref() == Some(native.as_str())
+            && i.admission_epoch.as_deref() == Some(epoch.as_str())
+            && !super::stopping::fenced_on(conn, i.target)?
+            && !super::maintenance_writer_held_on(conn, i.target)?,
+        "Primary routing is not a current accepted human instruction"
+    );
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_sources WHERE id=?1 AND human_id=?2",
+        params![i.input_id, human],
+        |r| r.get(0),
+    )?;
+    let original: SourceInput = serde_json::from_str(&raw)?;
+    let mut normalized = original.clone();
+    normalized.target_sessions.clear();
+    let mut expected = source.clone();
+    expected.target_sessions.clear();
+    anyhow::ensure!(
+        normalized == expected,
+        "Primary belongs to another human original"
+    );
+    Ok(PrimaryRouting {
+        instruction: id.into(),
+        input_id: i.input_id,
+        target_session: session,
+        target: i.target,
+        native,
+        binding: super::presentation::entry_binding(conn, human, i.target, session)?,
+        requests: i.requests,
+        source_hash: digest(&original)?,
+        epoch,
+    })
+}
+fn primary_target_allowed(
+    conn: &Connection,
+    human: i64,
+    primary: &PrimaryRouting,
+    target: SessionKey,
+) -> Result<bool> {
+    super::session_requests::interview_target_allowed_on(
+        conn,
+        human,
+        primary.target_session,
+        target,
+    )
+}
+fn primary_view(primary: &PrimaryRouting) -> Value {
+    json!({"instruction":primary.instruction,"target":primary.target,"requests":primary.requests,"meaning":"Existing primary owner and original request coverage are retained. This workflow is an additional scoped subtask, not a replay, replacement or completion of that original."})
+}
+pub(in crate::store) fn purpose_parents_on(
+    conn: &Connection,
+    human: i64,
+    source: &SourceInput,
+) -> Result<Value> {
+    let mut q=conn.prepare("SELECT i.id FROM interaction_instructions i JOIN interaction_sources x ON x.id=i.input_id WHERE x.human_id=?1 AND x.channel=?2 AND x.event_id=?3 ORDER BY i.sequence LIMIT 6")?;
+    let ids = q
+        .query_map(params![human, source.channel, source.event_id], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        ids.len() <= 5,
+        "Original primary routing exceeds bounded selection"
+    );
+    Ok(json!(ids.iter().map(|id|match primary_on(conn,human,source,id){Ok(p)=>primary_view(&p),Err(_)=>json!({"instruction":id,"state":"unavailable","meaning":"Not a current accepted human primary; do not replay it"})}).collect::<Vec<_>>()))
 }
 fn result_on(conn: &Connection, w: &Workflow, index: usize) -> Result<Option<(Value, Delivery)>> {
     let Some(a) = &w.admissions[index] else {
@@ -238,6 +355,9 @@ fn view_on(conn: &Connection, w: &Workflow) -> Result<Value> {
         "active"
     };
     let mut view = json!({"schema":"telecodex.workflow/v1","id":w.id,"input_ref":w.plan.input_ref,"request_id":w.plan.request_id,"entry":w.entry,"expires_at":w.plan.expires_at,"phase":phase,"steps":steps,"final_checkpoint":w.final_checkpoint,"supersession":w.supersession,"authority":"retained original human input; worker results are internal evidence","publication_grant":false});
+    if let Some(primary) = &w.primary {
+        view["primary_routing"] = primary_view(primary);
+    }
     view["revision"] = json!(digest(&view)?);
     let mut returns = Vec::new();
     for r in &w.native_returns {
@@ -617,9 +737,22 @@ impl Store {
             format!("telecodex:workflow:{human}:{session}:{source_key}").as_bytes(),
         )
         .to_string();
-        let selected:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND channel=?2 AND event_id=?3) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4)",params![human,source.channel,source.event_id,plan.input_ref],|r|r.get(0))?;
-        if selected {
+        let (selected,creation):(bool,bool)=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND channel=?2 AND event_id=?3),EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4)",params![human,source.channel,source.event_id,plan.input_ref],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        if creation || selected && plan.parent_instruction.is_none() {
             bail!("Original already has a dispatch or creation plan");
+        }
+        let primary = plan
+            .parent_instruction
+            .as_deref()
+            .map(|id| primary_on(&tx, human, &source, id))
+            .transpose()?;
+        for step in &plan.steps {
+            if let Some(primary) = &primary {
+                anyhow::ensure!(
+                    primary_target_allowed(&tx, human, primary, step.owner)?,
+                    "An interview cannot activate its pinned source work"
+                );
+            }
         }
         let retained: i64 =
             tx.query_row("SELECT count(*) FROM interaction_workflows", [], |r| {
@@ -640,6 +773,7 @@ impl Store {
             owner_on(&tx, human, step.owner)?;
         }
         let w = Workflow {
+            primary,
             id: id.clone(),
             human,
             entry,
@@ -780,7 +914,7 @@ impl Store {
         let predecessor = index
             .checked_sub(1)
             .map(|i| view["steps"][i]["result"].clone());
-        let text = format!(
+        let mut text = format!(
             "Preauthorized workflow step, authored by the integrating session. This is internal session context under the retained human task, never a new human instruction or permission to transfer ownership/create helpers. Workflow: {}. Step: {}. Original input: {}. Required checkpoint: {}. Scope:\n{}\nPredecessor source (read its exact revision with workflow_result before relying on it): {}",
             w.id,
             step.id,
@@ -789,6 +923,9 @@ impl Store {
             step.scope,
             serde_json::to_string(&predecessor)?
         );
+        if let Some(primary) = &w.primary {
+            text.push_str(&format!("\nExisting primary routing, whose owner and original request coverage remain unchanged: {}",primary_view(primary)));
+        }
         let source = SourceInput {
             tribu_source: None,
             transcription: None,
@@ -815,7 +952,10 @@ impl Store {
             "UPDATE interaction_instructions SET doc=?2 WHERE id=?1",
             params![i.id, serde_json::to_string(&i)?],
         )?;
-        let author = json!({"kind":"workflow_step","session":entry,"native_thread":native,"workflow":w.id,"step":step.id,"input_ref":w.plan.input_ref,"authorized_human":human,"predecessor":predecessor});
+        let mut author = json!({"kind":"workflow_step","session":entry,"native_thread":native,"workflow":w.id,"step":step.id,"input_ref":w.plan.input_ref,"authorized_human":human,"predecessor":predecessor});
+        if let Some(primary) = &w.primary {
+            author["primary_routing"] = primary_view(primary);
+        }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
             params![i.input_id, author.to_string()],
@@ -1283,6 +1423,7 @@ mod tests {
         let a = session(&s, 7);
         let b = session(&s, 8);
         let plan = WorkflowPlan {
+            parent_instruction: None,
             request_id: "selected-work".into(),
             input_ref: original(
                 &s,
@@ -1409,6 +1550,191 @@ mod tests {
             &"Result α\n".repeat(400),
         );
         (instruction, delivery)
+    }
+    fn selected_primary(s: &Store, e: &SessionRecord, reference: &InputReference) -> Instruction {
+        let (mut source, _) = s
+            .interaction_entry_original(e.key, 100, "native-1", reference, "conversation")
+            .unwrap();
+        let target = s
+            .get_session(SessionKey::new(100, Some(7)))
+            .unwrap()
+            .unwrap();
+        source.target_sessions = vec![target.id];
+        let (primary, _) = s
+            .interaction_admit(&source, target.key, RequestRelation::New)
+            .unwrap();
+        s.interaction_bind_epoch(&primary.id, 100, "initial")
+            .unwrap();
+        accept(s, &primary);
+        s.interaction_instruction(&primary.id, 100)
+            .unwrap()
+            .unwrap()
+    }
+    #[test]
+    fn selected_human_primary_can_link_an_additional_workflow_without_replay_or_transfer() {
+        let (_f, s, e, mut plan) = setup();
+        let primary = selected_primary(&s, &e, &plan.input_ref);
+        plan.request_id = "additional-evidence-check".into();
+        plan.steps.truncate(1);
+        plan.steps[0].owner = SessionKey::new(100, Some(8));
+        plan.steps[0].scope =
+            "Check the additional selected peer evidence; keep primary implementation ownership."
+                .into();
+        let before = serde_json::to_value(
+            s.interaction_instruction(&primary.id, 100)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        plan.parent_instruction = Some(Uuid::now_v7().to_string());
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        plan.parent_instruction = Some(primary.id.clone());
+        let view = declare(&s, &e, plan.clone());
+        assert_eq!(view["primary_routing"]["instruction"], primary.id);
+        assert_eq!(
+            view["primary_routing"]["target"],
+            serde_json::to_value(primary.target).unwrap()
+        );
+        assert_eq!(declare(&s, &e, plan.clone())["id"], view["id"]);
+        let mut changed = plan;
+        changed.steps[0].scope.push_str(" changed");
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                changed,
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        let child = advance(&s, &e, &view).unwrap();
+        assert!(
+            child
+                .text
+                .contains("whose owner and original request coverage remain unchanged")
+        );
+        assert!(
+            child
+                .requests
+                .iter()
+                .all(|id| !primary.requests.contains(id))
+        );
+        accept(&s, &child);
+        assert_eq!(
+            s.interaction_author(&child.id, 100).unwrap().unwrap()["primary_routing"]["instruction"],
+            primary.id
+        );
+        assert_eq!(
+            serde_json::to_value(
+                s.interaction_instruction(&primary.id, 100)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            before
+        );
+        s.interaction_withdraw_session_requests(primary.target)
+            .unwrap();
+        assert!(!s.interaction_session_input_allowed(&child.id, 100).unwrap());
+        assert_eq!(
+            status(&s, &e, view["id"].as_str().unwrap())["phase"],
+            "retired"
+        );
+        assert_eq!(
+            s.interaction_instruction(&child.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            P::Accepted
+        );
+        assert_eq!(
+            serde_json::to_value(
+                s.interaction_instruction(&primary.id, 100)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            before
+        );
+    }
+    #[test]
+    fn linked_primary_rejects_another_original_session_authorship_and_rebound_owner() {
+        let (_f, s, e, mut plan) = setup();
+        let primary = selected_primary(&s, &e, &plan.input_ref);
+        let different = original(&s, &e, "A different actual human original.");
+        plan.parent_instruction = Some(primary.id.clone());
+        plan.input_ref = different;
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        let (_f, s, e, mut plan) = setup();
+        let primary = selected_primary(&s, &e, &plan.input_ref);
+        plan.parent_instruction = Some(primary.id.clone());
+        let view = declare(&s, &e, plan);
+        s.set_session_codex_thread(primary.target, "replacement-native")
+            .unwrap();
+        s.set_session_codex_thread(primary.target, "native-7")
+            .unwrap();
+        assert_eq!(
+            status(&s, &e, view["id"].as_str().unwrap())["phase"],
+            "retired"
+        );
+        let (_f, s, e, mut plan) = setup();
+        let primary = selected_primary(&s, &e, &plan.input_ref);
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO interaction_session_authors(input_id,doc) VALUES(?1,?2)",
+                params![
+                    primary.input_id,
+                    json!({"kind":"session_request","authorized_human":100}).to_string()
+                ],
+            )
+            .unwrap();
+        plan.parent_instruction = Some(primary.id);
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan,
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn heartbeat_generation_fences_native_admission_without_erasing_history_or_ack() {

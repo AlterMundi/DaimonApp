@@ -134,8 +134,9 @@ impl Store {
             anyhow::ensure!(offset <= total, "Human purpose offset exceeds source");
             let text: String = source.text.chars().skip(offset).take(12000).collect();
             let next = offset + text.chars().count();
+            let parents = crate::store::workflows::purpose_parents_on(&conn, human, &source)?;
             return Ok(
-                json!({"source":"purpose:human","revision":revision,"input_ref":parent.contract.purpose.as_ref().unwrap().input_ref,"human_id":source.human_id,"channel":source.channel,"event_id":source.event_id,"text":text,"total_chars":total,"next_offset":if next<total{Some(next)}else{None},"retained_human_original":true,"new_human_input":false,"publication_grant":false,"meaning":"Actual earlier human original, not a new utterance or an expansion of its task scope. Peer evidence remains separately attributed."}),
+                json!({"source":"purpose:human","revision":revision,"input_ref":parent.contract.purpose.as_ref().unwrap().input_ref,"human_id":source.human_id,"channel":source.channel,"event_id":source.event_id,"text":text,"total_chars":total,"next_offset":if next<total{Some(next)}else{None},"retained_human_original":true,"new_human_input":false,"primary_routing":parents,"publication_grant":false,"meaning":"Actual earlier human original, not a new utterance or an expansion of its task scope. Peer evidence remains separately attributed. An already routed original needs its exact primary instruction for an additional bounded workflow; preserve that owner's responsibility and never reissue the original."}),
             );
         }
         let key = format!("report:{source_id}");

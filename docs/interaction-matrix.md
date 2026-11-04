@@ -165,6 +165,24 @@ The optional purpose supplies context, not a model judgment that its text
 authorizes every proposed task. Existing separately authorized workflows retain
 their actual human originals; this adds no second task/authority engine.
 
+The purpose reader also supplies a bounded current `primary_routing` view for
+an original already dispatched to an existing owner. A genuinely additional
+scoped workflow must name that exact accepted human `parent_instruction`.
+Without it, the ordinary duplicate dispatch/creation refusal remains unchanged.
+At declaration the backend freezes the primary's source hash, current owner/
+native binding generation, epoch and original request coverage, and revalidates
+them before future steps and returns. This is not an acceptance-time generation
+record. Foreign originals, session-authored or withdrawn parents, mismatching
+current owners and creation plans cannot acquire this linkage. Interview
+restrictions use the same existing source-protection rule as session dependencies.
+
+The original owner/instruction is neither resent, rewritten, retired nor marked
+completed by that additional workflow. Child request IDs remain distinct; their
+attributed context and status retain the primary reference. A later withdrawal
+or rebind closes new admission while accepted/uncertain child effects remain
+history. This supports a real already-routed operating purpose without replacing
+it with a fabricated unclaimed human message.
+
 No-news reads are silent. Failed source reads consume checks and produce one
 revision-bound availability notice, with a separate recovery notice; unchanged
 failures do not repeatedly activate the integrator. Page retention uses a
