@@ -5,6 +5,8 @@ mod executions;
 pub(in crate::store) use delegation::{
     AttentionOwner, claim_delegate_on, owner_current_on, owner_for_turn_on,
 };
+pub(in crate::store) mod producer;
+pub use producer::HeartbeatProducerContract;
 mod resources;
 pub(super) use executions::claim_on as execution_claim_on;
 pub use resources::HeartbeatResources;
@@ -24,6 +26,10 @@ pub enum HeartbeatCommand {
     ConfigureResources {
         generation: u64,
         contract: HeartbeatResources,
+    },
+    ConfigureProducer {
+        generation: u64,
+        contract: HeartbeatProducerContract,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -100,6 +106,21 @@ impl Store {
                 None
             }
 
+            HeartbeatCommand::ConfigureProducer {
+                generation,
+                contract,
+            } => {
+                anyhow::ensure!(
+                    control.paused && control.generation == generation,
+                    "Pause and select the exact heartbeat generation before configuring its producer"
+                );
+                anyhow::ensure!(
+                    !executions::unresolved_on(&tx, human, entry)?,
+                    "Heartbeat execution is unresolved"
+                );
+                producer::configure_on(&tx, human, entry, contract)?;
+                None
+            }
             HeartbeatCommand::Status => None,
             HeartbeatCommand::Pause => Some(true),
             HeartbeatCommand::Resume { generation } => {
@@ -131,6 +152,7 @@ impl Store {
                         &native,
                         control.generation,
                     )?;
+                    producer::resume_on(&tx, human, entry, control.generation)?;
                 }
             }
         }
@@ -138,11 +160,11 @@ impl Store {
         // A damaged resource record must never roll back the pause fence.
         let resources = resources::status_on(&conn, session, human)
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
-        // This release supplies the persistent admission control only. Do not
-        // pretend its flag interrupts automatic inference that is not yet wired.
+        let producer = producer::status_on(&conn, human, session)
+            .unwrap_or_else(|_| json!({"state":"unavailable"}));
         Ok(
             json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,
-            "attention_engine":"not_implemented","owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
+            "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
         )
     }
 }

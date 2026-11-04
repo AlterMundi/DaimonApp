@@ -149,7 +149,7 @@ def qualify(binary, *, funded=False):
         assert resumed["admission_paused"] is False
         paused_again = j.read("heartbeat", "pause")["result"]
         assert paused_again["generation"] > resumed["generation"]
-        assert paused_again["attention_engine"] == "not_implemented"
+        assert paused_again["attention_engine"] == "not_configured"
         request = selected["request"]
         assert request["original"]["text"] == original
         assert b.status(ident)["phase"] == "matrix_requested"

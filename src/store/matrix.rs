@@ -575,6 +575,26 @@ fn retain_return_on(
 /// Pending source-linked offers, using the canonical presentation reader.
 /// No remote read, new queue, source-text copy or model admission occurs here.
 pub(super) fn attention_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<Value> {
+    attention_excluding_on(conn, human, entry, "{}")
+}
+
+/// Matrix replies and their source revisions are immutable within an entry
+/// binding. Exclude reviewed identities before LIMIT without incorporating them.
+pub(super) fn heartbeat_attention_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    seen: &std::collections::BTreeMap<String, String>,
+) -> Result<Value> {
+    attention_excluding_on(conn, human, entry, &serde_json::to_string(seen)?)
+}
+
+fn attention_excluding_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    seen: &str,
+) -> Result<Value> {
     let (session, _) = super::presentation::entry_on(conn, human, entry)?;
     let binding = super::presentation::entry_binding(conn, human, entry, session)?;
     let epoch = super::stopping::admission_epoch_on(conn, entry)?;
@@ -583,9 +603,9 @@ pub(super) fn attention_on(conn: &Connection, human: i64, entry: SessionKey) -> 
             json!({"envelopes":[],"available":false,"reason":"entry_fenced","has_more":false}),
         );
     }
-    let mut query = conn.prepare("SELECT r.message_id FROM interaction_matrix_results r JOIN interaction_matrix_requests m ON m.id=r.request_id WHERE r.human_id=?1 AND m.human_id=?1 AND m.entry_session=?2 AND r.reported_revision IS NULL AND json_extract(m.doc,'$.entry_generation')=?3 AND json_extract(m.doc,'$.epoch')=?4 AND NOT EXISTS(SELECT 1 FROM interaction_matrix_requests c JOIN json_each(c.doc,'$.relation.requests') p WHERE c.human_id=?1 AND c.entry_session=?2 AND json_extract(c.doc,'$.relation.kind')='amends' AND p.value=m.id) ORDER BY r.rowid LIMIT 17")?;
+    let mut query = conn.prepare("SELECT r.message_id FROM interaction_matrix_results r JOIN interaction_matrix_requests m ON m.id=r.request_id WHERE r.human_id=?1 AND m.human_id=?1 AND m.entry_session=?2 AND r.reported_revision IS NULL AND json_extract(m.doc,'$.entry_generation')=?3 AND json_extract(m.doc,'$.epoch')=?4 AND NOT EXISTS(SELECT 1 FROM interaction_matrix_requests c JOIN json_each(c.doc,'$.relation.requests') p WHERE c.human_id=?1 AND c.entry_session=?2 AND json_extract(c.doc,'$.relation.kind')='amends' AND p.value=m.id) AND NOT EXISTS(SELECT 1 FROM json_each(?5) reviewed WHERE reviewed.key='matrix:'||r.message_id) ORDER BY r.rowid LIMIT 17")?;
     let ids = query
-        .query_map(params![human, session, binding, epoch], |r| {
+        .query_map(params![human, session, binding, epoch, seen], |r| {
             r.get::<_, String>(0)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -789,6 +809,36 @@ mod tests {
             16
         );
         assert_eq!(attention["matrix"]["has_more"], true);
+        // Reviewing a bounded window does not incorporate it. The producer
+        // must still reach later immutable replies before applying its limit.
+        let seen = attention["matrix"]["envelopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["source"].as_str().unwrap().to_owned(),
+                    e["revision"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let next = heartbeat_attention_on(&store.conn.lock().unwrap(), 100, entry, &seen).unwrap();
+        assert_eq!(next["envelopes"].as_array().unwrap().len(), 2);
+        assert_eq!(next["has_more"], false);
+        assert!(!next["envelopes"].as_array().unwrap().iter().any(|e| {
+            attention["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .contains(e)
+        }));
+        assert_eq!(
+            store.interaction_workflow_attention(100, entry).unwrap()["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            16
+        );
+
         assert!(
             !attention["matrix"]
                 .to_string()

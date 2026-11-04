@@ -8,6 +8,6 @@ permissions:
   contents: read
 jobs:
   native:
-    uses: compaii/codex/.github/workflows/interaction-goal-controls.yml@c479b54e6e0fce207178929f6d35a2a4add67e2a
+    uses: compaii/codex/.github/workflows/interaction-goal-controls.yml@948b3d328f0057ee27f99210f651fc7443c351bf
     with:
-      source_ref: c479b54e6e0fce207178929f6d35a2a4add67e2a
+      source_ref: 948b3d328f0057ee27f99210f651fc7443c351bf

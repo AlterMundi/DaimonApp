@@ -4,6 +4,7 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) enum ReturnParent {
+    Heartbeat(Box<crate::store::heartbeat::producer::Parent>),
     Workflow(Box<Workflow>),
     Routed(Box<super::routed::RoutedParent>),
     Foreground(Box<super::foreground::ForegroundParent>),
@@ -34,6 +35,17 @@ fn complete_result_preview(source: &Value) -> bool {
 }
 
 impl ReturnContext {
+    pub fn heartbeat(parent: crate::store::heartbeat::producer::Parent) -> Self {
+        Self {
+            human: parent.human,
+            entry: parent.entry,
+            native: parent.native.clone(),
+            epoch: parent.epoch.clone(),
+            native_returns: parent.native_returns.clone(),
+            parent: ReturnParent::Heartbeat(Box::new(parent)),
+        }
+    }
+
     pub fn foreground(parent: super::foreground::ForegroundParent) -> Self {
         Self {
             human: parent.human,
@@ -66,6 +78,7 @@ impl ReturnContext {
     }
     pub fn name(&self) -> &'static str {
         match &self.parent {
+            ReturnParent::Heartbeat(_) => "heartbeat_attention",
             ReturnParent::Workflow(_) => "workflow_attention",
             ReturnParent::Routed(_) => "conversation_attention",
             ReturnParent::Foreground(_) => "foreground_context",
@@ -79,15 +92,17 @@ impl ReturnContext {
                 .and_then(|r| r.envelope["slot"].as_u64())
                 .and_then(|slot| w.reported.get(slot as usize))
                 .and_then(Option::as_deref),
-            ReturnParent::Routed(_) | ReturnParent::Foreground(_) => self
-                .native_returns
-                .get(index)
-                .and_then(|r| r.reported_revision.as_deref()),
+            ReturnParent::Heartbeat(_) | ReturnParent::Routed(_) | ReturnParent::Foreground(_) => {
+                self.native_returns
+                    .get(index)
+                    .and_then(|r| r.reported_revision.as_deref())
+            }
         }
     }
     pub fn output(&self, index: usize) -> String {
         let r = &self.native_returns[index];
         match &self.parent {
+            ReturnParent::Heartbeat(_) => crate::store::heartbeat::producer::output(r),
             ReturnParent::Foreground(parent) => {
                 let request=parent.checkpoint_request.as_ref().filter(|q|r.envelope["checkpoint_generation"]==q["generation"]);
                 json!({"schema":"telecodex.foreground-context/v1","return_id":r.id,"dialogue":parent.dialogue,"generation":parent.generation,"evidence":r.envelope,

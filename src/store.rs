@@ -29,7 +29,7 @@ mod goal_retries;
 pub use goal_retries::GoalRecoveryPolicy;
 pub(crate) use goal_retries::GoalRetry;
 mod heartbeat;
-pub use heartbeat::{HeartbeatCommand, HeartbeatResources};
+pub use heartbeat::{HeartbeatCommand, HeartbeatProducerContract, HeartbeatResources};
 mod interaction;
 mod interactions;
 mod live_context;

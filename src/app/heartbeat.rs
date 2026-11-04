@@ -62,6 +62,21 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("configure-producer ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected heartbeat configure-producer GENERATION CONTRACT_JSON")?;
+        return execute(
+            app,
+            human,
+            super::routing::profile(&app.shared)?.entry(),
+            HeartbeatCommand::ConfigureProducer {
+                generation: generation.parse()?,
+                contract: serde_json::from_str::<crate::store::HeartbeatProducerContract>(raw)?,
+            },
+        )
+        .await;
+    }
     if let Some(rest) = args.strip_prefix("configure-resources ") {
         let (generation, raw) = rest
             .split_once(' ')
@@ -85,7 +100,7 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause|resume GENERATION|configure-resources GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause|resume GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(
@@ -95,4 +110,73 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         command,
     )
     .await
+}
+
+/// Existing maintenance calls this; unconfigured/paused/no-news never starts a model.
+pub(super) async fn tick(app: &App) -> Result<()> {
+    if app.shared.shutdown.is_cancelled() {
+        return Ok(());
+    }
+    let Some(cfg) = app.shared.config.interaction.as_ref() else {
+        return Ok(());
+    };
+    let Some(session) = app.shared.store.get_session(cfg.entry())? else {
+        return Ok(());
+    };
+    if session.busy || session.codex_thread_id.is_none() {
+        return Ok(());
+    }
+    if let Some(selected) = app
+        .shared
+        .store
+        .heartbeat_produce(cfg.human_id, cfg.entry())?
+    {
+        let id = selected.id.clone();
+        let attempt = selected.attempts;
+        if app.shared.shutdown.is_cancelled()
+            || super::workflows::deliver(app, selected).await.is_err()
+        {
+            app.shared.store.workflow_native_outcome_attempt(
+                &id,
+                attempt,
+                "retained_unsent",
+                None,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn recover_unsent(app: &App) -> Result<()> {
+    let Some(cfg) = app.shared.config.interaction.as_ref() else {
+        return Ok(());
+    };
+    if app.shared.shutdown.is_cancelled() {
+        return Ok(());
+    }
+    let Some(session) = app.shared.store.get_session(cfg.entry())? else {
+        return Ok(());
+    };
+    if session.busy || session.codex_thread_id.is_none() {
+        return Ok(());
+    }
+    for selected in app
+        .shared
+        .store
+        .heartbeat_returns_recover_unsent(cfg.human_id, cfg.entry())?
+    {
+        let id = selected.id.clone();
+        let attempt = selected.attempts;
+        if app.shared.shutdown.is_cancelled()
+            || super::workflows::deliver(app, selected).await.is_err()
+        {
+            app.shared.store.workflow_native_outcome_attempt(
+                &id,
+                attempt,
+                "retained_unsent",
+                None,
+            )?;
+        }
+    }
+    Ok(())
 }

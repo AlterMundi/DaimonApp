@@ -33,6 +33,14 @@ impl Maintenance for App {
                     tracing::warn!("Native output recovery remains pending; no input replayed");
                 }
             }
+            Recovery::CanonicalAttention => {
+                if heartbeat::recover_unsent(self).await.is_err() {
+                    tracing::warn!("Known-unsent heartbeat return remains pending");
+                }
+                if heartbeat::tick(self).await.is_err() {
+                    tracing::warn!("Finite heartbeat offer remains pending");
+                }
+            }
             Recovery::KnownUnsentReturns => {
                 if workflows::recover_unsent(self).await.is_err() {
                     tracing::warn!("Known-unsent workflow return recovery remains pending");

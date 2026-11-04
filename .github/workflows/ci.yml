@@ -248,6 +248,7 @@ jobs:
           python3 -B tests/goal_inspection_io.py target/release/telecodex
           python3 -B tests/live_tasks_io.py target/release/telecodex
           python3 -B tests/warm_controller_io.py target/release/telecodex
+          python3 -B tests/heartbeat_io.py target/release/telecodex
       # Native-question HTTP journeys also decode voice; provision after goals,
       # before the first voice-capable compatibility group.
       - name: Select voice dependency cache

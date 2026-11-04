@@ -362,6 +362,83 @@ fn attention_workflow_on(
     Ok(Some(w))
 }
 
+pub(in crate::store) fn heartbeat_offers_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    after: i64,
+) -> Result<(i64, Vec<super::heartbeat::producer::Offer>)> {
+    let rows = |after| -> Result<Vec<(i64, String)>> {
+        let mut q=conn.prepare("SELECT rowid,doc FROM interaction_workflows WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND rowid>?4 AND phase='active' AND julianday(json_extract(doc,'$.plan.expires_at'))>julianday('now') ORDER BY rowid LIMIT 4")?;
+        Ok(
+            q.query_map(params![human, entry.chat_id, entry.thread_id, after], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?,
+        )
+    };
+    let mut selected = rows(after)?;
+    if selected.is_empty() && after > 0 {
+        selected = rows(0)?;
+    }
+    let next = selected.last().map_or(0, |r| r.0);
+    let mut offers = vec![];
+    for (_, raw) in selected {
+        let w: Workflow = serde_json::from_str(&raw)?;
+        for mut evidence in attention_on(conn, &w)? {
+            let revision = evidence["revision"]
+                .as_str()
+                .context("Workflow offer revision missing")?
+                .to_owned();
+            let slot = evidence["slot"]
+                .as_u64()
+                .context("Workflow offer slot missing")?;
+            evidence["original_input_ref"] = json!(w.plan.input_ref);
+            evidence["reader"] = if evidence["source"]["kind"] == "native_question" {
+                json!({"operation":"workflow_question","arguments":{"question":evidence["source"]["id"],"revision":evidence["source"]["revision"],"offset":0}})
+            } else if evidence["source"].is_object() {
+                json!({"operation":"workflow_result","arguments":{"workflow":w.id,"step":evidence["step"],"revision":evidence["source"]["revision"],"offset":0}})
+            } else {
+                json!({"operation":"workflow_status","arguments":{"workflow":w.id}})
+            };
+            evidence["after_incorporation"] = json!({"operation":"workflow_reported","arguments":{"workflow":w.id,"revision":revision}});
+            offers.push(super::heartbeat::producer::Offer {
+                key: format!("workflow:{}:{slot}", w.id),
+                revision,
+                evidence,
+            });
+        }
+    }
+    Ok((next, offers))
+}
+pub(in crate::store) fn heartbeat_offer_current_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    key: &str,
+    revision: &str,
+    admission: bool,
+) -> Result<bool> {
+    let Some(id) = key
+        .strip_prefix("workflow:")
+        .and_then(|s| s.rsplit_once(':'))
+        .map(|(id, _)| id)
+    else {
+        return Ok(false);
+    };
+    let mut w = load_on(conn, human, entry, id)?;
+    if !admission {
+        if !matches!(w.phase.as_str(), "active" | "completed") {
+            return Ok(false);
+        }
+        w.phase = "active".into();
+        w.reported.fill(None);
+    }
+    Ok(attention_on(conn, &w)?
+        .iter()
+        .any(|e| e["revision"] == revision))
+}
+
 /// Explicit owner Resume advances only retained workflow authority and returns
 /// that have never crossed a native submission boundary. It creates no input,
 /// allocation or retry, and preserves all accepted/uncertain execution evidence.
@@ -3754,6 +3831,388 @@ mod tests {
         );
         assert!(!s.interaction_session_input_allowed(&first.id, 100).unwrap());
     }
+    fn producer_configure(s: &Store, entry: &SessionRecord, max_checks: u32) {
+        use crate::store::{HeartbeatCommand as H, HeartbeatProducerContract};
+        s.heartbeat_control(100, entry.key, H::Pause).unwrap();
+        let resources = crate::store::heartbeat::test_contract();
+        let expiry = resources.expires_at_unix_ms;
+        s.heartbeat_control(
+            100,
+            entry.key,
+            H::ConfigureResources {
+                generation: 1,
+                contract: resources,
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            entry.key,
+            H::ConfigureProducer {
+                generation: 1,
+                contract: HeartbeatProducerContract {
+                    interval_seconds: 30,
+                    max_checks,
+                    expires_at_unix_ms: expiry,
+                    matrix_replies: true,
+                    workflows: true,
+                },
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, entry.key, H::Resume { generation: 1 })
+            .unwrap();
+    }
+    fn producer_edit(s: &Store, entry: &SessionRecord, edit: impl FnOnce(&mut Value)) {
+        let conn = s.conn.lock().unwrap();
+        let key = format!("heartbeat_producer:100:{}", entry.id);
+        let raw: String = conn
+            .query_row("SELECT value FROM bot_state WHERE key=?1", [&key], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mut value: Value = serde_json::from_str(&raw).unwrap();
+        edit(&mut value);
+        conn.execute(
+            "UPDATE bot_state SET value=?2 WHERE key=?1",
+            params![key, value.to_string()],
+        )
+        .unwrap();
+    }
+    fn producer_work(s: &Store, entry: &SessionRecord, plan: WorkflowPlan) -> Value {
+        let view = declare(s, entry, plan);
+        let i = advance(s, entry, &view).unwrap();
+        let local = accept(s, &i);
+        answer(
+            s,
+            &i,
+            local,
+            "producer-checkpoint",
+            vec![i.id.clone()],
+            "Selected checkpoint for the heartbeat.",
+        );
+        view
+    }
+
+    #[test]
+    fn heartbeat_producer_no_news_is_model_free_durable_and_finite() {
+        use crate::store::HeartbeatCommand as H;
+        let (file, s, entry, _) = setup();
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        producer_configure(&s, &entry, 2);
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 1);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        s.heartbeat_control(100, entry.key, H::Pause).unwrap();
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["producer"]["checks"],
+            1
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        s.heartbeat_control(100, entry.key, H::Resume { generation: 3 })
+            .unwrap();
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 2);
+        assert_eq!(status["producer"]["state"], "check_capacity");
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+    }
+
+    #[test]
+    fn heartbeat_producer_batches_existing_sources_and_reviews_once_with_fresh_ownership() {
+        use crate::store::HeartbeatCommand as H;
+        let (_file, s, entry, plan) = setup();
+        let view = producer_work(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        assert_eq!(selected.name, "heartbeat_attention");
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        assert_eq!(packet["schema"], "daimon.heartbeat-batch/v1");
+        let revision = packet["evidence"]["revision"].as_str().unwrap();
+        assert_eq!(
+            packet["evidence"]["offers"][0]["evidence"]["reader"]["operation"],
+            "workflow_result"
+        );
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            0
+        );
+        assert!(
+            s.heartbeat_reported(100, entry.key, "native-1", &selected.id, revision)
+                .is_err()
+        );
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.heartbeat_native_started(local, "heartbeat-batch-physical")
+            .unwrap();
+        s.workflow_native_outcome(&selected.id, "accepted", Some("heartbeat-batch-physical"))
+            .unwrap();
+        assert!(super::native_visible_on(&s.conn.lock().unwrap(), local).unwrap());
+        assert!(
+            s.heartbeat_reported(101, entry.key, "native-1", &selected.id, revision)
+                .is_err()
+        );
+        s.heartbeat_reported(100, entry.key, "native-1", &selected.id, revision)
+            .unwrap();
+        s.heartbeat_reported(100, entry.key, "native-1", &selected.id, revision)
+            .unwrap();
+        s.heartbeat_native_terminal(local, "heartbeat-batch-physical", "completed")
+            .unwrap();
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["cursor_entries"], 1);
+        assert_eq!(status["producer"]["retained_returns"], 1);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 3);
+        // Batch review is distinct from original source incorporation and task completion.
+        assert_eq!(
+            s.interaction_workflow_attention(100, entry.key).unwrap()["envelopes"][0]["workflow"],
+            view["id"]
+        );
+        assert_eq!(status["producer"]["checks"], 2);
+    }
+
+    #[test]
+    fn heartbeat_producer_accepted_narration_survives_consumed_offers() {
+        let (_file, s, entry, plan) = setup();
+        let view = producer_work(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.heartbeat_native_started(local, "heartbeat-action")
+            .unwrap();
+        s.workflow_native_outcome(&selected.id, "accepted", Some("heartbeat-action"))
+            .unwrap();
+        // Advancing the ready successor changes the original offer set. It
+        // must not hide narration of the action just performed.
+        let current = status(&s, &entry, view["id"].as_str().unwrap());
+        assert!(
+            s.interaction_workflow_advance_at_turn(
+                100,
+                entry.key,
+                "native-1",
+                Some("heartbeat-action"),
+                view["id"].as_str().unwrap(),
+                current["revision"].as_str().unwrap(),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .is_some()
+        );
+        // Source incorporation remains separate from batch review.
+        let offer = &packet["evidence"]["offers"][0];
+        s.interaction_workflow_reported(
+            100,
+            entry.key,
+            "native-1",
+            view["id"].as_str().unwrap(),
+            offer["revision"].as_str().unwrap(),
+        )
+        .unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            assert!(native_visible_on(&conn, local).unwrap());
+            assert!(native_publication_on(&conn, local).unwrap().is_some());
+            assert!(native_source_current_on(&conn, &selected.id).unwrap());
+            let (p, index) = super::super::heartbeat::producer::load_return(&conn, &selected.id)
+                .unwrap()
+                .unwrap();
+            assert!(
+                !super::super::heartbeat::producer::current(
+                    &conn,
+                    &p,
+                    &p.native_returns[index],
+                    true
+                )
+                .unwrap()
+            );
+        }
+        // Pause blocks new inference, not already accepted narration. Retiring
+        // the original native binding still withdraws its publication authority.
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(native_visible_on(&s.conn.lock().unwrap(), local).unwrap());
+        s.set_session_codex_thread(entry.key, "replacement-native")
+            .unwrap();
+        assert!(!native_visible_on(&s.conn.lock().unwrap(), local).unwrap());
+    }
+
+    #[test]
+    fn heartbeat_producer_retires_independently_incorporated_unsent_source() {
+        let (_file, s, entry, plan) = setup();
+        let view = producer_work(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        s.interaction_workflow_reported(
+            100,
+            entry.key,
+            "native-1",
+            view["id"].as_str().unwrap(),
+            packet["evidence"]["offers"][0]["revision"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        producer_edit(&s, &entry, |v| {
+            assert_eq!(v["native_returns"][0]["phase"], "retired_unsent");
+            assert_eq!(v["native_returns"][0]["reported_revision"], Value::Null);
+        });
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Status)
+                .unwrap()["producer"]["pending"],
+            false
+        );
+    }
+
+    #[test]
+    fn heartbeat_producer_pause_resume_preserves_pending_identity_and_account() {
+        use crate::store::HeartbeatCommand as H;
+        let (_file, s, entry, plan) = setup();
+        producer_work(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        s.heartbeat_control(100, entry.key, H::Pause).unwrap();
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        s.heartbeat_control(100, entry.key, H::Resume { generation: 3 })
+            .unwrap();
+        let current = s.workflow_native_dispatch(&selected.id).unwrap();
+        assert_eq!(current.id, selected.id);
+        assert_eq!(current.attention_generation, Some(4));
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["producer"]["checks"],
+            1
+        );
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.heartbeat_native_not_submitted(local).unwrap();
+        s.workflow_native_outcome(&selected.id, "retained_unsent", None)
+            .unwrap();
+        s.heartbeat_control(100, entry.key, H::Pause).unwrap();
+        s.heartbeat_control(100, entry.key, H::Resume { generation: 5 })
+            .unwrap();
+        producer_edit(&s, &entry, |v| {
+            v["native_returns"][0]["retry_after"] = json!(0)
+        });
+        assert!(
+            s.native_returns_recover_unsent(100, entry.key, false, false)
+                .unwrap()
+                .is_empty()
+        );
+        let retry = s.heartbeat_returns_recover_unsent(100, entry.key).unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].id, selected.id);
+        assert_eq!(retry[0].attention_generation, Some(6));
+        assert_eq!(retry[0].attempts, 2);
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            3
+        );
+    }
+
+    #[test]
+    fn heartbeat_producer_restart_preserves_uncertain_submission_without_retry() {
+        use crate::store::HeartbeatCommand as H;
+        let (file, s, entry, plan) = setup();
+        producer_work(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, entry.key)
+                .unwrap()
+                .is_empty()
+        );
+        producer_edit(&s, &entry, |v| {
+            assert_eq!(v["native_returns"][0]["phase"], "uncertain")
+        });
+        let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 1);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 3);
+    }
+
+    #[test]
+    fn heartbeat_producer_retires_only_known_unsent_stale_offers() {
+        use crate::store::HeartbeatCommand as H;
+        let (_file, s, entry, plan) = setup();
+        let view = producer_work(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut w = load_on(&conn, 100, entry.key, view["id"].as_str().unwrap()).unwrap();
+            w.phase = "withdrawn".into();
+            save_on(&conn, &w).unwrap();
+        }
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        producer_edit(&s, &entry, |v| {
+            assert_eq!(v["native_returns"][0]["phase"], "retired_unsent");
+            assert_eq!(v["native_returns"][0]["reported_revision"], Value::Null);
+        });
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, entry.key)
+                .unwrap()
+                .is_empty()
+        );
+        let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["pending"], false);
+        assert_eq!(status["producer"]["cursor_entries"], 0);
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+    }
+
+    #[test]
+    fn heartbeat_producer_failed_source_read_keeps_cadence_and_expiry() {
+        use crate::store::HeartbeatCommand as H;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        producer_configure(&s, &entry, 8);
+        {
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE interaction_workflows SET doc='{' WHERE id=?1",
+                [view["id"].as_str().unwrap()],
+            )
+            .unwrap();
+        }
+        assert!(s.heartbeat_produce(100, entry.key).is_err());
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["producer"]["checks"],
+            1
+        );
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        producer_edit(&s, &entry, |v| {
+            v["contract"]["expires_at_unix_ms"] = json!(0);
+            v["next_check_ms"] = json!(0)
+        });
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
+        assert_eq!(status["producer"]["state"], "expired");
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+    }
+
     fn attention_parent(s: &Store, entry: &SessionRecord) -> i64 {
         use crate::store::HeartbeatCommand;
         s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)

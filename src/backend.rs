@@ -17,6 +17,7 @@ pub(crate) enum Ownership {
 pub(crate) enum Recovery {
     OptionalProjection,
     NativeOutput,
+    CanonicalAttention,
     KnownUnsentReturns,
     Artifacts,
 }
@@ -38,13 +39,18 @@ pub(crate) async fn tick(owner: &impl Maintenance, shutdown: &CancellationToken)
     for phase in [
         Recovery::OptionalProjection,
         Recovery::NativeOutput,
+        Recovery::CanonicalAttention,
         Recovery::KnownUnsentReturns,
         Recovery::Artifacts,
     ] {
         if shutdown.is_cancelled() {
             return;
         }
-        if phase == Recovery::OptionalProjection && ownership != Ownership::Held {
+        if matches!(
+            phase,
+            Recovery::OptionalProjection | Recovery::CanonicalAttention
+        ) && ownership != Ownership::Held
+        {
             continue;
         }
         // Do not cancel a journal operation halfway through a possible external
