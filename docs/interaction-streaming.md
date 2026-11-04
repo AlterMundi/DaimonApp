@@ -12,7 +12,10 @@ mode with Gemini `gemini-3.5-transcribe-live`, plus `speech.streaming_output` an
 `speech.incremental_segments`. PR341 was receiving-adopted on 27 October 2026,
 with successful CI40449397345. Final input text is reused for its exact original
 WAV; Groq file-ASR remains the fallback. The private streaming credential never
-reaches the browser. Sol remains the integrating model and Qwen remains TTS.
+reaches the browser. This27October snapshot selected Sol as integrator and Qwen
+for TTS; the later Qwen Avatar foreground is a separate role. The rejected Qwen
+integrating-model experiment is historical, not pending. Integrator provider/model
+selection remains supported; current receiving selection is in the guide below.
 Portable defaults remain off. Streaming output is source-bound and uses the
 existing HTML audio player. These flags do not establish measured end-to-end
 latency or complete v0.3 acceptance. Current receiving software, health and

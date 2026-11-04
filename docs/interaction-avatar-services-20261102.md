@@ -41,8 +41,8 @@ not proof that a provider is interchangeable by changing its URL.
 Two OpenAI paths should remain distinct:
 
 - **Realtime API:** finish qualifying the prepared adapter through the existing
-  application-owned tool/original/return contract. This is the smallest source
-  delta for an initial API comparison. It needs actual project API access, not
+  application-owned tool/original/return contract if selected for comparison.
+  Its smaller source delta is not a reason to prefer it over GPT-Live. It needs actual project API access, not
   a ChatGPT login token reinterpreted as an API key.
 - **GPT-Live with client delegation:** a separately implemented transport whose
   documented design explicitly separates fluid conversation from an existing
@@ -66,7 +66,14 @@ with the integrator, bypass original admission, or restart an active native
 server just to audition a voice. Keep this route as an explicit alternative
 while the existing API-key request remains pending.
 
-## Decision supported by the evidence
+Human correction4November: optimize for the best conversational workflow, not
+minimum changes to our current implementation. GPT-Live's official migration
+and delegation design is the implementation starting point; the existing
+Realtime candidate remains a separate optional comparison. Relevant developer
+examples and lab evaluations must inform the design before provider activation.
+See the [inspected practice comparison](interaction-gpt-live-practices.md).
+
+## Historical decision supported by the evidence — 2 November
 
 Keep the integrator and its work sessions independent of the speech provider.
 The first alternative worth comparing with the working Gemini baseline is
@@ -83,7 +90,7 @@ coherent generation43. They remain historical evidence; this brief adds current
 service lifecycle and selection checks. In particular, the earlier successful
 native-login WebRTC experiment was not a general API-credit entitlement.
 
-## Candidate map
+## Historical candidate map — 2 November
 
 | Provider / route | Documented capability | Fit and unresolved requirement |
 | --- | --- | --- |

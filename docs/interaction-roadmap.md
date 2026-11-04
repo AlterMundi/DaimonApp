@@ -312,6 +312,12 @@ bounds unchanged while repairing continuity; compare OpenAI voice; make Avatar
 the same daimon's approachable face, with model-independent integrating roles.
 These are selected design requirements, not a claim of new runtime delivery.
 
+The Qwen integrating-model experiment is completed historical work, not a
+pending migration. The human rejected that model for the integrating role.
+Preserve the supported ability to change integrator provider/model deliberately;
+do not pin that role permanently to Sol or confuse the independently selected
+Qwen voice layer with a return to the abandoned integrating-model experiment.
+
 **Observed state.** PR597 supplies manual reconnect and exact-original recovery
 on top of the Qwen native foreground. Actual human feedback confirms the ordinary
 voice is now recognizable and exchanges can be fluent. Sustained continuity is
@@ -341,6 +347,11 @@ continuity qualifies. No always-on microphone or background listener is implied.
    Include current conversation purpose, human corrections, unresolved requests,
    pending questions/results, and heard/interrupted speech. Do not load every
    worker transcript or the entire memory corpus into the voice prompt.
+   Manual reconnect currently creates a new dialogue UUID; it also needs an
+   explicit authenticated link to the same durable conversation, its previous
+   checkpoint, subsequent delta and pending-effect references. Do not confuse
+   this with reopening the old producer or assume current excerpt-based startup
+   already implements it. Qualify reconnect after an acknowledged checkpoint.
 2. Keep canonical human originals and assistant utterances available to the
    integrator through ordered deltas with an acknowledged cursor. A complete
    selected history remains readable on demand; do not resend it each update.
@@ -355,7 +366,7 @@ continuity qualifies. No always-on microphone or background listener is implied.
    with room for further speech. Bound internal tool returns and fetch details
    by reference rather than repeatedly pasting full state.
 4. Prepare at most one successor from an acknowledged basis. Commit the switch
-   only at a safe turn boundary with exact original/tool/question identities
+   only at a provider-appropriate safe boundary with exact original/tool/question identities
    preserved. Separate a durable raw recording awaiting interpretation from
    audio still in flight: neither silently discard it nor let it create an
    unexplained permanent renewal barrier. Any relaxation of the current floor
@@ -421,6 +432,11 @@ at a conversational pause. Opening a result is not approval or task completion.
    integration and return contract; measure useful audio, interruption, delayed
    tools, renewal and cost. Record hearing/device acceptance separately from
    mocks or generated text. Keep the current provider until a candidate passes.
+   For GPT-Live, follow its own continuous-audio, transcript/delegation and
+   playback lifecycle rather than inheriting Qwen/Gemini manual-turn mechanics.
+   Start from the official workflow and relevant inspected implementations;
+   redesign our transport/foreground seam where that produces a better result.
+   The prepared Realtime adapter is not a prerequisite or a substitute for this.
 4. Finish the result/question presentation slice above and exercise a guided
    family journey without Telegram, terminal access or knowledge of model/session
    names: converse, request a small creation, see/hear its result, correct it,

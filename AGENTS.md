@@ -1,5 +1,13 @@
 # Interaction development boundaries
 
+Current Avatar planning is the4November slice in docs/interaction-roadmap.md;
+GPT-Live adaptation follows docs/interaction-gpt-live-practices.md. Keep the
+diagnostic context/visit limits unchanged. Qwen as integrator was a rejected,
+completed experiment, never pending migration work. Keep deliberate integrator
+provider/model selection supported and independent of the Qwen voice foreground.
+The integrating role is not permanently tied to Sol. GPT-Live needs its own
+continuous-audio/delegation lifecycle, not the existing manual-turn adapter.
+
 Interaction is an independent application: web now, native/badge clients later.
 Human priority, 2026-11-01: implement native speech above the existing Sol
 integrator, with sourced asynchronous delegation and integrating returns. See
