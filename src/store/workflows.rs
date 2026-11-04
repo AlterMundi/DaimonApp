@@ -1263,6 +1263,112 @@ mod tests {
         );
     }
     #[test]
+    fn heartbeat_pause_preserves_exact_canonical_report_and_source_reader_scope() {
+        let (_file, s, entry, plan) = setup();
+        let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+        let selected = s
+            .native_routed_result_reserve(100, entry.key, &delivery.id)
+            .unwrap()
+            .unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        {
+            // Only the server-owned fixture marks this retained source; peer
+            // text and requesting models cannot mint an attention generation.
+            let conn = s.conn.lock().unwrap();
+            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1", [&delivery.id]).unwrap();
+        }
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::Resume { generation: 1 },
+        )
+        .unwrap();
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        assert!(
+            !s.heartbeat_native_started(local, "heartbeat-report-physical")
+                .unwrap()
+        );
+        s.workflow_native_outcome_attempt(
+            &selected.id,
+            1,
+            "accepted",
+            Some("heartbeat-report-physical"),
+        )
+        .unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        s.heartbeat_executions(100, entry.key, true).unwrap();
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        let report = "The selected result was reviewed; further heartbeat work is paused.";
+        assert!(
+            s.record_native_message(
+                local,
+                "native-1",
+                "heartbeat-report-physical",
+                "paused-report",
+                Some("commentary"),
+                report
+            )
+            .unwrap()
+        );
+        s.heartbeat_native_terminal(local, "heartbeat-report-physical", "interrupted")
+            .unwrap();
+        assert!(
+            !s.record_native_message(
+                local,
+                "native-1",
+                "heartbeat-report-physical",
+                "paused-report",
+                Some("commentary"),
+                report
+            )
+            .unwrap()
+        );
+        let list = s
+            .interaction_presentation_list(100, entry.key, 0, 0)
+            .unwrap();
+        let reports: Vec<_> = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["preview"] == report)
+            .collect();
+        assert_eq!(
+            reports.len(),
+            1,
+            "Exact native item is presented once across pause/terminal observation"
+        );
+        assert_eq!(reports[0]["kind"], "integrator_progress");
+        assert_eq!(reports[0]["native_returns"], json!([selected.id]));
+        assert_eq!(
+            reports[0]["current"], true,
+            "Pause fences new inference, not retained human-authorized reports"
+        );
+        assert!(
+            s.interaction_presentation_list(101, entry.key, 0, 0)
+                .is_err()
+        );
+        // Existing canonical source retirement remains separate: an old report
+        // stays in history but cannot become a fresh voice offer after expiry.
+        let conn = s.conn.lock().unwrap();
+        conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.expires_at','2000-01-01T00:00:00Z') WHERE id=?1",[&delivery.id]).unwrap();
+        drop(conn);
+        let list = s
+            .interaction_presentation_list(100, entry.key, 0, 0)
+            .unwrap();
+        let item = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["preview"] == report)
+            .unwrap();
+        assert_eq!(item["current"], false);
+    }
+
+    #[test]
     fn ordinary_return_reuses_exact_attempt_and_source_publication_fences() {
         let (_f, s, entry, plan) = setup();
         let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);

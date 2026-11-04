@@ -410,7 +410,7 @@ never invalidates presentation/history reads or drops a late canonical native
 ACK. Resume never reopens a previous submitting/uncertain generation.
 
 This adds no public source-tagging API or funding grant. The heartbeat producer,
-bounded/coalesced idle admission and publication still need implementation
+bounded/coalesced idle admission and its source/publication contract still need implementation
 before activation. Fresh physical ownership and scoped interruption are supported
 below; no public producer or automatic attention is enabled. A tagged receipt alone
 is not proof that its physical turn is exclusively owned; do not use it as
@@ -430,7 +430,10 @@ is retained beside the existing turn in the state store, with the exact physical
 native ID added on its callback. Tagged execution requires native
 `turn/startIfIdle`, with no fallback to `turn/start`: a local idle observation is
 not an atomic native ownership fence. Older servers reject before submission.
-That new native method is not yet implemented in the receiving Core and remains
+Core source4dc51af25, now proposed in compaii/codex#10, exposes the existing
+atomic StartIfIdle through that method. Actual App Server mocked-provider busy
+refusal/independent internal-turn and legacy-permission regressions plus317
+protocol/export/schema tests pass. It is not yet receiving-selected and remains
 a prerequisite for actual cancellation qualification; ordinary `toolOutput`
 uses start-or-steer and cannot establish this ownership by itself. Retain at most sixteen records (one live owner
 plus fifteen prior terminal/transferred records); pruning never deletes native
@@ -456,8 +459,35 @@ replays an uncertain input. The control never invokes session/global Stop.
 
 This is source-level execution control, not a complete running heartbeat.
 The trusted bounded producer, actual resource admission, descendant/successor
-ownership and paired-human canonical/audio publication remain to be implemented
+ownership and producer source/publication binding remain to be implemented
 and qualified before automatic activation. Native socket fixtures prove prepared
 and active ownership refusal prevents provider writes while original work still
 finishes; SQLite tests cover both race winners, late identity, restart and bounded
 retention. They do not prove actual receiving-model cancellation or device hearing.
+
+
+### Canonical reports reuse the existing integrating return path
+
+A heartbeat-owned execution does not grant publication by itself. Its admitted
+retained source must carry the existing paired-human integrating return authority.
+For that source, completed native commentary and final answers already use
+`interaction_native_messages`, immutable native thread/turn/item identities and
+frozen native-return source associations. Reuse this path; do not create a second
+report feed, fabricated human input, new audio queue or broad Tribe audience.
+
+The scoped heartbeat admission pause does not retire those accepted source
+reports. A regression covers accepted tagged source→pause→canonical commentary,
+exact repeated item deduplication, preserved same-integrator currentness and
+reader ownership, then ordinary source expiry without deleting history. The
+existing foreground canonical reader and mounted native-voice pending-return
+journey pass with these same `integrator_progress`/`native_returns` descriptors.
+Native voice continues while awaiting an integrating return and source revisions
+are revalidated before offers. This is source/fixture evidence, not actual phone
+hearing or acceptance of a fully activated producer.
+
+Meaningful actions, replies, results and pending outcomes belong in that same
+conversation and its enabled audio surface. No-news ticks and routine incorporation
+remain silent. The future trusted producer must bind its finite human-selected
+source/purpose to this existing report path; an execution tag or arbitrary peer
+text cannot manufacture that grant. Activation, real receiving cancellation,
+successor ownership and physical device acceptance remain unfinished.
