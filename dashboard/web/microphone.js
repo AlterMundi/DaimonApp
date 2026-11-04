@@ -1,7 +1,9 @@
 "use strict";
 window.VoiceInput = (() => {
   // Ordinary capture owns one unfinished original; explicit continuous mode can
-  // retain two, together <=20MiB, in the same recovery key. Never evict an
+  // retain two in-flight originals, together <=20MiB, in the same recovery key.
+  // Native originals durably retained for review share that byte budget and
+  // have a128-record ceiling; they never count as completed human speech. Never evict an
   // uncertain original for capacity. Matching confirmation/explicit discard
   // retires it. Reload only reads. Older clients retain the unknown two-item
   // envelope rather than overwriting it; use this decoder to recover both.
@@ -28,6 +30,13 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
+      if(old.schema==='telecodex.voice-recovery/v3'){
+        if(!Array.isArray(old.items)||old.items.length<3||old.items.length>128||
+            old.items.some(v=>!v.id||!v.blob||!Number.isFinite(v.blob.size))||
+            new Set(old.items.map(v=>v.id)).size!==old.items.length||
+            old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery is malformed');
+        return [...old.items];
+      }
       if(old.schema==='telecodex.voice-recovery/v2'){
         if(!Array.isArray(old.items)||old.items.length!==2)throw Error('Recording recovery is malformed');
         return [...old.items];
@@ -37,7 +46,7 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete('pending');
-      else store.put(items.length===1?items[0]:{schema:'telecodex.voice-recovery/v2',items},'pending');
+      else store.put(items.length===1?items[0]:{schema:items.length>2?'telecodex.voice-recovery/v3':'telecodex.voice-recovery/v2',items},'pending');
     }
     return {
       read:()=>operation('readonly',(_store,old)=>records(old)[0]),
@@ -49,7 +58,7 @@ window.VoiceInput = (() => {
           const items=records(old),index=items.findIndex(v=>v.id===value.id);
           if(index>=0){if(items[index].audio_sha256!==value.audio_sha256)throw Error('Recording identity changed');items[index]=value;}
           else{
-            if(items.length>= (parallel?2:1)||items.some(v=>v.binding!==value.binding))throw Error('Another unfinished recording is retained');
+            if(items.length>=128||(parallel?items.filter(v=>v.native_review!==true).length>=2:items.length>=1)||items.some(v=>v.binding!==value.binding))throw Error('Another unfinished recording is retained');
             items.push(value);
           }
           if(items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery limit reached');
@@ -57,6 +66,12 @@ window.VoiceInput = (() => {
           storeRecords(store,items);
         });
       },
+      review:value=>operation('readwrite',(store,old)=>{
+        const items=records(old),item=items.find(v=>v.id===value.id);
+        if(!item||item.audio_sha256!==value.audio_sha256||item.binding!==value.binding||
+            !item.foreground_dialogue||item.foreground_dialogue!==value.foreground_dialogue)throw Error('Original review changed');
+        item.native_review=true;storeRecords(store,items);
+      }),
       remove:value=>operation('readwrite',(store,old)=>storeRecords(store,records(old).filter(v=>v.id!==value.id||v.audio_sha256!==value.audio_sha256)))
     };
   }
@@ -316,6 +331,10 @@ window.VoiceInput = (() => {
       const frozen={...original,audio_sha256:Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join(''),localRecovery:true};
       await recovery.put(frozen,true);recoveryFree=false;return frozen;
     }
+    async function reviewNativeContinuous(original){
+      if(!recovery||original.binding!==getBinding())throw Error('Original review binding changed');
+      await recovery.review(original);
+    }
     async function releaseContinuous(original,hash){
       if(original.binding!==getBinding()||original.audio_sha256!==hash)throw Error('Original confirmation changed');
       await recovery?.remove(original);if(recovery)recoveryFree=(await recovery.list()).length===0;
@@ -388,7 +407,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
   return {mount};
 })();

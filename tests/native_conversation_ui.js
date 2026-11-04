@@ -109,7 +109,7 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   }
   // A provider may generate PCM before its manual-end ACK. Preserve the
   // beginning while waiting for that ACK instead of hearing only a late tail.
-  for(const confirmation of ['voice_activity','input_interpreted'])for(const native of [false,true]){
+  for(const confirmation of ['voice_activity','input_interpreted','input_uninterpreted'])for(const native of [false,true]){
     const early=boot(native),earlySocket=await ready(early,false,'automatic'),input=crypto.randomUUID(),output=crypto.randomUUID();
     early.sources[0].emit({pcm:new Uint8Array(3200).buffer});
     earlySocket.push({type:'capture_started',id:input,start:0});earlySocket.push({type:'phrase_end',id:input,start:0,end:3200});
@@ -118,9 +118,9 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
     earlySocket.push(packet(640));earlySocket.push(packet(1280));await until(()=>early.engine.hasAudio);
     assert.equal(early.engine.paused,true,'Fresh response waits for the matching manual-end ACK');
     assert.equal(early.timings.some(t=>t.id===output&&t.stage==='output_progress'),false);
-    earlySocket.push({type:confirmation,id:crypto.randomUUID(),activity:'ACTIVITY_END',text:'Old phrase'});await tick();
+    if(confirmation!=='input_uninterpreted')earlySocket.push({type:confirmation,id:crypto.randomUUID(),activity:'ACTIVITY_END',text:'Old phrase',reason:'empty_final_transcript'});await tick();
     assert.equal(early.engine.paused,true,'An unrelated input confirmation cannot release output');
-    early.engine.pause();earlySocket.push({type:confirmation,id:input,activity:'ACTIVITY_END',text:'Exact phrase'});await tick();
+    early.engine.pause();earlySocket.push({type:confirmation,id:input,activity:'ACTIVITY_END',text:'Exact phrase',reason:'empty_final_transcript'});await tick();
     assert.equal(early.engine.paused,true,'Input confirmation cannot override the human Pause');
     early.engine.resume();await until(()=>!early.engine.paused);
     if(!native)assert.equal(early.contexts[0].state,'running');

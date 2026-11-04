@@ -17,6 +17,11 @@ class _Wire:
     def recv(self):return self.socket.recv()
     def settimeout(self, value):self.socket.settimeout(value)
     def close(self):self.socket.close()
+    def __getattr__(self,name):
+        # Preserve actual control frames; recv() otherwise collapses CLOSE to
+        # empty JSON and hides the provider-close category from the reader.
+        if name=='recv_data':return getattr(self.socket,name)
+        raise AttributeError(name)
 
 
 class QwenDialogue(NativeDialogue):
@@ -31,6 +36,7 @@ class QwenDialogue(NativeDialogue):
         if activity_mode!='manual' or context_pinning:
             raise ValueError('Qwen pilot requires explicit local acoustic ownership without context pinning')
         self._qsocket=None;self._qgenerating=False;self._qresponse=None
+        self._qcancels=deque();self._qcancel_noops=0
         self._qstart=None;self._qcommit=None;self._qitems={};self._qanswered=set();self._qinput_response=False
         self._qdeferred=deque();self._qdeferred_bytes=0
         self._qbase='';self._qvoice=voice_name or 'longanqian'
@@ -108,7 +114,11 @@ class QwenDialogue(NativeDialogue):
                     raise ValueError('Qwen input commitment is still pending')
                 self._qstart=self.input_bytes
                 if self._qgenerating and self._qresponse:
-                    self._raw({'type':'response.cancel'})
+                    self._expire_cancels()
+                    if not any(ident==self._qresponse for ident,_ in self._qcancels):
+                        if len(self._qcancels)>=8:raise ValueError('Qwen cancel receipts exceed their bound')
+                        self._qcancels.append((self._qresponse,self._clock()+10))
+                        self._raw({'type':'response.cancel'})
                 return
             if 'audio' in data:
                 self._raw({'type':'input_audio_buffer.append','audio':data['audio']['data']});return
@@ -140,6 +150,31 @@ class QwenDialogue(NativeDialogue):
                         'human_speech':False,'call_id':ident,'source_data':True,'result':item['response']},ensure_ascii=False)))
             self._later(frames);return
         raise ValueError('Unsupported Qwen foreground command')
+
+    def _expire_cancels(self):
+        now=self._clock()
+        while self._qcancels and self._qcancels[0][1]<now:self._qcancels.popleft()
+
+    @property
+    def control_diagnostics(self):
+        return {'cancel_noops':self._qcancel_noops}
+
+    def _provider_error(self,value):
+        self._expire_cancels()
+        error=value.get('error')
+        if isinstance(error,dict):
+            message=error.get('message')
+            if (value.get('type')=='error' and error.get('type')=='invalid_request_error'
+                    and error.get('code')=='invalid_value' and isinstance(message,str)
+                    and len(message)<=512 and 'no active response' in message.lower()
+                    and self._qcancels):
+                # A response can finish on the server before the local reader
+                # processes response.done. Its late cancellation is a no-op,
+                # not input failure. Do not clear a newer response/commit, retry
+                # the command or replay any original/tool.
+                self._qcancels.popleft();self._qcancel_noops+=1
+                return []
+        self._fail('native-dialogue-qwen-provider-error')
 
     def _events(self,value):
         kind=value.get('type')
@@ -179,6 +214,9 @@ class QwenDialogue(NativeDialogue):
         elif kind=='response.done':
             if value.get('response',{}).get('status') not in ('completed','cancelled'):
                 raise ValueError('Qwen response did not complete')
+            if value.get('response',{}).get('status')=='cancelled':
+                ident=value['response'].get('id',self._qresponse)
+                self._qcancels=deque((r,t) for r,t in self._qcancels if r!=ident)
             self._qgenerating=False;self._qresponse=None
             mapped={'serverContent':{'turnComplete':True,**({'interrupted':True}
                 if value.get('response',{}).get('status')=='cancelled' else {})}}
