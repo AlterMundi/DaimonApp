@@ -31,6 +31,7 @@ mod forum;
 mod goal_controls;
 mod goal_recovery;
 mod goals;
+mod heartbeat;
 mod icons;
 mod interactions;
 mod io;
