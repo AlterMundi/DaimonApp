@@ -73,6 +73,11 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
     selected=config['streaming_transcription']
     activity_mode=selected.get('native_activity_mode','manual')
     configured_seconds=selected.get('native_session_seconds',300)
+    def dialogue_class():
+        if selected.get('native_provider','gemini')=='qwen':
+            from .qwen_dialogue import QwenDialogue
+            return QwenDialogue
+        return NativeDialogue
     app.state.native_voice_enabled=True
     recovery_slots=asyncio.Semaphore(2);recovery_owned=set()
 
@@ -117,7 +122,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             nonlocal utterance,output_text,output_bytes,output_hash
             if utterance is None:return
             record=await asyncio.to_thread(app.state.native_history.retain,owner,meta['id'],meta['binding'],
-                utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed)
+                utterance,output_text,output_hash.hexdigest(),output_bytes,interrupted=interrupted,closed=closed,model=stream.model)
             if closed:
                 if context_producer is not None:context_producer.notify()
                 if caption_audio is not None:
@@ -307,10 +312,11 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         cancelled_proposals.add(proposal);proposal.cancel()
                         await asyncio.gather(proposal,return_exceptions=True)
                     await send(event);continue
-                if kind in ('voice_activity','input_transcript'):
+                if kind in ('voice_activity','input_transcript','input_committed'):
                     original=acoustic.provider.ident if acoustic.provider else None
                     owned=await acoustic.provider_event(event)
                     if owned is not None:original=owned
+                    if kind=='input_committed':continue
                     event={**event,'id':original}
                     # Explicit transcription fragments are rendered as
                     # the acoustic owner's accumulated caption; an empty
@@ -506,7 +512,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600,
                         **({'session_seconds':session_seconds} if session_seconds>300 else {}))
                 await recheck()
-                opening=asyncio.create_task(asyncio.to_thread(NativeDialogue,selected['credential_file'],activity_mode=activity_mode,
+                opening=asyncio.create_task(asyncio.to_thread(dialogue_class(),selected.get('native_credential_file',selected['credential_file']),activity_mode=activity_mode,
                     voice_name=selected.get('native_voice_name'),context=context))
                 stream=await asyncio.shield(opening)
                 # Provider readiness is actual setupComplete, not successful connect().

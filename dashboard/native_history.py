@@ -54,20 +54,21 @@ class NativeHistory:
         if count>=self.max_rows or size+16384>self.max_bytes:
             raise ValueError('Foreground conversation history reached its retention bound')
 
-    def retain(self,human,dialogue,binding,ident,text,audio_sha256,generated_bytes,*,interrupted=False,closed=True):
+    def retain(self,human,dialogue,binding,ident,text,audio_sha256,generated_bytes,*,interrupted=False,closed=True,model="gemini-3.8-live"):
         for value in (dialogue,ident):self.ident(value)
         if (type(human) is not int or not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding)
                 or not isinstance(text,str) or len(text.encode())>16384 or '\0' in text
                 or not isinstance(audio_sha256,str) or not re.fullmatch('[a-f0-9]{64}',audio_sha256)
                 or type(generated_bytes) is not int or not 0<=generated_bytes<=300*48000
-                or type(interrupted) is not bool or type(closed) is not bool):
+                or type(interrupted) is not bool or type(closed) is not bool
+                or model not in ('gemini-3.8-live','qwen-audio-3.0-realtime-plus','gpt-realtime-2.1')):
             raise ValueError('Select bounded assistant-authored voice output')
         with self.database() as db:
             db.execute('BEGIN IMMEDIATE')
             old=db.execute('SELECT * FROM foreground_utterances WHERE id=?',(ident,)).fetchone()
             if old:
                 if (old['human']!=human or old['scope']!=self.scope or old['dialogue']!=dialogue
-                        or old['binding']!=binding or old['closed']
+                        or old['binding']!=binding or old['model']!=model or old['closed']
                         or generated_bytes<old['generated_bytes'] or not text.startswith(old['text'])):
                     raise ValueError('Retained assistant utterance cannot be rewritten')
             # PCM/hash/closed updates cannot grow the row or text quota. Keep
@@ -84,8 +85,8 @@ class NativeHistory:
                            (text,audio_sha256,generated_bytes,int(interrupted),int(closed),ident))
             else:
                 db.execute('''INSERT INTO foreground_utterances(id,human,scope,dialogue,binding,observed_at,text,model,audio_sha256,generated_bytes,interrupted,closed)
-                    VALUES(?,?,?,?,?,?,?,'gemini-3.8-live',?,?,?,?)''',
-                    (ident,human,self.scope,dialogue,binding,time.time(),text,audio_sha256,generated_bytes,int(interrupted),int(closed)))
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (ident,human,self.scope,dialogue,binding,time.time(),text,model,audio_sha256,generated_bytes,int(interrupted),int(closed)))
             row=db.execute('SELECT rowid,* FROM foreground_utterances WHERE id=?',(ident,)).fetchone()
             enqueue(db,row)
         if (text and old is None) or old is not None and (old['text']!=text or bool(old['closed'])!=closed):

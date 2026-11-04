@@ -1647,3 +1647,81 @@ of the final61tail observations indicated speech despite continuing noise.
 The12/6dB mixtures clipped two/four samples respectively. This qualifies only
 these controlled signals; arbitrary road noise, competing voices, echo, the
 actual person's microphone and useful phone/hearing latency remain unqualified.
+
+## Explicit Qwen native pilot and prepared OpenAI transport — 4 November 2026
+
+`streaming_transcription.native_provider` now selects `gemini` (unchanged default)
+or `qwen` for the foreground conversation, independently of prepared ASR and its
+existing fallback. Qwen requires an explicit absolute `native_credential_file`,
+manual local acoustic ownership and a matching voice such as `longanqian`.
+Changing providers never replays a retained original or switches an open dialogue.
+The configured finite logical session and shared identity/Sol/source policy remain.
+Ordinary TTS, file ASR, shared login and the native integrator stay independent.
+
+Qwen's `input_audio_buffer.committed` acknowledges one buffered input item. The
+adapter binds its ID to its one outstanding exact original PCM range; it does
+not invent a provider VAD event or provider-reported sample offsets. Only that
+item's final transcript can complete the original. Duplicate/unowned commitment
+or final transcription closes for review. PCM remains16kHz input/24kHz output.
+Provider function calls retain the existing tool validation and source-bound
+Sol admission. Qwen has one function output per call; later admitted streaming
+returns become explicitly attributed internal context on that same retained
+call, never another tool execution or new human speech. Controls wait for the
+provider/acoustic floor, with at most64 queued controls/256KiB. Interruption
+cancels voice generation only, preserving independent work and pending tools.
+Assistant history records the actual generating model rather than labeling all
+speech Gemini. Existing rows keep their original attribution.
+
+The pilot uses a conservative64k context ceiling, requests50 retained turns, and
+signals checkpoint pressure at48k estimated tokens,40 completed response turns,
+240seconds cumulative generated/input audio, or the existing physical lifetime
+and tool bounds. The existing Sol checkpoint/successor owner handles continuity;
+these are bounds, not a measured long-session/device acceptance result.
+
+Observed qualification: one real Qwen synthetic text/tool/audio exchange; then
+one adapter audio-input/final-transcript/read-only-tool/audio-output exchange;
+then one mounted actual Qwen/local CPU/native Sol composition. The last completed
+in26.439seconds total with one provider socket, zero forced rollovers, retained
+originals and integrating context. No production human input, worker dispatch,
+physical microphone/speaker, hearing or useful-latency claim. The earlier
+600second Gemini capacity qualification is not Qwen duration acceptance.
+
+OpenAI's `OpenAIDialogue` is a prepared transport candidate, not a selectable
+receiving provider yet: it targets the GA `gpt-realtime-2.1` WebSocket contract,
+explicit API credentials, `gpt-transcribe` input interpretation and a prebuilt
+`cedar` voice. Its streaming16→24kHz PCM phase, GA event/tool mapping and original
+coordinates have isolated tests only. Actual account access, model/tool/audio
+qualification and the native completed-reader allowlist still need closure.
+The existing ChatGPT login and historical native WebRTC sample do not establish
+an API key. Do not repurpose that login token, advertise this candidate as live,
+or bypass the compatible-reader requirement to select it. A native-login/WebRTC
+integration is a separate transport option, not an API credential substitution.
+
+Five real phone attempts on4November closed during Gemini preflight before any
+PCM input/output. One bounded setup-only inspection observed close code1011
+with a billing/credit category; no exact balance was read. `recv()` had collapsed
+the close frame into an empty string, producing the misleading invalid-envelope
+code. The reader now distinguishes a fixed billing category from an ordinary
+provider close without retaining provider reason text or retrying a session.
+Subsequent human recovery and renewed immediate failure are retained separately;
+no phone success is inferred from a successful independent Qwen sample.
+
+Official contracts, retrieved4November:
+[Qwen Token Plan voice](https://docs.qwencloud.com/token-plan/best-practices/realtime-voice),
+[Qwen client events](https://docs.qwencloud.com/api-reference/qwen-audio-realtime/client-events),
+[Qwen native audio/context](https://docs.qwencloud.com/developer-guides/speech/qwen-audio-realtime),
+[OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime),
+[OpenAI GA events](https://developers.openai.com/api/reference/resources/realtime/client-events).
+Voces retains the expanded listening comparison. Grok and MiniMax have no
+receiving conversation adapter from this change; MiniMax TTS streaming alone is
+not full audio-to-audio conversation. Receiving selection and device acceptance
+remain distinct from these source/qualification observations.
+
+One initial standalone interruption fixture stopped with a local ValueError and
+did not retain enough boundary metadata to establish its cause. A separately
+instrumented two-original interruption observed an actual provider cancellation
+and subsequent audio. The cancellation control was then narrowed to Qwen's
+documented `response.cancel` shape, and the original synthetic script content
+completed with two committed originals, cancellation and subsequent audio. This
+is regression evidence, not proof of the earlier fixture's cause or general
+physical interruption acceptance. No uncertain human input or work was replayed.
