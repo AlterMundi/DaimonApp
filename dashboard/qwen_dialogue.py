@@ -177,10 +177,11 @@ class QwenDialogue(NativeDialogue):
             mapped={'toolCall':{'functionCalls':[{'id':value['call_id'],'name':value['name'],
                 'args':json.loads(value['arguments'])}]}}
         elif kind=='response.done':
-            if value.get('response',{}).get('status') not in ('completed','cancelled','incomplete'):
+            if value.get('response',{}).get('status') not in ('completed','cancelled'):
                 raise ValueError('Qwen response did not complete')
             self._qgenerating=False;self._qresponse=None
-            mapped={'serverContent':{'turnComplete':True}}
+            mapped={'serverContent':{'turnComplete':True,**({'interrupted':True}
+                if value.get('response',{}).get('status')=='cancelled' else {})}}
         elif kind=='conversation.item.input_audio_transcription.failed':
             raise ValueError('Qwen final input transcription unavailable')
         events=super()._events(mapped) if mapped else []

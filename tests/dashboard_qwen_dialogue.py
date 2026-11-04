@@ -68,8 +68,13 @@ class Qwen(unittest.TestCase):
         self.stream.append(b'\0\0'*1000);self.stream.activity_end()
         self.event({'type':'input_audio_buffer.committed','item_id':'item1'})
         before=len([x for x in self.socket.sent if x['type']=='response.create'])
-        self.event({'type':'response.done','response':{'status':'cancelled'}})
+        cancelled=self.event({'type':'response.done','response':{'status':'cancelled'}})
+        self.assertIn('interrupted',[e['type'] for e in cancelled])
         self.assertEqual(len([x for x in self.socket.sent if x['type']=='response.create']),before+1)
+    def test_incomplete_response_requires_review_instead_of_silent_completion(self):
+        self.ready()
+        with self.assertRaises(DialogueUnavailable):self.event({'type':'response.done','response':{'status':'incomplete'}})
+
     def test_audio_is_validated_by_existing_normalizer(self):
         self.ready();e=self.event({'type':'response.audio.delta','delta':base64.b64encode(b'\1\0'*10).decode()})
         self.assertEqual(e[0]['pcm'],b'\1\0'*10);self.assertEqual(e[0]['sample_rate'],24000)
