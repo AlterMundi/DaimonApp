@@ -21,6 +21,7 @@ use uuid::Uuid;
 mod artifact_outputs;
 mod attention;
 mod auth;
+mod backend;
 pub(crate) mod controller;
 mod conversation_inputs;
 mod conversation_requests;
@@ -30,6 +31,7 @@ mod forum;
 mod goal_controls;
 mod goal_recovery;
 mod goals;
+mod heartbeat;
 mod icons;
 mod interactions;
 mod io;
@@ -626,39 +628,12 @@ impl App {
     }
 
     async fn run_instance_heartbeat_loop(&self) {
-        loop {
-            sleep(Duration::from_secs(
-                (Self::BACKGROUND_MAINTENANCE_INTERVAL_SECONDS / 2).max(1),
-            ))
-            .await;
-            if let Err(error) = self.shared.store.heartbeat_instance() {
-                tracing::error!("database instance heartbeat failed: {error:#}");
-                if error.to_string() == INSTANCE_LOCK_LOST_ERROR {
-                    self.shared.shutdown.cancel();
-                    return;
-                }
-            } else if self.shared.config.telegram.enabled
-                && topic_publications::recover(self.shared.clone()).is_err()
-            {
-                tracing::warn!("Retained topic publication recovery unconfirmed");
-            }
-            if !self.shared.shutdown.is_cancelled()
-                && self.shared.config.codex.shared_app_server
-                && native_recovery::tick(self).await.is_err()
-            {
-                tracing::warn!("Native output recovery remains pending; no input replayed");
-            }
-            if !self.shared.shutdown.is_cancelled()
-                && workflows::recover_unsent(self).await.is_err()
-            {
-                tracing::warn!("Known-unsent workflow return recovery remains pending");
-            }
-            if !self.shared.shutdown.is_cancelled()
-                && artifact_outputs::recover(self.shared.clone()).is_err()
-            {
-                tracing::warn!("Retained file recovery unconfirmed");
-            }
-        }
+        crate::backend::run(
+            self,
+            &self.shared.shutdown,
+            Duration::from_secs((Self::BACKGROUND_MAINTENANCE_INTERVAL_SECONDS / 2).max(1)),
+        )
+        .await;
     }
 
     async fn notify_primary_user(&self, text: &str) {

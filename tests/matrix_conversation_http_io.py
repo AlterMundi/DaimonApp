@@ -139,6 +139,17 @@ def qualify(binary, *, funded=False):
                 "requests": [],
             },
         )
+        # The human console and scoped integrator use one persistent gate.
+        paused = j.read("heartbeat", "pause")["result"]
+        assert paused["admission_paused"] is True
+        same = j.call("route-heartbeat-shared-status", "heartbeat_control", {"action": "status"})
+        assert same == paused
+        j.call("route-heartbeat-stale-resume", "heartbeat_control", {"action": "resume", "generation": 0}, ok=False)
+        resumed = j.call("route-heartbeat-explicit-resume", "heartbeat_control", {"action": "resume", "generation": paused["generation"]})
+        assert resumed["admission_paused"] is False
+        paused_again = j.read("heartbeat", "pause")["result"]
+        assert paused_again["generation"] > resumed["generation"]
+        assert paused_again["attention_engine"] == "not_implemented"
         request = selected["request"]
         assert request["original"]["text"] == original
         assert b.status(ident)["phase"] == "matrix_requested"
@@ -151,6 +162,8 @@ def qualify(binary, *, funded=False):
             ("message-selector", {"message_id": request["id"], "receive_after": 0}),
             ("oversized-cursor", {"request_id": request["id"], "receive_after": 2**53}),
             ("boolean-cursor", {"request_id": request["id"], "receive_after": True}),
+            ("both-cursors", {"request_id": request["id"], "receive_after": 0, "receive_next": True}),
+            ("message-next", {"message_id": request["id"], "receive_next": True}),
         ):
             j.call("route-reject-selected-read-" + label, "matrix_status", invalid, ok=False)
         assert reads == []
@@ -220,10 +233,22 @@ def qualify(binary, *, funded=False):
         assert inspected["phase"] == "reply_received"
         assert inspected["inspection"]["canonical_replies"] == 1
         assert inspected["inspection"]["native_input"] is False
+        attention = j.call("route-matrix-canonical-attention", "workflow_attention", {})
+        offer = attention["matrix"]["envelopes"][0]
+        assert offer["completed"] is None and offer["author"] == callback["author"]
+        source = j.call("route-matrix-attention-exact-source", "conversation_part", offer["reader"]["arguments"])
+        assert source["text"] == callback["text"]
+        assert source["revision"] == offer["revision"]
+        reported = j.call("route-matrix-attention-incorporated", "matrix_reported", offer["after_incorporation"]["arguments"])
+        assert reported["incorporation_reported"] is True
+        assert reported["task_completed"] is False and reported["peer_reply_sent"] is False
+        assert j.call("route-matrix-no-duplicate-attention", "workflow_attention", {})["matrix"]["envelopes"] == []
         cursor = inspected["inspection"]["next_cursor"]
         empty = j.call("route-inspect-selected-matrix-after-cursor", "matrix_status", {
-            "request_id": request["id"], "receive_after": cursor,
+            "request_id": request["id"], "receive_next": True,
         })
+        assert empty["inspection"]["after"] == cursor
+        assert empty["inspection_cursor"] == cursor
         assert empty["inspection"]["canonical_replies"] == 0
         assert len(observed) == 1  # No additional authored send.
         assert reads == [request["id"], request["id"]]
@@ -260,8 +285,9 @@ def qualify(binary, *, funded=False):
             response_to=(sdk.receiver, sent["message_id"]),
         )
         ordinary = j.call("route-inspect-ordinary-native-speech", "matrix_status", {
-            "request_id": request["id"], "receive_after": cursor,
+            "request_id": request["id"], "receive_next": True,
         })
+        assert ordinary["inspection"]["after"] == cursor
         assert ordinary["inspection"]["canonical_replies"] == 1
         spoken_result = next(row["result"] for row in ordinary["results"]
                              if row["result"]["message_id"] == spoken["message_id"])

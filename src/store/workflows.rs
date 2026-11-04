@@ -20,6 +20,43 @@ const MAX_RETAINED_WORKFLOWS: i64 = 256;
 const MAX_WORKFLOW_DOCUMENT_BYTES: usize = 256 * 1024;
 pub(crate) const WORKFLOW_CAPACITY_ERROR: &str = "Workflow journal capacity reached; retain existing history and finish or inspect current workflows";
 
+/// Only bounded, non-sensitive admission diagnostics cross the tool boundary.
+#[derive(Debug)]
+struct WorkflowRejection {
+    code: &'static str,
+    workflow: Option<String>,
+}
+impl std::fmt::Display for WorkflowRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.code)
+    }
+}
+impl std::error::Error for WorkflowRejection {}
+fn refusal(code: &'static str, workflow: Option<String>) -> anyhow::Error {
+    WorkflowRejection { code, workflow }.into()
+}
+pub(crate) fn rejection(error: &anyhow::Error) -> Option<Value> {
+    let e = error.downcast_ref::<WorkflowRejection>()?;
+    let recovery = match e.code {
+        "workflow_plan_conflict" => {
+            "This request_id already names an immutable plan. Inspect workflow_status and its retained instructions. Exact retries must preserve the plan; a genuinely additional authorized subtask uses a distinct stable request_id, not a replacement original or a retry of accepted/uncertain work."
+        }
+        "workflow_scope_already_selected" => {
+            "This subtask already belongs to the referenced workflow. Inspect and continue that retained workflow; changing request_id is not permission to dispatch it again."
+        }
+        "workflow_original_retired" => {
+            "A prior explicit withdrawal/supersession retired this original's workflow authority. Preserve existing effects and select the actual later human instruction instead."
+        }
+        "workflow_selected" => {
+            "This original already has attributed workflow work. Inspect the retained workflow. For genuinely additional authorized work, declare a separate bounded workflow with the same input_ref and its own stable request_id and scope; do not dispatch the entire original again or replay an existing subtask."
+        }
+        _ => return None,
+    };
+    Some(
+        json!({"kind":"routing_rejected","code":e.code,"workflow":e.workflow,"admitted":false,"effect":"This call made no new workflow or native submission; earlier effects remain retained.","recovery":recovery}),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowStep {
@@ -349,33 +386,63 @@ impl Store {
             channel,
             false,
         )?;
-        let source_key = digest(&json!([source.channel, source.event_id]))?;
-        let id = Uuid::new_v5(
-            &Uuid::NAMESPACE_URL,
-            format!("telecodex:workflow:{human}:{session}:{source_key}").as_bytes(),
-        )
-        .to_string();
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT doc FROM interaction_workflows WHERE id=?",
-                [&id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(raw) = existing {
-            let w: Workflow = serde_json::from_str(&raw)?;
+        // Preserve old per-original workflow IDs. New plans use the actual
+        // caller-selected subtask identity; changing an ID never retries work.
+        let mut q = tx.prepare("SELECT doc FROM interaction_workflows WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND json_extract(doc,'$.source.channel')=?4 AND json_extract(doc,'$.source.event_id')=?5")?;
+        let existing = q
+            .query_map(
+                params![
+                    human,
+                    entry.chat_id,
+                    entry.thread_id,
+                    source.channel,
+                    source.event_id
+                ],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        let siblings = existing
+            .iter()
+            .map(|raw| serde_json::from_str::<Workflow>(raw))
+            .collect::<serde_json::Result<Vec<_>>>()?;
+        if let Some(w) = siblings
+            .iter()
+            .find(|w| w.plan.request_id == plan.request_id)
+        {
             if w.plan != plan || w.source != source || w.native != native {
-                bail!("Workflow identity is immutable");
+                return Err(refusal("workflow_plan_conflict", Some(w.id.clone())));
             }
-            return view_on(&tx, &w);
+            return view_on(&tx, w);
         }
-        super::matrix::unclaimed_on(
+        for w in &siblings {
+            if matches!(w.phase.as_str(), "superseded" | "withdrawn") {
+                return Err(refusal("workflow_original_retired", Some(w.id.clone())));
+            }
+            if w.plan.steps.iter().any(|old| {
+                plan.steps
+                    .iter()
+                    .any(|new| old.owner == new.owner && old.scope.trim() == new.scope.trim())
+            }) {
+                return Err(refusal(
+                    "workflow_scope_already_selected",
+                    Some(w.id.clone()),
+                ));
+            }
+        }
+        super::matrix::non_workflow_unclaimed_on(
             &tx,
             human,
             &source.channel,
             &source.event_id,
             source.update_id,
         )?;
+        let source_key = digest(&json!([source.channel, source.event_id, plan.request_id]))?;
+        let id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("telecodex:workflow:{human}:{session}:{source_key}").as_bytes(),
+        )
+        .to_string();
         let selected:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND channel=?2 AND event_id=?3) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4)",params![human,source.channel,source.event_id,plan.input_ref],|r|r.get(0))?;
         if selected {
             bail!("Original already has a dispatch or creation plan");
@@ -612,8 +679,9 @@ impl Store {
                 envelopes.push(envelope);
             }
         }
+        let matrix = super::matrix::attention_on(&conn, human, entry)?;
         Ok(
-            json!({"schema":"telecodex.workflow-attention/v1","envelopes":envelopes,"bounded":true,"max_workflows":16,"max_steps":4,"max_envelopes":192,"automatic_native_return":false,"publication_grant":false}),
+            json!({"schema":"telecodex.workflow-attention/v1","matrix":matrix,"envelopes":envelopes,"bounded":true,"max_workflows":16,"max_steps":4,"max_envelopes":192,"automatic_native_return":false,"publication_grant":false}),
         )
     }
     /// An exact offer acknowledgment is not a hearing or completion receipt.
@@ -877,7 +945,8 @@ pub(super) fn unclaimed_on(
 ) -> Result<()> {
     let held:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_workflows WHERE human_id=?1 AND (json_extract(doc,'$.source.update_id')=?4 OR (json_extract(doc,'$.source.channel')=?2 AND json_extract(doc,'$.source.event_id')=?3)))",params![human,channel,event,update],|r|r.get(0))?;
     if held {
-        bail!("Original input has an immutable workflow selection");
+        let id: String = conn.query_row("SELECT id FROM interaction_workflows WHERE human_id=?1 AND (json_extract(doc,'$.source.update_id')=?4 OR (json_extract(doc,'$.source.channel')=?2 AND json_extract(doc,'$.source.event_id')=?3)) ORDER BY rowid LIMIT 1",params![human,channel,event,update], |r| r.get(0))?;
+        return Err(refusal("workflow_selected", Some(id)));
     }
     Ok(())
 }
@@ -1074,6 +1143,68 @@ mod tests {
         (instruction, delivery)
     }
     #[test]
+    fn heartbeat_generation_fences_native_admission_without_erasing_history_or_ack() {
+        let (_file, s, entry, plan) = setup();
+        let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+        let selected = s
+            .native_routed_result_reserve(100, entry.key, &delivery.id)
+            .unwrap()
+            .unwrap();
+        // The existing ordinary policy is independent of the default-paused gate.
+        s.workflow_native_validate(&selected.id).unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        {
+            // Test-owned server receipt, not a new public tagging or funding API.
+            let conn = s.conn.lock().unwrap();
+            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1",[&delivery.id]).unwrap();
+        }
+        let local = turn(&s, &entry, "");
+        assert!(s.workflow_native_link(&selected.id, local).is_err());
+        assert!(s.workflow_native_submitting(&selected.id).is_err());
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::Resume { generation: 1 },
+        )
+        .unwrap();
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_validate(&selected.id).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        let revision = packet["evidence"]["revision"].as_str().unwrap();
+        s.native_routed_source(100, entry.key, "native-1", &selected.id, revision, 0)
+            .unwrap();
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::Resume { generation: 3 },
+        )
+        .unwrap();
+        // Resume permits only a new generation; a previously submitting intent
+        // never becomes eligible or known-unsent solely because pause occurred.
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        s.workflow_native_outcome(&selected.id, "accepted", Some("exact-late-physical"))
+            .unwrap();
+        let conn = s.conn.lock().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT native_return FROM interaction_deliveries WHERE id=?1",
+                [&delivery.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let retained: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(retained["returns"][0]["phase"], "accepted");
+        assert_eq!(retained["returns"][0]["native_turn"], "exact-late-physical");
+        assert_eq!(retained["returns"][0]["attention_generation"], 2);
+    }
+
+    #[test]
     fn ordinary_routed_result_returns_exact_source_without_declaring_workflow() {
         let (_f, s, entry, plan) = setup();
         let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
@@ -1131,6 +1262,112 @@ mod tests {
             1
         );
     }
+    #[test]
+    fn heartbeat_pause_preserves_exact_canonical_report_and_source_reader_scope() {
+        let (_file, s, entry, plan) = setup();
+        let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+        let selected = s
+            .native_routed_result_reserve(100, entry.key, &delivery.id)
+            .unwrap()
+            .unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        {
+            // Only the server-owned fixture marks this retained source; peer
+            // text and requesting models cannot mint an attention generation.
+            let conn = s.conn.lock().unwrap();
+            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1", [&delivery.id]).unwrap();
+        }
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::Resume { generation: 1 },
+        )
+        .unwrap();
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        assert!(
+            !s.heartbeat_native_started(local, "heartbeat-report-physical")
+                .unwrap()
+        );
+        s.workflow_native_outcome_attempt(
+            &selected.id,
+            1,
+            "accepted",
+            Some("heartbeat-report-physical"),
+        )
+        .unwrap();
+        s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)
+            .unwrap();
+        s.heartbeat_executions(100, entry.key, true).unwrap();
+        assert!(s.workflow_native_validate(&selected.id).is_err());
+        let report = "The selected result was reviewed; further heartbeat work is paused.";
+        assert!(
+            s.record_native_message(
+                local,
+                "native-1",
+                "heartbeat-report-physical",
+                "paused-report",
+                Some("commentary"),
+                report
+            )
+            .unwrap()
+        );
+        s.heartbeat_native_terminal(local, "heartbeat-report-physical", "interrupted")
+            .unwrap();
+        assert!(
+            !s.record_native_message(
+                local,
+                "native-1",
+                "heartbeat-report-physical",
+                "paused-report",
+                Some("commentary"),
+                report
+            )
+            .unwrap()
+        );
+        let list = s
+            .interaction_presentation_list(100, entry.key, 0, 0)
+            .unwrap();
+        let reports: Vec<_> = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["preview"] == report)
+            .collect();
+        assert_eq!(
+            reports.len(),
+            1,
+            "Exact native item is presented once across pause/terminal observation"
+        );
+        assert_eq!(reports[0]["kind"], "integrator_progress");
+        assert_eq!(reports[0]["native_returns"], json!([selected.id]));
+        assert_eq!(
+            reports[0]["current"], true,
+            "Pause fences new inference, not retained human-authorized reports"
+        );
+        assert!(
+            s.interaction_presentation_list(101, entry.key, 0, 0)
+                .is_err()
+        );
+        // Existing canonical source retirement remains separate: an old report
+        // stays in history but cannot become a fresh voice offer after expiry.
+        let conn = s.conn.lock().unwrap();
+        conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.expires_at','2000-01-01T00:00:00Z') WHERE id=?1",[&delivery.id]).unwrap();
+        drop(conn);
+        let list = s
+            .interaction_presentation_list(100, entry.key, 0, 0)
+            .unwrap();
+        let item = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["preview"] == report)
+            .unwrap();
+        assert_eq!(item["current"], false);
+    }
+
     #[test]
     fn ordinary_return_reuses_exact_attempt_and_source_publication_fences() {
         let (_f, s, entry, plan) = setup();
@@ -1688,6 +1925,124 @@ mod tests {
         let next = replacement_collector(&s, &entry, "declared-physical");
         assert!(!s.workflow_native_visible(next).unwrap());
     }
+    #[test]
+    fn incremental_subtasks_preserve_legacy_plan_receipts_and_original_authority() {
+        let (file, store, entry, mut first_plan) = setup();
+        first_plan.steps.truncate(1);
+        let first = declare(&store, &entry, first_plan.clone());
+        // Reproduce a pre-change workflow identity before any admission.
+        let legacy = "legacy-original-workflow";
+        {
+            let conn = store.conn.lock().unwrap();
+            let mut w = load_on(&conn, 100, entry.key, first["id"].as_str().unwrap()).unwrap();
+            w.id = legacy.into();
+            conn.execute("UPDATE interaction_workflows SET id=?1,doc=?2,source_key='legacy-source' WHERE id=?3",params![legacy,document(&w).unwrap(),first["id"].as_str().unwrap()]).unwrap();
+        }
+        let legacy_view = declare(&store, &entry, first_plan.clone());
+        assert_eq!(legacy_view["id"], legacy);
+        let original_instruction = advance(&store, &entry, &legacy_view).unwrap();
+        let worker = accept(&store, &original_instruction);
+        let mut next = first_plan.clone();
+        next.request_id = "additional-attributed-handoff".into();
+        next.steps[0].id = "deliver-context".into();
+        next.steps[0].owner = SessionKey::new(100, Some(8));
+        next.steps[0].scope = "Session A reports its checkpoint; deliver this attributed context to B under the same human request".into();
+        next.steps[0].checkpoint = "B incorporates the selected attributed evidence".into();
+        // Additional work is not a mutation, retry or replay of the first plan.
+        let added = declare(&store, &entry, next.clone());
+        assert_ne!(added["id"], legacy);
+        assert_eq!(declare(&store, &entry, next.clone()), added);
+        let second_instruction = advance(&store, &entry, &added).unwrap();
+        assert!(
+            store
+                .interaction_author(&second_instruction.id, 100)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(second_instruction.target, SessionKey::new(100, Some(8)));
+        assert!(
+            advance(
+                &store,
+                &entry,
+                &status(&store, &entry, added["id"].as_str().unwrap())
+            )
+            .is_none()
+        );
+        assert_eq!(
+            store
+                .interaction_instruction(&original_instruction.id, 100)
+                .unwrap()
+                .unwrap()
+                .local_turn,
+            Some(worker)
+        );
+        let mut conflict = next.clone();
+        conflict.steps[0].scope = "Mutating the frozen selected work is refused".into();
+        let error = store
+            .interaction_workflow_declare(
+                100,
+                entry.key,
+                "native-1",
+                "conversation",
+                conflict,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(rejection(&error).unwrap()["code"], "workflow_plan_conflict");
+        let mut duplicate = next.clone();
+        duplicate.request_id = "not-a-retry-loophole".into();
+        duplicate.steps[0].checkpoint = "Different reporting expectation is not new work".into();
+        let error = store
+            .interaction_workflow_declare(
+                100,
+                entry.key,
+                "native-1",
+                "conversation",
+                duplicate,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            rejection(&error).unwrap()["code"],
+            "workflow_scope_already_selected"
+        );
+        let error = store
+            .interaction_entry_original(entry.key, 100, "native-1", &next.input_ref, "conversation")
+            .unwrap_err();
+        assert_eq!(rejection(&error).unwrap()["code"], "workflow_selected");
+        assert!(rejection(&anyhow!("private arbitrary diagnostic")).is_none());
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert_eq!(declare(&store, &entry, first_plan)["id"], legacy);
+        assert_eq!(declare(&store, &entry, next.clone())["id"], added["id"]);
+        assert_eq!(
+            store
+                .interaction_instruction(&original_instruction.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            P::Accepted
+        );
+        // A retired original cannot gain another plan by changing request_id.
+        withdraw_on(&store.conn.lock().unwrap(), entry.key).unwrap();
+        next.request_id = "after-withdrawal".into();
+        next.steps[0].scope = "Different work still cannot revive retired authority".into();
+        let error = store
+            .interaction_workflow_declare(
+                100,
+                entry.key,
+                "native-1",
+                "conversation",
+                next,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            rejection(&error).unwrap()["code"],
+            "workflow_original_retired"
+        );
+    }
+
     #[test]
     fn workflow_retains_ownership_exact_scope_milestones_and_final_integration() {
         let (_f, s, e, plan) = setup();

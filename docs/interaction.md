@@ -1506,3 +1506,55 @@ I/O is another ingress/egress of this continuing integrator, never a second
 reasoning owner. Production peer activation still needs the selected authority,
 limits and enforceable inference route; source and model-free integration tests
 do not enable it.
+
+
+## Incremental attributed subtasks under one original (#577)
+
+`input_ref` identifies actual retained human authority; `request_id` identifies
+one integrator-selected bounded subtask plan, not the entire lifetime of that
+original. `workflow_declare` can admit genuinely additional authorized work with
+a different stable request_id under the same original. Each plan remains
+immutable, at most four ordered steps with a finite deadline. Existing retained
+workflow IDs, original texts and native effects are preserved. Old per-original
+workflows still resolve by their retained request_id after upgrade/restart.
+No schema rewrite, duplicate goal engine or new input transport is involved.
+
+Use this path for a later selected destination or integrator-authored handoff of
+relevant peer evidence. Scope/checkpoint text is attributed session context,
+never a new human message or independent permission from the peer. Preserve
+source/session/revision attribution and restrictions in that bounded scope;
+ordered dependent steps retain the existing exact predecessor reader. Workers
+cannot declare another workflow or expand the original human's authority.
+
+For an exact retry, reuse the same request_id and the entire frozen plan. Inspect
+workflow_status, instruction/acceptance and uncertainty first. A new key is not
+a recovery operation: an identical selected owner/scope is rejected
+rather than replayed, even if its checkpoint changes. Changing wording is not permission to repeat completed,
+accepted or uncertain work. A conflicting plan under the same key returns
+`workflow_plan_conflict`; duplicated scope returns
+`workflow_scope_already_selected`, with the retained workflow ID. A whole-original
+`dispatch` after workflow selection returns `workflow_selected`: continue the
+existing plan, or declare only the genuinely additional attributed subtask.
+Explicit withdrawal/supersession retires that original's ability to gain new
+workflow plans (`workflow_original_retired`). Owner/native/original, delegation,
+admission epoch, Stop/maintenance, competing goal/Matrix/direct plans and the
+existing 16-active/256-retained workflow capacity remain enforced. No automatic
+cleanup or capacity replenishment is introduced. Arbitrary internal failures
+still use the non-sensitive generic diagnostic, not raw exception strings.
+
+Declaration is metadata only. `workflow_advance` uses the existing attributed
+instruction journal/native dispatch once; exact repeated advancement cannot
+retransmit an admitted step. Results, integration and public presentation keep
+their existing independent receipts. This extension must never replay the
+production inventory/Weaver handoffs that exposed the defect.
+
+
+Collector recovery for the shared integrating entry must classify the actual
+physical execution, not its configured Tribu conversation label. A submitted
+nonterminal bounded I/O admission with the selected native/physical identity
+(or an unresolved receipt that could still be that writer) retains its deadline/
+reconciliation fence. Ordinary web/native work in the same conversation uses the
+existing exact `attach-active` route; this starts no turn and changes no goal.
+A successful software selection is not receiving continuity until those actual
+collectors, or their terminal native outcomes, are observed. Never repeat a
+queued attachment or software selection to repair a missing observation.

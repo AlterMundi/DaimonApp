@@ -58,6 +58,7 @@ pub struct CodexRunner {
     goal_activation: Option<GoalActivation>,
     client_message_id: Option<String>,
     tool_output: Option<NativeToolOutput>,
+    idle_only: bool,
     rollout_reads: Arc<tokio::sync::Semaphore>,
     dynamic_tools: Vec<Value>,
     session_profiles: Vec<SessionModelProfile>,
@@ -232,6 +233,8 @@ pub enum CodexEvent {
     },
     NativeInputRejected,
     NativeTurnSubmitting,
+    /// Transactional ownership handover before any new packet joins a writer.
+    NativeExternalInputSubmitting,
     NativeTurnTerminal {
         id: String,
         status: String,
@@ -741,6 +744,7 @@ impl CodexRunner {
             goal_activation: None,
             client_message_id: None,
             tool_output: None,
+            idle_only: false,
             rollout_reads: Arc::new(tokio::sync::Semaphore::new(1)),
             dynamic_tools: vec![],
             session_profiles: vec![],
@@ -1177,6 +1181,13 @@ impl CodexRunner {
         runner.client_message_id = id;
         runner
     }
+    /// No fallback to start-or-steer: an older server must reject this request
+    /// before accepting context into a possibly human-owned physical turn.
+    pub fn with_idle_only(&self, idle_only: bool) -> Self {
+        let mut runner = self.clone();
+        runner.idle_only = idle_only;
+        runner
+    }
     pub fn with_tool_output(&self, output: NativeToolOutput) -> Self {
         let mut runner = self.clone();
         runner.tool_output = Some(output);
@@ -1238,6 +1249,7 @@ impl CodexRunner {
             self.goal_activation.as_ref(),
             self.client_message_id.as_deref(),
             self.tool_output.as_ref(),
+            self.idle_only,
             &self.dynamic_tools,
             profile.as_ref(),
             session,
@@ -1333,6 +1345,7 @@ async fn run_app_server_turn<F, Fut>(
     goal_activation: Option<&GoalActivation>,
     client_message_id: Option<&str>,
     tool_output: Option<&NativeToolOutput>,
+    idle_only: bool,
     dynamic_tools: &[Value],
     profile: Option<&NativeModelProfile>,
     session: &SessionRecord,
@@ -1345,6 +1358,10 @@ where
     F: FnMut(CodexEvent) -> Fut,
     Fut: std::future::Future<Output = Result<CodexEventOutcome>>,
 {
+    anyhow::ensure!(
+        !idle_only || (tool_output.is_some() && goal_activation.is_none() && bounded.is_none()),
+        "Idle-only heartbeat cannot activate goals or bounded human input"
+    );
     let mut initial_write_possible = false;
     let mut collecting_existing = goal_activation.is_some_and(|a| a.attach_turn.is_some());
     let result: Result<RunSummary> = async {
@@ -1514,7 +1531,7 @@ where
                 .context("native goal was not staged")?;
             staged_goal = true;
         }
-    } else if bounded.is_none() {
+    } else if bounded.is_none() && !idle_only {
         goal_snapshot_request_id = Some(
             process
                 .send_request("thread/goal/get", json!({"threadId":thread_id}))
@@ -1567,6 +1584,10 @@ where
                 continue;
             }
             if steer.goal.is_none() && steer.tool_output.is_none() && tool_output.is_none() {
+                if let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
+                    let _=steer.response.send(Err(CodexSteerError::Rejected(error.to_string())));
+                    continue;
+                }
                 let text = match &steer.client_message_id {
                     Some(id) => format!("Additional admitted input {id}:\n{}", steer.text),
                     None => steer.text.clone(),
@@ -1594,7 +1615,7 @@ where
         None
     } else {
         initial_write_possible = true;
-        Some(process.send_request("turn/start", params).await?)
+        Some(process.send_request(if idle_only {"turn/startIfIdle"} else {"turn/start"}, params).await?)
     };
     let mut goal_activation_id = None;
     let mut goal_activation_pending = false;
@@ -1737,6 +1758,10 @@ where
                         let _=steer.response.send(Err(CodexSteerError::Rejected("native interruption pending".to_string())));
                         continue;
                     }
+                    if steer.goal.is_some() && let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
+                        let _=steer.response.send(Err(CodexSteerError::Rejected(error.to_string())));
+                        continue;
+                    }
                     if let Some(GoalControl::Activate(activation))=steer.goal.as_ref()
                         && let Some(control)=activation.conditional.as_ref() {
                         let mut params=build_turn_start_params(&thread_id,&effective_session,request);
@@ -1788,7 +1813,7 @@ where
                         continue;
                     }
                     if let Some(turn_id)=active_turn_id.as_deref() {
-                        send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers).await?;
+                        send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers,on_event).await?;
                     } else {
                         queued_steers.push_back(steer);
                     }
@@ -1960,7 +1985,7 @@ where
             }
             if let Some(turn_id)=active_turn_id.as_deref() {
                 while let Some(steer)=queued_steers.pop_front() {
-                    send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers).await?;
+                    send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers,on_event).await?;
                 }
             }
           }
@@ -2051,16 +2076,32 @@ fn native_event_turn(params: &Value) -> Option<&str> {
 }
 
 /// Sends one queued steering request and tracks its app-server response by request id.
-async fn send_steer_request(
+async fn send_steer_request<F, Fut>(
     process: &mut AppServerProcess,
     thread_id: &str,
     turn_id: &str,
     steer: CodexSteerRequest,
     pending_steers: &mut HashMap<u64, PendingSteer>,
-) -> Result<()> {
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(CodexEvent) -> Fut,
+    Fut: std::future::Future<Output = Result<CodexEventOutcome>>,
+{
     if let Some(check) = &steer.admission_check
         && let Err(error) = check.check().await
     {
+        let _ = steer
+            .response
+            .send(Err(CodexSteerError::Rejected(error.to_string())));
+        return Ok(());
+    }
+    if steer.tool_output.is_some()
+        && (!steer.text.is_empty() || !steer.images.is_empty() || steer.goal.is_some())
+    {
+        bail!("Mixed internal and human steering");
+    }
+    if let Err(error) = on_event(CodexEvent::NativeExternalInputSubmitting).await {
         let _ = steer
             .response
             .send(Err(CodexSteerError::Rejected(error.to_string())));
@@ -2530,7 +2571,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -3864,6 +3905,176 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn heartbeat_idle_only_refuses_unsupported_native_without_start_or_steer_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut requests = 0;
+            while let Some(message) = socket.next().await {
+                let message = match message {
+                    Ok(message)=>message,
+                    Err(tokio_tungstenite::tungstenite::Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) if requests==1=>break,
+                    Err(error)=>panic!("Unexpected native fixture close: {error}"),
+                };
+                if message.is_close() {
+                    break;
+                }
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                match request["method"].as_str() {
+                    Some("initialize")=>socket.send(WsMessage::Text(json!({"id":request["id"],"result":{}}).to_string().into())).await.unwrap(),
+                    Some("initialized")=>{},
+                    Some("thread/start")=>socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"thread":{"id":"idle-only-thread"},"model":"synthetic-model"}}).to_string().into())).await.unwrap(),
+                    Some("turn/startIfIdle")=>{
+                        requests+=1;
+                        assert_eq!(request["params"]["input"],json!([]));assert_eq!(request["params"]["toolOutput"]["name"],"heartbeat_attention");
+                        socket.send(WsMessage::Text(json!({"id":request["id"],"error":{"code":-32601,"message":"Unsupported method"}}).to_string().into())).await.unwrap();
+                    }
+                    other=>panic!("No start-or-steer fallback or goal activation allowed: {other:?}"),
+                }
+            }
+            assert_eq!(requests, 1);
+        });
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "Attributed internal evidence".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = rejected.clone();
+        let result = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                CancellationToken::new(),
+                receiver,
+                move |event| {
+                    if matches!(event, CodexEvent::NativeInputRejected) {
+                        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    async { Ok(CodexEventOutcome::None) }
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(rejected.load(std::sync::atomic::Ordering::SeqCst));
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ownership_refusal_rejects_prepared_and_active_steers_before_provider_write() {
+        for prepared in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+            let (finish, finished) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(message) = socket.next().await {
+                    let message = message.unwrap();
+                    if message.is_close() {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => json!({}),
+                        Some("initialized") => continue,
+                        Some("thread/start") => {
+                            json!({"thread":{"id":"owned-thread"},"model":"synthetic-model"})
+                        }
+                        Some("thread/goal/get") => json!({"goal":null}),
+                        Some("turn/start") => {
+                            assert_eq!(request["params"]["input"].as_array().unwrap().len(), 1);
+                            socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"turn":{"id":"owned-turn"}}}).to_string().into())).await.unwrap();
+                            finished.await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"item/completed","params":{"threadId":"owned-thread","turnId":"owned-turn","item":{"type":"agentMessage","id":"answer","phase":"final_answer","text":"Original work preserved"}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"owned-thread","turn":{"id":"owned-turn","status":"completed"}}}).to_string().into())).await.unwrap();
+                            break;
+                        }
+                        other => panic!("Unexpected provider write: {other:?}"),
+                    };
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"id":request["id"],"result":result})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            });
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let (reply, received) = oneshot::channel();
+            let mut packet = Some(CodexSteerRequest {
+                tool_output: None,
+                observation: None,
+                images: vec![],
+                admission_check: None,
+                text: "Human followup".into(),
+                client_message_id: Some("human-followup".into()),
+                goal: None,
+                response: reply,
+            });
+            if prepared {
+                sender.send(packet.take().unwrap()).unwrap();
+            }
+            let runner = CodexRunner::new(binary).with_shared_app_server(true);
+            let mut request = review_request();
+            request.review_mode = None;
+            let run = tokio::spawn(async move {
+                runner
+                    .run_turn(
+                        &session_with_sandbox("read-only"),
+                        &request,
+                        CancellationToken::new(),
+                        receiver,
+                        move |event| {
+                            if matches!(event, CodexEvent::NativeTurnStarted(_))
+                                && let Some(packet) = packet.take()
+                            {
+                                sender.send(packet).unwrap();
+                            }
+                            let refuse = matches!(event, CodexEvent::NativeExternalInputSubmitting);
+                            async move {
+                                if refuse {
+                                    bail!("Exact heartbeat owner is stopping");
+                                }
+                                Ok(CodexEventOutcome::None)
+                            }
+                        },
+                    )
+                    .await
+            });
+            let reply = tokio::time::timeout(Duration::from_secs(10), received)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(reply, Err(CodexSteerError::Rejected(_))));
+            finish.send(()).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.assistant_text, "Original work preserved");
+            server.await.unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn prepared_correction_is_in_initial_packet_and_recorded_before_output() {
         let root = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4411,6 +4622,7 @@ model = "ignored-tui-field"
             None,
             None,
             None,
+            false,
             &[],
             Some(&profile),
             &session,

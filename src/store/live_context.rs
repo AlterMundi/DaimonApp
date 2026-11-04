@@ -1343,6 +1343,7 @@ pub(in crate::store) fn reserve_on(
     p.native_returns.push(super::workflows::WorkflowReturn {
         id,
         workflow: String::new(),
+        attention_generation: None,
         reported_revision: None,
         envelope: evidence["range"].clone(),
         phase: "reserved".into(),

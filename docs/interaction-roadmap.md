@@ -1,9 +1,77 @@
-# Daimon Interaction — full roadmap and continuous-voice delivery plan
+# DaimonApp — full roadmap and continuous-voice delivery plan
 
 This is the maintained product roadmap, not a claim that the later stages are
 implemented. Human selection, 2026-10-26: move from the accepted single-chat base
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
+
+## Project name and pending Telegram separation —4November2026
+
+Nicolas selected **DaimonApp** for the project, repository and existing development
+session formerly named Realtime. The app's visible/store name is **Daimon**.
+The existing repository was renamed in place from `AlterMundi/telecodex` to
+`AlterMundi/DaimonApp`, retaining its identity, history, issues and pull requests.
+Existing executable/configuration names and receiving URLs are compatibility
+surfaces; this naming change does not replace native state or deploy new clients.
+
+Keep the already-owned #452 refactor on this roadmap: identify and separate the
+shared backend/native execution, admission, journals and coordination used by
+DaimonApp from Telegram polling, bot credentials, topics and presentation.
+Telegram must remain an optional adapter, with the existing web/mobile app
+working without it. Reuse the extraction already underway; do not create a
+parallel backend or duplicate session/goal stores. Preserve public APIs and
+receiving history, validate both Telegram-disabled app operation and the retained
+Telegram adapter, and document the resulting maintained component boundaries.
+Nicolas further clarifies that the existing **Telecodex development session stays
+Telecodex** and owns Telegram-specific work; it is not renamed or retired by the
+repository change. DaimonApp and Telecodex are intended to be independently
+usable domains/clients that can interoperate through a common backend when
+selected. Neither client should require the other. Talking with a daimon through
+the app, including children's use, must not require a Telegram account, bot or
+transport. Preserve both current access paths during this evolution. The common
+backend owns shared native state/coordination through explicit contracts rather
+than one frontend importing or depending on the other frontend's lifecycle.
+
+This remaining refactor is explicitly **not the current priority or a new gate**
+for the app or the Matrix/heartbeat work. Its implementation remains pending.
+
+## Shared attention backend —4November2026
+
+Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
+authorized session progress/results, presentation and iteration through Avatar,
+and selected experience/discovery evidence for Bitácora. The continuing native
+integrator owns judgment and routing; there is no second I/O reasoning session.
+The [single Matrix310 plan](https://github.com/AlterMundi/daimon-matrix/issues/310#issuecomment-6621485717)
+records that path under the full Matrix437 foundation goal.
+
+The backend separation already belongs to #452. Core attention, state and
+single-writer admission must work independently of Telegram credentials,
+polling, topics and API availability. Web, Avatar and Telegram are client/adapters,
+not core prerequisites. Reuse the existing journals, observer, owner controls and
+native return path; do not introduce another scheduler or task/goal store.
+
+The initial extraction moves the existing maintenance runner into transport-neutral
+`src/backend.rs`, with receiving callbacks in `src/app/backend.rs`. Ownership
+renewal, native-output recovery, known-unsent returns and retained artifacts keep
+their existing journals. Optional Telegram projection remains an adapter callback.
+Idle cancellation now exits the wait immediately; a journal recovery already in
+flight retains its existing outcome rather than being abandoned halfway through
+an external effect. This extraction does not activate new inbox discovery,
+model turns, attention policies or Bitácora publication. Native goal/history,
+uncertain operations and current configuration remain authoritative.
+
+Future selected discovery must batch only new source-linked revisions with durable
+cursors, backpressure, pause/stop and enforced inference/cost limits. The timer's
+no-news path requires no model. A light model may classify genuinely new evidence
+or draft a summary; execution and deeper work use the existing selected sessions.
+Evaluate Nicolas's Instant suggestion against actual client availability and
+account limits; Chat availability is not proof of a free backend model route.
+Do not change ordinary worker/integrator models to implement this role.
+
+Qualification must include tokenless/Telegram-disabled operation, loss of the
+owner fence, cancellation between recovery operations, exact-once retained returns,
+and the actual Matrix→integrator→worker→Avatar/Bitácora path as each part lands.
+The extracted runner and tests do not establish that complete receiving loop.
 
 ## Native voice foreground — human correction,1November2026
 
@@ -274,3 +342,152 @@ GPT-Live client delegation as an architectural challenger to the selected Gemini
 foreground, separates Instant's text/tool capabilities from native audio, and
 retains credit/access and phone qualification gaps. This research does not switch
 providers, replace Sol, close milestones or authorize a new account/billing change.
+
+### Retained selected Matrix reply progress
+
+`matrix_status` remains an explicit, one-page operation. Select `request_id` and
+`receive_next: true` to continue from that original's saved global inbox cursor,
+or use `receive_after` for an explicit historical read. These selectors are
+mutually exclusive. The existing request row stores progress; verified canonical
+replies and cursor commit in one SQLite transaction. A failed page commits
+neither. Only pages covering the saved cursor advance progress; explicit reads
+ahead do not skip an unread gap. Existing rows migrate to cursor zero without
+losing replies. The active tool owner is rechecked after SDK I/O, and
+acknowledgment is rechecked at commit. Historical replies remain readable without
+reviving work. No scheduler, peer activation, automatic input, new queue or
+inference is enabled. This is a resumable selected-reply primitive for #452 /
+Matrix #310/#437; new unsolicited inbox attention and its resource admission
+remain unfinished.
+
+### Matrix evidence in existing integrator attention
+
+The explicit `workflow_attention` read also returns `matrix.envelopes`: at most16
+oldest unincorporated canonical replies, with `has_more`, exact authorship and
+revision, text size/hash and the existing `conversation_part` reader. It performs
+no remote reads and copies no reply body into another journal. Current owner,
+admission epoch and later human amendments determine eligibility; retired sources
+remain readable as history but do not become current offers.
+
+After actually reading/incorporating the exact source, `matrix_reported` records
+its canonical revision on that same reply row. Exact retry is idempotent across
+restart. This is an integrator assertion of incorporation, never hearing, a peer
+response, execution approval or human-task completion. One optional64byte marker
+and a partial pending index share the reply history's retention; no offer queue
+or growing per-tick log is created. Workflow bounds remain unchanged and Matrix
+has its own16-envelope bound so pending work is not displaced. Neither this read
+nor its acknowledgment enables discovery polling or automatic model admission.
+The periodic attention policy/shared resource admission and real receiving loop
+remain unfinished under #452 / Matrix #310/#437.
+
+### Shared persistent heartbeat admission control
+
+The owner console `telecodex --control CONFIG heartbeat pause` and the scoped
+integrator `heartbeat_control` operation (`action: pause`) use the same model-free
+handler. `heartbeat status` observes its persisted flag/generation.
+`heartbeat resume GENERATION` requires the exact current generation and only
+clears the admission gate; it does not start a timer or grant an account/budget.
+Default is paused. Repeat pause is idempotent, restart preserves it, and a later
+pause invalidates older resume generations. One small record per configured
+entry uses the existing state store; no growing operation log or second queue
+is added. Human access needs no live native turn.
+
+The control reports `attention_engine: not_implemented`; it does not activate
+periodic attention or grant funding. Its `owned_execution_control` now exposes
+exact native interruption for server-owned executions, as described below.
+Admission-paused is not provider quiescence: inspect each execution and its
+terminal/unconfirmed observation. Ordinary human contact, shared maintenance,
+goals and funding remain unchanged. Paired-human visible/audio reporting still
+requires its own source publication binding.
+
+### Heartbeat generation at existing native return boundaries
+
+An optional server-owned `attention_generation` on the existing native-return
+receipt closes its admission when the shared control is paused, missing or on
+another generation. The existing transactional link/submitting checks and final
+steering/submission validation use that same fence. Ordinary returns omit the
+field, preserving their existing serialized history and separate policy. Pause
+never invalidates presentation/history reads or drops a late canonical native
+ACK. Resume never reopens a previous submitting/uncertain generation.
+
+This adds no public source-tagging API or funding grant. The heartbeat producer,
+bounded/coalesced idle admission and its source/publication contract still need implementation
+before activation. Fresh physical ownership and scoped interruption are supported
+below; no public producer or automatic attention is enabled. A tagged receipt alone
+is not proof that its physical turn is exclusively owned; do not use it as
+permission to interrupt a human execution.
+An RPC already between final validation and its ACK remains a retained
+submitting/uncertain operation; exact ownership, interruption and terminal
+observation must close that race before automatic attention is selected. These
+checks do not establish provider quiescence.
+
+### Exact heartbeat execution ownership and scoped pause
+
+Only the serialized entry worker may link a tagged return to a fresh empty local
+turn. Ordinary active-writer steering rejects that tag. The store verifies the
+entry/native owner, current generation, absence of human ingress/collection or
+other source bindings, and at most one unresolved heartbeat execution. Ownership
+is retained beside the existing turn in the state store, with the exact physical
+native ID added on its callback. Tagged execution requires native
+`turn/startIfIdle`, with no fallback to `turn/start`: a local idle observation is
+not an atomic native ownership fence. Older servers reject before submission.
+Core source4dc51af25, now proposed in compaii/codex#10, exposes the existing
+atomic StartIfIdle through that method. Actual App Server mocked-provider busy
+refusal/independent internal-turn and legacy-permission regressions plus317
+protocol/export/schema tests pass. It is not yet receiving-selected and remains
+a prerequisite for actual cancellation qualification; ordinary `toolOutput`
+uses start-or-steer and cannot establish this ownership by itself. Retain at most sixteen records (one live owner
+plus fifteen prior terminal/transferred records); pruning never deletes native
+history, source receipts or an uncertain execution. Turn deletion removes only
+its matching ownership metadata.
+
+Human/external steering crosses an ownership handover callback before its actual
+provider write, after ordinary source admission checks. If handover wins, the
+execution becomes transferred and heartbeat pause cannot cancel it, including a
+later human physical successor. If pause wins, the input receives a known-unsent
+rejection rather than entering a turn being interrupted. Prepared coalesced inputs
+and active/queued steering use the same boundary. This ownership is independent
+of canonical publication; transfer does not fabricate a human original.
+
+Pause persists its admission fence before claiming an owned execution as stopping.
+For an observed physical identity it uses existing exact `turn/interrupt`, then
+reads that same native turn's terminal status. An interrupt ACK alone is not
+termination. Missing identity, failed observation or nonterminal status remains
+unconfirmed with its retained ownership; a late native ID asks only that owning
+runner to interrupt its exact turn. Only known native rejection/non-submission
+may release an owner as `not_submitted`. Resume never resets resource counters or
+replays an uncertain input. The control never invokes session/global Stop.
+
+This is source-level execution control, not a complete running heartbeat.
+The trusted bounded producer, actual resource admission, descendant/successor
+ownership and producer source/publication binding remain to be implemented
+and qualified before automatic activation. Native socket fixtures prove prepared
+and active ownership refusal prevents provider writes while original work still
+finishes; SQLite tests cover both race winners, late identity, restart and bounded
+retention. They do not prove actual receiving-model cancellation or device hearing.
+
+
+### Canonical reports reuse the existing integrating return path
+
+A heartbeat-owned execution does not grant publication by itself. Its admitted
+retained source must carry the existing paired-human integrating return authority.
+For that source, completed native commentary and final answers already use
+`interaction_native_messages`, immutable native thread/turn/item identities and
+frozen native-return source associations. Reuse this path; do not create a second
+report feed, fabricated human input, new audio queue or broad Tribe audience.
+
+The scoped heartbeat admission pause does not retire those accepted source
+reports. A regression covers accepted tagged source→pause→canonical commentary,
+exact repeated item deduplication, preserved same-integrator currentness and
+reader ownership, then ordinary source expiry without deleting history. The
+existing foreground canonical reader and mounted native-voice pending-return
+journey pass with these same `integrator_progress`/`native_returns` descriptors.
+Native voice continues while awaiting an integrating return and source revisions
+are revalidated before offers. This is source/fixture evidence, not actual phone
+hearing or acceptance of a fully activated producer.
+
+Meaningful actions, replies, results and pending outcomes belong in that same
+conversation and its enabled audio surface. No-news ticks and routine incorporation
+remain silent. The future trusted producer must bind its finite human-selected
+source/purpose to this existing report path; an execution tag or arbitrary peer
+text cannot manufacture that grant. Activation, real receiving cancellation,
+successor ownership and physical device acceptance remain unfinished.

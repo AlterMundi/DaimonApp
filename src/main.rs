@@ -1,5 +1,6 @@
 mod app;
 mod ascii;
+mod backend;
 mod codex;
 mod codex_history;
 mod commands;
@@ -42,12 +43,13 @@ async fn main() -> Result<()> {
                     | "requests"
                     | "matrix"
                     | "observer"
+                    | "heartbeat"
                     | "topics"
                     | "goal"
             )
         {
             anyhow::bail!(
-                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
+                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
             );
         }
         let config = config::Config::load(args[2].clone().into())?;
@@ -59,6 +61,7 @@ async fn main() -> Result<()> {
                 | "requests"
                 | "matrix"
                 | "observer"
+                | "heartbeat"
                 | "topics"
                 | "goal"
         ) {

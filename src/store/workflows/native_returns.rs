@@ -25,6 +25,10 @@ pub(crate) struct WorkflowReturn {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workflow: String,
+    /// Set only by a future server-owned heartbeat producer, never peer content.
+    /// Ordinary human-authorized returns retain their independent policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_revision: Option<String>,
     pub envelope: Value,
@@ -49,6 +53,7 @@ pub(crate) struct ReturnDispatch {
     pub native: String,
     pub epoch: String,
     pub output: String,
+    pub attention_generation: Option<u64>,
 }
 pub(crate) struct ReturnObservation {
     pub physical: String,
@@ -197,6 +202,17 @@ fn current_on(
     admission: bool,
 ) -> Result<bool> {
     let r = &context.native_returns[index];
+    if admission
+        && let Some(generation) = r.attention_generation
+        && !super::super::heartbeat::generation_current_on(
+            conn,
+            context.human,
+            context.entry,
+            generation,
+        )?
+    {
+        return Ok(false);
+    }
     match &context.parent {
         ReturnParent::Foreground(parent) => foreground::current(conn, parent, r, admission),
         ReturnParent::Routed(parent) => routed::current(conn, parent, r, admission),
@@ -514,6 +530,7 @@ impl Store {
                 let r = WorkflowReturn {
                     id: id.clone(),
                     workflow: w.id.clone(),
+                    attention_generation: None,
                     reported_revision: None,
                     envelope: envelope.clone(),
                     phase: "reserved".into(),
@@ -534,6 +551,7 @@ impl Store {
                 selected.push(ReturnDispatch {
                     name: "workflow_attention",
                     attempts: 1,
+                    attention_generation: None,
                     id,
                     human,
                     entry,
@@ -611,6 +629,7 @@ impl Store {
                 selected.push(ReturnDispatch {
                     name: w.name(),
                     attempts,
+                    attention_generation: w.native_returns[index].attention_generation,
                     id,
                     human: w.human,
                     entry: w.entry,
@@ -638,6 +657,7 @@ impl Store {
         Ok(ReturnDispatch {
             name: w.name(),
             attempts: r.attempts,
+            attention_generation: r.attention_generation,
             id: id.into(),
             human: w.human,
             entry: w.entry,
@@ -647,6 +667,12 @@ impl Store {
         })
     }
     pub(crate) fn workflow_native_link(&self, id: &str, local: i64) -> Result<()> {
+        self.workflow_native_link_mode(id, local, false)
+    }
+    pub(crate) fn workflow_native_link_fresh(&self, id: &str, local: i64) -> Result<()> {
+        self.workflow_native_link_mode(id, local, true)
+    }
+    fn workflow_native_link_mode(&self, id: &str, local: i64, fresh: bool) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let (mut w, index) = selected_on(&tx, id)?;
@@ -656,6 +682,19 @@ impl Store {
         let owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.id=?1 AND t.from_user_id=?2 AND t.status='running' AND s.chat_id=?3 AND s.thread_id=?4 AND s.creator_user_id=?2 AND s.codex_thread_id=?5)",params![local,w.human,w.entry.chat_id,w.entry.thread_id,w.native],|r|r.get(0))?;
         if !owned {
             bail!("Workflow return writer changed");
+        }
+        if let Some(generation) = w.native_returns[index].attention_generation {
+            anyhow::ensure!(
+                fresh,
+                "Heartbeat context cannot be steered into an existing writer"
+            );
+            anyhow::ensure!(
+                bindings_on(&tx, local)?.is_empty(),
+                "Heartbeat requires an exclusive source binding"
+            );
+            super::super::heartbeat::execution_claim_on(
+                &tx, local, w.human, w.entry, &w.native, generation, id,
+            )?;
         }
         bind_on(&tx, local, id)?;
         w.native_returns[index].local = Some(local);
