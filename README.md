@@ -1,12 +1,19 @@
-# <div align="center">🤖 Telecodex</div>
+# <div align="center">🤖 DaimonApp</div>
 
 <div align="center">
-  <strong>Telegram as a remote, topic-aware frontend for your local Codex CLI.</strong>
+  <strong>The Daimon app: conversation, voice and coordinated native work.</strong>
 </div>
 
 <div align="center">
-  Long polling. Persistent sessions. Attachment handling. Topic-aware workspace sync. SQLite ACLs.
+  Web and mobile conversation. Persistent sessions. Voice and attachments. Native work coordination. Optional Telegram access.
 </div>
+
+**DaimonApp** is the project and repository name. The user-facing app and future
+store listing are named **Daimon**. The project grew from Telecodex; existing
+`telecodex` executables, configuration keys and deployment paths remain compatible.
+The [product roadmap](docs/interaction-roadmap.md) retains the pending separation
+of the app/backend from Telegram-specific support. Renaming does not imply that
+this refactor or a store publication has happened.
 
 <br />
 
