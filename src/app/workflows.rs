@@ -74,6 +74,12 @@ struct AttentionSource {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MatrixReported {
+    message_id: String,
+    revision: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AttentionReported {
     return_id: String,
     revision: String,
@@ -91,7 +97,8 @@ pub(super) fn capabilities(value: &mut Value, integrating: bool) {
     value["operations"]["workflow_supersede"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact workflow_status revision","input_ref":"later accepted human correction original"},"description":"Retire future steps under a later actual human original; preserve accepted and uncertain native effects. Does not cancel unrelated work or transfer ownership."});
     value["operations"]["workflow_status"] = json!({"arguments":{"workflow":"workflow ID"},"description":"Current instruction/coverage/readiness evidence. Final helper completion leaves awaiting_integration, never overall completion."});
     value["operations"]["workflow_advance"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact workflow_status revision"},"description":"Explicitly admit one ready predeclared step through the existing worker dispatch. Never retransmits an existing queued/accepted/uncertain request. Inspect changed revisions before progressing."});
-    value["operations"]["workflow_attention"] = json!({"arguments":{},"description":"Read bounded model-free source envelopes for current workflow results and reconciliation. No continuous polling or model wakeup. Read source text on demand."});
+    value["operations"]["matrix_reported"] = json!({"arguments":{"message_id":"exact Matrix message UUID from workflow_attention.matrix","revision":"exact canonical source revision"},"description":"Record actual incorporation of this verified Matrix reply into the existing integrator. Read all conversation_part pages first. No peer reply, hearing, execution approval or task completion is established."});
+    value["operations"]["workflow_attention"] = json!({"arguments":{},"description":"Read bounded model-free source envelopes for current workflow results, reconciliation and retained verified Matrix replies. No continuous polling or model wakeup. Read source text on demand."});
     value["operations"]["workflow_reported"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact attention envelope revision"},"description":"Acknowledge an integrated offer. This is neither a hearing receipt, publication grant nor task completion."});
     value["operations"]["workflow_finish"] = json!({"arguments":{"workflow":"workflow ID","revision":"exact workflow_status revision","checkpoint":"integrator's final checkpoint, max2000bytes"},"description":"Retain final integration only after every required step is currently completed with cumulative source coverage. No automatic publication."});
 }
@@ -149,6 +156,19 @@ pub(super) async fn tool(
                 &args.return_id,
                 &args.revision,
                 args.offset,
+            )
+        }
+        "matrix_reported" => {
+            let args: MatrixReported = serde_json::from_value(arguments)?;
+            store.interaction_matrix_reported(
+                human,
+                key,
+                &request.thread_id,
+                &args.message_id,
+                &args.revision,
+            )?;
+            Ok(
+                json!({"incorporation_reported":true,"hearing_receipt":false,"task_completed":false,"peer_reply_sent":false}),
             )
         }
         "attention_reported" => {

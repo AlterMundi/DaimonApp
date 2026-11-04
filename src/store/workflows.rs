@@ -679,8 +679,9 @@ impl Store {
                 envelopes.push(envelope);
             }
         }
+        let matrix = super::matrix::attention_on(&conn, human, entry)?;
         Ok(
-            json!({"schema":"telecodex.workflow-attention/v1","envelopes":envelopes,"bounded":true,"max_workflows":16,"max_steps":4,"max_envelopes":192,"automatic_native_return":false,"publication_grant":false}),
+            json!({"schema":"telecodex.workflow-attention/v1","matrix":matrix,"envelopes":envelopes,"bounded":true,"max_workflows":16,"max_steps":4,"max_envelopes":192,"automatic_native_return":false,"publication_grant":false}),
         )
     }
     /// An exact offer acknowledgment is not a hearing or completion receipt.

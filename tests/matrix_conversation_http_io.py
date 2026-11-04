@@ -222,6 +222,16 @@ def qualify(binary, *, funded=False):
         assert inspected["phase"] == "reply_received"
         assert inspected["inspection"]["canonical_replies"] == 1
         assert inspected["inspection"]["native_input"] is False
+        attention = j.call("route-matrix-canonical-attention", "workflow_attention", {})
+        offer = attention["matrix"]["envelopes"][0]
+        assert offer["completed"] is None and offer["author"] == callback["author"]
+        source = j.call("route-matrix-attention-exact-source", "conversation_part", offer["reader"]["arguments"])
+        assert source["text"] == callback["text"]
+        assert source["revision"] == offer["revision"]
+        reported = j.call("route-matrix-attention-incorporated", "matrix_reported", offer["after_incorporation"]["arguments"])
+        assert reported["incorporation_reported"] is True
+        assert reported["task_completed"] is False and reported["peer_reply_sent"] is False
+        assert j.call("route-matrix-no-duplicate-attention", "workflow_attention", {})["matrix"]["envelopes"] == []
         cursor = inspected["inspection"]["next_cursor"]
         empty = j.call("route-inspect-selected-matrix-after-cursor", "matrix_status", {
             "request_id": request["id"], "receive_next": True,
