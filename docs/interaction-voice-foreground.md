@@ -1837,3 +1837,34 @@ response finished streaming. Its evidence retained interrupted playback offsets.
 The driver now waits for the complete known synthetic PCM frame count and
 non-stopped ended sources before each next phrase; partial/cancelled playback
 is no longer mistaken for a full response.
+
+
+### Late Qwen cancellation is not a conversation failure —4November2026
+
+The next phone test confirmed the selected ordinary/realtime base voice, but
+closed after43.152seconds with a generic invalid-provider-envelope code. The
+human associated some cuts with nearby speech/noise. That timing is a reported
+clue, not proof of the specific provider error hidden by the previous reader.
+
+A separate bounded synthetic provider sample reproduced a cancellation race:
+the server completed a response before its local completion event was applied;
+a new activity onset sent `response.cancel`, and the server returned
+`invalid_request_error` / `invalid_value` with a no-active-response message.
+Qwen documents an error for cancellation when no inference is in progress. The
+shared reader previously treated every error envelope as fatal.
+
+The adapter now tolerates only that specific no-active-response result within
+10seconds of one of its own outstanding cancellation commands. It consumes the
+receipt without retrying a command, replaying input/work or clearing a newer
+response/commit. At most8 cancellation receipts are retained, duplicate cancels
+for the same outstanding response are avoided, and a successful cancelled
+response retires its matching receipt. Unrequested/expired/other errors still
+close with a fixed Qwen-provider-error code. Only a scalar tolerated-noop count
+is added to existing close diagnostics; no provider error text is retained.
+The wire wrapper also preserves actual WebSocket CLOSE frames so they cannot
+collapse into an empty JSON-envelope diagnosis.
+
+This resolves the reproduced race; it does not establish that the earlier
+phone closure was the same event, identify a foreground speaker, or close the
+separate receiving-owner-call incident. Existing exact-original review, native
+writer/Core/current work and128-record/20MiB recovery bounds remain unchanged.

@@ -596,13 +596,18 @@ class NativeDialogue:
                 try:
                     self._validation_stage="envelope"
                     value = json.loads(raw)
-                    if not isinstance(value, dict) or 'error' in value:
-                        raise ValueError()
+                    if not isinstance(value, dict):raise ValueError()
+                    if 'error' in value:return self._provider_error(value)
                     return self._events(value)
                 except DialogueUnavailable:
                     raise
                 except Exception:
                     self._fail('native-dialogue-invalid-provider-event-'+self._validation_stage)
+
+    def _provider_error(self,value):
+        # Provider adapters may recognize a narrowly correlated harmless control
+        # result. The default protocol retains its existing refusal behavior.
+        raise ValueError('Provider error envelope')
 
     def _text(self, value):
         if not isinstance(value, str) or len(value.encode()) > 16384:

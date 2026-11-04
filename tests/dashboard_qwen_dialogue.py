@@ -1,5 +1,6 @@
 """Qwen wire ownership: exact commits, asynchronous returns and barge-in."""
 import base64
+from collections import deque
 import json
 from pathlib import Path
 import sys
@@ -87,6 +88,63 @@ class Qwen(unittest.TestCase):
     def test_incomplete_response_requires_review_instead_of_silent_completion(self):
         self.ready()
         with self.assertRaises(DialogueUnavailable):self.event({'type':'response.done','response':{'status':'incomplete'}})
+
+    def cancel_error(self,**updates):
+        return {'type':'error','error':{'type':'invalid_request_error','code':'invalid_value',
+                'message':'No active response',**updates}}
+
+    def test_late_cancel_noop_preserves_new_input_generation_and_owned_tools(self):
+        self.ready();self.event({'type':'response.created','response':{'id':'old'}})
+        self.event({'type':'response.function_call_arguments.done','call_id':'owned','name':'session_status','arguments':'{}'})
+        self.stream.activity_start();self.stream.append(b'\0\0'*1600);self.stream.activity_end()
+        self.event({'type':'input_audio_buffer.committed','item_id':'next'})
+        self.event({'type':'response.done','response':{'status':'completed'}})
+        self.event({'type':'response.created','response':{'id':'new'}})
+        before=len(self.socket.sent)
+        self.assertEqual(self.event(self.cancel_error()),[])
+        self.assertEqual(self.stream.phase,'ready');self.assertIsNone(self.stream.failure_code)
+        self.assertEqual(self.stream._qresponse,'new');self.assertTrue(self.stream._qgenerating)
+        self.assertEqual(self.stream.tools['owned']['state'],'pending')
+        self.assertEqual(len(self.socket.sent),before,'No command, original or work replay')
+        self.assertEqual(self.stream.control_diagnostics,{'cancel_noops':1})
+        self.event({'type':'conversation.item.input_audio_transcription.completed','item_id':'next','transcript':'Exact next phrase.'})
+        self.assertEqual(self.event({'type':'response.audio.delta','delta':base64.b64encode(b'\1\0'*10).decode()})[0]['type'],'audio')
+        with self.assertRaises(DialogueUnavailable):self.event(self.cancel_error())
+
+    def test_unrequested_expired_and_other_provider_errors_are_not_ignored(self):
+        self.ready()
+        with self.assertRaises(DialogueUnavailable):self.event(self.cancel_error())
+        self.assertEqual(self.stream.failure_code,'native-dialogue-qwen-provider-error')
+        for expired,error in [(True,self.cancel_error()),(False,self.cancel_error(code='other'))]:
+            with self.subTest(expired=expired):
+                socket=Socket();stream=QwenDialogue(self.key,activity_mode='manual',connect=lambda *a,**k:socket)
+                socket.received=[{'type':'session.updated'}];stream.receive()
+                stream._qcancels=deque([('old',stream._clock()+(-1 if expired else 10))])
+                socket.received=[error]
+                with self.assertRaises(DialogueUnavailable):stream.receive()
+                stream.close()
+
+    def test_multiple_pending_cancel_noops_do_not_consume_new_input_or_replay(self):
+        self.ready()
+        for n in range(2):
+            self.event({'type':'response.created','response':{'id':f'r{n}'}})
+            self.phrase()
+            self.event({'type':'input_audio_buffer.committed','item_id':f'input{n}'})
+            self.event({'type':'conversation.item.input_audio_transcription.completed','item_id':f'input{n}','transcript':f'Phrase {n}'})
+            self.event({'type':'response.done','response':{'id':f'r{n}','status':'completed'}})
+        self.assertEqual(len(self.stream._qcancels),2)
+        sent=len(self.socket.sent)
+        self.assertEqual(self.event(self.cancel_error()),[])
+        self.assertEqual(self.event(self.cancel_error()),[])
+        self.assertEqual(self.stream.control_diagnostics['cancel_noops'],2)
+        self.assertEqual(len(self.socket.sent),sent)
+        self.assertEqual(self.stream.phase,'ready')
+
+    def test_qwen_wrapper_preserves_actual_websocket_close_frames(self):
+        self.ready()
+        self.socket.recv_data=lambda **kwargs:(8,b'\x03\xf3Billing unavailable')
+        with self.assertRaises(DialogueUnavailable):self.stream.receive()
+        self.assertEqual(self.stream.failure_code,'native-dialogue-provider-billing')
 
     def test_audio_is_validated_by_existing_normalizer(self):
         self.ready();e=self.event({'type':'response.audio.delta','delta':base64.b64encode(b'\1\0'*10).decode()})
