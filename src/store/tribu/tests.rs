@@ -357,3 +357,70 @@ fn overflow_does_not_hide_active_turn_from_pause_controls() {
     assert_eq!(controls.len(), 1);
     assert_eq!(controls[0]["id"], "active");
 }
+
+#[test]
+fn ordinary_integrator_writer_is_not_bounded_io_but_ambiguous_submission_stays_held() {
+    let root = tempfile::tempdir().unwrap();
+    let store = open(&root.path().join("store.sqlite"));
+    let key = SessionKey::new(1, Some(2));
+    assert!(
+        !store
+            .tribu_native_writer_held(key, "entry-native", "ordinary")
+            .unwrap()
+    );
+    store
+        .tribu_admit(key, "bounded", None, &json!({"source":"synthetic"}), 20)
+        .unwrap();
+    assert!(store.tribu_reserve(key, "bounded").unwrap());
+    store.tribu_link_turn("bounded", 1).unwrap();
+    store.tribu_submitting(key, "bounded").unwrap();
+    // Submitted without a matched native receipt remains uncertain, not ordinary.
+    assert!(
+        store
+            .tribu_native_writer_held(key, "entry-native", "ordinary")
+            .unwrap()
+    );
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute("UPDATE tribu_admissions SET native_thread='entry-native',native_turn='bounded-physical' WHERE id='bounded'",[]).unwrap();
+    }
+    assert!(
+        store
+            .tribu_native_writer_held(key, "entry-native", "bounded-physical")
+            .unwrap()
+    );
+    assert!(
+        !store
+            .tribu_native_writer_held(key, "entry-native", "ordinary")
+            .unwrap()
+    );
+    assert!(
+        !store
+            .tribu_native_writer_held(
+                SessionKey::new(1, Some(3)),
+                "entry-native",
+                "bounded-physical"
+            )
+            .unwrap()
+    );
+    assert!(
+        !store
+            .tribu_native_writer_held(key, "other-native", "bounded-physical")
+            .unwrap()
+    );
+    drop(store);
+    let store = open(&root.path().join("store.sqlite"));
+    assert!(
+        store
+            .tribu_native_writer_held(key, "entry-native", "bounded-physical")
+            .unwrap()
+    );
+    store
+        .tribu_reconcile("bounded", "bounded-physical", "completed")
+        .unwrap();
+    assert!(
+        !store
+            .tribu_native_writer_held(key, "entry-native", "bounded-physical")
+            .unwrap()
+    );
+}
