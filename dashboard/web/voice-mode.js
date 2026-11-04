@@ -1,7 +1,7 @@
 "use strict";
 // A foreground, bounded view. No persisted microphone opt-in or second sender.
 window.ConversationVoiceMode=(()=>{
-  function mount({portrait,onEnter,onLeave,onSuspend,onSpeak,onResumeAudio,canStart,canEnter=canStart}){
+  function mount({portrait,onEnter,onLeave,onSuspend,onSpeak,onReconnect,onResumeAudio,canStart,canReconnect=()=>true,canEnter=canStart}){
     if(!portrait || typeof document.createElement('dialog').showModal!=='function')return;
     const dialog=document.createElement('dialog');dialog.className='voice-mode';
     dialog.setAttribute('aria-label','Direct voice conversation');
@@ -73,6 +73,7 @@ window.ConversationVoiceMode=(()=>{
       if(value.connected===false){close();return;}
       if(continuous&&value.handoff)showDetection(value.handoff);
       const wasStopped=!listening&&!preparing&&!!directMessage;
+      if(value.continuousState?.starting){detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;}
       if(value.continuousState){directMessage=value.continuousState.message;listening=value.continuousState.active;preparing=value.continuousState.starting;directPending=value.continuousState.pending;directWorking=value.continuousState.working;remaining=Number.isInteger(value.continuousState.remaining)&&value.continuousState.remaining>=0&&value.continuousState.remaining<=120?value.continuousState.remaining:undefined;}
       if(typeof value.continuousState?.audioPaused==='boolean')audioPaused=value.continuousState.audioPaused;
       if(typeof value.continuousState?.audioEnabled==='boolean')audioEnabled=value.continuousState.audioEnabled;
@@ -87,11 +88,11 @@ window.ConversationVoiceMode=(()=>{
         status.dataset.nearLimit=String(listening&&remaining!==undefined&&remaining<=15);
         status.setAttribute('aria-label',status.textContent+(listening&&remaining!==undefined?`. ${remaining} seconds of recording remaining`:''));
         if(Object.hasOwn(value,'caption'))caption.textContent=value.caption;
-        if(directPending)caption.textContent=(directMessage?directMessage+' ':'')+'Return to the conversation to review your recordings.';
+        if(directPending)caption.textContent=(directMessage?directMessage+' ':'')+(typeof onReconnect==='function'&&canReconnect()?'Reconnect to keep talking; your recordings stay available for review.':'Return to the conversation to review your recordings.');
         else if(!listening&&!preparing&&directMessage)caption.textContent=directMessage;
         else if(value.continuousState&&wasStopped&&!Object.hasOwn(value,'caption'))caption.textContent='';
-        const resume=canResumeAudio();
-        speak.hidden=!resume&&(preparing||listening||directPending);speak.disabled=directWorking||!resume&&!canStart();speak.textContent=resume?(audioEnabled?'Resume audio':'Enable audio'):'Start voice';
+        const resume=canResumeAudio(),reconnect=!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect();
+        speak.hidden=reconnect?false:!resume&&(preparing||listening||directPending);speak.disabled=directWorking||preparing||!resume&&!reconnect&&!canStart();speak.title=reconnect?'Reconnect voice and save a connection diagnostic':'';speak.textContent=reconnect?'Reconnect voice':resume?(audioEnabled?'Resume audio':'Enable audio'):'Start voice';
         dialog.dataset.phase=phase==='recording'?'listening':playing?'speaking':'waiting';return;
       }
       status.dataset.nearLimit='false';status.removeAttribute('aria-label');
@@ -105,7 +106,7 @@ window.ConversationVoiceMode=(()=>{
     portrait.addEventListener('click',open);
     portrait.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
     back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
-    speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
+    speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){clearTimeout(timer);timer=setTimeout(close,5*60*1000);onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
     document.addEventListener('visibilitychange',()=>{
       if(!document.hidden || !opened)return;
       if(continuous && onSuspend)onSuspend();

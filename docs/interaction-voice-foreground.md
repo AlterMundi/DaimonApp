@@ -1893,3 +1893,43 @@ unit is stopped or its snapshot is stale. Check the owning unit and fresh
 does not start an inactive dependent when its owner starts. Receiving operators
 should retain the existing observer dependency from the native owner's `Wants`
 without restarting native conversations just to repair an inactive observer.
+
+
+### Explicit voice reconnect and close diagnostics — 4 November 2026
+
+A stopped native Avatar now offers **Reconnect voice** alongside **Back to
+conversation**, including when originals need review. Reconnect is a human
+click, never an automatic loop. It unlocks fresh output, obtains fresh owner
+preflight and opens a new dialogue UUID before acquiring a new microphone.
+It never resends previous PCM, work, or tool requests. Old queued asynchronous
+events and playback callbacks cannot close, block or mutate the new epoch.
+
+Pending local originals are transactionally marked `reconnect_review` under the
+same exact binding, ID, dialogue and digest. This is local recovery metadata,
+not server retention, interpretation, completion or permission to discard.
+The existing IndexedDB recovery queue keeps every blob within its128-record /
+20MiB bounds; reviewed records no longer consume the two in-flight slots.
+Wrong bindings/digests or a full recovery store refuse reconnect without deleting
+originals. Rollback must retain the v3-compatible reader; extra review metadata
+is ignored safely by that reader, although its old writer may refuse further
+capture while originals remain pending.
+
+The fresh authenticated socket accepts an optional fixed scalar close snapshot:
+previous dialogue UUID, a closed reason enum, PCM/backlog/event counters,
+playback-context enum and floor/blocked/user-pause booleans. Exact fields and
+bounded types are validated before binding. After current owner admission,
+one `native_voice_reconnect` journal record correlates that untrusted client
+observation with a same-human, same-binding previous server close, if available.
+Only the latest32 server close summaries are kept in process memory; restart
+clears them and missing correlation is explicit. Existing journal retention owns
+the diagnostic; no new persistent store, polling, transcript or audio log is
+introduced. Close summaries also include fixed provider-context counters.
+
+The receiving incident motivating this change reached the conservative provider
+input-context bound after229seconds. A checkpoint acknowledgment alone did not
+establish successful rollover. Manual reconnect restores a fresh conversation;
+it does not claim to repair automatic compaction or explain every earlier cut.
+Mounted tests cover retained originals, fixed diagnostics and delayed old-event
+success/failure. The full Chromium fixture supports `--reconnect` for the actual
+shell button, AudioContext, shared-cookie preflight and IndexedDB recovery.
+Synthetic peers do not establish physical hearing or human device acceptance.

@@ -1,6 +1,6 @@
 // Shipped fullscreen controller with synthetic callbacks; no capture or models.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function boot({suspend=false}={}){
+function boot({suspend=false,reconnect}={}){
  const timers=[],listeners={},nodes=[];
  class Node{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.events={};this.hidden=false;this.dataset={};this.classList={add(){},remove(){}};nodes.push(this);}
@@ -18,7 +18,7 @@ function boot({suspend=false}={}){
  const window={addEventListener:(name,fn)=>listeners[name]=fn};
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document,setTimeout:(fn,ms)=>{const timer={fn,ms};timers.push(timer);return timer;},clearTimeout:t=>{if(t)t.cancelled=true;}});
  let starts=0,enters=0,leaves=0,suspends=0,resumes=0,canStart=true,canEnter=true;
- const mode=window.ConversationVoiceMode.mount({portrait,...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
+ const mode=window.ConversationVoiceMode.mount({portrait,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
  return {mode,portrait,header,nodes,timers,document,listeners,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
 }
 const f=boot();f.mode.configure(false);f.portrait.events.click();assert.equal(f.counts().starts,0);
@@ -95,3 +95,5 @@ resume.events.click();assert.equal(paused.resumes(),2);assert.equal(paused.count
 paused.mode.update({continuousState:{active:false,pending:true,audioPaused:true}});assert(resume.hidden);paused.mode.close();
 
 console.log('Fullscreen voice: avatar identity, explicit opt-in, response/rearm fences, review, explicit in-avatar audio recovery, Escape, hidden and bounded exit passed.');
+
+let reconnected=0;const recoveryMode=boot({reconnect:()=>reconnected++});recoveryMode.mode.configure(true,true);recoveryMode.portrait.events.click();recoveryMode.canStart(false);recoveryMode.mode.update({continuousState:{active:false,starting:false,pending:true,working:false,message:'Recordings retained.'}});const reconnectButton=recoveryMode.nodes.find(v=>v.textContent==='Reconnect voice');assert(reconnectButton&&!reconnectButton.hidden&&!reconnectButton.disabled);reconnectButton.events.click();assert.equal(reconnected,1);assert(recoveryMode.mode.active,'Reconnect stays inside Avatar and keeps the review action available');

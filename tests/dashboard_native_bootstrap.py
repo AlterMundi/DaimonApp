@@ -7,6 +7,7 @@ repo=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out',type=Path,required=True,help='New absolute output directory, bounded to4MiB')
 parser.add_argument('--runtime',type=Path,help='Selected immutable app bundle; defaults to this checkout')
+parser.add_argument('--reconnect',action='store_true')
 parser.add_argument('--empty-input-once',action='store_true')
 parser.add_argument('--empty-input-count',type=int,choices=range(6),default=0)
 parser.add_argument('--input-confirmation',choices=('gemini','qwen'),default='gemini')
@@ -182,7 +183,7 @@ try:
    thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True);thread.start();deadline=time.monotonic()+10
    while not server.started:assert thread.is_alive() and time.monotonic()<deadline;time.sleep(.05)
    state['state']='full-bootstrap-browser-running';save()
-   node=subprocess.Popen(['node',str(repo/'tests/dashboard_native_bootstrap_browser.js')],env={**os.environ,'FIXTURE_ORIGIN':origin,'QUALIFICATION_OUTPUT':str(op),'QUALIFICATION_SECONDS':str(args.session_seconds),'QUALIFICATION_EMPTY_INPUT':str(empty_count),'QUALIFICATION_CYCLES':str(cycles)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+   node=subprocess.Popen(['node',str(repo/'tests/dashboard_native_bootstrap_browser.js')],env={**os.environ,'FIXTURE_ORIGIN':origin,'QUALIFICATION_OUTPUT':str(op),'QUALIFICATION_SECONDS':str(args.session_seconds),'QUALIFICATION_EMPTY_INPUT':str(empty_count),'QUALIFICATION_CYCLES':str(cycles),'QUALIFICATION_RECONNECT':str(int(args.reconnect))},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
    out,err=node.communicate(timeout=75);(op/'browser-run.log').write_text(out+'\n'+err);assert node.returncode==0,'Inspect retained full-bootstrap browser outcome'
   server.should_exit=True;thread.join(timeout=8);assert not thread.is_alive()
   state['originals']=[{'id':v['id'],'phase':v['phase'],'audio_sha256':v['voice']['audio_sha256']} for v in owner.inputs.values()];state['history']=[{k:v[k] for k in ('id','generated_bytes','played_bytes','closed')} for v in app.state.native_history.page(100,binding=owner.binding)['items']];state['delegations']=len(owner.delegations)
@@ -192,7 +193,7 @@ try:
   assert [v['phase'] for v in state['originals']]==expected
   assert len(browser['before']['released'])==cycles-empty_count
   assert all(v['closed'] and v['generated_bytes']==v['played_bytes']==48000 for v in state['history'])
-  assert state['provider_opened']==state['provider_closed']==1 and state['delegations']==0
+  assert state['provider_opened']==state['provider_closed']==1+int(args.reconnect) and state['delegations']==0
   state['state']='full-bootstrap-synthetic-journey-observed';save()
 finally:
  if node and node.poll() is None:node.terminate();node.wait(timeout=5)
