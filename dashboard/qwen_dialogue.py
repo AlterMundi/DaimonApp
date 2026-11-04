@@ -57,8 +57,13 @@ class QwenDialogue(NativeDialogue):
 
     @property
     def checkpoint_pressure(self):
-        if self.context_estimate>=48000 or self.turns_finished>=40 or self.input_bytes/32000+self.output_bytes/48000>=240:
-            return {'reason':'qwen_context','tokens':self.context_estimate,'usage_kind':'conservative'}
+        # Use the existing native checkpoint vocabulary; provider names are
+        # not pressure reasons accepted by the receiving Store.
+        reason=('tokens' if self.context_estimate>=48000 else
+            'tools' if self.turns_finished>=40 else
+            'lifetime' if self.input_bytes/32000+self.output_bytes/48000>=240 else None)
+        if reason is not None:
+            return {'reason':reason,'tokens':self.context_estimate,'usage_kind':'conservative'}
         return super().checkpoint_pressure
 
     @staticmethod

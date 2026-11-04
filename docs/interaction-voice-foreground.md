@@ -1868,3 +1868,28 @@ This resolves the reproduced race; it does not establish that the earlier
 phone closure was the same event, identify a foreground speaker, or close the
 separate receiving-owner-call incident. Existing exact-original review, native
 writer/Core/current work and128-record/20MiB recovery bounds remain unchanged.
+
+### Qwen checkpoint and observer follow-up — 4 November 2026
+
+Qwen checkpoint pressure now uses the receiving Store's existing reason vocabulary:
+`tokens` at 48k conservative tokens, `tools` at 40 finished responses, and
+`lifetime` at 240 cumulative input/output audio seconds. The adapter previously
+sent `qwen_context`, which the native Store rejects. That rejection propagated
+from the idle control task and ended voice; a consultation could coincide with
+the failure without causing it. The mounted voice/actual-native-Store regression
+now obtains pressure from the real Qwen adapter property rather than supplying
+an independently valid mock reason. The old adapter fails this regression; the
+corrected adapter completes the two checkpoint/successor cycles. Provider audio,
+detector and Core reasoning remain synthetic; this does not establish phone
+continuity. No native wire vocabulary or retained original is changed.
+
+Fixed-name close diagnostics also identify Live context, canonical source reads,
+observer reads and foreground delegation, without logging arguments or content.
+An owner rejection still retains its uncertainty; no work or audio is replayed.
+
+A configured observer can legitimately report `unknown` when its existing activity
+unit is stopped or its snapshot is stale. Check the owning unit and fresh
+`sonic_activity` data before attributing this to the voice model. `PartOf` alone
+does not start an inactive dependent when its owner starts. Receiving operators
+should retain the existing observer dependency from the native owner's `Wants`
+without restarting native conversations just to repair an inactive observer.

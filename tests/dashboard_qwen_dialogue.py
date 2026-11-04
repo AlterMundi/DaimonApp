@@ -82,7 +82,11 @@ class Qwen(unittest.TestCase):
         self.assertEqual(successor.sent[0]['session']['voice'],'longanqian')
         self.assertIn('Synthetic semantic continuity.',successor.sent[0]['session']['instructions'])
         self.stream.context_estimate=48000
-        self.assertEqual(self.stream.checkpoint_pressure['reason'],'qwen_context')
+        self.assertEqual(self.stream.checkpoint_pressure['reason'],'tokens')
+        self.stream.context_estimate=1000;self.stream.turns_finished=40
+        self.assertEqual(self.stream.checkpoint_pressure['reason'],'tools')
+        self.stream.turns_finished=0;self.stream.input_bytes=240*32000
+        self.assertEqual(self.stream.checkpoint_pressure['reason'],'lifetime')
         candidate.close()
 
     def test_incomplete_response_requires_review_instead_of_silent_completion(self):
