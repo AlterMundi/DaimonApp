@@ -44,7 +44,9 @@ def failure_site(error):
 def owner_operation(error):
     """Fixed receiving operation only, without payload, arguments or error text."""
     operation=None;trace=error.__traceback__
-    known={'conversation_voice_submit','conversation_foreground_complete','conversation_input_status'}
+    known={'conversation_voice_submit','conversation_foreground_complete','conversation_input_status',
+        'conversation_live_context','conversation_foreground_delegate','conversation_foreground_originals',
+        'presentation_part','presentation_list','sonic_activity'}
     while trace is not None:
         frame=trace.tb_frame
         if frame.f_globals.get('__name__')=='dashboard.provider' and frame.f_code.co_name in known:
