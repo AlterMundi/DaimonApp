@@ -228,6 +228,35 @@ class Mounted(unittest.TestCase):
             invalid={**self.config,'streaming_transcription':{**self.config['streaming_transcription'],**updates}}
             with self.assertRaises(ValueError):create_app(invalid,self.owner,lambda raw,bot:int(raw))
 
+    def test_reconnect_metadata_is_bounded_and_correlates_the_owned_close(self):
+        import dashboard.native_voice as voice
+        snapshot={'previous_dialogue':self.ident,'cause':'server_review','playback_context':'running',
+            'audio_bytes':3200,'retained_originals':1,'pending_events':0,'queued_audio_bytes':0,
+            'generated_audio_bytes':4800,'played_audio_bytes':2400,'floor':False,'blocked':True,'user_paused':False}
+        self.assertEqual(voice.reconnect_snapshot(snapshot),snapshot)
+        self.assertEqual(voice.reconnect_snapshot({**snapshot,'generated_audio_bytes':86400000})['generated_audio_bytes'],86400000)
+        for value in ({**snapshot,'text':'Private words'},{**snapshot,'audio_bytes':True},
+                {**snapshot,'queued_audio_bytes':86400001},{**snapshot,'cause':'arbitrary details'}):
+            with self.assertRaises(ValueError):voice.reconnect_snapshot(value)
+        with self.assertLogs('uvicorn.error',level='INFO') as logs:
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_json({'type':'close'})
+            deadline=time.monotonic()+3
+            while not any('native_voice_closed ' in v for v in logs.output) and time.monotonic()<deadline:time.sleep(.005)
+            self.assertTrue(any('native_voice_closed ' in v for v in logs.output))
+            self.ident=str(uuid.uuid4())
+            with self.open() as ws:
+                ws.send_json(self.meta(reconnect=snapshot))
+                self.assertEqual(ws.receive_json()['type'],'reconnect_recorded')
+                outcome=ws.receive_json();self.assertEqual(outcome['type'],'ready',outcome)
+                ws.send_json({'type':'close'})
+        report=json.loads(next(v.split('native_voice_reconnect ',1)[1] for v in logs.output if 'native_voice_reconnect ' in v))
+        self.assertEqual(report['client_observation'],snapshot)
+        self.assertTrue(report['previous_close_available'])
+        self.assertEqual(report['previous_server_close']['id'],snapshot['previous_dialogue'])
+        self.assertEqual(self.owner.delegations,[])
+
     def test_owner_selected_voice_reaches_provider_and_invalid_selection_is_refused(self):
         self.config['streaming_transcription']['native_voice_name']='Charon'
         with self.open() as ws:
@@ -965,7 +994,7 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
         self.assertRegex(result['failure_site'],r'^native_acoustic\.provider_event:[0-9]+$')
         self.assertIsNone(result['first_send_failure'])
         self.assertIsNone(result['boundary_mismatch'])
-        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','owner_operation','provider_controls','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures'})
+        self.assertEqual(set(result),{'id','stage','error_type','failure_site','first_send_failure','provider_failure_code','owner_operation','provider_controls','boundary_mismatch','elapsed_ms','received_pcm_bytes','received_messages','peak_pending_messages','peak_pending_pcm_bytes','peak_input_queue_wait_ms','actor_checks','acoustic_queues','caption_recovery','generated_pcm_bytes','cleanup','client_playback','context_producer','provider_rollovers','candidate_setup_failures','provider_context'})
         self.assertGreater(result['actor_checks']['fresh_checks'],0)
         self.assertEqual(result['acoustic_queues'],{'peak_analysis_audio_ms':0,
             'peak_unsent_span_audio_ms':0,'peak_input_confirmation_wait_ms':0})

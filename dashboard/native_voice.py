@@ -55,6 +55,21 @@ def owner_operation(error):
     return operation
 
 
+def reconnect_snapshot(value):
+    """Untrusted fixed scalars only; no transcript, audio, URL or provider payload."""
+    counters={'audio_bytes','retained_originals','pending_events','queued_audio_bytes',
+        'generated_audio_bytes','played_audio_bytes'}
+    flags={'floor','blocked','user_paused'}
+    if (not isinstance(value,dict) or set(value)!={'previous_dialogue','cause','playback_context',*counters,*flags}
+            or value.get('cause') not in ('client_hold','server_review','transport_closed')
+            or value.get('playback_context') not in ('native','running','suspended','interrupted','closed','unavailable')
+            or any(type(value[k]) is not int or not 0<=value[k]<=86400000 for k in counters)
+            or any(type(value[k]) is not bool for k in flags)):
+        raise ValueError('Select bounded reconnect observations')
+    Provider.input_id(value['previous_dialogue'])
+    return dict(value)
+
+
 def playback_status(value):
     """Untrusted client observations: fixed scalars only, never audio authority."""
     counts={'handled','scheduled','ended','skipped_floor','skipped_muted','skipped_retired'}
@@ -93,6 +108,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             return QwenDialogue
         return NativeDialogue
     app.state.native_voice_enabled=True
+    closures=deque(maxlen=32)  # Recent own-session diagnostics only; restart clears them.
     recovery_slots=asyncio.Semaphore(2);recovery_owned=set()
 
     @app.websocket('/api/interaction/voice/native')
@@ -469,7 +485,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 raw=await asyncio.wait_for(socket.receive_text(),5)
                 if len(raw.encode())>8192:raise ValueError('Native voice metadata exceeds bound')
                 meta=json.loads(raw)
-                if (not isinstance(meta,dict) or set(meta)-{'id','binding','csrf','authorization','capture_questions','session_seconds'}
+                if (not isinstance(meta,dict) or set(meta)-{'id','binding','csrf','authorization','capture_questions','session_seconds','reconnect'}
                         or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf'))
                         or not re.fullmatch('[a-f0-9]{64}',meta['binding'])):
                     raise ValueError('Select one owned native voice conversation')
@@ -478,7 +494,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     raise ValueError('Select a finite native client duration')
                 session_seconds=min(configured_seconds,requested_seconds)
                 provider.input_id(meta['id']);Provider.check_capture_questions(meta.get('capture_questions'))
+                reconnect=reconnect_snapshot(meta['reconnect']) if 'reconnect' in meta else None
                 session,recheck,actor=await bind_voice(socket,meta)
+                if reconnect is not None:
+                    previous=next((v[3] for v in reversed(closures)
+                        if v[:3]==(session['human'],meta['binding'],reconnect['previous_dialogue'])),None)
+                    logging.getLogger('uvicorn.error').info('native_voice_reconnect %s',json.dumps({
+                        'id':meta['id'],'source':'explicit_client_reconnect','client_observation':reconnect,
+                        'previous_server_close':previous,'previous_close_available':previous is not None},separators=(',',':')))
+                    await send({'type':'reconnect_recorded'})
                 human=session['human']
                 if human in active or len(active)>=2:raise ForegroundUnavailable('Native voice capacity occupied')
                 owner=human;active.add(owner)
@@ -722,9 +746,13 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     'acoustic_queues':acoustic.diagnostics() if acoustic is not None else None,
                     'caption_recovery':dict(caption_recovery.counts) if caption_recovery is not None else None,
                     'generated_pcm_bytes':retired_output_bytes+(getattr(stream,'output_bytes',0) if stream else 0),
+                    'provider_context':{'estimated_tokens':getattr(stream,'context_estimate',0),
+                        'completed_turns':getattr(stream,'turns_finished',0),
+                        'checkpoint_requested':bool(context_producer and context_producer.checkpoint_requested_generation)},
                     'provider_rollovers':rollover_count,
                     'candidate_setup_failures':candidate_setup_failures,
                     'cleanup':'cancelled' if task.cancelled() else 'failed' if task.exception() is not None else 'completed'}
+                closures.append((owner,meta['binding'],meta['id'],summary))
                 logging.getLogger('uvicorn.error').info('native_voice_closed %s',json.dumps(summary,separators=(',',':')))
             cleanup_task=asyncio.create_task(cleanup())
             cleanup_task.add_done_callback(ForegroundBridge._observe)

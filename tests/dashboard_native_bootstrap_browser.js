@@ -55,8 +55,18 @@ try{
  }
  const before=await page.evaluate(()=>fixture.report());assert.equal(before.engineCreations,1);assert.equal(before.pending,emptyInput);assert(before.captureFrames>0);assert.equal(before.sharedAuth,'true');assert.equal(before.appLoaded,true);assert.equal(before.retained.length,cycles);assert.equal(before.released.length,cycles-emptyInput);
  assert(http.some(v=>v.path.endsWith('/api/interaction/access')&&v.status===200));assert(http.some(v=>v.path.endsWith('/api/interaction/events')&&v.status===200));assert.equal(http.filter(v=>v.status>=500&&v.status!==503).length,0,JSON.stringify(http));assert.equal(errors.length,0,errors.join('\n'));
+ if(process.env.QUALIFICATION_RECONNECT==='1'){
+  await page.evaluate(()=>fixture.engine.hold('Synthetic unexpected close'));
+  await page.waitForFunction(()=>!fixture.engine.active&&fixture.trackStops===1);
+  const reconnect=page.locator('dialog.voice-mode').getByRole('button',{name:'Reconnect voice',exact:true});
+  await reconnect.click();
+  await page.waitForFunction(()=>fixture.engine.active&&fixture.contexts.length===4&&fixture.inputContext.state==='running',{},{timeout:15000});
+  assert.equal(await page.evaluate(()=>fixture.retained.length),cycles,'Reconnect never captures or replays an old original');
+  assert.equal(await page.evaluate(()=>fixture.released.length),cycles-emptyInput,'Reconnect never confirms an old original');
+  await page.screenshot({path:path.join(root,'reconnected-390.png')});
+ }
  await page.locator('dialog.voice-mode').getByRole('button',{name:'Back to conversation',exact:true}).click();
- await page.waitForFunction(()=>!fixture.engine.active&&fixture.trackStops===1&&fixture.inputContext.state==='closed'&&fixture.contexts.every(c=>c.state==='closed'),{},{timeout:10000});
+ await page.waitForFunction(stops=>!fixture.engine.active&&fixture.trackStops===stops&&fixture.inputContext.state==='closed'&&fixture.contexts.every(c=>c.state==='closed'),process.env.QUALIFICATION_RECONNECT==='1'?2:1,{timeout:10000});
  save('browser.json',{finiteWorklet,state:'actual-shell-shared-cookie-native-cycles-observed',cycles,before,after:await page.evaluate(()=>fixture.report()),http,errors,limits:'Synthetic identity/provider/detector/MediaStream. Actual shipped app bootstrap, worklet, output/IndexedDB, sockets/HTTP/SSE. No real account login/provider/native work/physical hearing qualified.'});
 }catch(error){if(page)try{save('browser-progress.json',await page.evaluate(()=>fixture.report()));}catch{}save('browser-error.json',{error:String(error),http,errors});throw error;}
 finally{if(page)try{await page.evaluate(()=>fixture.engine?.hold('Synthetic full-bootstrap cleanup'));}catch{}if(context)await context.close();if(browser)await browser.close();save('browser-closure.json',{closed:true});}

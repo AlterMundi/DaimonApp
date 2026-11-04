@@ -319,5 +319,16 @@ function boot(live=false,recovery,status404=false){
  assert.equal(leaving.uploads[0].headers['X-Recording-Stop'],undefined,'Leaving voice mode is not a duration-limit cutoff');
  const failure=boot(true);await failure.ui.startConversation();failure.preparation().onDetectionUnavailable();
  await until(()=>failure.state().startsWith('Voice mode ended.'));assert.equal(failure.uploads.length,0,'Detector failure retains the recording for review');
+ const reconnectStore=memoryRecovery(),reconnectMic=boot(true,reconnectStore);
+ await until(()=>reconnectMic.ui.canStartContinuous());reconnectMic.ui.continuousOwner(true);
+ const pendingOriginal=await reconnectMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),mime:'audio/wav',blob:new Blob(['local only'])});
+ await assert.rejects(reconnectMic.ui.prepareReconnect([{...pendingOriginal,audio_sha256:'changed'}]));
+ await reconnectMic.ui.prepareReconnect([pendingOriginal]);
+ const retainedReview=reconnectStore.values.get('pending');assert.equal(retainedReview.reconnect_review,true);assert.notEqual(retainedReview.native_review,true,'A local reconnect review is never a server-retention receipt');
+ assert(reconnectMic.ui.canStartContinuous());
+ const freshOriginal=await reconnectMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),mime:'audio/wav',blob:new Blob(['new capture'])});
+ assert.equal(reconnectStore.values.get('pending').items.length,2);assert.equal(reconnectMic.uploads.length,0,'Reconnect preparation never sends pending audio');
+ await reconnectMic.ui.releaseContinuous(freshOriginal,freshOriginal.audio_sha256);
+ assert.equal(reconnectStore.values.get('pending').id,pendingOriginal.id,'Confirmation of a new capture preserves the older review');
  console.log('Microphone UI: finalized one-button capture, playback pause, source hashing, explicit identical retry, receipt-only recovery, hidden/cancel/late permission cleanup, duration-limit review and binding reset passed; zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

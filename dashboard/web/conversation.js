@@ -2120,7 +2120,7 @@ window.Conversation = (() => {
     voiceSession=legacyVoiceSession;
     if(standalone&&!readOnly&&microphone)nativeVoiceSession=window.NativeConversation?.create({
       headers,getBinding:()=>binding,getQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,
-      retain:original=>microphone.retainContinuous(original),reviewOriginal:original=>microphone.reviewNativeContinuous(original),release:(original,hash)=>microphone.releaseContinuous(original,hash),
+      prepareReconnect:originals=>microphone.prepareReconnect(originals),retain:original=>microphone.retainContinuous(original),reviewOriginal:original=>microphone.reviewNativeContinuous(original),release:(original,hash)=>microphone.releaseContinuous(original,hash),
       onReview:originals=>{if(!voiceMode?.active)void microphone.reviewContinuous(originals);},
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onUtterance:foregroundCard,
       onHandoff:handoff=>voiceMode?.update({handoff}),onTiming:(id,stage)=>timing?.native?.(id,stage),
@@ -2139,6 +2139,8 @@ window.Conversation = (() => {
         conversationOnly=true;stop();audioFilterChanged();enableVoice();sound?.update({conversationOnly:true});
       },
       onSpeak:()=>voiceModePrevious?.continuous?voiceSession?.start():microphone?.startConversation(),
+      canReconnect:()=>nativeEnabled,
+      onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous())return voiceSession?.start();},
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:()=>{

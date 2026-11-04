@@ -3,11 +3,11 @@
 window.NativeConversation=(()=>{
   const nativePcm=()=>window.NativeSpeechAudio?.pcm===true&&typeof window.NativeSpeechAudio.openPcm==='function';
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&(!window.NativeSpeechAudio?.backgroundPlayback||nativePcm()));
-  function create({headers,getBinding,getQuestions,retain,release,reviewOriginal=async()=>{},onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
+  function create({headers,getBinding,getQuestions,retain,release,reviewOriginal=async()=>{},prepareReconnect=async originals=>{if(originals.length)throw Error('Recording recovery is unavailable');},onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
     let parts=[],bytes=0,originals=new Map(),rawRetained=new Set(),uninterpreted=new Set(),markedReview=new Set(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
     let playbackReporting=false,playbackReports=0,playbackCounts;
-    let sessionSeconds=300,pcmBase=0,originalRanges=new Map();
+    let sessionSeconds=300,pcmBase=0,originalRanges=new Map(),closeSnapshot;
     const emitState=value=>onState({...value,audioPaused:userPaused,audioEnabled:audible});
     const state=message=>emitState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
@@ -31,16 +31,18 @@ window.NativeConversation=(()=>{
       for(const id of ids)if(!retired.has(id)&&(played.get(id)||0)<received.get(id))onTiming(id,stage);
     }
     function pauseOutput(){
+      const owned=epoch;
       if(nativeOutput)nativeOutput.pause();
-      else if(context)void context.suspend().then(()=>{if(!stopped&&context?.state==='suspended')emitState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>hold('Voice playback could not pause.'));
+      else if(context)void context.suspend().then(()=>{if(!stopped&&owned===epoch&&context?.state==='suspended')emitState({active,starting,floor,pending:false,playback:'paused'});}).catch(()=>{if(owned===epoch)hold('Voice playback could not pause.');});
     }
     function resumeOutput(){
+      const owned=epoch;
       if(stopped||!audible||userPaused||floor||blocked)return;
       pendingTiming('output_release_requested');
       if(nativeOutput)nativeOutput.resume();
-      else if(context)void context.resume().then(()=>{if(!stopped){emitState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});diagnosePlayback();}}).catch(()=>hold('Voice playback could not resume.'));
+      else if(context)void context.resume().then(()=>{if(!stopped&&owned===epoch){emitState({active,starting,floor,pending:false,playback:nodes.size?'playing':'idle'});diagnosePlayback();}}).catch(()=>{if(owned===epoch)hold('Voice playback could not resume.');});
     }
-    async function play(value){
+    async function play(value,owned){
       if(value.sample_rate!==24000||typeof value.pcm!=='string'||value.pcm.length>350000||!Number.isSafeInteger(value.end))throw Error('Invalid native audio');
       const raw=atob(value.pcm);if(!raw.length||raw.length%2)throw Error('Invalid native PCM');
       const begin=received.get(value.id)||0;if(value.end!==begin+raw.length||value.end>sessionSeconds*48000)throw Error('Native audio continuity changed');
@@ -52,7 +54,9 @@ window.NativeConversation=(()=>{
       }
       if(nativeOutput){
         const bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
-        if(await nativeOutput.append(value.id,value.end,bytes)){playbackCounts.scheduled++;if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}
+        const scheduled=await nativeOutput.append(value.id,value.end,bytes);
+        if(stopped||owned!==epoch)return;
+        if(scheduled){playbackCounts.scheduled++;if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}
         if(begin===0)diagnosePlayback();return;
       }
       if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
@@ -62,7 +66,7 @@ window.NativeConversation=(()=>{
       const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
       const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
-      source.onended=()=>{nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};
+      source.onended=()=>{if(owned!==epoch)return;nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};
       source.start(at);playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');emitState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
     }
     function slice(start,end){
@@ -83,13 +87,18 @@ window.NativeConversation=(()=>{
       // Reserve capacity before an asynchronous IndexedDB write completes.
       originals.set(span.id,value);originalRanges.set(span.id,{start:span.start,end:span.end});writing=promise.then(()=>{},()=>{});return promise;
     }
-    async function markReviewed(id){
+    async function markReviewed(id,owned){
       if(rawRetained.has(id)&&uninterpreted.has(id)&&!markedReview.has(id)){
-        await reviewOriginal(originals.get(id));markedReview.add(id);
+        await reviewOriginal(originals.get(id));if(!stopped&&owned===epoch)markedReview.add(id);
       }
     }
-    function hold(message='Voice ended. Your unconfirmed originals are kept for review.',recoverUnassigned=false){
-      if(stopped)return;diagnosePlayback();stopped=true;active=starting=floor=false;clearTimeout(timer);silence();
+    function hold(message='Voice ended. Your unconfirmed originals are kept for review.',recoverUnassigned=false,cause='client_hold'){
+      if(stopped)return;
+      closeSnapshot={previous_dialogue:dialogue,cause,audio_bytes:bytes,retained_originals:originals.size,
+        pending_events:pendingEvents,queued_audio_bytes:Math.min(32000000,socket?.bufferedAmount||0),
+        generated_audio_bytes:[...received.values()].reduce((a,b)=>a+b,0),played_audio_bytes:[...played.values()].reduce((a,b)=>a+b,0),
+        playback_context:nativeOutput?'native':context?.state||'unavailable',floor,blocked,user_paused:userPaused};
+      diagnosePlayback();stopped=true;active=starting=floor=false;clearTimeout(timer);silence();
       if(current&&bytes>current.start){const span={...current,end:bytes};current=undefined;try{void Promise.resolve(keep(span)).catch(()=>onReview([...originals.values()]));}catch{}}
       unsubscribe?.();unsubscribe=undefined;capture?.close();capture=undefined;
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
@@ -107,7 +116,7 @@ window.NativeConversation=(()=>{
               Object.entries(scope).some(([id,revision])=>!(/^[a-f0-9]{32}$/.test(id))||typeof revision!=='string'||!(/^[a-f0-9]{64}$/.test(revision))))throw Error('Canonical question scope changed');
           questionScope={...scope};break;
         }
-        case 'audio':await play(value);break;
+        case 'audio':await play(value,owned);break;
         case 'capture_started':
           if(current||typeof value.id!=='string')throw Error('Original capture changed');
           onTiming(value.id,'capture_started');current={id:value.id,start:value.start,questions:pendingScope||questions};pendingScope=undefined;floor=true;blocked=true;silence(true);pauseOutput();onInterrupt();state('Listening');
@@ -115,15 +124,15 @@ window.NativeConversation=(()=>{
         case 'phrase_end':{
           if(!current||current.id!==value.id||current.start!==value.start)throw Error('Phrase boundary changed');
           onTiming(value.id,'phrase_end');const span={...current,end:value.end};current=undefined;floor=false;lastEnded=value.id;
-          await keep(span);onTiming(value.id,'local_retained');onHandoff({id:value.id,gate:'waiting_transcript'});state('Phrase end detected');break;
+          await keep(span);if(stopped||owned!==epoch)return;onTiming(value.id,'local_retained');onHandoff({id:value.id,gate:'waiting_transcript'});state('Phrase end detected');break;
         }
         case 'original_retained':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256)throw Error('Retained original differs');
-          rawRetained.add(value.id);await markReviewed(value.id);onHandoff({id:value.id,gate:uninterpreted.has(value.id)?'review':'foreground_saved'});break;
+          rawRetained.add(value.id);await markReviewed(value.id,owned);if(stopped||owned!==epoch)return;onHandoff({id:value.id,gate:uninterpreted.has(value.id)?'review':'foreground_saved'});break;
         }
         case 'original_completed':{
           const original=originals.get(value.id);if(!original||original.audio_sha256!==value.sha256||value.phase!=='foreground')throw Error('Completed original differs');
-          onTiming(value.id,'original_confirmed');await release(original,value.sha256);originals.delete(value.id);rawRetained.delete(value.id);uninterpreted.delete(value.id);markedReview.delete(value.id);
+          onTiming(value.id,'original_confirmed');await release(original,value.sha256);if(stopped||owned!==epoch)return;originals.delete(value.id);rawRetained.delete(value.id);uninterpreted.delete(value.id);markedReview.delete(value.id);
           const range=originalRanges.get(value.id);originalRanges.delete(value.id);
           if(range){
             if(current&&current.start<range.end)throw Error('Confirmed PCM overlaps live capture');
@@ -140,7 +149,7 @@ window.NativeConversation=(()=>{
           if(current)onHandoff({id:current.id,gate:value.activity.speaking?'speaking':'waiting_endpoint'});break;
         case 'input_uninterpreted':
           if(!originals.has(value.id)||value.reason!=='empty_final_transcript')throw Error('Unknown original review');
-          uninterpreted.add(value.id);await markReviewed(value.id);
+          uninterpreted.add(value.id);await markReviewed(value.id,owned);if(stopped||owned!==epoch)return;
           if(value.id===lastEnded&&!floor){blocked=false;resumeOutput();}
           onHandoff({id:value.id,gate:'review'});state('No words confirmed. Recording kept for review; you can keep talking.');break;
         case 'input_interpreted':
@@ -148,26 +157,35 @@ window.NativeConversation=(()=>{
           // input item instead of emitting Gemini's ACTIVITY_END event.
           if(value.id===lastEnded&&!floor){blocked=false;resumeOutput();}
           onTiming(value.id,'input_interpreted');onCaption(value.text);break;
-        case 'review':case 'closing':hold(value.message||'Voice session ended.');break;
+        case 'reconnect_recorded':break;
+        case 'review':case 'closing':hold(value.message||'Voice session ended.',false,'server_review');break;
       }
     }
-    async function start(){
-      if(active||starting||originals.size||document.hidden||!getBinding()||!supported())return false;
-      const owned=++epoch;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;rawRetained=new Set();uninterpreted=new Set();markedReview=new Set();received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
+    async function start({reconnect=false}={}){
+      if(active||starting||originals.size&&!reconnect||document.hidden||!getBinding()||!supported())return false;
+      const diagnostic=reconnect?closeSnapshot:undefined;
+      const owned=++epoch;chain=Promise.resolve();pendingEvents=0;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;rawRetained=new Set();uninterpreted=new Set();markedReview=new Set();received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       playbackReporting=false;playbackReports=0;playbackCounts={handled:0,scheduled:0,ended:0,skipped_floor:0,skipped_muted:0,skipped_retired:0};
       sessionSeconds=300;pcmBase=0;originalRanges=new Map();const requestedSeconds=nativePcm()?300:1800;
       // Unlock output in the explicit gesture; microphone waits for owner preflight.
       timer=setTimeout(()=>hold('Voice session reached five minutes.'),300000);
       try{
         if(nativePcm()){
-          nativeOutput=window.NativeSpeechAudio.openPcm({onProgress:report,onBufferEnded:id=>{if(stopped||owned!==epoch)return;playbackCounts.ended++;onTiming(id,'output_buffer_ended');diagnosePlayback();},
-            onState:playback=>{if(!stopped)emitState({active,starting,floor,pending:false,playback});},onUnavailable:hold});
+          nativeOutput=window.NativeSpeechAudio.openPcm({onProgress:(id,count)=>{if(!stopped&&owned===epoch)report(id,count);},onBufferEnded:id=>{if(stopped||owned!==epoch)return;playbackCounts.ended++;onTiming(id,'output_buffer_ended');diagnosePlayback();},
+            onState:playback=>{if(!stopped&&owned===epoch)emitState({active,starting,floor,pending:false,playback});},onUnavailable:message=>{if(owned===epoch)hold(message);}});
           await nativeOutput.ready;if(stopped||owned!==epoch)return false;
         }else{context=new (window.AudioContext||window.webkitAudioContext)();context.onstatechange=()=>{if(owned===epoch)diagnosePlayback();};void context.resume().catch(()=>{});}
+        if(reconnect){
+          await writing;
+          if(stopped||owned!==epoch)return false;
+          await prepareReconnect([...originals.values()]);
+          if(stopped||owned!==epoch||binding!==getBinding())throw Error('Conversation changed before reconnect');
+          originals=new Map();
+        }
         const target=new URL('api/interaction/voice/native',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
         const opened=new Promise((resolve,reject)=>{
           socket=new WebSocket(target);
-          socket.onopen=()=>{if(owned!==epoch||stopped)return;try{const h=headers(),authorization=h.Authorization||h.authorization;socket.send(JSON.stringify({id:dialogue,binding,csrf:h['X-Dashboard-CSRF']||h['x-dashboard-csrf'],capture_questions:questions,session_seconds:requestedSeconds,...(authorization?{authorization}:{})}));}catch(error){reject(error);}};
+          socket.onopen=()=>{if(owned!==epoch||stopped)return;try{const h=headers(),authorization=h.Authorization||h.authorization;socket.send(JSON.stringify({id:dialogue,binding,csrf:h['X-Dashboard-CSRF']||h['x-dashboard-csrf'],capture_questions:questions,session_seconds:requestedSeconds,...(diagnostic?{reconnect:diagnostic}:{}),...(authorization?{authorization}:{})}));}catch(error){reject(error);}};
           socket.onmessage=message=>{
             if(owned!==epoch||stopped)return;
             try{
@@ -180,10 +198,10 @@ window.NativeConversation=(()=>{
                 playbackReporting=value.playback_status===true;resolve();return;
               }
               if(value.type==='review'&&starting){reject(Error(value.message));return;}
-              pendingEvents++;chain=chain.then(()=>event(value,owned)).catch(error=>hold(error.message)).finally(()=>pendingEvents--);
+              pendingEvents++;chain=chain.then(()=>event(value,owned)).catch(error=>{if(owned===epoch&&!stopped)hold(error.message);}).finally(()=>{if(owned===epoch)pendingEvents--;});
             }catch(error){reject(error);hold(error.message);}
           };
-          socket.onerror=socket.onclose=()=>{reject(Error('Native voice disconnected'));if(owned===epoch)hold();};
+          socket.onerror=socket.onclose=()=>{reject(Error('Native voice disconnected'));if(owned===epoch)hold(undefined,false,'transport_closed');};
         });
         let readyTimer;
         try{await Promise.race([opened,new Promise((_,reject)=>{readyTimer=setTimeout(()=>reject(Error('Native voice readiness timed out')),45000);})]);}
@@ -222,7 +240,7 @@ window.NativeConversation=(()=>{
         capture.observe();capture.start();active=true;starting=false;state('Listening');return true;
       }catch(error){if(owned===epoch)hold(error.message||'Native voice unavailable.');return false;}
     }
-    return {start,hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();diagnosePlayback();},
+    return {start,reconnect:()=>start({reconnect:true}),hold,setEnabled:value=>{const enabled=value===true;if(audible===enabled)return;audible=enabled;if(!audible)silence();else resumeOutput();diagnosePlayback();},
       pause:(reason='manual')=>{userPaused=true;pauseOutput();diagnosePlayback();emitState({active,starting,floor,pending:false,playback:'paused',pauseReason:reason});},
       resume:()=>{userPaused=false;resumeOutput();},
       get hasAudio(){return !!nativeOutput?.hasAudio||nodes.size>0;},get paused(){return nativeOutput?.paused||context?.state==='suspended';},
