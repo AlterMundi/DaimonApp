@@ -641,3 +641,54 @@ provider work; after release, a later finite heartbeat reads the retained status
 and recovers that exact step. It also qualifies recurrence, exact pause and
 ordinary contact afterward. Whole-journey local HTTP observations include setup
 and ordinary work; conservative resource reservations are recorded separately.
+
+### Selected owner reports in the same finite producer
+
+The optional `reports` array on the existing producer contract selects up to eight
+owner-readable JSON reports: an `id` (up to64 ASCII letters/digits/underscore/hyphen),
+an absolute local `path`, and one to16 exact JSON `pointers`. It launches no
+command, provider, poller or second queue. Default is empty, preserving prior
+contracts. Use the existing owning producer's maintained report, not a copied
+conversation or another being's private memory. Receiving permissions remain
+real: an inaccessible root-owned report stays unavailable until its owning
+operator supplies the narrow authorized projection; reading metadata does not
+justify broad directory access.
+
+This is the shared seam for SourceReview offers, DMK worker/consolidation state,
+authorized activity and editorial intake evidence. Select stable meaningful
+fields; exclude changing timestamps/run counters when they alone should not
+wake the integrator. For example, selected SourceReview `/offers`,
+`/local_candidates`, `/unavailable` retain their native source identities; DMK
+`/state`, `/budget_exhausted`, `/phases` report existing work without launching
+capture/consolidation or replenishing its exhausted allowance. These are example
+fields, not installed receiver bindings. No report implies signed native Source
+trust, species membership, an adoption decision or publication authority.
+
+Each finite held-lease check reads at most256KiB per regular report, selecting
+at most64KiB of JSON fields. Invalid/missing/unreadable/oversized reports become
+an explicit stable unavailable observation. Changes to selected values determine
+the revision; clock-only changes outside the selection stay quiet. Matrix,
+workflow and report lanes share the existing four-offer/16KiB batch. Reports
+consume the same check/cursor/receipt capacities and conserved execution account.
+No-news is model-free. Pause prevents new observation; retained exact source
+reads remain available to ordinary human-directed work.
+
+Offers contain only report identity, state, revision and the `heartbeat_source`
+reader. Supply the enclosing `return_id`, offered `source` ID, exact `revision`
+and optional character `offset`; the reader returns at most12000characters and
+an exact continuation. It checks the current integrator/native/entry epoch and
+that this report/revision was actually offered. It reads only selected fields,
+never accepts a path from the caller, and refuses changed revisions. Report paths
+and unselected fields are omitted from offers/source text. Review uses the same
+`heartbeat_reported`, separate from source adoption and task completion. A changed
+known-unsent report batch retires; an accepted narration remains visible under
+its original source authority.
+
+This extends observation only. Shared pause/accounting for selected DMK/editorial
+side effects, new signed-inbox intake and actual receiving learning/Bitácora/voice
+acceptance remain required for Nicolas's combined stack candidate. Existing
+independent SourceReview/DMK jobs keep their original finite contracts; they are
+not silently reset or claimed controlled by heartbeat pause. The candidate remains
+OFF until the combined design is qualified. The opt-in native fixture additionally
+accepts `--native-cli` for a complete packaged Codex entrypoint and `--reports`
+for exact report-source delivery through the real controller.

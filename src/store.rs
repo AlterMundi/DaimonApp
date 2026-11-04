@@ -29,6 +29,8 @@ mod goal_retries;
 pub use goal_retries::GoalRecoveryPolicy;
 pub(crate) use goal_retries::GoalRetry;
 mod heartbeat;
+#[cfg(test)]
+pub use heartbeat::HeartbeatReportSource;
 pub use heartbeat::{HeartbeatCommand, HeartbeatProducerContract, HeartbeatResources};
 mod interaction;
 mod interactions;

@@ -3859,6 +3859,14 @@ mod tests {
         assert!(!s.interaction_session_input_allowed(&first.id, 100).unwrap());
     }
     fn producer_configure(s: &Store, entry: &SessionRecord, max_checks: u32) {
+        producer_configure_reports(s, entry, max_checks, vec![]);
+    }
+    fn producer_configure_reports(
+        s: &Store,
+        entry: &SessionRecord,
+        max_checks: u32,
+        reports: Vec<crate::store::HeartbeatReportSource>,
+    ) {
         use crate::store::{HeartbeatCommand as H, HeartbeatProducerContract};
         s.heartbeat_control(100, entry.key, H::Pause).unwrap();
         let resources = crate::store::heartbeat::test_contract();
@@ -3883,6 +3891,7 @@ mod tests {
                     expires_at_unix_ms: expiry,
                     matrix_replies: true,
                     workflows: true,
+                    reports,
                 },
             },
         )
@@ -3919,6 +3928,185 @@ mod tests {
             "Selected checkpoint for the heartbeat.",
         );
         view
+    }
+
+    #[test]
+    fn heartbeat_owned_report_selective_read_pause_and_changed_source() {
+        use crate::store::{HeartbeatCommand as H, HeartbeatReportSource};
+        let (_file, s, entry, _) = setup();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        use std::io::Write;
+        file.write_all(
+            br#"{"clock":1,"offers":[{"publisher":"Eko","revision":"r1"}],"private":"excluded"}"#,
+        )
+        .unwrap();
+        producer_configure_reports(
+            &s,
+            &entry,
+            8,
+            vec![HeartbeatReportSource {
+                id: "learning".into(),
+                path: file.path().to_path_buf(),
+                pointers: vec!["/offers".into()],
+            }],
+        );
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        let source_revision = packet["evidence"]["offers"][0]["revision"]
+            .as_str()
+            .unwrap();
+        assert!(!selected.output.contains(file.path().to_str().unwrap()));
+        assert!(!selected.output.contains("Eko")); // only metadata in the offered batch
+        let read = s
+            .heartbeat_source(
+                100,
+                entry.key,
+                "native-1",
+                &selected.id,
+                "learning",
+                source_revision,
+                0,
+            )
+            .unwrap();
+        assert!(read["text"].as_str().unwrap().contains("Eko"));
+        assert!(!read["text"].as_str().unwrap().contains("private"));
+        assert!(
+            s.heartbeat_source(
+                101,
+                entry.key,
+                "native-1",
+                &selected.id,
+                "learning",
+                source_revision,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_source(
+                100,
+                entry.key,
+                "wrong-native",
+                &selected.id,
+                "learning",
+                source_revision,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_source(
+                100,
+                entry.key,
+                "native-1",
+                &selected.id,
+                "other-report",
+                source_revision,
+                0
+            )
+            .is_err()
+        );
+        let paused = s.heartbeat_control(100, entry.key, H::Pause).unwrap();
+        let before = paused["producer"]["checks"].clone();
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["producer"]["checks"],
+            before
+        );
+        // Reading an exact retained report remains possible during pause.
+        std::fs::write(
+            file.path(),
+            br#"{"clock":2,"offers":[{"publisher":"Eko","revision":"r1"}]}"#,
+        )
+        .unwrap();
+        s.heartbeat_source(
+            100,
+            entry.key,
+            "native-1",
+            &selected.id,
+            "learning",
+            source_revision,
+            0,
+        )
+        .unwrap();
+        std::fs::write(
+            file.path(),
+            br#"{"offers":[{"publisher":"Eko","revision":"r2"}]}"#,
+        )
+        .unwrap();
+        assert!(
+            s.heartbeat_source(
+                100,
+                entry.key,
+                "native-1",
+                &selected.id,
+                "learning",
+                source_revision,
+                0
+            )
+            .is_err()
+        );
+        s.heartbeat_control(
+            100,
+            entry.key,
+            H::Resume {
+                generation: paused["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        let next = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        assert_ne!(next.id, selected.id);
+        let conn = s.conn.lock().unwrap();
+        let (parent, index) = crate::store::heartbeat::producer::load_return(&conn, &selected.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parent.native_returns[index].phase, "retired_unsent");
+    }
+
+    #[test]
+    fn heartbeat_reviewed_report_unchanged_is_quiet_after_restart() {
+        use crate::store::{HeartbeatCommand as H, HeartbeatReportSource};
+        let (db, s, entry, _) = setup();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), br#"{"state":"pending","steps":9}"#).unwrap();
+        producer_configure_reports(
+            &s,
+            &entry,
+            8,
+            vec![HeartbeatReportSource {
+                id: "memory".into(),
+                path: file.path().to_path_buf(),
+                pointers: vec!["/state".into(), "/steps".into()],
+            }],
+        );
+        let selected = s.heartbeat_produce(100, entry.key).unwrap().unwrap();
+        let packet: Value = serde_json::from_str(&selected.output).unwrap();
+        let local = turn(&s, &entry, "");
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
+        s.workflow_native_submitting(&selected.id).unwrap();
+        s.heartbeat_native_started(local, "report-physical")
+            .unwrap();
+        s.workflow_native_outcome(&selected.id, "accepted", Some("report-physical"))
+            .unwrap();
+        s.heartbeat_reported(
+            100,
+            entry.key,
+            "native-1",
+            &selected.id,
+            packet["evidence"]["revision"].as_str().unwrap(),
+        )
+        .unwrap();
+        s.heartbeat_native_terminal(local, "report-physical", "completed")
+            .unwrap();
+        producer_edit(&s, &entry, |v| v["next_check_ms"] = json!(0));
+        drop(s);
+        let s = Store::open(db.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(s.heartbeat_produce(100, entry.key).unwrap().is_none());
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            3
+        );
     }
 
     #[test]

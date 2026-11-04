@@ -7,6 +7,8 @@ pub(in crate::store) use delegation::{
 };
 pub(in crate::store) mod producer;
 pub use producer::HeartbeatProducerContract;
+mod reports;
+pub use reports::HeartbeatReportSource;
 mod resources;
 pub(super) use executions::claim_on as execution_claim_on;
 pub use resources::HeartbeatResources;

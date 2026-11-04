@@ -12,6 +12,8 @@ pub struct HeartbeatProducerContract {
     pub expires_at_unix_ms: i64,
     pub matrix_replies: bool,
     pub workflows: bool,
+    #[serde(default)]
+    pub reports: Vec<super::HeartbeatReportSource>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -89,7 +91,7 @@ pub(in crate::store) fn load_return(
         .context("Heartbeat return is unavailable")?;
     Ok(Some((p, index)))
 }
-fn bound(conn: &Connection, p: &Parent) -> Result<bool> {
+pub(super) fn bound(conn: &Connection, p: &Parent) -> Result<bool> {
     let Ok((session, native)) = super::super::presentation::entry_on(conn, p.human, p.entry) else {
         return Ok(false);
     };
@@ -137,6 +139,10 @@ pub(in crate::store) fn current(
             if !source.is_some_and(|s| s["current"] == true && s["revision"] == offer.revision) {
                 return Ok(false);
             }
+        } else if offer.key.starts_with("report:") {
+            if !super::reports::current(p, &offer.key, &offer.revision)? {
+                return Ok(false);
+            }
         } else if !super::super::workflows::heartbeat_offer_current_on(
             conn,
             p.human,
@@ -161,13 +167,14 @@ pub(in crate::store) fn configure_on(
     entry: SessionKey,
     contract: HeartbeatProducerContract,
 ) -> Result<()> {
+    super::reports::validate(&contract.reports)?;
     let now = Utc::now().timestamp_millis();
     anyhow::ensure!(
         (30..=3600).contains(&contract.interval_seconds)
             && (1..=1024).contains(&contract.max_checks)
             && contract.expires_at_unix_ms > now
             && contract.expires_at_unix_ms <= now + 7 * 86400 * 1000
-            && (contract.matrix_replies || contract.workflows),
+            && (contract.matrix_replies || contract.workflows || !contract.reports.is_empty()),
         "Select finite heartbeat sources, frequency and expiry"
     );
     let (session, native) = super::super::presentation::entry_on(conn, human, entry)?;
@@ -223,7 +230,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "configured"
     };
     Ok(
-        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"sources":"existing_canonical_matrix_replies_and_workflow_offers_only"}),
+        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"sources":"existing_canonical_matrix_replies_workflow_offers_and_selected_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -348,7 +355,7 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
-        let mut lanes = [vec![], vec![]];
+        let mut lanes = [vec![], vec![], vec![]];
         if p.contract.matrix_replies {
             let value = super::super::matrix::heartbeat_attention_on(&tx, human, entry, &p.seen)?;
             for item in value["envelopes"].as_array().into_iter().flatten() {
@@ -374,12 +381,19 @@ impl Store {
                 .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
                 .collect();
         }
+        lanes[2] = super::reports::offers(&p.contract.reports)?
+            .into_iter()
+            .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
+            .collect();
         let mut selected = vec![];
         let mut lane = usize::from(p.next_lane);
-        let mut positions = [0, 0];
+        let mut positions = [0, 0, 0];
         for _ in 0..4 {
-            if positions[lane] >= lanes[lane].len() {
-                lane = 1 - lane
+            for _ in 0..3 {
+                if positions[lane] < lanes[lane].len() {
+                    break;
+                }
+                lane = (lane + 1) % 3;
             }
             if let Some(offer) = lanes[lane].get(positions[lane]) {
                 let new_keys = selected
@@ -391,7 +405,7 @@ impl Store {
                 }
                 positions[lane] += 1;
             }
-            lane = 1 - lane;
+            lane = (lane + 1) % 3;
         }
         p.next_lane = !p.next_lane;
         if selected.is_empty() {

@@ -62,7 +62,7 @@ class ActualJourney(HeartbeatJourney):
             self.process = None
 
 
-def qualify(binary, native_binary, *, busy=False):
+def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False):
     j = ActualJourney(str(Path(binary).resolve()))
     native = client = None
     native_log = None
@@ -143,7 +143,17 @@ def qualify(binary, native_binary, *, busy=False):
                     batch = packet
                     prefix = 'hb-' + packet['return_id'].rsplit(':', 1)[-1]
                     read_id, declare_id, advance_id, reviewed_id = [prefix+'-'+kind for kind in ('read', 'declare', 'advance', 'reviewed')]
-                    if reviewed_id in outputs:
+                    report = next((offer for offer in packet['evidence']['offers']
+                                   if offer['key'].startswith('report:')), None)
+                    report_read_id = prefix + '-owned-report'
+                    if report and report_read_id not in outputs:
+                        reader = report['evidence']['reader']
+                        events = [call(report_read_id, reader['operation'], {
+                            **reader['arguments'], 'return_id': packet['return_id']})]
+                        stage = 'heartbeat-owned-report-read'
+                    elif report and 'OWNED_REPORT_DELTA' not in output(report_read_id).get('text', ''):
+                        raise AssertionError('Owned report fields were not delivered through exact source reader')
+                    elif reviewed_id in outputs:
                         assert output(reviewed_id).get('reviewed') is True, output(reviewed_id)
                         events = [message('Native heartbeat read the checkpoint and selected the verification; retained outcomes remain separate.')]
                         stage = 'heartbeat-final'
@@ -230,7 +240,10 @@ supports_websockets=false
         with socket.socket() as address:
             address.bind(('127.0.0.1', 0)); port = address.getsockname()[1]
         native_log = (j.root/'actual-native.log').open('w+')
-        native = subprocess.Popen([str(Path(native_binary).resolve()), '--listen', f'ws://127.0.0.1:{port}'],
+        native_command = [str(Path(native_binary).resolve())]
+        if native_cli:
+            native_command.append('app-server')
+        native = subprocess.Popen([*native_command, '--listen', f'ws://127.0.0.1:{port}'],
             cwd=j.root, env={'PATH': os.environ['PATH'], 'HOME': str(j.root),
                 'CODEX_HOME': str(native_home), 'RUST_LOG': 'warn'}, stdout=native_log, stderr=native_log)
         deadline = time.monotonic()+10
@@ -288,9 +301,15 @@ supports_websockets=false
             'provider_attempts_per_execution': 6, 'max_request_bytes': 2*1024*1024,
             'execution_seconds': 60, 'expires_at_unix_ms': expiry}
         j.read('heartbeat', 'configure-resources', str(paused['generation']), json.dumps(resources))
+        report_sources = []
+        if reports:
+            report_path = j.root/'learning-report.json'
+            report_path.write_text(json.dumps({'clock': 1, 'offers': [{'delta': 'OWNED_REPORT_DELTA'}],
+                'excluded': 'PRIVATE_REPORT_FIELD'}))
+            report_sources = [{'id': 'learning', 'path': str(report_path), 'pointers': ['/offers']}]
         j.read('heartbeat', 'configure-producer', str(paused['generation']), json.dumps({
             'interval_seconds': 30, 'max_checks': 3, 'expires_at_unix_ms': expiry,
-            'matrix_replies': False, 'workflows': True}))
+            'matrix_replies': False, 'workflows': True, **({'reports': report_sources} if reports else {})}))
         j.read('heartbeat', 'resume', str(paused['generation']))
         retained_child = None
         if busy:
@@ -321,8 +340,12 @@ supports_websockets=false
         final = j.read('heartbeat', 'status')['result']
         assert final['admission_paused'] and final['resources']['reserved_provider_attempts'] == expected_reserved
         assert batch is not None and len(requests) <= 24, requests
+        if reports:
+            assert any(r['stage'] == 'heartbeat-owned-report-read' for r in requests)
         assert j.row('SELECT count(*) FROM conversation_inputs') == [(2,)]
         print(json.dumps({'result': 'PASS', 'native_sha256': file_sha256(native_binary),
+            'native_entrypoint': 'complete-cli' if native_cli else 'standalone-app-server',
+            'owned_report_read': reports,
             'requests': requests, 'reserved_attempts': expected_reserved, 'busy_known_unsent_recovered': busy, 'live_provider_calls': 0,
             'pause_observations': status['cancellation_observations'], 'ordinary_contact_after_pause': True,
             'evidence': 'Actual Core, local HTTP stand-in, real wrapper/controller/store, bounded root/child, source read/canonical report, exact active-root pause and subsequent ordinary contact. Not receiving/model/device acceptance.'}))
@@ -349,4 +372,5 @@ supports_websockets=false
 
 
 if __name__ == '__main__':
-    qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:])
+    qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:],
+        native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:])
