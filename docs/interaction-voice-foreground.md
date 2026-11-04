@@ -1786,3 +1786,10 @@ model also supports that system voice in its initial session configuration.
 Matching this voice ID does not imply identical prosody, rate or pitch between
 TTS and realtime models. A voice change applies to newly opened provider
 sessions and must not interrupt an existing human conversation.
+
+The4November human listening feedback also requests brief, efficient, poetic
+speech. The shared avatar instruction now defaults to one short sentence, at
+most two unless asked for more, with useful content first and a light poetic
+touch that adds meaning rather than length. It avoids repeated acknowledgments,
+recaps and filler. This is prompting, not a guarantee of provider compliance or
+a truncation rule for tool arguments or canonical work results.
