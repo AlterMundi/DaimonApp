@@ -151,6 +151,8 @@ def qualify(binary, *, funded=False):
             ("message-selector", {"message_id": request["id"], "receive_after": 0}),
             ("oversized-cursor", {"request_id": request["id"], "receive_after": 2**53}),
             ("boolean-cursor", {"request_id": request["id"], "receive_after": True}),
+            ("both-cursors", {"request_id": request["id"], "receive_after": 0, "receive_next": True}),
+            ("message-next", {"message_id": request["id"], "receive_next": True}),
         ):
             j.call("route-reject-selected-read-" + label, "matrix_status", invalid, ok=False)
         assert reads == []
@@ -222,8 +224,10 @@ def qualify(binary, *, funded=False):
         assert inspected["inspection"]["native_input"] is False
         cursor = inspected["inspection"]["next_cursor"]
         empty = j.call("route-inspect-selected-matrix-after-cursor", "matrix_status", {
-            "request_id": request["id"], "receive_after": cursor,
+            "request_id": request["id"], "receive_next": True,
         })
+        assert empty["inspection"]["after"] == cursor
+        assert empty["inspection_cursor"] == cursor
         assert empty["inspection"]["canonical_replies"] == 0
         assert len(observed) == 1  # No additional authored send.
         assert reads == [request["id"], request["id"]]
@@ -260,8 +264,9 @@ def qualify(binary, *, funded=False):
             response_to=(sdk.receiver, sent["message_id"]),
         )
         ordinary = j.call("route-inspect-ordinary-native-speech", "matrix_status", {
-            "request_id": request["id"], "receive_after": cursor,
+            "request_id": request["id"], "receive_next": True,
         })
+        assert ordinary["inspection"]["after"] == cursor
         assert ordinary["inspection"]["canonical_replies"] == 1
         spoken_result = next(row["result"] for row in ordinary["results"]
                              if row["result"]["message_id"] == spoken["message_id"])

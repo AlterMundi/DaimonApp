@@ -312,3 +312,19 @@ GPT-Live client delegation as an architectural challenger to the selected Gemini
 foreground, separates Instant's text/tool capabilities from native audio, and
 retains credit/access and phone qualification gaps. This research does not switch
 providers, replace Sol, close milestones or authorize a new account/billing change.
+
+### Retained selected Matrix reply progress
+
+`matrix_status` remains an explicit, one-page operation. Select `request_id` and
+`receive_next: true` to continue from that original's saved global inbox cursor,
+or use `receive_after` for an explicit historical read. These selectors are
+mutually exclusive. The existing request row stores progress; verified canonical
+replies and cursor commit in one SQLite transaction. A failed page commits
+neither. Only pages covering the saved cursor advance progress; explicit reads
+ahead do not skip an unread gap. Existing rows migrate to cursor zero without
+losing replies. The active tool owner is rechecked after SDK I/O, and
+acknowledgment is rechecked at commit. Historical replies remain readable without
+reviving work. No scheduler, peer activation, automatic input, new queue or
+inference is enabled. This is a resumable selected-reply primitive for #452 /
+Matrix #310/#437; new unsolicited inbox attention and its resource admission
+remain unfinished.

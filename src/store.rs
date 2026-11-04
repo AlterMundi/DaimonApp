@@ -38,7 +38,7 @@ pub(crate) use live_context::LiveContextCommand;
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
-pub use matrix::{MatrixAuthor, MatrixReturn, MatrixSubmission};
+pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routing;
 mod session_requests;
 mod workflows;
