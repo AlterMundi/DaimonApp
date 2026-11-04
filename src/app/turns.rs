@@ -924,6 +924,17 @@ pub(super) async fn process_turn(
                                 });
                                 Ok(CodexEventOutcome::Approval(receiver))
                             }
+                            CodexEvent::NativeInputDeferred => {
+                                shared.store.heartbeat_native_not_submitted(turn_id)?;
+                                if let (Some(id),Some(attempt))=(workflow_return.as_deref(),workflow_return_attempt) {
+                                    shared.store.workflow_native_outcome_attempt(id,attempt,"retained_unsent",None)?;
+                                }
+                                shared.store.native_collection_rejected(turn_id)?;
+                                if let Some(id)=interaction.as_deref() {
+                                    shared.store.heartbeat_workflow_deferred(id,requester_user_id,turn_id)?;
+                                }
+                                Ok(CodexEventOutcome::None)
+                            }
                             CodexEvent::NativeInputRejected => {
                                 shared.store.heartbeat_native_not_submitted(turn_id)?;
                                 if let (Some(id),Some(attempt))=(workflow_return.as_deref(),workflow_return_attempt) {shared.store.workflow_native_outcome_attempt(id,attempt,"rejected",None)?;}
@@ -1829,6 +1840,7 @@ impl LiveTurnSink {
             | CodexEvent::UserInputRequest { .. }
             | CodexEvent::DynamicToolRequest { .. }
             | CodexEvent::NativeInputRejected
+            | CodexEvent::NativeInputDeferred
             | CodexEvent::NativeInternalReturnDetached { .. }
             | CodexEvent::NativeInputAccepted(_)
             | CodexEvent::NativeSteerAccepted { .. }

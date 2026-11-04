@@ -232,6 +232,8 @@ pub enum CodexEvent {
         turn_id: String,
     },
     NativeInputRejected,
+    /// Atomic idle admission confirmed capacity contention without submission.
+    NativeInputDeferred,
     NativeTurnSubmitting,
     /// Transactional ownership handover before any new packet joins a writer.
     NativeExternalInputSubmitting,
@@ -477,6 +479,16 @@ struct RpcError {
     message: String,
     #[serde(default)]
     data: Option<Value>,
+}
+fn idle_capacity_rejection(error: &RpcError) -> bool {
+    error.code == Some(-32600)
+        && error.data.as_ref().is_some_and(|data| {
+            data["submitted"] == false
+                && matches!(
+                    data["reason"].as_str(),
+                    Some("notIdle" | "pendingTriggerTurn")
+                )
+        })
 }
 impl std::fmt::Display for RpcError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1874,7 +1886,12 @@ where
                     }
                 } else if Some(id)==turn_request_id{
                     if let Some(error)=error{
-                        if matches!(error.code,Some(-32602..=-32600)) { let _=on_event(CodexEvent::NativeInputRejected).await?; }
+                        if idle_only && idle_capacity_rejection(&error) {
+                            initial_write_possible=false;
+                            let _=on_event(CodexEvent::NativeInputDeferred).await?;
+                        } else if matches!(error.code,Some(-32602..=-32600)) {
+                            let _=on_event(CodexEvent::NativeInputRejected).await?;
+                        }
                         for steer in initial_steers.drain(..) {
                             let _=steer.response.send(steer_response("",None,Some(&error)));
                         }
@@ -2611,7 +2628,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -3953,14 +3970,74 @@ mod tests {
                 deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
             }),
             true,
+            None,
         )
         .await;
     }
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn heartbeat_idle_capacity_refusal_is_known_unsent_without_fallback() {
+        for reason in ["notIdle", "pendingTriggerTurn"] {
+            heartbeat_inference_fixture(
+                Some(NativeInferenceAllowance {
+                    max_provider_attempts: 2,
+                    max_request_bytes: 1024,
+                    deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
+                }),
+                true,
+                Some(reason),
+            )
+            .await;
+        }
+    }
+
+    #[test]
+    fn heartbeat_capacity_requires_exact_native_no_submission_evidence() {
+        for (code, data, expected) in [
+            (
+                Some(-32600),
+                json!({"reason":"notIdle","submitted":false}),
+                true,
+            ),
+            (
+                Some(-32600),
+                json!({"reason":"pendingTriggerTurn","submitted":false}),
+                true,
+            ),
+            (
+                Some(-32600),
+                json!({"reason":"notIdle","submitted":true}),
+                false,
+            ),
+            (Some(-32600), json!({"reason":"notIdle"}), false),
+            (
+                Some(-32600),
+                json!({"reason":"planMode","submitted":false}),
+                false,
+            ),
+            (
+                Some(-32601),
+                json!({"reason":"notIdle","submitted":false}),
+                false,
+            ),
+            (None, Value::Null, false),
+        ] {
+            assert_eq!(
+                idle_capacity_rejection(&RpcError {
+                    code,
+                    message: "busy-looking text cannot select recovery".into(),
+                    data: Some(data)
+                }),
+                expected
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn heartbeat_idle_only_requires_reservation_before_native_write() {
-        heartbeat_inference_fixture(None, false).await;
+        heartbeat_inference_fixture(None, false, None).await;
         heartbeat_inference_fixture(
             Some(NativeInferenceAllowance {
                 max_provider_attempts: 2,
@@ -3968,6 +4045,7 @@ mod tests {
                 deadline_unix_ms: 1,
             }),
             false,
+            None,
         )
         .await;
     }
@@ -3976,6 +4054,7 @@ mod tests {
     async fn heartbeat_inference_fixture(
         allowance: Option<NativeInferenceAllowance>,
         expected_send: bool,
+        capacity_reason: Option<&'static str>,
     ) {
         let root = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4003,7 +4082,11 @@ mod tests {
                         assert_eq!(request["params"]["turn"]["input"],json!([]));assert_eq!(request["params"]["turn"]["toolOutput"]["name"],"heartbeat_attention");
                         assert_eq!(request["params"]["allowance"]["maxProviderAttempts"],2);
                         assert_eq!(request["params"]["allowance"]["maxRequestBytes"],1024);
-                        socket.send(WsMessage::Text(json!({"id":request["id"],"error":{"code":-32601,"message":"Unsupported method"}}).to_string().into())).await.unwrap();
+                        let error = match capacity_reason {
+                            Some(reason) => json!({"code":-32600,"message":"idle-only turn was not submitted","data":{"reason":reason,"submitted":false}}),
+                            None => json!({"code":-32601,"message":"Unsupported method"}),
+                        };
+                        socket.send(WsMessage::Text(json!({"id":request["id"],"error":error}).to_string().into())).await.unwrap();
                     }
                     other=>panic!("No start-or-steer fallback or goal activation allowed: {other:?}"),
                 }
@@ -4025,6 +4108,8 @@ mod tests {
         let (_sender, receiver) = mpsc::unbounded_channel();
         let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = rejected.clone();
+        let deferred = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deferred_observation = deferred.clone();
         let result = runner
             .run_turn(
                 &session_with_sandbox("read-only"),
@@ -4034,6 +4119,9 @@ mod tests {
                 move |event| {
                     if matches!(event, CodexEvent::NativeInputRejected) {
                         observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if matches!(event, CodexEvent::NativeInputDeferred) {
+                        deferred_observation.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                     let allocation = allowance.clone();
                     async move {
@@ -4051,9 +4139,13 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             rejected.load(std::sync::atomic::Ordering::SeqCst),
-            expected_send
+            expected_send && capacity_reason.is_none()
         );
-        if !expected_send {
+        assert_eq!(
+            deferred.load(std::sync::atomic::Ordering::SeqCst),
+            capacity_reason.is_some()
+        );
+        if !expected_send || capacity_reason.is_some() {
             assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
         }
         server.await.unwrap();

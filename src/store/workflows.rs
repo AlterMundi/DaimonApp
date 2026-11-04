@@ -411,6 +411,27 @@ pub(in crate::store) fn resume_attention_on(
 }
 
 impl Store {
+    /// Only the exact claimed child, with native proof of no submission, may
+    /// return to the existing known-unsent recovery lane. Never downgrade ACKs.
+    pub(crate) fn heartbeat_workflow_deferred(
+        &self,
+        id: &str,
+        human: i64,
+        local: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let proven: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN bot_state b ON b.key='heartbeat_execution:'||?3 WHERE i.id=?1 AND s.human_id=?2 AND i.phase='submitting' AND json_extract(i.doc,'$.local_turn')=?3 AND json_extract(i.doc,'$.native_turn') IS NULL AND json_extract(b.value,'$.owner') IS NOT NULL AND json_extract(b.value,'$.physical') IS NULL AND json_extract(b.value,'$.phase')='terminal' AND json_extract(b.value,'$.terminal_status')='not_submitted')",params![id,human,local],|r|r.get(0))?;
+        anyhow::ensure!(proven, "No exact unsubmitted delegated execution proof");
+        let mut i = instruction_on(&tx, human, id)?;
+        i.phase = crate::interaction::TransportPhase::RetainedUnsent;
+        tx.execute(
+            "UPDATE interaction_instructions SET phase='retained_unsent',doc=?2 WHERE id=?1",
+            params![id, serde_json::to_string(&i)?],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     pub(super) fn init_workflows(&self) -> Result<()> {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
             "CREATE TABLE IF NOT EXISTS interaction_workflows(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,source_key TEXT NOT NULL,phase TEXT NOT NULL,doc TEXT NOT NULL,UNIQUE(human_id,entry_chat,entry_topic,source_key));")?;
@@ -3926,6 +3947,63 @@ mod tests {
         assert_eq!(
             s.interaction_instruction(&i.id, 100).unwrap().unwrap().text,
             i.text
+        );
+    }
+
+    #[test]
+    fn heartbeat_busy_child_requires_exact_unsent_proof_and_preserves_the_account() {
+        use crate::store::HeartbeatCommand;
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let first = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, first, P::Submitting, None)
+            .unwrap();
+        s.heartbeat_claim_workflow_delegate(first, 100, i.target, &i.id)
+            .unwrap();
+        assert!(s.heartbeat_workflow_deferred(&i.id, 100, first).is_err());
+        s.heartbeat_native_not_submitted(first).unwrap();
+        assert!(s.heartbeat_workflow_deferred(&i.id, 101, first).is_err());
+        s.heartbeat_workflow_deferred(&i.id, 100, first).unwrap();
+        assert_eq!(
+            s.interaction_instruction(&i.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            P::RetainedUnsent
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            6
+        );
+        assert!(s.interaction_recover(&i.id, 100).unwrap());
+        let second = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, second, P::Submitting, None)
+            .unwrap();
+        s.heartbeat_claim_workflow_delegate(second, 100, i.target, &i.id)
+            .unwrap();
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]["reserved_provider_attempts"],
+            9
+        );
+        s.heartbeat_native_started(second, "accepted-child")
+            .unwrap();
+        s.interaction_transport(&i.id, 100, second, P::Accepted, Some("accepted-child"))
+            .unwrap();
+        assert!(s.heartbeat_native_not_submitted(second).is_err());
+        assert!(s.heartbeat_workflow_deferred(&i.id, 100, second).is_err());
+        assert!(!s.interaction_recover(&i.id, 100).unwrap());
+        assert_eq!(
+            s.interaction_instruction(&i.id, 100)
+                .unwrap()
+                .unwrap()
+                .native_turn
+                .as_deref(),
+            Some("accepted-child")
         );
     }
 

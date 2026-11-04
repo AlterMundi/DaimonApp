@@ -69,7 +69,7 @@ all live cancellation targets and prunes only terminal/transferred details.
 
 Source qualification includes conserved reservations, duplicate-claim refusal,
 pause before/after child admission, bounded result returns and capacity retention.
-The full text suite passes521 tests (one existing ignored), including the explicit
+The full text suite passes524 tests (one existing ignored), including the explicit
 Resume regressions below. The routing queue
 regression is local qualification, not a native routed-worker journey or live
 receiving acceptance. Explicit Resume now advances the retained workflow's attention generation only
@@ -80,9 +80,21 @@ It neither allocates resources nor creates/retries an input. Focused tests prove
 the same queued step can claim its fresh conserved allocation after Resume and
 that replacing the native entry cannot revive an old workflow. Scheduling that
 known-unsent work and the actual native busy-worker journey remain unqualified.
-Known-unsent busy recovery, typed attachments, positive native agent/reviewer
-allocation, external-tool inference, the finite producer and receiving acceptance
-remain unfinished; do not activate this increment as a complete heartbeat.
+The bridge now distinguishes the native idle-admission error's exact
+`submitted:false` plus `notIdle`/`pendingTriggerTurn` reasons from a permanent
+rejection or uncertain delivery. Only an idle-only bounded request selects this
+known-unsent outcome. It retires that execution's unsubmitted ownership without
+refunding its reservation. Workflow returns use the existing finite retry/backoff
+journal; a delegated step enters the existing retained-unsent recovery lane only
+with its exact unsubmitted child-ownership proof. Unsupported methods, plan mode,
+missing proof and uncertain/accepted inputs do not select capacity recovery.
+Native socket regressions verify both contention reasons without start/steer
+fallback; store regressions preserve the same instruction/account across recovery
+and refuse to downgrade an ACK. Actual combined native/receiver acceptance and
+automatic queued-child recovery remain unqualified. Typed attachments, positive
+native agent/reviewer allocation, external-tool inference, the finite producer
+and receiving acceptance remain unfinished; do not activate this increment as a
+complete heartbeat.
 
 
 Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
