@@ -1,7 +1,11 @@
 //! Persistent scoped attention control. No scheduler, inference or goal mutation.
 use super::*;
 mod executions;
+mod resources;
 pub(super) use executions::claim_on as execution_claim_on;
+pub use resources::HeartbeatResources;
+#[cfg(test)]
+pub(in crate::store) use resources::test_contract;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -10,7 +14,13 @@ use serde_json::{Value, json};
 pub enum HeartbeatCommand {
     Status,
     Pause,
-    Resume { generation: u64 },
+    Resume {
+        generation: u64,
+    },
+    ConfigureResources {
+        generation: u64,
+        contract: HeartbeatResources,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +80,22 @@ impl Store {
                 changed_at: String::new(),
             });
         let selected = match command {
+            HeartbeatCommand::ConfigureResources {
+                generation,
+                contract,
+            } => {
+                anyhow::ensure!(
+                    control.paused && control.generation == generation,
+                    "Pause and select the current heartbeat generation before configuring resources"
+                );
+                anyhow::ensure!(
+                    !executions::unresolved_on(&tx, human, entry)?,
+                    "Heartbeat execution is unresolved; no resource account was created"
+                );
+                resources::configure_on(&tx, session, human, contract)?;
+                None
+            }
+
             HeartbeatCommand::Status => None,
             HeartbeatCommand::Pause => Some(true),
             HeartbeatCommand::Resume { generation } => {
@@ -96,11 +122,14 @@ impl Store {
             }
         }
         tx.commit()?;
+        // A damaged resource record must never roll back the pause fence.
+        let resources = resources::status_on(&conn, session, human)
+            .unwrap_or_else(|_| json!({"state":"unavailable"}));
         // This release supplies the persistent admission control only. Do not
         // pretend its flag interrupts automatic inference that is not yet wired.
         Ok(
             json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,
-            "attention_engine":"not_implemented","owned_execution_control":"not_implemented","scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
+            "attention_engine":"not_implemented","owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
         )
     }
 }

@@ -26,10 +26,16 @@ fn selected(conn: &Connection, human: i64, entry: SessionKey) -> Result<Vec<Valu
         .collect()
 }
 
+pub(super) fn unresolved_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<bool> {
+    Ok(selected(conn, human, entry)?
+        .iter()
+        .any(|r| matches!(r["phase"].as_str(), Some("owned" | "stopping"))))
+}
+
 /// Only a fresh serialized entry-worker turn may claim ownership. An internal
 /// return steered into an existing turn never establishes cancellation rights.
 pub(in crate::store) fn claim_on(
-    conn: &Connection,
+    conn: &rusqlite::Transaction<'_>,
     local: i64,
     human: i64,
     entry: SessionKey,
@@ -54,6 +60,8 @@ pub(in crate::store) fn claim_on(
             .any(|r| matches!(r["phase"].as_str(), Some("owned" | "stopping"))),
         "An unresolved heartbeat execution already exists"
     );
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let allowance = super::resources::reserve_on(conn, session, human)?;
     // Keep the live ownership plus fifteen previous terminal/transferred
     // records. Never delete native turns, source receipts or an uncertain owner.
     for old in retained.iter().skip(15) {
@@ -69,7 +77,7 @@ pub(in crate::store) fn claim_on(
     save(
         conn,
         local,
-        &json!({"local":local,"generation":generation,"source":source,"native":native,"physical":null,"phase":"owned","terminal_status":null}),
+        &json!({"local":local,"generation":generation,"source":source,"native":native,"physical":null,"phase":"owned","terminal_status":null,"inference_allowance":allowance}),
     )?;
     conn.execute_batch("CREATE TRIGGER IF NOT EXISTS heartbeat_execution_turn_deleted AFTER DELETE ON turns BEGIN DELETE FROM bot_state WHERE key='heartbeat_execution:'||OLD.id; END;")?;
     Ok(())
@@ -201,6 +209,16 @@ mod tests {
             .heartbeat_control(100, entry, HeartbeatCommand::Pause)
             .unwrap();
         store
+            .heartbeat_control(
+                100,
+                entry,
+                HeartbeatCommand::ConfigureResources {
+                    generation: 1,
+                    contract: super::super::test_contract(),
+                },
+            )
+            .unwrap();
+        store
             .heartbeat_control(100, entry, HeartbeatCommand::Resume { generation: 1 })
             .unwrap();
         let session = store.get_session(entry).unwrap().unwrap();
@@ -312,6 +330,10 @@ mod tests {
         own(&s, &entry, first).unwrap();
         let second = fresh(&s, &entry, "");
         assert!(own(&s, &entry, second).is_err());
+        let status = s
+            .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+            .unwrap();
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 3);
         s.heartbeat_native_not_submitted(first).unwrap();
         own(&s, &entry, second).unwrap();
         assert!(
@@ -328,6 +350,8 @@ mod tests {
             s.heartbeat_native_not_submitted(local).unwrap();
         }
         let conn = s.conn.lock().unwrap();
+        let resources = super::super::resources::status_on(&conn, entry.id, 100).unwrap();
+        assert_eq!(resources["reserved_provider_attempts"], 72);
         assert_eq!(
             conn.query_row(
                 "SELECT count(*) FROM bot_state WHERE key LIKE 'heartbeat_execution:%'",

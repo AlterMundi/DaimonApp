@@ -62,6 +62,21 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("configure-resources ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected heartbeat configure-resources GENERATION CONTRACT_JSON")?;
+        return execute(
+            app,
+            human,
+            super::routing::profile(&app.shared)?.entry(),
+            HeartbeatCommand::ConfigureResources {
+                generation: generation.parse()?,
+                contract: serde_json::from_str::<crate::store::HeartbeatResources>(raw)?,
+            },
+        )
+        .await;
+    }
     let fields = args.split_whitespace().collect::<Vec<_>>();
     let command = match fields.as_slice() {
         ["status"] => HeartbeatCommand::Status,
@@ -69,7 +84,9 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         ["resume", generation] => HeartbeatCommand::Resume {
             generation: generation.parse()?,
         },
-        _ => bail!("Expected heartbeat status|pause|resume GENERATION"),
+        _ => bail!(
+            "Expected heartbeat status|pause|resume GENERATION|configure-resources GENERATION CONTRACT_JSON"
+        ),
     };
     execute(
         app,

@@ -37,6 +37,22 @@ for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
 ## Shared attention backend —4November2026
 
+The next source increment reserves a complete execution's maximum provider
+attempts in the SAME SQLite transaction that claims its fresh native writer.
+The parent account is independent of the sixteen retained detail records.
+Pause/resume, restart, source succession and detail pruning do not replenish it;
+unknown or known-unsent outcomes stay conservatively reserved. An initial
+`configure_resources` uses the shared owner handler while paused at the exact
+current generation; a new contract UUID cannot overwrite an existing account.
+The contract supplies total/per-execution attempts, complete request bytes,
+execution seconds and a fixed expiry. Status labels these as reserved request
+attempts, never token or monetary spend. Configuration neither resumes attention
+nor changes native goals or a provider account. No receiving account is created
+by this source work. Native bounded-turn admission, descendant/tool allocation
+and producer/receiving acceptance remain unfinished; do not activate this
+increment as a complete heartbeat.
+
+
 Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
 authorized session progress/results, presentation and iteration through Avatar,
 and selected experience/discovery evidence for Bitácora. The continuing native

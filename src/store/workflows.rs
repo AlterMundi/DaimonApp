@@ -1166,6 +1166,15 @@ mod tests {
         s.heartbeat_control(
             100,
             entry.key,
+            crate::store::HeartbeatCommand::ConfigureResources {
+                generation: 1,
+                contract: crate::store::heartbeat::test_contract(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            entry.key,
             crate::store::HeartbeatCommand::Resume { generation: 1 },
         )
         .unwrap();
@@ -1278,6 +1287,15 @@ mod tests {
             let conn = s.conn.lock().unwrap();
             conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1", [&delivery.id]).unwrap();
         }
+        s.heartbeat_control(
+            100,
+            entry.key,
+            crate::store::HeartbeatCommand::ConfigureResources {
+                generation: 1,
+                contract: crate::store::heartbeat::test_contract(),
+            },
+        )
+        .unwrap();
         s.heartbeat_control(
             100,
             entry.key,
