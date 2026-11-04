@@ -1,8 +1,8 @@
 name: Interaction native SDK qualification
 on:
-  pull_request:
-    paths:
-      - .github/workflows/native-sdk-qualification.yml
+  # Qualify each exact native pin once through the existing manual route.
+  # PR path filters compare the cumulative diff, causing App-only commits to
+  # cancel/rebuild the same immutable native source repeatedly.
   workflow_dispatch:
 permissions:
   contents: read

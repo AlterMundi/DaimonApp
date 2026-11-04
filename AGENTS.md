@@ -178,6 +178,13 @@ changes retain their native checks. In particular timing_ui.js is exercised by
 the dashboard job. Reuse exact unchanged native source qualification when shipping
 a web-only delta; do not turn a filename containing voice into native evidence.
 
+Qualify an exact native SDK pin with the existing manually dispatched
+`native-sdk-qualification.yml` workflow. Record the native SHA, run and outcome
+with the caller's qualification. Dispatch when the pin or its native qualification
+contract changes; preserve a currently running exact-pin run and reuse its valid
+result for later App-only commits. App changes still run their own affected CI.
+Do not declare native qualification complete from the caller's checks alone.
+
 
 Enabling native_workflow_returns/native_routed_returns changes the dashboard's
 receiving-profile fingerprint even when only the listener is being deployed.
