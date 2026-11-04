@@ -480,6 +480,13 @@ submitting/uncertain operation; exact ownership, interruption and terminal
 observation must close that race before automatic attention is selected. These
 checks do not establish provider quiescence.
 
+For owned heartbeat collection, native `thread/status/changed: idle` is not a
+terminal receipt. Current Core emits idle before the exact `turn/completed`.
+The collector waits for that physical turn's terminal event, releasing ownership
+only from observed terminal state. The ordinary legacy idle fallback is unchanged.
+Application context and bounded internal work must both appear in the first
+provider request; a context-only sampling pass must not spend the work's allowance.
+
 ### Exact heartbeat execution ownership and scoped pause
 
 Only the serialized entry worker may link a tagged return to a fresh empty local
@@ -603,3 +610,15 @@ The current source qualification is not receiving deployment or device acceptanc
 DMK consolidation, Source review, assigned-task intake, Bitácora/Avatar handoff,
 combined actual native delegation/recovery and real audio acceptance remain
 separate full-roadmap work. No Instant/provider selection is implied.
+
+
+The opt-in `python3 tests/heartbeat_native_io.py APP_BINARY NATIVE_APP_SERVER`
+qualifies the real wrapper/controller/store and real Core against a finite local
+Responses stand-in, with Telegram disabled and no real provider account. It
+materializes test-only worker contexts through the supported native API, lets the
+wrapper create the integrating thread with its actual dynamic-tool profile, and
+uses explicit final-answer phases. It covers the first useful bounded request,
+canonical source read/review, reserved workflow child, recurrence, an active
+provider request held during exact owner pause, and ordinary contact afterward
+without replenishing the account. It owns/terminates its temporary servers and
+state; this is not a live model, phone or receiving deployment acceptance.

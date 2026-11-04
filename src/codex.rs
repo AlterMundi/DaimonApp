@@ -1938,6 +1938,12 @@ where
               }
               RpcMessage::Notification{method,params}=>{
                 if !event_matches_run(&thread_id,active_turn_id.as_deref(),&method,&params,shared_app_server){continue;}
+                // Native idle precedes turn/completed on current Core. Owned
+                // heartbeat work needs that exact terminal receipt; the legacy
+                // idle fallback would close collection and strand ownership.
+                if idle_only && method == "thread/status/changed" && params["status"]["type"]=="idle" {
+                    continue;
+                }
                 if method == "thread/goal/updated" {
                     goal_snapshot_request_id=None;
                     if let Some(goal)=goals::parse_goal(&params,&thread_id)? {
@@ -3971,6 +3977,7 @@ mod tests {
             }),
             true,
             None,
+            false,
         )
         .await;
     }
@@ -3987,6 +3994,7 @@ mod tests {
                 }),
                 true,
                 Some(reason),
+                false,
             )
             .await;
         }
@@ -4037,7 +4045,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn heartbeat_idle_only_requires_reservation_before_native_write() {
-        heartbeat_inference_fixture(None, false, None).await;
+        heartbeat_inference_fixture(None, false, None, false).await;
         heartbeat_inference_fixture(
             Some(NativeInferenceAllowance {
                 max_provider_attempts: 2,
@@ -4046,6 +4054,23 @@ mod tests {
             }),
             false,
             None,
+            false,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn heartbeat_owned_waits_for_terminal_after_native_idle() {
+        heartbeat_inference_fixture(
+            Some(NativeInferenceAllowance {
+                max_provider_attempts: 2,
+                max_request_bytes: 1024,
+                deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
+            }),
+            true,
+            None,
+            true,
         )
         .await;
     }
@@ -4055,6 +4080,7 @@ mod tests {
         allowance: Option<NativeInferenceAllowance>,
         expected_send: bool,
         capacity_reason: Option<&'static str>,
+        accepted: bool,
     ) {
         let root = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4082,6 +4108,14 @@ mod tests {
                         assert_eq!(request["params"]["turn"]["input"],json!([]));assert_eq!(request["params"]["turn"]["toolOutput"]["name"],"heartbeat_attention");
                         assert_eq!(request["params"]["allowance"]["maxProviderAttempts"],2);
                         assert_eq!(request["params"]["allowance"]["maxRequestBytes"],1024);
+                        if accepted {
+                            socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"turn":{"id":"exact-owned-turn"}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"item/completed","params":{"threadId":"idle-only-thread","turnId":"exact-owned-turn","item":{"type":"agentMessage","id":"exact-final","phase":"final_answer","text":"Owned result"}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"thread/status/changed","params":{"threadId":"idle-only-thread","status":{"type":"idle"}}}).to_string().into())).await.unwrap();
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            let _=socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"idle-only-thread","turn":{"id":"exact-owned-turn","status":"completed"}}}).to_string().into())).await;
+                            continue;
+                        }
                         let error = match capacity_reason {
                             Some(reason) => json!({"code":-32600,"message":"idle-only turn was not submitted","data":{"reason":reason,"submitted":false}}),
                             None => json!({"code":-32601,"message":"Unsupported method"}),
@@ -4110,6 +4144,8 @@ mod tests {
         let observed = rejected.clone();
         let deferred = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let deferred_observation = deferred.clone();
+        let terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminal_observation = terminal.clone();
         let result = runner
             .run_turn(
                 &session_with_sandbox("read-only"),
@@ -4117,6 +4153,9 @@ mod tests {
                 CancellationToken::new(),
                 receiver,
                 move |event| {
+                    if matches!(&event, CodexEvent::NativeTurnTerminal {id,status} if id=="exact-owned-turn" && status=="completed") {
+                        terminal_observation.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     if matches!(event, CodexEvent::NativeInputRejected) {
                         observed.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
@@ -4136,10 +4175,11 @@ mod tests {
                 },
             )
             .await;
-        assert!(result.is_err());
+        assert_eq!(result.is_ok(), accepted);
+        assert_eq!(terminal.load(std::sync::atomic::Ordering::SeqCst), accepted);
         assert_eq!(
             rejected.load(std::sync::atomic::Ordering::SeqCst),
-            expected_send && capacity_reason.is_none()
+            expected_send && capacity_reason.is_none() && !accepted
         );
         assert_eq!(
             deferred.load(std::sync::atomic::Ordering::SeqCst),
