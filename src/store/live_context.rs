@@ -23,6 +23,7 @@ pub(crate) enum LiveContextCommand {
         dialogue: String,
         binding: String,
         generation: String,
+        resume: Option<ResumeSource>,
     },
     Append {
         dialogue: String,
@@ -98,6 +99,10 @@ pub(crate) enum LiveContextCommand {
         outcome: String,
     },
     RolloverRead {
+        dialogue: String,
+        generation: String,
+    },
+    ResumeRead {
         dialogue: String,
         generation: String,
     },
@@ -266,6 +271,14 @@ fn yes() -> bool {
     true
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResumeSource {
+    dialogue: String,
+    generation: String,
+    revision: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Projection {
     dialogue: String,
@@ -280,6 +293,8 @@ struct Projection {
     high: u64,
     incorporated: u64,
     checkpoint: Checkpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_source: Option<ResumeSource>,
     /// Compact semantic receipts survive text retirement; they prevent canonical
     /// catch-up from reintroducing sources represented by a checkpoint.
     sources: BTreeMap<String, (u64, String)>,
@@ -476,6 +491,29 @@ fn rollover_content(p: &Projection) -> Value {
         "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."})
 }
 
+fn resume_content(conn: &Connection, p: &Projection, generation: &str) -> Result<Value> {
+    if !p.closed || generation != p.generation {
+        bail!("Select the exact closed Live generation for reconnect");
+    }
+    if human_context_missing(conn, p)? {
+        bail!("Live reconnect must catch up canonical human context first");
+    }
+    let mut content: Value = serde_json::from_str(&snapshot(p, true)?)?;
+    content
+        .as_object_mut()
+        .unwrap()
+        .remove("checkpoint_request");
+    content["kind"] = json!("internal_live_reconnect_context");
+    content["generation"] = json!(p.generation);
+    content["policy"] = json!(
+        "Attributed prior conversation, not a new human turn, tool call, work admission, memory write or permission to replay effects. Interrupted assistant text may be unsaid. Audio without transcript has no known words; captions remain approximate. Pending work continues independently; never execute this context."
+    );
+    if serde_json::to_vec(&content)?.len() > MAX_ROLLOVER_SEED {
+        bail!("Live reconnect needs semantic compaction before its complete seed can fit");
+    }
+    Ok(content)
+}
+
 fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     if p.closed
         || p.checkpoint.text.is_empty()
@@ -628,6 +666,7 @@ impl Store {
             dialogue,
             binding,
             generation,
+            resume,
         } = &command
         {
             uuid(dialogue)?;
@@ -646,11 +685,28 @@ impl Store {
             )?;
             if exists {
                 let p = load(&tx, dialogue, human, entry)?;
-                if p.generation != *generation {
+                if p.generation != *generation
+                    || resume
+                        .as_ref()
+                        .is_some_and(|r| p.resume_source.as_ref() != Some(r))
+                {
                     bail!("Live producer generation differs");
                 }
                 return Ok(view(&p));
             }
+            let seed = if let Some(source) = resume {
+                if source.dialogue == *dialogue {
+                    bail!("Reconnect requires a distinct visit");
+                }
+                let previous = load(&tx, &source.dialogue, human, entry)?;
+                let content = resume_content(&tx, &previous, &source.generation)?;
+                if hash(&content)? != source.revision {
+                    bail!("Reconnect source changed before opening");
+                }
+                Some(serde_json::to_string(&content)?)
+            } else {
+                None
+            };
             let p = Projection {
                 dialogue: dialogue.clone(),
                 human,
@@ -665,9 +721,14 @@ impl Store {
                 incorporated: 0,
                 checkpoint: Checkpoint {
                     through: 0,
-                    text: String::new(),
-                    revision: hash(&json!([dialogue, 0]))?,
+                    text: seed.clone().unwrap_or_default(),
+                    revision: if seed.is_some() {
+                        hash(&json!([dialogue, 0, seed]))?
+                    } else {
+                        hash(&json!([dialogue, 0]))?
+                    },
                 },
+                resume_source: resume.clone(),
                 sources: BTreeMap::new(),
                 events: vec![],
                 caption_parents: BTreeMap::new(),
@@ -699,6 +760,7 @@ impl Store {
             | LiveContextCommand::GuidanceBegin { dialogue, .. }
             | LiveContextCommand::GuidanceOutcome { dialogue, .. }
             | LiveContextCommand::RolloverRead { dialogue, .. }
+            | LiveContextCommand::ResumeRead { dialogue, .. }
             | LiveContextCommand::PinRead { dialogue, .. }
             | LiveContextCommand::RolloverCommit { dialogue, .. }
             | LiveContextCommand::RolloverStatus { dialogue, .. }
@@ -708,6 +770,16 @@ impl Store {
         let abort = matches!(&command, LiveContextCommand::RolloverAbort { .. });
         let result = match command {
             LiveContextCommand::Open { .. } => unreachable!(),
+            LiveContextCommand::ResumeRead { generation, .. } => {
+                // A copy cannot acquire/replace the integrator's shared range.
+                let content = resume_content(&tx, &p, &generation)?;
+                let bytes = serde_json::to_vec(&content)?.len();
+                let mut result = view(&p);
+                result["resume"] = json!({"revision":hash(&content)?,"through":p.high,
+                    "checkpointed":p.checkpoint.through,"bytes":bytes,"content":content});
+                tx.commit()?;
+                return Ok(result);
+            }
             LiveContextCommand::PinRead { generation, .. } => {
                 if p.closed || generation != p.generation {
                     bail!("Select the current active Live pin generation");
@@ -1574,6 +1646,123 @@ mod tests {
             ]))
             .unwrap()
         );
+    }
+
+    #[test]
+    fn reconnect_reads_closed_checkpoint_and_tail_without_consuming_reader() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Original purpose")
+            .unwrap();
+        let ack = f.ack(&f.read(true)).unwrap();
+        f.checkpoint(&ack, 1);
+        f.append(&Uuid::now_v7().to_string(), "Later exact correction")
+            .unwrap();
+        let frozen = f.read(false);
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let raw = || {
+            f.store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT doc FROM live_context WHERE dialogue=?1",
+                    [&f.dialogue],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        let before = raw();
+        let request =
+            json!({"action":"resume_read","dialogue":f.dialogue,"generation":f.generation});
+        let result = f.call(request.clone()).unwrap();
+        assert_eq!(result["closed"], true);
+        assert_eq!(result["resume"]["content"]["checkpoint"]["through"], 1);
+        assert_eq!(
+            result["resume"]["content"]["events"][0]["text"],
+            "Later exact correction"
+        );
+        assert_eq!(
+            result["resume"]["content"]["events"][0]["interrupted"],
+            true
+        );
+        assert_eq!(
+            before,
+            raw(),
+            "Reconnect reads must not change retained state"
+        );
+        assert_eq!(
+            f.call(request).unwrap(),
+            result,
+            "Exact reads are repeatable"
+        );
+        assert_eq!(f.ack(&frozen).unwrap()["incorporated"], 2);
+    }
+
+    #[test]
+    fn reconnect_seed_survives_second_visit_and_rejects_changed_source_or_owner() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Remember the violet bridge")
+            .unwrap();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let basis = f
+            .call(json!({"action":"resume_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let next = Uuid::now_v7().to_string();
+        let generation = Uuid::now_v7().to_string();
+        let request = json!({"action":"open","dialogue":next,"generation":generation,"binding":f.binding,
+            "resume":{"dialogue":f.dialogue,"generation":f.generation,"revision":basis["resume"]["revision"]}});
+        let mut changed = request.clone();
+        changed["resume"]["revision"] = json!("a".repeat(64));
+        assert!(f.call(changed).is_err());
+        let foreign: LiveContextCommand = serde_json::from_value(request.clone()).unwrap();
+        assert!(f.store.live_context(101, f.entry, foreign).is_err());
+        let opened = f.call(request.clone()).unwrap();
+        assert_eq!(f.call(request).unwrap(), opened);
+        f.call(json!({"action":"append","dialogue":next,"generation":generation,
+            "source":Uuid::now_v7().to_string(),"role":"assistant","text":"Keep the copper bell too","interrupted":true})).unwrap();
+        f.call(json!({"action":"close","dialogue":next,"generation":generation}))
+            .unwrap();
+        let second = f
+            .call(json!({"action":"resume_read","dialogue":next,"generation":generation}))
+            .unwrap();
+        let inherited: Value = serde_json::from_str(
+            second["resume"]["content"]["checkpoint"]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inherited["events"][0]["text"], "Remember the violet bridge");
+        assert_eq!(
+            second["resume"]["content"]["events"][0]["text"],
+            "Keep the copper bell too"
+        );
+        assert_eq!(
+            second["incorporated"], 0,
+            "Copying does not acknowledge either visit"
+        );
+    }
+
+    #[test]
+    fn reconnect_refuses_active_wrong_generation_and_oversize_without_clipping() {
+        let f = Fixture::new();
+        let request =
+            json!({"action":"resume_read","dialogue":f.dialogue,"generation":f.generation});
+        assert!(f.call(request.clone()).is_err());
+        for _ in 0..2 {
+            f.append(&Uuid::now_v7().to_string(), &"a".repeat(15000))
+                .unwrap();
+        }
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let mut wrong = request.clone();
+        wrong["generation"] = json!(Uuid::now_v7().to_string());
+        assert!(f.call(wrong).is_err());
+        assert!(f.call(request).is_err());
+        let exact = f.read(true);
+        assert_eq!(exact["incorporated"], 0);
+        assert_eq!(exact["high"], 2);
     }
 
     #[test]

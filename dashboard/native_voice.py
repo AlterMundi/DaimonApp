@@ -118,6 +118,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
         await socket.accept()
         owner=None;bridge=acoustic=worker=stream=inbox=opening=incoming=actor=None
         session_seconds=300
+        owner_slots=asyncio.Semaphore(2)
         context_producer=None;caption_audio=None;caption_recovery=None;audio_released=False
         control_task=None;control_dirty=False
         output_queue=None;output_pending=deque();output_batch_pending=False
@@ -531,6 +532,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 human=session['human']
                 if human in active or len(active)>=2:raise ForegroundUnavailable('Native voice capacity occupied')
                 owner=human;active.add(owner)
+                async def context_owner(function,*args):
+                    # Shared bounded owner slots also cover pre-provider recovery.
+                    await actor()
+                    return await ForegroundBridge._run(owner_slots,function,*args)
                 # All preflight happens before provider opening and browser microphone acquisition.
                 capabilities=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                 if (capabilities.get('binding')!=meta['binding'] or capabilities.get('foreground_retention')!='v1'
@@ -580,10 +585,20 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {}),
                         'bounded':True,'can_delegate':False})
                 context={'display_name':config.get('daimon_name','Daimon'),'sources':sources,'source_data':True}
+                if reconnect is not None:
+                    if capabilities.get('foreground_resume')!='v1':
+                        raise ForegroundUnavailable('Selected listener cannot restore the prior voice context')
+                    context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
+                    context['prior_conversation']=await context_producer.resume_context(reconnect['previous_dialogue'])
                 identity=await asyncio.to_thread(being_identity,selected)
                 if identity is not None:context['being_identity']=identity
-                while len(json.dumps(context,ensure_ascii=False).encode())>32768:sources.pop()
+                while len(json.dumps(context,ensure_ascii=False).encode())>32768:
+                    if not sources:raise ForegroundUnavailable('Complete voice continuity needs semantic compaction')
+                    sources.pop()
                 await recheck()
+                if context_producer is None:
+                    context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
+                await context_producer.open()
                 if activity_mode=='manual':
                     worker=await Detector.open(detector_command,continuous=True,silence_end_millis=1600,
                         **({'session_seconds':session_seconds} if session_seconds>300 else {}))
@@ -607,17 +622,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                         **({'derived_caption':item['derived_caption']} if 'derived_caption' in item else {})} for item in history['items'][:4]]
                 bridge=ForegroundBridge(provider,stream,selected['cache_root'],meta['id'],meta['binding'],recheck,
                     speech_context=speech_context)
+                bridge._owners=owner_slots
                 bridge.max_pcm_bytes=session_seconds*32000
                 if session_seconds>300:bridge.max_captures=1024
                 bridge.idle_notify=notice_if_idle
-                async def context_owner(function,*args):
-                    # The same bounded owner slots remain held until actual
-                    # control completion, including final cleanup after audio
-                    # ownership has closed. No extra unbounded thread pool.
-                    await actor()
-                    return await bridge._run(bridge._owners,function,*args)
-                context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
-                await context_producer.open()
                 if selected.get('native_caption_recovery') is True:
                     async def recover_caption(value,result):
                         record=await bridge._run(bridge._owners,app.state.native_history.retain_caption,

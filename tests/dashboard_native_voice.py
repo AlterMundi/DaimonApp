@@ -99,7 +99,7 @@ class Owner(Receiver):
         self.input_id=Provider.input_id
         self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event();self.guidance_done=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1'}
+        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1','foreground_resume':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -146,6 +146,12 @@ class Owner(Receiver):
             self.assert_context_binding(body['binding'])
             context=self.contexts.setdefault(dialogue,{'dialogue':dialogue,'generation':generation,'closed':False,'sources':{}})
         else:context=self.contexts[dialogue]
+        if body['action']=='resume_read':
+            assert context['closed']
+            content={'dialogue':dialogue,'generation':generation,'checkpoint':{'text':'Prior purpose'},
+                'events':list(context['sources'].values())}
+            return {k:context[k] for k in ('dialogue','generation','closed')}|{'resume':{
+                'revision':'c'*64,'bytes':len(json.dumps(content,separators=(',',':')).encode()),'content':content}}
         if body['action']=='rollover_read':
             if not context['sources']:raise ProviderUnavailable('Synthetic checkpoint not yet ready')
             content={'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Keep conversation purpose and pending integrating references.'}}
@@ -253,6 +259,7 @@ class Mounted(unittest.TestCase):
                 outcome=ws.receive_json();self.assertEqual(outcome['type'],'ready',outcome)
                 ws.send_json({'type':'close'})
         report=json.loads(next(v.split('native_voice_reconnect ',1)[1] for v in logs.output if 'native_voice_reconnect ' in v))
+        self.assertEqual(Stream.opened[-1].context['prior_conversation']['content']['dialogue'],snapshot['previous_dialogue'])
         self.assertEqual(report['client_observation'],snapshot)
         self.assertTrue(report['previous_close_available'])
         self.assertEqual(report['previous_server_close']['id'],snapshot['previous_dialogue'])

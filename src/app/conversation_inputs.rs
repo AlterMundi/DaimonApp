@@ -142,6 +142,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 | crate::store::LiveContextCommand::GuidanceBegin { .. }
                 | crate::store::LiveContextCommand::GuidanceOutcome { .. }
                 | crate::store::LiveContextCommand::RolloverRead { .. }
+                | crate::store::LiveContextCommand::ResumeRead { .. }
                 | crate::store::LiveContextCommand::PinRead { .. }
                 | crate::store::LiveContextCommand::RolloverCommit { .. }
                 | crate::store::LiveContextCommand::RolloverStatus { .. }
@@ -159,6 +160,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             | crate::store::LiveContextCommand::GuidanceBegin { dialogue, .. }
             | crate::store::LiveContextCommand::GuidanceOutcome { dialogue, .. }
             | crate::store::LiveContextCommand::RolloverRead { dialogue, .. }
+            | crate::store::LiveContextCommand::ResumeRead { dialogue, .. }
             | crate::store::LiveContextCommand::PinRead { dialogue, .. }
             | crate::store::LiveContextCommand::RolloverCommit { dialogue, .. }
             | crate::store::LiveContextCommand::RolloverStatus { dialogue, .. }
@@ -253,6 +255,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         result["foreground_derived_captions"] = json!("v1");
         result["foreground_guidance"] = json!("v1");
         result["foreground_rollover"] = json!("v1");
+        result["foreground_resume"] = json!("v1");
         result["foreground_completed_reader"] = json!(
             app.shared
                 .config
