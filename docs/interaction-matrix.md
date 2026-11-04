@@ -254,6 +254,56 @@ human instructions. Selected task/DMK/editorial
 follow-through and actual combined receiving/model/spoken acceptance remain
 unfinished. The finite producer remains unconfigured in production.
 
+### Native package adoption under an existing start watcher
+
+`scripts/native_package_handoff.py` is a finite receiving operator, not part of
+the heartbeat or a new supervisor. Use the existing qualified native maintenance,
+stopped-only complete-package installer and stopped-only recovery commands. A
+generic watcher calling ordinary `daemon start` must not race this sequence:
+that command can discard saved maintenance recovery before installation.
+
+The owner supplies one bounded private `daimon.native-package-handoff/v1` plan:
+stable UUID `id`, `ready`, receiving `uid`/`cgroup`, `package`, complete relative
+`files` SHA256 map (including `bin/codex`), `codex_home`, and fresh `supervisor`/
+`receiver` process identities from this operator's `identity(pid)`. Configuration
+is not authorization. Keep `ready=false` until the complete selected stack is
+qualified. The explicit `--adopt` invocation takes `--plan` and `--receipt` paths;
+an existing receipt refuses rearming, including after uncertainty. A fixed sibling
+lock serializes this intent without holding the native lifecycle lock.
+
+Run the coordinator in the target's existing persistent service cgroup, for
+example through a dedicated named tmux server launched there. Inspect actual
+placement; detachment or a tmux name does not prove it. Do not stop that service
+or launch its replacement in a disposable build unit. The operator refuses a
+different cgroup, owner, package hash or process generation. Linux pidfds bind
+signals and exit observations to the selected processes rather than reused PIDs.
+
+Only the generic start watcher receives SIGSTOP; native execution/admission stays
+live. Its already launched start child must finish first (two-second observation,
+then deferral), because suspending its Python parent does not stop that child.
+The native receiver still decides its natural-idle handoff. A terminal deferral
+releases the same watcher. Only confirmed `handoffReady` plus observed old-process
+exit permits stopped installation and snapshot-preserving restoration in the
+same persistent cgroup. Compare all package files/resources and the installer's
+fixed `codex -> bin/codex` compatibility link; CLI equality alone is insufficient.
+Pin the complete previous tree and release path independently. A known old package can be restored after refused
+installation; this is software recovery, never a history restore or input replay.
+
+Uncertain maintenance/exit/restore is retained, never resent or converted into
+fresh start. The watcher remains held when releasing it could erase uncertain
+recovery. Inspect that receipt and actual native state before further action;
+there is no automatic rearm or forced stop. A successfully restored receiver is
+checked for code/placement before the exact watcher resumes. No host action,
+global Stop, goal mutation, archive or provider/model selection is performed.
+
+`tests/native_package_handoff.py OLD_CLI CANDIDATE_CLI --scratch /selected/data`
+qualifies the actual complete-package route with an isolated managed receiver,
+live competing start watcher and original loaded thread. It uses only unreachable
+loopback inference and preserves unfinished fixtures on failure. The smaller CI
+unit suite checks generation/cgroup refusal, terminal deferral and uncertainty
+without targeting a real daemon. These are operator proofs, not receiving/model/
+audio acceptance of the heartbeat.
+
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 
 A finite approved purpose and a later received original are separate inputs.
