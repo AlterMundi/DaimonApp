@@ -1169,7 +1169,7 @@ mod tests {
             crate::store::HeartbeatCommand::Resume { generation: 1 },
         )
         .unwrap();
-        s.workflow_native_link(&selected.id, local).unwrap();
+        s.workflow_native_link_fresh(&selected.id, local).unwrap();
         s.workflow_native_validate(&selected.id).unwrap();
         s.workflow_native_submitting(&selected.id).unwrap();
         s.heartbeat_control(100, entry.key, crate::store::HeartbeatCommand::Pause)

@@ -46,7 +46,7 @@ pub(super) async fn command(
             .thread_control_notices(human, native, after);
     }
     if let Some(selected) = args.strip_prefix("heartbeat ") {
-        return heartbeat::owner(app, human, selected);
+        return heartbeat::owner(app, human, selected).await;
     }
     if let Some(selected) = args.strip_prefix("observer ") {
         return observer::owner_command(app, human, selected);

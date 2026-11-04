@@ -350,6 +350,7 @@ fn reserve(
         name: context.name(),
         id: return_id,
         attempts: 1,
+        attention_generation: None,
         human,
         entry,
         native: context.native.clone(),

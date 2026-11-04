@@ -1,5 +1,7 @@
 //! Persistent scoped attention control. No scheduler, inference or goal mutation.
 use super::*;
+mod executions;
+pub(super) use executions::claim_on as execution_claim_on;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
