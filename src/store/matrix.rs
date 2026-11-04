@@ -29,6 +29,19 @@ pub(super) fn unclaimed_on(
     event: &str,
     update: Option<i64>,
 ) -> Result<()> {
+    super::workflows::unclaimed_on(conn, human, channel, event, update)?;
+    non_workflow_unclaimed_on(conn, human, channel, event, update)
+}
+
+/// Workflow declaration may add a separately identified attributed subtask, but
+/// never override a selected goal control or external Matrix original.
+pub(super) fn non_workflow_unclaimed_on(
+    conn: &Connection,
+    human: i64,
+    channel: &str,
+    event: &str,
+    update: Option<i64>,
+) -> Result<()> {
     super::goal_controls::unclaimed_on(
         conn,
         human,
@@ -39,9 +52,7 @@ pub(super) fn unclaimed_on(
         },
         event,
     )?;
-    super::workflows::unclaimed_on(conn, human, channel, event, update)?;
-    let held = selected_on(conn, human, channel, event, update)?.is_some();
-    if held {
+    if selected_on(conn, human, channel, event, update)?.is_some() {
         bail!("Original input has an immutable Matrix destination");
     }
     Ok(())

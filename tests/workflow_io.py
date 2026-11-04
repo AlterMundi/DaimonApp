@@ -112,6 +112,29 @@ def qualify(binary):
         assert j.row('SELECT count(*) FROM incoming_updates') == journal
         assert len(j.worker_packets['native-topic-7']) == len(j.worker_packets['native-topic-8']) == 1
         assert not j.messages, 'Internal workflow evidence was published to Telegram'
+        # The original remains the authority, while a new stable request_id
+        # identifies additional attributed work without reopening the first plan.
+        extra = {**plan, 'request_id': 'additional-context-handoff', 'steps': [
+            {'id': 'context', 'selector': 't8', 'after': None,
+             'scope': 'Integrator context: Alpha reported a selected checkpoint. Incorporate the attributed report without repeating either earlier task.',
+             'checkpoint': 'Attributed report incorporated', 'milestone': None}]}
+        added = j.call('route-additional', 'workflow_declare', extra)
+        assert added['id'] != ident and j.call('route-additional-repeat', 'workflow_declare', extra) == added
+        conflict = {**extra, 'steps': [{**extra['steps'][0], 'scope': 'Changed frozen work'}]}
+        rejected = j.call('route-conflict', 'workflow_declare', conflict, ok=False)
+        diagnostic = json.loads(rejected['contentItems'][0]['text'])
+        assert diagnostic['code'] == 'workflow_plan_conflict' and diagnostic['workflow'] == added['id']
+        duplicate = {**extra, 'request_id': 'not-a-repeat-loophole', 'steps': [{**extra['steps'][0], 'checkpoint': 'Changed reporting expectation'}]}
+        rejected = j.call('route-duplicate-subtask', 'workflow_declare', duplicate, ok=False)
+        assert json.loads(rejected['contentItems'][0]['text'])['code'] == 'workflow_scope_already_selected'
+        j.call('route-additional-start', 'workflow_advance', {'workflow': added['id'], 'revision': added['revision']})
+        j.wait(lambda: len(j.worker_packets.get('native-topic-8', [])) == 2)
+        assert len(j.worker_packets['native-topic-7']) == 1, 'Earlier native work was replayed'
+        assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?', (original['id'],)) == [(1,)]
+        assert j.row('SELECT count(*) FROM incoming_updates') == journal
+        j.answer_worker(8, 'Additional attributed context incorporated.')
+        j.wait(lambda: j.row("SELECT count(*) FROM interaction_results WHERE body='Additional attributed context incorporated.'") == [(1,)])
+        assert j.call('route-original-preserved', 'workflow_status', {'workflow': ident})['phase'] == 'completed'
         j.finish(j.web_thread, j.web_turn); j.idle()
         print('PASS actual controller → A → canonical-result callback → B → on-demand predecessor → final integration; exact milestones/acknowledgments, internal audience and original identity; zero models')
     finally:
