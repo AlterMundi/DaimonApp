@@ -501,25 +501,33 @@ async fn integrated_tribu_keeps_an_existing_native_binding_without_legacy_featur
         "being_ref":"fixture-being", "body_label":"fixture.codex@fixture", "embodiment_id":"fixture-body",
         "human_id":100, "chat_id":100, "topic_id":7, "activated_after":1
     })).unwrap());
-    let existing = app.shared.store.get_session(key).unwrap().unwrap();
-    assert!(
-        super::turns::resolve_session_codex_binding_from_history(&app.shared, existing.clone())
-            .is_err()
-    );
-    Arc::get_mut(&mut app.shared)
-        .unwrap()
-        .config
-        .tribu
-        .as_mut()
-        .unwrap()
-        .mode = crate::config::TribuMode::Interaction;
-    let selected =
-        super::turns::resolve_session_codex_binding_from_history(&app.shared, existing).unwrap();
-    assert_eq!(
-        selected.codex_thread_id.as_deref(),
-        Some("existing-integrator-native")
-    );
-    assert_eq!(selected.key, key);
+    {
+        // This reader shares CODEX_HOME with history fixtures that temporarily
+        // replace it. Use their existing lock and an isolated empty history.
+        let _lock = codex_home_test_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = CodexHomeGuard::set(home.path());
+        let existing = app.shared.store.get_session(key).unwrap().unwrap();
+        assert!(
+            super::turns::resolve_session_codex_binding_from_history(&app.shared, existing.clone())
+                .is_err()
+        );
+        Arc::get_mut(&mut app.shared)
+            .unwrap()
+            .config
+            .tribu
+            .as_mut()
+            .unwrap()
+            .mode = crate::config::TribuMode::Interaction;
+        let selected =
+            super::turns::resolve_session_codex_binding_from_history(&app.shared, existing)
+                .unwrap();
+        assert_eq!(
+            selected.codex_thread_id.as_deref(),
+            Some("existing-integrator-native")
+        );
+        assert_eq!(selected.key, key);
+    }
     // Browser IDs are client supplied. An occupied UUID is not evidence that
     // this authenticated public original was admitted or delivered.
     let source_id = "a".repeat(64);

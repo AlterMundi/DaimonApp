@@ -328,3 +328,23 @@ reviving work. No scheduler, peer activation, automatic input, new queue or
 inference is enabled. This is a resumable selected-reply primitive for #452 /
 Matrix #310/#437; new unsolicited inbox attention and its resource admission
 remain unfinished.
+
+### Matrix evidence in existing integrator attention
+
+The explicit `workflow_attention` read also returns `matrix.envelopes`: at most16
+oldest unincorporated canonical replies, with `has_more`, exact authorship and
+revision, text size/hash and the existing `conversation_part` reader. It performs
+no remote reads and copies no reply body into another journal. Current owner,
+admission epoch and later human amendments determine eligibility; retired sources
+remain readable as history but do not become current offers.
+
+After actually reading/incorporating the exact source, `matrix_reported` records
+its canonical revision on that same reply row. Exact retry is idempotent across
+restart. This is an integrator assertion of incorporation, never hearing, a peer
+response, execution approval or human-task completion. One optional64byte marker
+and a partial pending index share the reply history's retention; no offer queue
+or growing per-tick log is created. Workflow bounds remain unchanged and Matrix
+has its own16-envelope bound so pending work is not displaced. Neither this read
+nor its acknowledgment enables discovery polling or automatic model admission.
+The periodic attention policy/shared resource admission and real receiving loop
+remain unfinished under #452 / Matrix #310/#437.
