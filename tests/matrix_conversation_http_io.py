@@ -139,6 +139,17 @@ def qualify(binary, *, funded=False):
                 "requests": [],
             },
         )
+        # The human console and scoped integrator use one persistent gate.
+        paused = j.read("heartbeat", "pause")["result"]
+        assert paused["admission_paused"] is True
+        same = j.call("route-heartbeat-shared-status", "heartbeat_control", {"action": "status"})
+        assert same == paused
+        j.call("route-heartbeat-stale-resume", "heartbeat_control", {"action": "resume", "generation": 0}, ok=False)
+        resumed = j.call("route-heartbeat-explicit-resume", "heartbeat_control", {"action": "resume", "generation": paused["generation"]})
+        assert resumed["admission_paused"] is False
+        paused_again = j.read("heartbeat", "pause")["result"]
+        assert paused_again["generation"] > resumed["generation"]
+        assert paused_again["attention_engine"] == "not_implemented"
         request = selected["request"]
         assert request["original"]["text"] == original
         assert b.status(ident)["phase"] == "matrix_requested"

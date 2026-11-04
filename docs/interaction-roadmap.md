@@ -348,3 +348,24 @@ has its own16-envelope bound so pending work is not displaced. Neither this read
 nor its acknowledgment enables discovery polling or automatic model admission.
 The periodic attention policy/shared resource admission and real receiving loop
 remain unfinished under #452 / Matrix #310/#437.
+
+### Shared persistent heartbeat admission control
+
+The owner console `telecodex --control CONFIG heartbeat pause` and the scoped
+integrator `heartbeat_control` operation (`action: pause`) use the same model-free
+handler. `heartbeat status` observes its persisted flag/generation.
+`heartbeat resume GENERATION` requires the exact current generation and only
+clears the admission gate; it does not start a timer or grant an account/budget.
+Default is paused. Repeat pause is idempotent, restart preserves it, and a later
+pause invalidates older resume generations. One small record per configured
+entry uses the existing state store; no growing operation log or second queue
+is added. Human access needs no live native turn.
+
+This is the first control primitive, not the complete emergency stop contract.
+The status explicitly reports `attention_engine: not_implemented` and
+`owned_execution_control: not_implemented`: automatic attention, its actual
+admission/provider gates, physical execution ownership and exact interruption
+still require implementation before activation. Do not present this flag as
+proof that an already-running provider call stopped. Ordinary human contact,
+shared maintenance, goals and funding remain unchanged. The same paired-human
+visible/audio work-trail requirement remains pending alongside owned execution.
