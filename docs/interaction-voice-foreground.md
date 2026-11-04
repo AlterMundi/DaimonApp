@@ -1754,3 +1754,35 @@ phone acceptance and sustained useful latency remain separate. Run the fixture
 with the existing Playwright module through `PLAYWRIGHT_MODULE` when it is not
 installed in the checkout. A separate phone attempt also ended with an empty
 final input transcript; playback repair does not establish that failure resolved.
+
+
+### Empty Qwen input is an original-level review, not a voice-session failure
+
+A4November phone conversation played native Qwen speech, then closed after
+118seconds when Qwen finalized a committed input with no words. The failing
+site was the explicit empty-final rejection in the acoustic owner; this is
+separate from the earlier suspended playback gate. It does not establish
+whether the captured span contained noise, unclear speech or an ASR omission.
+
+For the manual Qwen protocol only, an empty finalized transcript following the
+exact commitment now keeps that original unconfirmed for review and releases
+the acoustic slot for the next phrase. No empty transcript is completed,
+delegated or substituted with generated words. The existing raw reservation,
+original quotas and PCM bounds remain. Matching original-level review also
+releases the browser playback gate without overriding newer capture, Pause or
+mute. Partial/uncommitted/uncorrelated input and other providers retain their
+existing refusal behavior. A source read waiting on the unresolved original is
+released to the existing no-completion refusal, never rebound to older input.
+
+Use the existing full-shell fixture with `--input-confirmation qwen
+--empty-input-once --case paced` to verify a retained unconfirmed first original,
+two subsequent completed originals, continuous output and zero work dispatch.
+The initial verifier still expected every original to complete; its retained
+browser evidence already showed the intended one-review/two-complete result,
+and that assertion was corrected to the explicit expected phases.
+
+The ordinary receiving TTS base voice is `longanlufeng`; the current3.0 realtime
+model also supports that system voice in its initial session configuration.
+Matching this voice ID does not imply identical prosody, rate or pitch between
+TTS and realtime models. A voice change applies to newly opened provider
+sessions and must not interrupt an existing human conversation.

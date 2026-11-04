@@ -225,9 +225,15 @@ class NativeAcousticSession:
         if span.end_ack and span.text is not None:
             # One finalized input transcript plus its exact manual-end ACK.
             # Output completion/generation does not finalize a human original.
-            self.bridge.transcript(span.ident,span.text)
             self.spans.pop(0);self.provider=None
-            await self.notify({'type':'input_interpreted','id':span.ident,'text':span.text})
+            if span.text.strip():
+                self.bridge.transcript(span.ident,span.text)
+                await self.notify({'type':'input_interpreted','id':span.ident,'text':span.text})
+            else:
+                # Qwen can commit a noise/unclear span with no words. Keep
+                # that exact original unconfirmed; do not end unrelated speech.
+                await self.notify({'type':'input_uninterpreted','id':span.ident,
+                    'reason':'empty_final_transcript'})
             await self._pump()
 
     async def watch_transcripts(self):
@@ -312,7 +318,10 @@ class NativeAcousticSession:
                         raise ForegroundUnavailable('Input transcript exceeds its live bound')
                     span.transcript_parts=combined;span.fragmented=True
                     if event['finished']:
-                        if not combined.strip():raise ForegroundUnavailable('Input transcript is empty')
+                        if not combined.strip() and not (
+                                getattr(self.stream,'model',None)=='qwen-audio-3.0-realtime-plus'
+                                and span.end_ack and span.stream_end is not None):
+                            raise ForegroundUnavailable('Input transcript is empty')
                         span.text=combined
                     await self.notify({'type':'input_caption','id':span.ident,'text':combined})
                 else:

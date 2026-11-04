@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const root=process.env.QUALIFICATION_OUTPUT,origin=process.env.FIXTURE_ORIGIN;assert(root&&origin,'Use dashboard_native_bootstrap.py to own the bounded server/output lifecycle');
+const root=process.env.QUALIFICATION_OUTPUT,origin=process.env.FIXTURE_ORIGIN;const emptyInput=Number(process.env.QUALIFICATION_EMPTY_INPUT||0);assert(root&&origin,'Use dashboard_native_bootstrap.py to own the bounded server/output lifecycle');
 const save=(name,value)=>fs.writeFileSync(path.join(root,name),JSON.stringify(value,null,2));
 (async()=>{let browser,context,page;const errors=[],http=[];
 try{
@@ -42,7 +42,7 @@ try{
    const recovered=page.waitForResponse(r=>new URL(r.url()).pathname.endsWith('/api/interaction')&&r.status()===200,{timeout:10000});
    await page.evaluate(()=>fetch('/fixture/control',{method:'POST',body:JSON.stringify({invalidate:true})}));await recovered;
   }
-  await page.waitForFunction(count=>fixture.retained.length===count&&fixture.released.length===count&&fixture.sources.every(v=>v.ended),n+1,{timeout:12000});
+  await page.waitForFunction(counts=>fixture.retained.length===counts.retained&&fixture.released.length===counts.released&&fixture.sources.every(v=>v.ended),{retained:n+1,released:n+1-emptyInput},{timeout:12000});
   assert.equal(await page.evaluate(()=>fixture.engine.active),true,'Native voice stays available for the next phrase');
   console.log('Completed full-app native cycle',n+1);
  }
@@ -53,7 +53,7 @@ try{
   assert.equal(finiteWorklet?.actualChromiumWorklet,true,'The browser must execute the fixture, not serialize its function');
   assert.equal(finiteWorklet.bytes,Number(process.env.QUALIFICATION_SECONDS)*32000);
  }
- const before=await page.evaluate(()=>fixture.report());assert.equal(before.engineCreations,1);assert.equal(before.pending,0);assert(before.captureFrames>0);assert.equal(before.sharedAuth,'true');assert.equal(before.appLoaded,true);assert.equal(before.retained.length,3);assert.equal(before.released.length,3);
+ const before=await page.evaluate(()=>fixture.report());assert.equal(before.engineCreations,1);assert.equal(before.pending,emptyInput);assert(before.captureFrames>0);assert.equal(before.sharedAuth,'true');assert.equal(before.appLoaded,true);assert.equal(before.retained.length,3);assert.equal(before.released.length,3-emptyInput);
  assert(http.some(v=>v.path.endsWith('/api/interaction/access')&&v.status===200));assert(http.some(v=>v.path.endsWith('/api/interaction/events')&&v.status===200));assert.equal(http.filter(v=>v.status>=500&&v.status!==503).length,0,JSON.stringify(http));assert.equal(errors.length,0,errors.join('\n'));
  await page.locator('dialog.voice-mode').getByRole('button',{name:'Back to conversation',exact:true}).click();
  await page.waitForFunction(()=>!fixture.engine.active&&fixture.trackStops===1&&fixture.inputContext.state==='closed'&&fixture.contexts.every(c=>c.state==='closed'),{},{timeout:10000});

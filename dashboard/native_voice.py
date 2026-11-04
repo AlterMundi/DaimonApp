@@ -139,6 +139,10 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     await actor()
                     await send({'type':'original_retained','id':capture.ident,'sha256':capture.digest})
                 raw_notifications[capture.ident]=launch(retained())
+            elif value['type']=='input_uninterpreted':
+                # Resolve waiting source reads without manufacturing a complete
+                # transcript. The original reservation/review remains intact.
+                bridge.captures[value['id']].interpretation_ready.set()
             elif value['type']=='input_interpreted':
                 capture=bridge.captures[value['id']]
                 async def completed():
