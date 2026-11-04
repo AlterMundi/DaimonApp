@@ -65,6 +65,64 @@ class DashboardHTTP(unittest.TestCase):
         return self.client.get('/api/state').json()['csrf']
     def stop(self,nonce,csrf):
         return self.client.post('/api/stop',json={'nonce':nonce},headers={**self.headers,'x-dashboard-csrf':csrf})
+    def test_avatar_recovery_runs_bounded_asr_before_existing_owner_completion(self):
+        csrf=self.login();calls=[]
+        ident='10000000-0000-4000-8000-000000000001';dialogue='20000000-0000-4000-8000-000000000002'
+        raw=b'synthetic exact WAV';digest=__import__('hashlib').sha256(raw).hexdigest()
+        media=Path(self.tmp.name)/ident;media.write_bytes(raw)
+        helper=Path(self.tmp.name)/'synthetic_asr.py';helper.write_text('import json; print(json.dumps({"text":"Recovered original","final":True}))')
+        phase=['foreground_captured']
+        def prepare(metadata,data,selected):
+            if selected!=dialogue or metadata['audio_sha256']!=digest or data!=raw:raise ValueError('Original changed')
+            calls.append('prepare')
+            current={'id':ident,'phase':phase[0],'foreground_dialogue':dialogue,'voice':{'audio_sha256':digest}}
+            return {'current':current,**({'command':[sys.executable,str(helper)],'media':media,'timeout':2} if phase[0]=='foreground_captured' else {})}
+        self.provider.conversation_voice_recover=prepare
+        def complete(*args):calls.append('complete');phase[0]='foreground';return {'id':ident,'phase':'foreground','foreground_dialogue':dialogue,'voice':{'audio_sha256':digest}}
+        self.provider.conversation_foreground_complete=complete
+        headers={**self.headers,'x-dashboard-csrf':csrf,'content-type':'audio/wav','x-input-id':ident,'x-input-binding':'a'*64,'x-audio-sha256':digest,'x-foreground-dialogue':dialogue}
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=self.headers).status_code,403)
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers={**headers,'x-audio-sha256':'b'*64}).status_code,400)
+        self.assertEqual(calls,[])
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=headers).json()['phase'],'foreground')
+        self.assertEqual(calls,['prepare','complete'])
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=headers).json()['phase'],'foreground')
+        self.assertEqual(calls,['prepare','complete','prepare'],'Completed retry reads only')
+        phase[0]='preparing'
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=headers).json()['phase'],'preparing')
+        self.assertEqual(calls.count('complete'),1)
+
+    def test_avatar_recovery_keeps_stored_scope_and_admits_local_only_exactly(self):
+        import sqlite3,hashlib
+        from dashboard.provider import ProviderUnavailable
+        db=Path(self.tmp.name)/'recovery.sqlite3';conn=sqlite3.connect(db)
+        conn.execute('CREATE TABLE conversation_inputs(id TEXT)');conn.commit();conn.close()
+        provider=Provider.__new__(Provider);provider.human=100
+        provider.receiver={'db_path':str(db),'voice':{'transcription_command':['/usr/bin/python3','/synthetic/interaction_asr.py','--binding','/synthetic/adapter.json'],'timeout_seconds':2}}
+        provider.assert_binding=lambda:None;provider.authorized=lambda human:human==100
+        provider.presentation=lambda command:{'binding':'a'*64}
+        records={};admissions=[]
+        provider.conversation_input_status=lambda ident:records[ident]
+        def admit(meta,data,**kwargs):
+            admissions.append(kwargs);ident=meta['id'];current={'id':ident,'phase':'foreground_captured','foreground_dialogue':kwargs['foreground_dialogue'],'voice':{'audio_sha256':meta['audio_sha256']}}
+            records[ident]=current
+            with sqlite3.connect(db) as conn:conn.execute('INSERT INTO conversation_inputs VALUES(?)',(ident,))
+            return current
+        provider.conversation_voice_submit=admit
+        raw=b'exact synthetic original';meta={'id':'10000000-0000-4000-8000-000000000001','binding':'a'*64,'mime':'audio/wav','audio_sha256':hashlib.sha256(raw).hexdigest()};dialogue='20000000-0000-4000-8000-000000000002'
+        plan=provider.conversation_voice_recover(meta,raw,dialogue)
+        self.assertEqual(admissions,[{'foreground_dialogue':dialogue,'defer_foreground':True}])
+        self.assertEqual(plan['media'].read_bytes(),raw);self.assertEqual(plan['timeout'],2)
+        self.assertEqual(provider.conversation_voice_recover(meta,raw,dialogue)['media'],plan['media'])
+        self.assertEqual(len(admissions),1,'Stored identity is not admitted twice or changed to ordinary input')
+        for changed in (dict(meta,audio_sha256='b'*64),dict(meta,binding='b'*64)):
+            with self.assertRaises((ValueError,ProviderUnavailable)):provider.conversation_voice_recover(changed,raw,dialogue)
+        with self.assertRaises(ValueError):provider.conversation_voice_recover(meta,raw,meta['id'])
+        records[meta['id']]['phase']='foreground'
+        self.assertNotIn('command',provider.conversation_voice_recover(meta,raw,dialogue),'Completed originals do not run ASR')
+        records[meta['id']]['phase']='preparing'
+        self.assertNotIn('command',provider.conversation_voice_recover(meta,raw,dialogue),'An already active completion is observed only')
+
     def test_voice_playback_context_is_bounded_advisory_metadata(self):
         csrf=self.login();retained=[]
         self.provider.conversation_voice_submit=lambda metadata,data: retained.append((metadata,data)) or {'id':metadata['id'],'phase':'preparing'}

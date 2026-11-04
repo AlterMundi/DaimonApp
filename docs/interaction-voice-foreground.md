@@ -1933,3 +1933,51 @@ Mounted tests cover retained originals, fixed diagnostics and delayed old-event
 success/failure. The full Chromium fixture supports `--reconnect` for the actual
 shell button, AudioContext, shared-cookie preflight and IndexedDB recovery.
 Synthetic peers do not establish physical hearing or human device acceptance.
+
+
+### Recover an Avatar original after the live socket closes —4November2026
+
+**Check delivery** remains read-only. **Retry** on a retained Avatar original now
+uses the authenticated, CSRF-protected `POST /api/interaction/voice/recover`
+instead of submitting it as an ordinary voice note. The ordinary route cannot
+replace an existing foreground original's dialogue/scope. Exact UUID, digest,
+entry binding and foreground dialogue remain unchanged.
+
+The browser supplies its exact retained WAV. The receiving provider distinguishes
+a missing native record with a bounded local existence read, never by interpreting
+an unavailable status as absence. A local-only original is retained through the
+existing deferred foreground admission. An existing original uses canonical
+stored scope; mismatched dialogue/digest/binding refuse without replacement.
+Already preparing or completed originals are observed without another ASR call.
+
+The native `input voice recover` operation is a completed-result reader: by itself
+it cannot interpret a clip whose final live transcript never arrived. Explicit
+Retry first invokes the configured maintained `interaction_asr.py` file adapter
+against the same private, hash-checked UUID file. Its existing identity lock,
+completion cache, storage budget and durable uncertain-provider intent govern
+reuse. Uncertain provider attempts are never replayed. Generic configured
+transcribers without that maintained adapter contract are refused.
+
+The route reuses the caption-recovery subprocess owner (32KiB output, configured
+<=120second timeout and exact process-group cleanup). At most one explicit
+recovery runs per web instance; concurrent requests fail rather than accumulating
+another ASR queue. Fresh owner authorization precedes the existing completed-only
+native resume. That operation commits interpretation to the same foreground
+source and preserves original order; it does not replay tools, reroute old work,
+create a replacement human utterance or promise another spoken reply.
+
+Local bytes stay until exact completed interpretation is observed. Confirmation
+removes only that matching local original and exposes the next queued recording.
+Missing/uncertain outcomes retain it for status inspection or saving. The existing
+128-record/20MiB local recovery and256MiB unresolved server-media bounds remain.
+No separate ASR journal, recurring retry, schema migration or native executable
+change is introduced. Rollback keeps the compatible v3 local reader and current
+journals; an older Retry may again refuse foreground recovery without deleting
+originals.
+
+Mounted tests cover local-only and stored originals, changed identities, completed
+and active attempts, actual bounded ASR subprocess execution and queue retention.
+The shipped Chromium fixture supports `--recover-original` with one empty-final
+original; it exercises read-only Check then explicit Retry and actual IndexedDB
+retirement. Synthetic ASR/owners do not establish physical hearing or recognition
+quality. The separate provider context-limit/automatic-rollover gap remains open.

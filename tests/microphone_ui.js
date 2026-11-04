@@ -28,7 +28,14 @@ function boot(live=false,recovery,status404=false){
  const media=()=>({stopped:0,getTracks(){return [{stop:()=>this.stopped++}];}});
  const window={indexedDB:recovery,confirm(message){confirmations.push(message);return confirmDiscard;},isSecureContext:true,MediaRecorder:Recorder,crypto,addEventListener(n,fn){events[n]=fn;},navigator:{mediaDevices:{async getUserMedia(){mediaRequests++;if(mediaFailure)throw mediaFailure;if(permission)return permission.promise;return media();}}}};
  async function fetch(_route,options){
-  options.route=_route;uploads.push(options);const id=options.headers['X-Input-Id'];
+  options.route=_route;uploads.push(options);
+  if(_route==='api/interaction/voice/recover'){
+   const id=options.headers['X-Input-Id'],old=originals.get(id);
+   assert.equal(options.headers['X-Audio-Sha256'],Buffer.from(await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer())).toString('hex'));
+   const result={...(old||{id,foreground_dialogue:options.headers['X-Foreground-Dialogue'],voice:{audio_sha256:options.headers['X-Audio-Sha256']}}),phase:old?.phase==='foreground'?'foreground':'preparing'};
+   originals.set(id,result);return {ok:true,json:async()=>result};
+  }
+  const id=options.headers['X-Input-Id'];
   if(mode==='before'){mode=undefined;throw Error('Offline before capture');}
   if(mode==='visual-refusal'){mode=undefined;return {ok:false,status:400,json:async()=>({code:'visual_reselection',submission_attempted:false})};}
   if(mode==='denied'){mode=undefined;return {ok:false,status:403,json:async()=>({})};}
@@ -185,14 +192,27 @@ function boot(live=false,recovery,status404=false){
  await until(()=>!nativeCopy.button().disabled);
  const nativeOriginal=await nativeCopy.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),blob:new Blob(['synthetic native WAV original']),mime:'audio/wav'});
  await nativeCopy.ui.reviewContinuous([nativeOriginal]);
- nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,phase:'foreground_captured',voice:{audio_sha256:nativeOriginal.audio_sha256}});
+ nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,foreground_dialogue:nativeOriginal.foreground_dialogue,phase:'foreground_captured',voice:{audio_sha256:nativeOriginal.audio_sha256}});
  await nativeCopy.check();
  assert.equal(nativeRecovery.values.size,1,'A retained native WAV without a completed interpretation keeps its local recovery copy');
  assert.equal(nativeCopy.received.length,0);assert.equal(nativeCopy.uploads.length,0);
- nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,phase:'foreground',text:'Completed native interpretation',voice:{audio_sha256:nativeOriginal.audio_sha256}});
- await nativeCopy.check();await until(()=>nativeCopy.received.length===1);
- assert.equal(nativeRecovery.values.size,0);assert.equal(nativeCopy.uploads.length,0,'Checking the completed original never resends it');
+ await nativeCopy.click();await until(()=>nativeCopy.uploads.length===1);
+ assert.equal(nativeCopy.uploads[0].route,'api/interaction/voice/recover');
+ assert.equal(nativeCopy.uploads[0].headers['X-Input-Id'],nativeOriginal.id);
+ assert.equal(nativeCopy.uploads[0].headers['X-Foreground-Dialogue'],nativeOriginal.foreground_dialogue);
+ assert.equal(nativeRecovery.values.size,1,'Preparing recovery keeps the local original');
 
+ nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,foreground_dialogue:nativeOriginal.foreground_dialogue,phase:'foreground',text:'Completed native interpretation',voice:{audio_sha256:nativeOriginal.audio_sha256}});
+ await nativeCopy.check();await until(()=>nativeCopy.received.length===1);
+ assert.equal(nativeRecovery.values.size,0);assert.equal(nativeCopy.uploads.length,1,'Checking completed recovery never resends or reinterprets it');
+
+ const missingStore=memoryRecovery(),missing=boot(true,missingStore);
+ await until(()=>missing.ui.canStartContinuous());
+ const local=await missing.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),blob:new Blob(['local Avatar original']),mime:'audio/wav'});
+ await missing.ui.reviewContinuous([local]);await missing.click();
+ await until(()=>missing.originals.has(local.id));
+ assert.equal(missing.uploads[0].route,'api/interaction/voice/recover','Local-only recovery uses the same native original identity');
+ assert.equal(missingStore.values.size,1,'Local-only original survives until interpretation completes');
  // Native review keeps exact local bytes and uses a versioned bounded queue.
  const reviewStore=memoryRecovery(),reviewOwner=boot(true,reviewStore);
  await until(()=>reviewOwner.ui.canStartContinuous());reviewOwner.ui.continuousOwner(true);

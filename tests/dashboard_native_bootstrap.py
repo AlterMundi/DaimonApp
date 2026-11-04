@@ -8,6 +8,7 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--out',type=Path,required=True,help='New absolute output directory, bounded to4MiB')
 parser.add_argument('--runtime',type=Path,help='Selected immutable app bundle; defaults to this checkout')
 parser.add_argument('--reconnect',action='store_true')
+parser.add_argument('--recover-original',action='store_true')
 parser.add_argument('--empty-input-once',action='store_true')
 parser.add_argument('--empty-input-count',type=int,choices=range(6),default=0)
 parser.add_argument('--input-confirmation',choices=('gemini','qwen'),default='gemini')
@@ -17,6 +18,7 @@ parser.add_argument('--session-seconds',type=int,choices=(300,600),default=300)
 args=parser.parse_args()
 empty_count=args.empty_input_count or int(args.empty_input_once)
 cycles=max(3,empty_count+2)
+if args.recover_original and (empty_count!=1 or args.reconnect):parser.error('Recovery fixture selects one empty original and no reconnect')
 if empty_count and (args.input_confirmation!='qwen' or args.activity_mode!='manual'):parser.error('Empty-final qualification selects the Qwen manual commitment protocol')
 if args.activity_mode!='manual' and args.session_seconds!=300:parser.error('Extended fixture selects manual activity')
 runtime=(args.runtime or repo).resolve();assert (runtime/'dashboard/app.py').is_file()
@@ -66,6 +68,15 @@ class FullOwner(Owner):
  def internal_pending(self,*a):return self.conversation_inputs()
  def sonic_activity(self):return {**descriptor({}),'configured':False,'connected':True,'sources':[]}
  def conversation_foreground_delegate(self,*a):raise AssertionError('No native work permitted in this synthetic bootstrap qualification')
+ def conversation_voice_recover(self,metadata,data,dialogue):
+  value=self.inputs[metadata['id']]
+  assert value['foreground_dialogue']==dialogue and value['voice']['audio_sha256']==metadata['audio_sha256']==hashlib.sha256(data).hexdigest()
+  state['explicit_recoveries']=state.get('explicit_recoveries',0)+1
+  media=self.root/'recovery.wav';media.write_bytes(data)
+  helper=self.root/'recovery.py';target=self.root/'prepared'/(metadata['id']+'.json')
+  helper.write_text('from pathlib import Path; import json; Path('+repr(str(target))+').write_text(json.dumps({"text":"Recovered synthetic original"})); print(json.dumps({"text":"Recovered synthetic original","final":True}))')
+  return {'current':value,'command':[sys.executable,str(helper)],'media':media,'timeout':2}
+
 class FullStream(Stream):
  model='qwen-audio-3.0-realtime-plus' if args.input_confirmation=='qwen' else Stream.model
  def __init__(self,*a,**kw):
@@ -183,13 +194,13 @@ try:
    thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True);thread.start();deadline=time.monotonic()+10
    while not server.started:assert thread.is_alive() and time.monotonic()<deadline;time.sleep(.05)
    state['state']='full-bootstrap-browser-running';save()
-   node=subprocess.Popen(['node',str(repo/'tests/dashboard_native_bootstrap_browser.js')],env={**os.environ,'FIXTURE_ORIGIN':origin,'QUALIFICATION_OUTPUT':str(op),'QUALIFICATION_SECONDS':str(args.session_seconds),'QUALIFICATION_EMPTY_INPUT':str(empty_count),'QUALIFICATION_CYCLES':str(cycles),'QUALIFICATION_RECONNECT':str(int(args.reconnect))},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+   node=subprocess.Popen(['node',str(repo/'tests/dashboard_native_bootstrap_browser.js')],env={**os.environ,'FIXTURE_ORIGIN':origin,'QUALIFICATION_OUTPUT':str(op),'QUALIFICATION_SECONDS':str(args.session_seconds),'QUALIFICATION_EMPTY_INPUT':str(empty_count),'QUALIFICATION_CYCLES':str(cycles),'QUALIFICATION_RECONNECT':str(int(args.reconnect)),'QUALIFICATION_RECOVER':str(int(args.recover_original))},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
    out,err=node.communicate(timeout=75);(op/'browser-run.log').write_text(out+'\n'+err);assert node.returncode==0,'Inspect retained full-bootstrap browser outcome'
   server.should_exit=True;thread.join(timeout=8);assert not thread.is_alive()
   state['originals']=[{'id':v['id'],'phase':v['phase'],'audio_sha256':v['voice']['audio_sha256']} for v in owner.inputs.values()];state['history']=[{k:v[k] for k in ('id','generated_bytes','played_bytes','closed')} for v in app.state.native_history.page(100,binding=owner.binding)['items']];state['delegations']=len(owner.delegations)
   browser=json.loads((op/'browser.json').read_text());assert sorted((v['id'],v['audio_sha256']) for v in state['originals'])==sorted((v['id'],v['sha256']) for v in browser['before']['retained'])
   assert len(state['originals'])==len(state['history'])==cycles
-  expected=['foreground_captured']*empty_count+['foreground']*(cycles-empty_count)
+  expected=['foreground']*cycles if args.recover_original else ['foreground_captured']*empty_count+['foreground']*(cycles-empty_count)
   assert [v['phase'] for v in state['originals']]==expected
   assert len(browser['before']['released'])==cycles-empty_count
   assert all(v['closed'] and v['generated_bytes']==v['played_bytes']==48000 for v in state['history'])
