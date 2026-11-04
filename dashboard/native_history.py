@@ -169,6 +169,15 @@ class NativeHistory:
             for utterance in rows:enqueue(db,utterance)
         return record
 
+    def context_resume_record(self,human,binding,dialogue):
+        """Select an existing explicitly named producer; never create one."""
+        self.ident(dialogue)
+        with self.database() as db:
+            row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=? AND human=? AND scope=? AND binding=?',
+                (dialogue,human,self.scope,binding)).fetchone()
+        if row is None:raise ValueError('Selected prior Live conversation is unavailable')
+        return dict(row)
+
     def context_unfinished(self,human,binding,excluding):
         with self.database() as db:
             return [dict(r) for r in db.execute("SELECT * FROM foreground_context_producers WHERE human=? AND scope=? AND binding=? AND dialogue!=? AND phase!='closed' ORDER BY rowid LIMIT 64",

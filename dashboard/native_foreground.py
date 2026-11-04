@@ -79,7 +79,8 @@ class ForegroundBridge:
         self.generation=dialogue
         self.idle_notify=None
 
-    async def _run(self, limit, function, *args, **kwargs):
+    @staticmethod
+    async def _run(limit, function, *args, **kwargs):
         # A cancelled waiter cannot release a slot while its owning file/control
         # thread is still running. There are at most two owner calls/one writer.
         async with asyncio.timeout(2):

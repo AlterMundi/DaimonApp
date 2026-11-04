@@ -29,6 +29,12 @@ class Journal:
         if body['action']=='open':
             p=self.producers.setdefault(ident,{'dialogue':ident,'generation':body['generation'],'closed':False,'sources':{}})
         else:p=self.producers[ident]
+        if body['action']=='resume_read':
+            assert p['closed']
+            content={'dialogue':ident,'generation':p['generation'],'checkpoint':{'text':'Prior purpose'},
+                'events':list(p['sources'].values())}
+            return {k:p[k] for k in ('dialogue','generation','closed')}|{'resume':{
+                'revision':'c'*64,'bytes':len(json.dumps(content,separators=(',',':')).encode()),'content':content}}
         if body['action']=='rollover_read':
             assert p['generation']==body['generation']
             content={'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Confirmed conversation purpose and pending effect references.'}}
@@ -98,6 +104,44 @@ class Context(unittest.IsolatedAsyncioTestCase):
 
     def retain(self,text='Terminal language α.',*,closed=True,source=None):
         return self.history.retain(100,self.dialogue,self.binding,source or str(uuid.uuid4()),text,'b'*64,640,closed=closed)
+
+    async def test_resume_catches_up_explicit_previous_visit_without_new_producer_or_replay(self):
+        old=self.producer();await old.open()
+        source=self.retain('Exact pending correction')
+        resumed=self.producer(str(uuid.uuid4()))
+        seed=await resumed.resume_context(self.dialogue)
+        self.assertEqual(seed['content']['events'][0]['text'],'Exact pending correction')
+        self.assertEqual(set(self.provider.producers),{self.dialogue})
+        self.assertEqual(len(self.provider.fresh),1)
+        calls=len(self.provider.calls)
+        self.assertEqual(await resumed.resume_context(self.dialogue),seed)
+        self.assertEqual([r['action'] for r in self.provider.calls[calls:]],['resume_read'])
+        self.assertEqual(self.provider.fresh[0]['source'],source['id'])
+        self.assertIsNone(resumed.record)
+
+    async def test_resume_open_passes_exact_source_and_refuses_oversize_receipt(self):
+        old=self.producer();await old.open();await old.close()
+        fresh=self.producer(str(uuid.uuid4()))
+        seed=await fresh.resume_context(self.dialogue)
+        await fresh.open()
+        opened=next(c for c in self.provider.calls if c['action']=='open' and c['dialogue']==fresh.dialogue)
+        self.assertEqual(opened['resume'],{'dialogue':self.dialogue,'generation':old.record['generation'],'revision':seed['revision']})
+        bad=self.producer(str(uuid.uuid4()))
+        original=self.provider.conversation_live_context
+        def overflow(body):
+            value=original(body)
+            if body['action']=='resume_read':value['resume']['content']['extra']='x'*24576
+            return value
+        with patch.object(self.provider,'conversation_live_context',side_effect=overflow):
+            with self.assertRaises(ValueError):await bad.resume_context(self.dialogue)
+        self.assertIsNone(bad.record)
+
+    async def test_resume_rejects_unknown_or_foreign_previous_without_creating_producer(self):
+        p=self.producer();await p.open()
+        other=NativeContext(self.history,self.provider,101,str(uuid.uuid4()),self.binding,self.owner)
+        with self.assertRaises(ValueError):await other.resume_context(self.dialogue)
+        with self.assertRaises(ValueError):await self.producer(str(uuid.uuid4())).resume_context(str(uuid.uuid4()))
+        self.assertEqual(set(self.provider.producers),{self.dialogue})
 
     async def test_missing_caption_reaches_sol_as_audio_observation_not_invented_language(self):
         p=self.producer();await p.open()

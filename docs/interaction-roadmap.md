@@ -352,11 +352,13 @@ continuity qualifies. No always-on microphone or background listener is implied.
    Include current conversation purpose, human corrections, unresolved requests,
    pending questions/results, and heard/interrupted speech. Do not load every
    worker transcript or the entire memory corpus into the voice prompt.
-   Manual reconnect currently creates a new dialogue UUID; it also needs an
-   explicit authenticated link to the same durable conversation, its previous
-   checkpoint, subsequent delta and pending-effect references. Do not confuse
-   this with reopening the old producer or assume current excerpt-based startup
-   already implements it. Qualify reconnect after an acknowledged checkpoint.
+   Manual reconnect creates a new visit UUID. The reconnect-continuity candidate
+   adds an authenticated exact prior checkpoint/tail copy, native source linkage
+   and pre-provider hydration, preserving earlier visits through repeated opens.
+   See `interaction-live-context.md` for `resume_read` and source-bound `open`.
+   This candidate is not receiving/device acceptance. Qualify reconnect after an
+   acknowledged checkpoint; keep pending-effect receipts independent and never
+   reopen old provider sockets or replay work.
 2. Keep canonical human originals and assistant utterances available to the
    integrator through ordered deltas with an acknowledged cursor. A complete
    selected history remains readable on demand; do not resend it each update.

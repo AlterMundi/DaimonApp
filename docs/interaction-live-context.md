@@ -316,8 +316,40 @@ correction may ask it to respond. Keep sent/applied/uncertain receipts distinct;
 never replay a possibly applied guidance write. Closed/replaced dialogue IDs,
 superseded basis assumptions and changed owner/native epochs reject new guidance.
 New speech by itself does not invalidate useful guidance.
-A reconnect must select the same logical producer explicitly; no silent creation
-of another session or replay of prior audio/tools.
+An explicit manual reconnect selects the previous visit by its exact dialogue
+UUID while creating a distinct visit UUID in the same persistent integrating
+conversation. It never replays prior audio or tools. The receiving owner excludes
+another live visit, settles the selected producer's canonical outbox and closes
+it before reading its continuation seed.
+
+The owner-only `resume_read` operation requires the current binding/native epoch,
+exact closed generation and canonical human-context catch-up. It returns a hashed
+copy of the checkpoint plus the complete ordered tail and unretired guidance,
+within24576bytes. It does not acquire the integrator's frozen reader, acknowledge
+incorporation, reopen the producer, admit work or wake a model. Oversize context
+requires actual semantic compaction; no clipping or fallback to recent excerpts.
+
+A new producer may `open` with `resume: {dialogue,generation,revision}`. Native
+storage revalidates that exact owned seed in the opening transaction. The copied
+prior context becomes the attributed initial checkpoint at sequence0, with its
+source receipt retained separately; this is a mechanical continuity copy, not a
+new semantic summary or incorporation acknowledgment. Later semantic checkpoints
+must preserve its relevant meaning. This keeps earlier visits available through
+successive reconnects without depending on ephemeral provider sockets. The full
+seed remains bounded; nested retained context may require semantic compaction.
+
+Web preflight reads and commits this source linkage before opening the provider
+or acquiring the microphone. Only the server selects the seed; browser reconnect
+metadata cannot supply checkpoint text. Existing identity, canonical question
+versions, unconfirmed originals and independent pending work retain their owners.
+A context copy grants no new authority or permission to repeat a request. The
+`foreground_resume=v1` capability is required only for explicit reconnect.
+
+Receiving adoption requires the native capability before the matching web change;
+an older listener must refuse reconnect before provider opening. Existing ordinary
+opens remain supported. The optional retained source receipt requires the current
+writer for exact reconnect idempotency; do not downgrade a live writer during an
+in-flight reconnect or treat a rollback's capability gap as permission to replay.
 
 ## Context budget and semantic compaction
 

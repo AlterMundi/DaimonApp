@@ -23,6 +23,7 @@ class NativeContext:
         self.guidance_lock=asyncio.Lock();self.guidance_attempts=set()
         self.operation_lock=asyncio.Lock()
         self.checkpoint_requested_generation=None
+        self.resume_source=None
 
     async def open(self):
         # Called only for an authenticated explicit avatar open, after the
@@ -38,6 +39,33 @@ class NativeContext:
         self.status='active'
         self.notify()
 
+    async def resume_context(self,previous):
+        """Before provider opening, copy the explicitly selected closed visit.
+
+        The receiving owner must first exclude another live visit. Settle only
+        retained canonical sources; this does not interpret/replay raw originals
+        or resubmit any work. A complete oversized tail must be compacted by the
+        integrator, never silently dropped from the reconnect seed.
+        """
+        if previous==self.dialogue:raise ValueError('Reconnect requires a distinct visit')
+        record=await asyncio.to_thread(self.history.context_resume_record,self.human,self.binding,previous)
+        if record['phase']!='closed' or record.get('rollover') is not None:
+            await self._open_record(record)
+            await asyncio.to_thread(self.history.context_seal,record)
+            await self._finish(record)
+        value=await self._call(record,'resume_read')
+        seed=value.get('resume')
+        if (value.get('closed') is not True or not isinstance(seed,dict)
+                or not isinstance(seed.get('content'),dict)
+                or seed['content'].get('dialogue')!=previous
+                or seed['content'].get('generation')!=record['generation']
+                or not isinstance(seed.get('revision'),str) or not re.fullmatch('[a-f0-9]{64}',seed['revision'])
+                or type(seed.get('bytes')) is not int or not 0<seed['bytes']<=24576
+                or len(json.dumps(seed['content'],ensure_ascii=False,separators=(',',':')).encode())>24576):
+            raise ValueError('Prior Live context receipt is incomplete or oversized')
+        self.resume_source={'dialogue':previous,'generation':record['generation'],'revision':seed['revision']}
+        return seed
+
     async def _call(self,record,action,**values):
         result=await self.owner(self.provider.conversation_live_context,{
             'action':action,'dialogue':record['dialogue'],'generation':record['generation'],**values})
@@ -50,7 +78,8 @@ class NativeContext:
             # An old process owns no surviving voice socket. Resolve its one
             # exact transition, never reopen/replay the candidate or tool calls.
             await self._resolve_rollover(record,json.loads(record['rollover']))
-        return await self._call(record,'open',binding=record['binding'])
+        extra={'resume':self.resume_source} if record['dialogue']==self.dialogue and self.resume_source is not None else {}
+        return await self._call(record,'open',binding=record['binding'],**extra)
 
     async def request_checkpoint(self,pressure):
         """One owner-local request per physical generation, including quiet speech.
