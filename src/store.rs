@@ -42,7 +42,9 @@ pub use matrix::{MatrixAuthor, MatrixReturn, MatrixSubmission};
 mod routing;
 mod session_requests;
 mod workflows;
-pub(crate) use workflows::{ReturnDispatch, WORKFLOW_CAPACITY_ERROR};
+pub(crate) use workflows::{
+    ReturnDispatch, WORKFLOW_CAPACITY_ERROR, rejection as workflow_rejection,
+};
 pub use workflows::{WorkflowPlan, WorkflowStep};
 fn record_turn_started_on(
     conn: &Connection,
