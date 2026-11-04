@@ -77,6 +77,21 @@ topic_id=8
         response=self.client.get('/api/interaction/sonic',headers=self.owner)
         self.assertEqual(response.status_code,200,response.text)
         return {s['id']:s for s in response.json()['sources']}
+    def test_workspace_lists_owned_unrouted_sessions_by_activity_not_observer_refresh(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute("INSERT INTO sessions VALUES(4,100,9,100,'unrouted',0,'Unrouted owned session')")
+            db.execute("INSERT INTO turns VALUES(4,100,'2024-01-02T00:00:00Z')")
+            db.execute("INSERT INTO turns VALUES(1,100,'2024-01-01T00:00:00Z')");db.commit()
+        response=self.client.get('/api/interaction/sessions',headers=self.owner)
+        self.assertEqual(response.status_code,200,response.text)
+        rows=response.json()['sessions']
+        self.assertEqual([r['title'] for r in rows],['Unrouted owned session','Entry','Worker'])
+        self.assertNotIn('foreign',json.dumps(rows).lower())
+        self.assertFalse(rows[0]['fresh']);self.assertEqual(rows[0]['goal_state'],'unknown')
+        self.assertTrue(rows[2]['human_action_pending']);self.assertEqual(rows[2]['goal_state'],'blocked')
+        self.assertEqual(rows[2]['results_review'],'unknown')
+        self.assertIsNone(self.provider.native,'Metadata must not open native processes')
+
     def test_live_owner_bound_goal_and_human_wait_are_distinct_from_foreign_unknown(self):
         items=self.sources()
         self.assertEqual(items['100:7']['goal_state'],'blocked')
@@ -106,6 +121,7 @@ topic_id=8
             grants.enroll('Synthetic sonic monitor',destination,60,scope='monitor_readonly')
         header={'authorization':json.loads(destination.read_text())['authorization']}
         self.assertEqual(self.client.get('/api/interaction/sonic',headers=header).status_code,200)
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=header).status_code,403)
         self.assertEqual(self.client.post('/api/interaction/sonic',headers=header,json={}).status_code,403)
         self.assertTrue(permitted('GET','/api/interaction/sonic'))
         self.assertFalse(permitted('POST','/api/interaction/sonic'))

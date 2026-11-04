@@ -263,6 +263,7 @@ window.Conversation = (() => {
     document.body.classList.toggle("standalone-conversation",standalone);
     if(graph){$("#conversation-flow").hidden=false;$("#conversation-flow").open=readOnly;}
     const timeline = standalone ? $("#conversation-timeline") : undefined;
+    if(timeline)window.ConversationHeader?.mount({timeline});
     let routeMapReturn;
     const mapBack=$("#routing-graph-return"),mapPanel=$("#conversation-flow"),mapInspector=$("#conversation-diagnostics");
     function closeRoutingMap(restore=true){

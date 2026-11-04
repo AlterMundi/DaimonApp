@@ -1065,3 +1065,14 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .standalone-conversation #conversation-player #conversation-voice-replies[data-voice-state="on"] {color:var(--accent);}
 
 .coordination-accounts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));gap:1rem;padding:0;list-style:none}.coordination-accounts li{min-width:0;overflow-wrap:anywhere}.coordination-accounts p{margin:.4rem 0}
+
+/* Scroll-driven compact presence, retaining the identity and header actions. */
+.standalone-conversation header { transition:height 140ms ease,min-height 140ms ease; }
+.standalone-conversation.conversation-header-compact header { height:44px;min-height:44px;overflow:hidden; }
+.standalone-conversation.conversation-header-compact header #conversation-companion { display:block; }
+.standalone-conversation.conversation-header-compact header #conversation-companion pre,
+.standalone-conversation.conversation-header-compact header .companion-caption,
+.standalone-conversation.conversation-header-compact header .companion-phases,
+.standalone-conversation.conversation-header-compact header #conversation-account { display:none!important; }
+.standalone-conversation.conversation-header-compact header .companion-name { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+@media(prefers-reduced-motion:reduce) { .standalone-conversation header { transition:none; } }

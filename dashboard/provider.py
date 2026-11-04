@@ -233,6 +233,34 @@ class Provider:
         suffix='' if matrix is None else f' {matrix}'
         return self.presentation(f'presentation {operation} {delivery} {native}'+suffix)
 
+    def session_workspace(self):
+        """All owned session metadata, without opening native/model processes."""
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
+        directory=self.config.get('activity_state_dir')
+        with closing(readonly(self.receiver['db_path'])) as db:
+            inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
+            owned=[v for v in inventory['items'] if v['human']==self.human]
+            if len(owned)>128 or inventory['truncated']:
+                raise ProviderUnavailable('Session inventory exceeds qualified bound')
+            items=[]
+            for row in owned:
+                chat,topic=map(int,row['key'].split(':'))
+                requests=pending_requests(db,chat,topic,self.human) if row.get('native') else None
+                ident=self.identity({'id':row['session'],'chat_id':chat,'thread_id':topic,'codex_thread_id':row['native']})
+                items.append({'id':ident,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
+                    'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
+                    **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
+                    'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
+                    'results_review':'unknown'})
+        items.sort(key=lambda v:(-(v['last_activity_at'] or 0),v['id']))
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience changed')
+        return {'schema':'daimon.session-workspace/v1','observed_at':time.time(),'sessions':items,
+            'connected':inventory['connected'],'truncated':False,
+            'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
+            'input_authority':'Metadata only; destination selection requires native admission.'}
+
     def sonic_activity(self):
         """Finite read of the existing database-bound observer, never native work.
 
