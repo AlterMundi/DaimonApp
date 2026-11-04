@@ -273,7 +273,7 @@ and digital qualification do not establish complete device/hearing acceptance.
 1. **Inspect and measure the existing path.** Reuse current PWA/shared auth, fetch-SSE events, player, ingress journal, observer, native session routing and results. Record actual capture/final-speech, partial/final ASR, commit, first useful model text, first playable sound and interruption-to-silence times on the same journey. Existing accepted behavior needs no generic repeat test. Consult the updated Collective Research speech frontier and prior native WebRTC/Talker-Reasoner evidence. That evidence is not a provider benchmark or a production entitlement.
 2. **Choose the smallest complete streaming path.** Compare the already exercised native account WebRTC route with modular streaming ASR + foreground response + incremental TTS. Inspect supported native admission/handoff behavior before choosing: a realtime connection must not silently start unintended backing work or suppress useful returns. Recheck selected primary provider docs, existing credentials, Spanish/English support, actual capacity and grants. Start with existing resources; do not assume a free GPU or buy a service. Preserve the current text/file-ASR fallback.
 3. **Streaming input and durable utterance commits.** Send bounded audio chunks while recording; render revisable transcript deltas promptly. Partial hypotheses are display/preparation data, never executable human instructions. Retain utterance identity and ordering; explicit Send commits exactly one original. An optional conversational endpointing mode must be explicit and handle pauses/corrections; retain push-to-talk. Discard never dispatches. Reconnect observes the existing outcome, without blind re-transcription or native replay. Preserve selected image/text context and transient raw-media retention with durable transcripts.
-4. **Responsive foreground separated from long work.** Keep gpt-6.1-sol / openai / medium as the selected conversational model and native jobs intact. Separate rapid conversational handling from long integrator/reasoner/work execution using supported existing seams. Do not reinstate the rejected Qwen conversational model or silently change every session's effort/model. If a genuinely different foreground model is needed, present the measured tradeoff and obtain the human's model choice. Stream useful response text and playable speech; do not manufacture filler to improve a latency metric.
+4. **Responsive foreground separated from long work.** Preserve the existing integrating role and persistent jobs while selecting the voice foreground independently. The earlier rejection of Qwen as the integrator does not prohibit the subsequently human-selected Qwen voice foreground. Gemini and Qwen now have foreground adapters; the prepared OpenAI Realtime candidate still requires access and integrated qualification. The human has also selected an OpenAI voice comparison. Keep role, model, transport and account access distinct. Stream useful response text and playable speech; do not manufacture filler to improve a latency metric.
 5. **Duplex and attention.** Barge-in fades/stops audible output immediately, preserves what was heard and unsaid, and lets the person correct/continue. It does not cancel native jobs. Coordinate simultaneous session updates, questions and foreground turns; useful intermediate/final results remain visible, ordered, attributed and deduplicated across app/Telegram/CLI. Avoid overlapping voices and stale spoken answers. Keep bounded context and versioned observer freshness; no mandatory extra LLM rewrite of every callback. Preserve explicit goal controls and direct-topic ingress boundaries.
 6. **Deliver and qualify one coherent experience.** Keep the existing interface, Follow, accessible controls, ASCII and click-free Beacon/ducking working. Finish the relevant pending fixes rather than rebuilding accepted functionality. Ship progressively behind the existing configuration path with an actual rollback to the tagged baseline; once new durable formats exist, rollback must retain a compatible reader. Publish current source/deployment/health/operator guidance through existing shared records.
 
@@ -302,6 +302,156 @@ integrated speech/coalescing, physical echo/noise and actual useful-audio latenc
 acceptance remain unfinished.
 
 ## Delivery tasks
+
+### Current refinement toward an approachable Avatar — 4 November 2026
+
+This is the next execution slice of #301/#303/#304, with provider comparison in
+#278 and input recovery in #271. It refines stages2/3/required4 rather than adding
+another roadmap. Human selection: keep the existing diagnostic context/session
+bounds unchanged while repairing continuity; compare OpenAI voice; make Avatar
+the same daimon's approachable face, with model-independent integrating roles.
+These are selected design requirements, not a claim of new runtime delivery.
+
+The Qwen integrating-model experiment is completed historical work, not a
+pending migration. The human rejected that model for the integrating role.
+Preserve the supported ability to change integrator provider/model deliberately;
+do not pin that role permanently to Sol or confuse the independently selected
+Qwen voice layer with a return to the abandoned integrating-model experiment.
+
+**Observed state.** PR597 supplies manual reconnect and exact-original recovery
+on top of the Qwen native foreground. Actual human feedback confirms the ordinary
+voice is now recognizable and exchanges can be fluent. Sustained continuity is
+not accepted: three selected4November trials closed after approximately117,
+201 and70seconds at `native-dialogue-context-input-bound`, with checkpoint
+requests but zero installed provider successors. This is our conservative local
+admission bound, not evidence that the provider exhausted its real window.
+The existing rollover path requires an idle acoustic/output/tool floor and an
+incorporated native checkpoint. The exact blocking condition still needs a
+retained diagnosis; checkpoint acknowledgment alone does not establish handover.
+
+**One conversation, replaceable voice connections.** Preserve three distinct
+lifetimes: the human's durable conversation, a finite opt-in microphone visit,
+and each replaceable provider connection. Compression or replacement must not
+finish the human's task, stop native jobs, clear pending questions, or pretend
+that a configured visit-duration cap has disappeared. The currently selected
+600second visit and all existing capacity bounds remain unchanged in this repair.
+A later longer-visit policy is a separate explicit configuration change after
+continuity qualifies. No always-on microphone or background listener is implied.
+
+**Continuity workflow to implement and qualify:**
+
+1. At open, assemble a compact, versioned identity/capability packet plus the
+   latest acknowledged integrating checkpoint and recent source-linked delta.
+   Identify Avatar mode, current modalities, available tools and their limits,
+   and how the integrating role provides memory, deliberation and work access.
+   Include current conversation purpose, human corrections, unresolved requests,
+   pending questions/results, and heard/interrupted speech. Do not load every
+   worker transcript or the entire memory corpus into the voice prompt.
+   Manual reconnect currently creates a new dialogue UUID; it also needs an
+   explicit authenticated link to the same durable conversation, its previous
+   checkpoint, subsequent delta and pending-effect references. Do not confuse
+   this with reopening the old producer or assume current excerpt-based startup
+   already implements it. Qualify reconnect after an acknowledged checkpoint.
+2. Keep canonical human originals and assistant utterances available to the
+   integrator through ordered deltas with an acknowledged cursor. A complete
+   selected history remains readable on demand; do not resend it each update.
+   Summaries retain exact source ranges/revisions and do not replace originals.
+   Durable memory curation belongs to the integrating role, not the ephemeral
+   provider. No unrelated private-history import follows.
+3. Before the existing hard reserve is exhausted, produce a semantic checkpoint
+   through the current native contract. Account separately for bootstrap text,
+   PCM, internal updates, tool output and generation reserve. Measure checkpoint
+   latency and remaining headroom; a fixed trigger alone cannot guarantee time
+   to obtain a checkpoint. Budget the successor packet so it can actually fit
+   with room for further speech. Bound internal tool returns and fetch details
+   by reference rather than repeatedly pasting full state.
+4. Prepare at most one successor from an acknowledged basis. Commit the switch
+   only at a provider-appropriate safe boundary with exact original/tool/question identities
+   preserved. Separate a durable raw recording awaiting interpretation from
+   audio still in flight: neither silently discard it nor let it create an
+   unexplained permanent renewal barrier. Any relaxation of the current floor
+   needs explicit supported ownership and a regression, not a skipped check.
+5. Record fixed, bounded reasons when renewal cannot proceed: checkpoint absent
+   or stale, new input, output not drained, unresolved original, tool/effect in
+   flight, successor setup failed, or generation changed. Reuse the existing
+   close/reconnect diagnostics and retention; do not add a transcript log per
+   tick. A checkpoint request and a socket-open receipt are separate from a
+   committed successor and useful audio after it.
+6. If remaining reserve cannot cover safe renewal, pause new provider admission
+   before the hard failure, preserve owned originals and show one understandable
+   reconnect/review action. Do not accumulate an unbounded audio queue or replay
+   an uncertain operation. Keep Check observational and Retry tied to the same
+   exact original. A finite logical visit ending is a distinct normal outcome.
+
+Provider-side compression/resumption can support this workflow, but does not
+replace the canonical checkpoint, source history or exactly-once work ownership.
+Provider truncation is not semantic memory. Keep cost, retained prompt size and
+connection lifetime bounded even when a provider allows longer contexts.
+
+**Speech, identity and tools.** Use a short foreground operating prompt and a
+small task-relevant capability description, instead of appending more repeated
+policy paragraphs. Being identity, selected SOUL and appropriate remembered
+preferences survive connection replacement. The same daimon speaks through
+both interfaces; changing the voice model does not create another being.
+Read-only task/result/pending views expose current observations with freshness
+and explicit unavailable fields. Memory lookup, uncertain capability requests,
+planning and actions pass through the existing integrating role with the exact
+human request/corrections. The foreground does not choose workers, duplicate
+orchestration or declare work accepted merely because it spoke a destination.
+Keep detailed tool procedures in their owning backend/skills; expose callable
+capabilities rather than dumping Codex-only skills into a direct provider prompt.
+
+Ordinary speech is brief, useful and lightly poetic when appropriate; failures
+need clear practical language. Do not narrate tool mechanics or announce work
+on a simple greeting/test. For a task lookup, a short “I'll check our progress”
+may be useful; otherwise perform the read quietly and report the result. Never
+claim success before the actual receipt. Do not casually mention “Sol,” worker
+sessions or model names; explain the real architecture clearly when asked.
+Avoid filler, repeated permission questions and premature replies to unfinished
+speech. A technical fault is not an occasion for a poetic metaphor.
+
+**Present results where the person can use them.** Reuse the existing timeline,
+viewers and For you ledger. Offer a concise spoken answer and a linked card for
+the actual image/model/report/result; allow “show it,” “tell me more,” and a
+short answer to the actual pending question. Preserve result revision, subject,
+audience and responder ownership. Distinguish working, blocked, needs your input,
+and result ready without exposing session machinery as the main navigation.
+Coalesce ordinary updates, never overlap voices, and offer meaningful returns
+at a conversational pause. Opening a result is not approval or task completion.
+
+**Next delivery order and a first children/family pilot:**
+
+1. Diagnose and repair renewal at the unchanged current bound. Demonstrate two
+   real successor installations with source continuity, late work return and
+   useful speech, plus deterministic blocked-checkpoint/empty-final/tool-race
+   coverage. A longer timeout or several manual reconnects do not pass this.
+2. Qualify the concise identity/capability packet and behavior with ordinary
+   greetings, interrupted sentences, task-status questions, unavailable memory,
+   delayed results, corrections and an explicitly named work destination.
+3. Compare the selected Qwen baseline with OpenAI through the same originals,
+   integration and return contract; measure useful audio, interruption, delayed
+   tools, renewal and cost. Record hearing/device acceptance separately from
+   mocks or generated text. Keep the current provider until a candidate passes.
+   For GPT-Live, follow its own continuous-audio, transcript/delegation and
+   playback lifecycle rather than inheriting Qwen/Gemini manual-turn mechanics.
+   Start from the official workflow and relevant inspected implementations;
+   redesign our transport/foreground seam where that produces a better result.
+   The prepared Realtime adapter is not a prerequisite or a substitute for this.
+4. Finish the result/question presentation slice above and exercise a guided
+   family journey without Telegram, terminal access or knowledge of model/session
+   names: converse, request a small creation, see/hear its result, correct it,
+   interrupt, reconnect and continue. Visible microphone control and a clear exit
+   must work. Respect each participant's actual data/tool permissions; do not
+   inherit the developer's private sessions simply by using the same product.
+
+The pilot is a bounded real-use acceptance step, not completion of all seven
+stages or a reason to require the full #452 backend separation first. Android,
+Beacon, pending navigation and other unfinished base obligations remain visible.
+No new provider/account selection, limit increase, automatic attention or
+continuous recording is performed by this documentation update.
+
+Provider limits and OpenAI integration paths are recorded in the
+[current service brief](interaction-avatar-services-20261102.md#4november-continuity-and-openai-integration-update).
 
 Human clarification,2November2026: the native voice model is primarily the
 conversational and prompt-formulation layer. Sol retains deliberate reasoning,
