@@ -67,6 +67,14 @@ decoded-PCM responses and a1375byte reconnect seed. The selected native's separa
 checks cover different scopes; the paid provider fixture did not execute20visits
 and neither proves natural-pressure acoustic handover or sustained phone use.
 
+A subsequent sustained-phone trial again hit the local input bound: its semantic
+checkpoint covered nine events while all sixteen events had been incorporated.
+The first close preceded the UI deployment; a later reconnect ended with an
+observed client disconnection whose cause remains unproven. PR624 removes the
+checkpoint-tail barrier without changing bounds. The current Qwen renewal-yield
+change coordinates deferred controls and wholly unsent audio at the owner
+boundary; receiving delivery and a new sustained-phone trial remain outstanding.
+
 The pending hold is not permanent archive closure. Archive transfer/retirement,
 long/noisy real speech, useful latency and actual phone continuity remain open.
 See [the context contract](interaction-live-context.md#active-continuation-preparation-5november2026)

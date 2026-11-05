@@ -171,6 +171,35 @@ class Acoustic(unittest.IsolatedAsyncioTestCase):
         await self.ack('ACTIVITY_END','0.2s')
         self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'Hello')])
 
+    async def test_renewal_preserves_wholly_unsent_span_and_preroll_on_successor(self):
+        await self.first()
+        self.session.renewal_hold=True
+        await self.session.feed(b'\2\0'*1600)
+        await self.session.activity(self.activity(9600,2,onset=9600))
+        await self.session.feed(b'\3\0'*1600)
+        await self.session.activity(self.activity(12800,2,endpoint=True))
+        queued=self.session.spans[1]
+        ident=queued.ident;expected=self.bridge.captures[-1][1]
+        self.assertEqual(self.session.unsent_originals(),{ident})
+        self.assertFalse(self.session.handover_ready(),'Already transmitted input still owns its final transcript')
+        await self.session.provider_event({'type':'input_transcript','text':'First'})
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertIsNone(self.session.provider)
+        self.assertTrue(self.session.handover_ready())
+        self.assertEqual(self.session.sent,6400,'Queued speech must not leak onto the old socket')
+        successor=Stream()
+        async with self.session.lock:
+            self.session.replace_stream(successor)
+            await self.session._pump()
+        self.assertEqual(self.session.spans[0].ident,ident)
+        self.assertEqual(b''.join(e[1] for e in successor.events if e[0]=='pcm'),expected)
+        self.assertEqual(self.session.provider_offset_base,6400)
+        self.assertEqual(len(self.bridge.captures),2,'Replacement cannot create another original')
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.provider_event({'type':'input_transcript','text':'Second'})
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts[-1],(ident,'Second'))
+
     async def test_handover_retires_only_completed_prefix_and_keeps_logical_tail_offsets(self):
         await self.first()
         await self.session.provider_event({'type':'input_transcript','text':'First'})

@@ -52,6 +52,7 @@ class NativeAcousticSession:
         self.closed=False;self.lock=asyncio.Lock();self.changed=asyncio.Event()
         self.boundary_mismatch=None
         self.provider_offset_base=0
+        self.renewal_hold=False
         self.peak_analysis_bytes=0;self.peak_unsent_span_bytes=0
         self.peak_confirmation_seconds=0
 
@@ -104,14 +105,24 @@ class NativeAcousticSession:
                     for c in self.bridge.captures.values()):return
             self._retire_prefix()
 
+    def unsent_originals(self):
+        """Only local spans whose provider activity was never started."""
+        return {s.ident for s in self.spans if s.stream_start is None and s.sent==s.start}
+
+    def handover_ready(self):
+        if self.closed or self.provider is not None:return False
+        if self.renewal_hold and self.stream.activity_mode=='manual':
+            return all(s.stream_start is None and s.sent==s.start for s in self.spans)
+        return self.local is None and not self.spans
+
     def replace_stream(self,stream):
         """Caller holds the idle acoustic lock; logical PCM/detector offsets stay.
 
         The new provider starts at byte zero. Keep retained source/capture clocks
         monotonic and rebase only its incoming activity offsets.
         """
-        if self.closed or self.local is not None or self.provider is not None or self.spans:
-            raise ForegroundUnavailable('Acoustic handover requires an idle boundary')
+        if not self.handover_ready():
+            raise ForegroundUnavailable('Acoustic handover requires an idle or wholly unsent boundary')
         if stream.activity_mode!=self.stream.activity_mode:
             raise ForegroundUnavailable('Acoustic handover changed activity ownership')
         if self.stream.activity_mode=='automatic' and (self.boundary!=self.sent or self.unassigned):
@@ -119,8 +130,12 @@ class NativeAcousticSession:
         # Only the completed original prefix is retired. Unassigned/trailing
         # PCM stays available for its later exact source or close-time recovery.
         # All capture/detector/provider clocks remain logical and monotonic.
-        self._retire_prefix()
+        keep=min([self.boundary]+[s.start for s in self.spans])
+        if not self.pcm_base<=keep<=self.captured:
+            raise ForegroundUnavailable('Acoustic handover PCM boundary changed')
+        del self.pcm[:keep-self.pcm_base];self.pcm_base=keep
         self.provider_offset_base=self.sent;self.stream=stream
+        self.renewal_hold=False
 
     async def marker(self,audio_bytes,questions):
         # The client emits this narrowing snapshot before the PCM containing its
@@ -206,6 +221,7 @@ class NativeAcousticSession:
         if self.closed:return
         self._observe_queues()
         if self.provider is None and self.spans:
+            if self.renewal_hold:return
             self.provider=self.spans[0];self.provider.stream_start=self.sent
             await asyncio.to_thread(self.stream.activity_start)
         span=self.provider

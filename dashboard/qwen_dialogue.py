@@ -39,6 +39,7 @@ class QwenDialogue(NativeDialogue):
         self._qcancels=deque();self._qcancel_noops=0
         self._qstart=None;self._qcommit=None;self._qitems={};self._qanswered=set();self._qinput_response=False
         self._qdeferred=deque();self._qdeferred_bytes=0
+        self._qrenewal_hold=False;self._qheld_response=False
         self._qbase='';self._qvoice=voice_name or 'longanqian'
         original_connect=connect
         if connect is None:
@@ -80,21 +81,58 @@ class QwenDialogue(NativeDialogue):
         self._qgenerating=True;self.response_pending=True
         self._raw({'type':'response.create'})
 
-    def _later(self, frames):
+    def _later(self, frames, *, requires_response=True):
         size=len(json.dumps(frames,ensure_ascii=False).encode())
         if len(self._qdeferred)>=64 or self._qdeferred_bytes+size>262144:
             raise ValueError('Qwen deferred controls exceed their bound')
-        self._qdeferred.append((frames,size));self._qdeferred_bytes+=size
+        self._qdeferred.append((frames,size,requires_response));self._qdeferred_bytes+=size
         self._drain_qwen()
 
     def _drain_qwen(self):
         if self.input_active or self._qgenerating or self._qcommit is not None:return
         if self._qinput_response:
-            self._qinput_response=False;self._create_response();return
+            self._qinput_response=False;self._qheld_response=False
+            self._create_response();return
+        if self._qrenewal_hold:
+            while self._qdeferred:
+                frames,size,requires_response=self._qdeferred.popleft();self._qdeferred_bytes-=size
+                for frame in frames:self._raw(frame)
+                if requires_response:
+                    # Complete actual tool-result and spoken-offer responses.
+                    # A new checkpoint seed is not their audible answer.
+                    self._qheld_response=False;self._create_response();return
+                self._qheld_response=True
+            # NativeDialogue sets this flag before a tool/guidance write. The
+            # frames are settled here, but no new provider response was started.
+            self.response_pending=False
+            return
         if self._qdeferred:
-            frames,size=self._qdeferred.popleft();self._qdeferred_bytes-=size
+            frames,size,_=self._qdeferred.popleft();self._qdeferred_bytes-=size
             for frame in frames:self._raw(frame)
-            self._create_response()
+            self._qheld_response=False;self._create_response()
+        elif self._qheld_response:
+            self._qheld_response=False;self._create_response()
+
+    def hold_for_renewal(self, enabled=True):
+        """Yield new control responses to the socket owner, not in-flight input.
+
+        Required tool/input/guidance responses finish on this socket. Only an
+        unsolicited control nudge may wait; its canonical queued references
+        remain with the owner. Failure release cannot replay a function output.
+        """
+        if type(enabled) is not bool:raise ValueError('Select explicit renewal hold')
+        with self._lock:
+            self._active()
+            self._qrenewal_hold=enabled
+            self._drain_qwen()
+
+    def handover_ready(self,idle_watch=None):
+        if not self._lock.acquire(blocking=False):return False
+        try:
+            if (self._qdeferred or self._qcommit is not None or self._qinput_response
+                    or self._qgenerating):return False
+            return super().handover_ready(idle_watch)
+        finally:self._lock.release()
 
     @staticmethod
     def _context_item(text):
@@ -137,7 +175,10 @@ class QwenDialogue(NativeDialogue):
             content=value['clientContent']
             text='\n'.join(p['text'] for t in content['turns'] for p in t['parts'])
             if content['turnComplete']:
-                self._later([self._context_item(text)])
+                try:notice=json.loads(text)
+                except ValueError:notice=None
+                control=isinstance(notice,dict) and notice.get('kind')=='internal_integrator_update_available'
+                self._later([self._context_item(text)],requires_response=not control)
             else:self._raw(self._context_item(text))
             return
         if 'toolResponse' in value:

@@ -1666,3 +1666,38 @@ ordinary publication occurred. This proves this semantic handling only. Native
 history remains retained; the successful disposable fixture was removed. Both
 the new caption-aware fixture and the actual old selected563Python app passed
 the joined owner/controller/SQLite handover tests on the exact new release.
+
+
+### Qwen renewal arbitration —5November2026
+
+A negative sustained-phone trial reached the unchanged local input bound after a
+semantic checkpoint had committed. New incorporated language followed that
+checkpoint. The old exact-prefix-only rollover gate rejected that otherwise
+bounded continuity; preparation now includes its exact incorporated tail.
+Aggregate `active_floor` diagnostics did not identify the precise transport or
+acoustic predicate that blocked the real trial. New fixed scalar floor fields
+distinguish those predicates without recording dialogue or frame logs.
+
+The Qwen owner yields at an actual response/input boundary. After early pressure,
+new local acoustic spans stay in the existing bounded PCM queue; a transmitted
+span must finish its exact commit and transcript. Required deferred function
+outputs are written once and their required answers finish on the old socket.
+A raw tool lookup is not automatically transferred as an answer in a checkpoint.
+Explicit spoken guidance also gets its response and blocks handover until its
+normal completion/playback boundary; it is not downgraded to a context receipt.
+Unsolicited return nudges wait behind renewal. A source query depending on a
+wholly unsent local original returns `not_ready` rather than waiting for that
+held original or selecting older words.
+
+Only spans with no provider start and no transmitted bytes may cross the final
+generation commit. Their IDs, original retention, question scope, PCM/preroll and
+logical clocks stay unchanged; pumping resumes on the installed successor.
+Known candidate setup failure releases the same old socket without replaying
+function outputs or originals. Existing admission uncertainty, source digests,
+playback gates, 64k/48k/600s diagnostic bounds and capture limits are unchanged.
+
+This uses Qwen's documented manual `input_audio_buffer.commit` / commit ACK /
+`response.create` lifecycle: [official interaction guide](https://help.aliyun.com/en/model-studio/realtime).
+`response.done` completes one response; it must not implicitly force another
+control response before the owner can choose renewal. This implementation and
+synthetic protocol/owner journeys are not sustained phone or hearing acceptance.

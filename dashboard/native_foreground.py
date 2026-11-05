@@ -62,6 +62,7 @@ class ForegroundBridge:
         self._recovery_captures=0
         self.latest=None
         self.pending_acoustic=None
+        self.unsent_originals=lambda:set()
         self._reservation_tail=None
         self.closed=False
         self._owners=asyncio.Semaphore(2)
@@ -229,6 +230,8 @@ class ForegroundBridge:
             elif event['type']=='source_query':
                 # Recognition/storage may finish while the native voice speaks.
                 capture=self.captures.get(self.latest)
+                if capture and capture.ident in self.unsent_originals():
+                    raise ForegroundUnavailable('The newer original is retained locally; its provider interpretation has not started')
                 if capture:
                     try:
                         await asyncio.wait_for(capture.interpretation_ready.wait(),10)
