@@ -46,6 +46,15 @@ section for measured loss/recovery, compatible rollback and remaining physical
 phone/background acceptance. This is a web durability correction, not completion
 of the ongoing device, full-memory or long-term workflow roadmap.
 
+A distinct selected654 three-visit clarification now qualifies concise identity
+after two explicit physical replacements, separately from653's misrecognized
+compound question. It exposed casual session jargon in backing and speech.
+The bounded context now distinguishes everyday work/voice controls from an
+architecture question and avoids inferring task status from voice closure.
+One integrated candidate follow-up speaks naturally; the generic first policy
+failed despite confirmed context. Full identity/memory, general speech compliance,
+phone/hearing and all prior roadmap requirements remain open; see the native guide.
+
 Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
 voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
 #301/#304/#609; it is not a gate for starting the comparison and is not silently

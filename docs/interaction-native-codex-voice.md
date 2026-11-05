@@ -4,6 +4,48 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Identity clarification and ordinary speech
+
+A distinct actual selected654 full-view case used the byte-identical deployed
+briefv4, the existing isolated Luna-low test thread and synthetic microphone.
+Three short visits/two explicit physical replacements identified CompAII, explained
+that closing voice does not cancel accepted work, and retained the same identity.
+All three visits closed/transcript_complete; four original segments2745864bytes
+and three output masters were hash-verified. Independent configured output Whisper
+recognized the name phonetically as Compay and continuity after both replacements.
+This supplies the concise identity clarification missing from the earlier653
+compound-question case; it does not rewrite that retained negative observation
+or prove full being-memory access, natural recovery or phone hearing.
+
+The case also exposed casual implementation language: the canonical backing final
+and spoken answer said work continues in its sessions, although the foreground
+brief already discourages such wording. Add the same ordinary-language distinction
+to the existing bounded backing/source context, which also accompanies voice
+startup. Everyday work/status/voice controls describe our work without technical
+session/model/delegation jargon; architecture remains explainable when asked how
+it works. Closing voice alone is not evidence that a task is currently running.
+No replacement execution owner, status inference, output filter or scripted reply.
+
+The first candidate's generic technical-question exception was insufficient:
+confirmed canonical context1809bytes still yielded session wording in both backing
+final and speech. That unselected candidate and its complete original are retained.
+A distinct precise-policy follow-up returned a short ordinary-language answer and
+the name, with one complete visit/original/output and no tool or new backing turn.
+Canonical context1903bytes was confirmed; independent output Whisper supports the
+work answer but misrecognizes that isolated spoken name. The name is supported by
+its native caption and the separate three-visit case, not by that ASR draft.
+Input ASR also altered the opening of the work question; preserve that uncertainty.
+This qualifies one integrated spoken follow-up, not separately forced backing
+speech compliance or a guarantee for all questions. Keep those limits explicit.
+
+The2048byte source context, short owner briefv4, native/Core/defaults and all
+capture/storage bounds are unchanged. Existing27history tests and focused
+independent policy/bounds review passed; no Rust source changed. Receiving
+selection and exact CI are recorded in the current operating record. Rollback
+retains the selected654 fragment-aware web reader and all native context,
+originals and accepted work; software rollback does not retract developer items
+already committed to native history. No database restore or input replay.
+
 ## Abrupt page reload and retained audio prefixes
 
 Native microphone capture now journals immutable approximately one-second WAV
