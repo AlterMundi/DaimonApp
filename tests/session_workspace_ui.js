@@ -18,11 +18,12 @@ function boot(){
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
-  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false;
+  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false;
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
     if(deny)throw Object.assign(Error('No workspace'),{status:403});
+    if(route==='interaction/sessions'&&failWorkspace)throw Object.assign(Error('Synthetic metadata outage'),{status:503});
     if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated};
     const url=new URL(route,'https://fixture.invalid');
     if(held){const hold=held;held=undefined;return hold;}
@@ -38,7 +39,7 @@ function boot(){
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
   return {root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
-    failHistory:value=>{failHistory=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
+    failHistory:value=>{failHistory=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
@@ -53,6 +54,13 @@ function boot(){
   assert.equal(f.byLabel('Show sessions').focused,true,'Pin returns focus to the menu toggle');
   f.byLabel('Show sessions').click();
   assert.equal(f.control.capture().reference.source,'session:7');
+  const selectedBeforeOutage=JSON.stringify(f.control.capture());
+  f.failWorkspace(true);await tick();await f.control.refresh('binding');
+  assert.equal(f.byLabel('Retry session status').hidden,false);
+  assert.equal(JSON.stringify(f.control.capture()),selectedBeforeOutage,'Metadata failure keeps the exact selected destination');
+  f.failWorkspace(false);await f.byLabel('Retry session status').click();
+  assert.equal(f.byLabel('Retry session status').hidden,true);
+  assert.equal(JSON.stringify(f.control.capture()),selectedBeforeOutage,'Retry does not route input or clear the pin');
   f.byText('Earlier work').click();await tick();
   assert.equal(f.timeline.hidden,true);assert.equal(f.control.capture().reference.source,'session:8');
   assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'false','Temporary view does not claim the earlier pin is its destination');

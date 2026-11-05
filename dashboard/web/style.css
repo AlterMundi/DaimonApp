@@ -1093,6 +1093,7 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .session-workspace-status:empty,.session-history-status:empty { display:none; }
 .session-workspace-status,.session-history-status { margin:4px 0;font-size:14px;line-height:1.4;overflow-wrap:anywhere; }
 .session-workspace-status { color:var(--warn); }
+.session-workspace-retry { justify-self:start;width:auto;min-height:32px;padding:4px 10px;font-size:14px; }
 .session-workspace-body { position:relative;display:flex;min-height:0;min-width:0;overflow:hidden; }
 .session-workspace-content { flex:1;min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr); }
 .standalone-conversation .session-workspace-content #conversation-timeline { grid-row:1;min-height:0;min-width:0;overflow:auto; }
