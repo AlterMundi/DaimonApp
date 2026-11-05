@@ -202,8 +202,8 @@ class NativeDialogue:
                      'description':'Read one bounded page of retained original references and recent assistant playback observations for this current foreground dialogue. Never starts work; playback does not prove hearing.',
                      'parameters':{'type':'OBJECT','properties':{'before':{'type':'INTEGER'}},'required':[]}},
                     {'name':'session_status','behavior':'NON_BLOCKING',
-                     'description':'Read one bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. Only coarse activity: not why a session is blocked, its work contents, or the decision it needs. Resolve those questions through Sol using recent_originals and delegate_to_integrator. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
-                     'parameters':{'type':'OBJECT','properties':{}}},
+                     'description':'Read a bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. When asking about one known session, pass its exact label or offered ID as selector to avoid returning unrelated sessions. Only coarse activity: not why a session is blocked, its work contents, or the decision it needs. Resolve those questions through Sol using recent_originals and delegate_to_integrator. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
+                     'parameters':{'type':'OBJECT','properties':{'selector':{'type':'STRING'}},'required':[]}},
                     {'name':'recent_results','behavior':'NON_BLOCKING',
                      'description':'Read one page of result references and available file names already visible in the integrating Conversation. This is not all worker history. Only current source revisions are offered; previews are incomplete. Use read_integrating_source with an offered ID/revision and offset0 for full text. Read-only; never starts work. Follow before_delivery/before_native cursors for older pages.',
                      'parameters':{'type':'OBJECT','properties':{'before_delivery':{'type':'INTEGER'},'before_native':{'type':'INTEGER'}},'required':[]}},
@@ -778,8 +778,14 @@ class NativeDialogue:
             if set(args)-{'after'} or type(after) is not int or not 0<=after<=2**63-1:
                 raise ValueError('Invalid pending cursor')
             proposal={'type':'session_pending_query','call_id':ident,'after':after}
-        elif name=='session_status' and not args:
-            proposal={'type':'session_status_query','call_id':ident}
+        elif name=='session_status':
+            selector=args.get('selector')
+            if (set(args)-{'selector'} or 'selector' in args and
+                    (not isinstance(selector,str) or not 1<=len(selector)<=128
+                     or selector!=selector.strip() or '\0' in selector)):
+                raise ValueError('Select one exact session label or offered ID')
+            proposal={'type':'session_status_query','call_id':ident,
+                **({'selector':selector} if selector is not None else {})}
         elif name=='read_integrating_source':
             if (set(args)!={'source','revision','offset'}
                     or not isinstance(args['source'],str) or not 1<=len(args['source'])<=256
