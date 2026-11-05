@@ -16,7 +16,7 @@ function boot(android=false,pcmReady=true,overrides={}){
     constructor(){this.currentTime=0;this.state='running';this.destination={};this.nodes=[];contexts.push(this);}
     resume(){this.state='running';return Promise.resolve();}suspend(){this.state='suspended';return Promise.resolve();}close(){this.state='closed';return Promise.resolve();}
     createBuffer(_channels,length,rate){return {duration:length/rate,copyToChannel(){}};}
-    createBufferSource(){const value={connect(){},disconnect(){},start(at){this.at=at;},stop(){this.stopped=true;},finish(){this.onended?.();}};this.nodes.push(value);return value;}
+    createBufferSource(){const owner=this,value={connect(){if(overrides.jumpOnConnect)owner.currentTime=.085;},disconnect(){},start(at){this.at=at;},stop(){this.stopped=true;},finish(){this.onended?.();}};this.nodes.push(value);return value;}
   }
   const track={readyState:'live',addEventListener(){},stop(){media.stopped=true;this.readyState='ended';}},media={stopped:false,getTracks(){return [track];}};
   const window={dispatchEvent(){return true;},crypto,AudioContext:Context,navigator:{mediaDevices:{getUserMedia:async()=>{permissionCalls++;return media;}}},StreamingVoice:{supported:()=>true,
@@ -74,6 +74,11 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   for(let n=0;n<299;n++)quiet.sources[0].emit({pcm:new ArrayBuffer(32000)});
   assert.equal(quiet.engine.active,false,'Unconfirmed resident tail ends before its300second hard bound');
   assert(quietWire.sent.some(v=>v.type==='close'&&v.recover_unassigned===true));
+  const jumping=boot(false,true,{jumpOnConnect:true}),jumpWire=await ready(jumping);
+  jumpWire.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:4800,pcm:Buffer.alloc(4800,1).toString('base64')});
+  await until(()=>jumping.contexts[0].nodes.length===1);
+  assert.equal(jumping.contexts[0].nodes[0].at,.165,'Initial output starts after device-clock initialization, preserving its prefix');
+  jumping.engine.hold();
   const paced=boot(),pacedWire=await ready(paced),pacedOutput=crypto.randomUUID();
   const pcm=Buffer.alloc(4800,1).toString('base64');
   pacedWire.push({type:'audio',id:pacedOutput,sample_rate:24000,end:4800,pcm});

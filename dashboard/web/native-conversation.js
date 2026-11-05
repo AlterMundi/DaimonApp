@@ -59,17 +59,20 @@ window.NativeConversation=(()=>{
         if(scheduled){playbackCounts.scheduled++;if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}
         if(begin===0)diagnosePlayback();return;
       }
+      if(nodes.size>=512)throw Error('Native playback exceeded its queue bound');
+      const samples=new Float32Array(raw.length/2);
+      for(let i=0;i<samples.length;i++){const n=raw.charCodeAt(2*i)|(raw.charCodeAt(2*i+1)<<8);samples[i]=(n>=32768?n-65536:n)/32768;}
+      const buffer=context.createBuffer(1,samples.length,24000);buffer.copyToChannel(samples,0);
+      const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
+      // Connecting the first source can advance the device clock. Read it
+      // afterwards so startup does not schedule the first samples in the past.
       const now=context.currentTime;
       // Reserve80ms only at startup/underrun. Once queued, preserve exact PCM
       // adjacency instead of adding a small new gap for every late fragment.
       // Distinct assistant interventions get a short natural separation.
       const boundary=begin===0&&scheduledOutput&&scheduledOutput!==value.id;
       const target=next+(boundary?0.18:0),at=target>now?target:now+.08;
-      if(nodes.size>=512||at-now+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
-      const samples=new Float32Array(raw.length/2);
-      for(let i=0;i<samples.length;i++){const n=raw.charCodeAt(2*i)|(raw.charCodeAt(2*i+1)<<8);samples[i]=(n>=32768?n-65536:n)/32768;}
-      const buffer=context.createBuffer(1,samples.length,24000);buffer.copyToChannel(samples,0);
-      const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
+      if(at-now+buffer.duration>30){source.disconnect();throw Error('Native playback exceeded its queue bound');}
       const node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
       source.onended=()=>{if(owned!==epoch||stopped||node.cancelled)return;nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};

@@ -13,6 +13,10 @@ playback deadline instead of carrying an earlier context's elapsed time into the
 new30second queue bound. A retained synthetic75second-visit regression reproduces
 immediate first-response failure without this reset and passes with it.
 
+Browser PCM reads its clock after connecting the source: device initialization
+can advance it by one output quantum. Actual muted Chromium exposed this startup
+prefix-clipping case; the corrected fresh-clock scheduling passed.
+
 Browser PCM starts/restarts with80ms of arrival reserve. Already queued fragments
 of the same utterance remain exactly adjacent; distinct assistant interventions
 leave180ms between their scheduled endpoints. Stop/capture/mute still retires old
