@@ -62,6 +62,15 @@ wrong-pool refusal, verifier operation-count mistake and different-binding/no-lo
 history negative. The complete native voice guide distinguishes this selective
 evidence from full being-memory, pagination/curation, cold-scope and device quality.
 
+Briefv5 adds a distinct cold-scope qualification: a fresh app binding without
+hydrated voice history recalls an already verified native result through one
+native handoff, with zero repeated source/tool calls. It carries the human's
+no-repeat condition and avoids interpreting an unclear name as implementation
+terminology. Preserve the raw explicit-name verifier failure and whole-output
+ASR mismatch; the exact retained speech window supports founder/date recall.
+This is one qualified case, not completion of full being-memory or device quality.
+See the native guide for closure, audio and selection limits.
+
 Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
 voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
 #301/#304/#609; it is not a gate for starting the comparison and is not silently
