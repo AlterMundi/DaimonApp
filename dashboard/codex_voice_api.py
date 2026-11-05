@@ -89,7 +89,7 @@ def install(app,config,provider,authorize,origins):
         if socket.headers.get('origin')not in origins:
             await socket.close(code=1008);return
         await socket.accept()
-        lease=voice=opening=starting=incoming=events=None
+        lease=voice=opening=remembering=starting=incoming=events=None
         visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
         async def send(value):
             await recheck()
@@ -125,9 +125,17 @@ def install(app,config,provider,authorize,origins):
                     sources=await asyncio.to_thread(provider.codex_voice_transcripts,owner,pending)
                     await asyncio.to_thread(history.reconcile,human,owner,sources)
                     startup=await asyncio.to_thread(history.continuation,human,owner)
+                memory=await asyncio.to_thread(history.memory_context,human,owner)
+                if memory is not None:
+                    startup=await asyncio.to_thread(history.continuation,human,owner,reserve=len(memory.encode()))
                 opening=asyncio.create_task(asyncio.to_thread(CodexVoice,provider.native_home,
                     owner['native_thread'],lease=lease))
                 voice=await asyncio.shield(opening)
+                if memory is not None:
+                    await recheck()
+                    if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
+                    remembering=asyncio.create_task(asyncio.to_thread(history.remember,human,owner,memory,voice,provider))
+                    await asyncio.shield(remembering)
                 await asyncio.to_thread(history.open,visit,human,owner,voice.session_id,seconds,
                     identity_sha256=identity['sha256'],startup=startup)
                 retained_visit=True
@@ -140,7 +148,7 @@ def install(app,config,provider,authorize,origins):
                 await recheck()
                 if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
                 starting=asyncio.create_task(asyncio.to_thread(voice.start,offer['sdp'],
-                    voice=selected.get('voice','cove'),context=context,continuation=startup))
+                    voice=selected.get('voice','cove'),context=context,continuation=startup,memory=memory))
                 await asyncio.shield(starting)
                 incoming=asyncio.create_task(socket.receive_text())
                 events=asyncio.create_task(asyncio.to_thread(voice.receive,.25))
@@ -204,6 +212,8 @@ def install(app,config,provider,authorize,origins):
                 # closes voice only and leaves accepted backend work running.
                 if opening is not None and voice is None:
                     with suppress(Exception):voice=await asyncio.shield(opening)
+                if remembering is not None:
+                    with suppress(Exception):await asyncio.shield(remembering)
                 if starting is not None:
                     with suppress(Exception):await asyncio.shield(starting)
                 if voice is not None:
