@@ -142,8 +142,18 @@ Explicit written-answer selection exits
 through ordinary hold/flush, preserves the draft and binds the exact question
 revision; reading/selection alone sends no answer. Shipped-shell synthetic
 Chromium qualifies this combined pending-question/voice/recovery UI at desktop
-and mobile widths. Actual native question creation and spoken incorporation
-remain open; Core mode/features/defaults are unchanged.
+and mobile widths. Actual native qualification now distinguishes regular RPC
+questions from native async questions. The regular question survives replacement
+and accepts one exact typed reply; spoken acknowledgement alone does not resolve
+its RPC. Under ordinary Default settings, an async structured question survives
+two visits and its spoken answer triggers actual native source work and the
+correct spoken result. Its metadata is absent from both application pending
+ledgers: connecting native async questions to existing For you cards and their
+source-linked ordinary input/dismissal remains the next concrete gap. Do not
+invent an RPC responder or enable experimental regular questions globally.
+See the native voice guide for failed-control evidence, exact limits and verified
+originals. This is synthetic-engine evidence, not phone/hearing acceptance;
+production Core settings and source647 remain unchanged.
 
 The complete fullscreen controller had a separate inherited five-minute guard
 that closed continuous Avatar before its configured600second capture budget.

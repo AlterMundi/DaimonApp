@@ -491,9 +491,9 @@ the local owner configuration does not explicitly enable it. A handler/schema
 alone therefore does not prove that ordinary native voice handoffs can invoke
 it. Do not enable a global feature, switch an ordinary thread to Plan, answer
 approvals, or synthesize a human answer merely to make a fixture pass. The
-existing request/task ledgers and For you remain the presentation/decision owners;
-actual question creation, visible attention during Avatar, reconnect and exact
-human-answer incorporation still need qualification.
+existing request/task ledgers and For you remain the presentation/decision owners.
+The actual qualification below distinguishes regular RPC questions from native
+asynchronous questions; their input and presentation semantics are different.
 
 
 ## Avatar attention without another decision path
@@ -530,3 +530,57 @@ voice. Fullscreen count/withdrawal/deadline/focus tests and existing question
 choice/receipt/scope fixtures cover their respective boundaries. This is UI and
 synthetic transport evidence, not actual model-created native questions, spoken
 answer incorporation or phone/hearing acceptance. No Core feature/mode changes.
+
+## Actual native questions across voice replacement
+
+Three bounded cases used the existing task-owned native test thread, selected
+Core and ChatGPT sign-in, synthetic microphone/actor and source647. No production
+input, global/default setting change, Gemini call or repeated original. Combined
+artifacts have a24MiB cap; each report256KiB. The positive cases each used two
+explicit microphone visits, at most210seconds of browser observation, four fresh
+native turns, three dynamic calls and one question. Existing600second visit and
+storage limits were unchanged. Read-only adjudication verified exact native
+final item/revision, retained original hashes/lengths and decoded16kHz mono output.
+These are engine-level digital qualifications, not fullscreen/phone/hearing tests.
+
+1. **Wrong executor, not proof of a channel restriction.** The first model tried
+   `tools.request_user_input_async` from `exec`; the actual output was a TypeError
+   because that function is absent from this proxy. It never made a direct native
+   question call. Preserve the completed failed original. The model's explanation
+   that the channel lacked questions was not evidence of that restriction.
+   Inspect tool exposure as well as schema, mode and effective configuration:
+   these question tools are registered DirectModelOnly, outside `tools.*`.
+   Native diagnostic readers must include custom_tool_call/output variants and
+   distinguish physical-turn metadata from the owning/root turn.
+2. **Regular RPC question: typed response passes, speech alone does not.** On the
+   test thread only, enabling the experimental Default-mode regular-question
+   setting allowed one actual `item/tool/requestUserInput` color question. It
+   remained pending across replacement. Voice understood “Elijo el azul” and
+   acknowledged it, but no RPC response arrived during18seconds. A separately
+   explicit typed clarification through the exact retained question/revision
+   answered once; the canonical turn completed with Azul and later voice recalled
+   it. Three retained originals total1,770,970bytes. An acknowledgement of a
+   spoken choice must not be reported as a native question response.
+3. **Native asynchronous question: ordinary voice continuation passes.** With
+   `default_mode_request_user_input` false on the test thread and globally, the
+   direct async tool emitted one completed agentMessage with `delivery:async`
+   and structured Luna/Estrella questions. It did not create an RPC responder.
+   Voice on the first visit recalled those choices. After confirmed closure, a
+   second explicit visit chose Luna and requested continuation. Native work read
+   the designated fixture only after that choice; its exact canonical final and
+   useful spoken output returned the mapped word, Magnolia. All three native
+   turns completed; both visits closed/transcript_complete; two retained
+   originals total1,323,098bytes. App context restore remained enabled, so this
+   does not isolate backend-only recall. No typed fallback or client work loop.
+
+The async case exposes a concrete product gap: both existing request and human-task
+ledgers returned zero despite the structured native question. The current647
+For you UI therefore cannot surface this question. The native TUI treats its
+answer as ordinary human input (with source-linked question context), not a
+regular-question RPC response. Follow that distinction when extending the existing
+ledger/card path; do not fabricate an RPC request/responder, force Plan mode or
+enable experimental regular questions globally. Preserve native item identity,
+question version, ordinary input admission and later dismissal/retirement as
+separate observations. A spoken answer is not permission to clear unrelated cards.
+Presentation plus exact written/spoken resolution remains unfinished under#303.
+The selected647 runtime and owner briefv3 are unchanged by these experiments.
