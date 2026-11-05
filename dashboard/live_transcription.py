@@ -213,6 +213,31 @@ def save_prepared(root, ident, binding, pcm, result):
     return value
 
 
+async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=True):
+    headers = list(socket.scope['headers'])
+    if 'authorization' in meta:
+        if (not isinstance(meta['authorization'], str) or len(meta['authorization']) > 128
+                or socket.headers.getlist('authorization')):
+            raise ValueError('One explicit session credential required')
+        headers.append((b'authorization', meta['authorization'].encode('ascii')))
+    request = Request({**socket.scope, 'type': 'http', 'method': 'POST',
+        'scheme': 'https' if socket.url.scheme == 'wss' else 'http', 'headers': headers})
+    session = await authorize(request)
+    if not secrets.compare_digest(meta['csrf'], session['csrf']):
+        raise HTTPException(403, 'Action token missing')
+    if require_voice and not getattr(provider, 'receiver', {}).get('voice'):
+        raise ValueError('Voice input unavailable')
+    actor=VoiceActor(authorize,request,session['human'])
+    async def recheck():
+        await actor()
+        value = await asyncio.to_thread(provider.presentation, f'input list {2**63-1} after')
+        if value['binding'] != meta['binding']:
+            raise ValueError('Conversation binding changed')
+    await recheck()
+    return session, recheck, actor
+
+
+
 def install(app, config, provider, authorize, origins):
     selected = config.get('streaming_transcription', {})
     if selected.get('enabled') is not True:
@@ -270,7 +295,8 @@ def install(app, config, provider, authorize, origins):
     detector_command = detection_command(selected)
     root = private_directory(selected['cache_root'])
     active = set()
-    analysis_active = set()
+    if not hasattr(app.state,'voice_active'):app.state.voice_active=set()
+    analysis_active = app.state.voice_active
     prepared_writes = asyncio.Semaphore(1)
 
     async def persist_prepared(*args):
@@ -286,27 +312,7 @@ def install(app, config, provider, authorize, origins):
         return await asyncio.wait_for(asyncio.shield(job), 3)
 
     async def bind_voice(socket, meta):
-        headers = list(socket.scope['headers'])
-        if 'authorization' in meta:
-            if (not isinstance(meta['authorization'], str) or len(meta['authorization']) > 128
-                    or socket.headers.getlist('authorization')):
-                raise ValueError('One explicit session credential required')
-            headers.append((b'authorization', meta['authorization'].encode('ascii')))
-        request = Request({**socket.scope, 'type': 'http', 'method': 'POST',
-            'scheme': 'https' if socket.url.scheme == 'wss' else 'http', 'headers': headers})
-        session = await authorize(request)
-        if not secrets.compare_digest(meta['csrf'], session['csrf']):
-            raise HTTPException(403, 'Action token missing')
-        if not getattr(provider, 'receiver', {}).get('voice'):
-            raise ValueError('Voice input unavailable')
-        actor=VoiceActor(authorize,request,session['human'])
-        async def recheck():
-            await actor()
-            value = await asyncio.to_thread(provider.presentation, f'input list {2**63-1} after')
-            if value['binding'] != meta['binding']:
-                raise ValueError('Conversation binding changed')
-        await recheck()
-        return session, recheck, actor
+        return await bind_voice_actor(provider,authorize,socket,meta)
 
 
     @app.websocket('/api/interaction/voice/live')

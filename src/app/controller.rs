@@ -20,6 +20,34 @@ pub(super) struct Guard {
     closed: CancellationToken,
 }
 
+/// Observe the physical writer already owned by this enrolled collector. This
+/// grants no lease, starts no input and exposes no controller access material.
+pub(super) fn collecting_native_turn(
+    shared: &AppShared,
+    human: i64,
+    key: SessionKey,
+    local: i64,
+) -> Option<String> {
+    shared
+        .controller_leases
+        .lock()
+        .expect("controller leases poisoned")
+        .values()
+        .find(|lease| {
+            lease.human == human
+                && lease.key == key
+                && lease.local_turn == local
+                && !lease.closed.is_cancelled()
+        })
+        .and_then(|lease| {
+            lease
+                .physical
+                .lock()
+                .expect("physical turn poisoned")
+                .clone()
+        })
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Access {

@@ -14,6 +14,10 @@ preserve our architecture. GPT-Live needs its own continuous-audio/delegation
 lifecycle, not the existing manual-turn adapter. Gemini remains deferred without
 balance; do not call it. Receiving native WebRTC handoff/reconnect evidence and
 its task-quality/context-cost limitations are recorded in the practices note.
+Nicolas6ea37cd3,5November: keep the current Qwen/Gemini mode working while adding
+OpenAI as a separately selectable mode. Freeze the selected engine for each voice
+visit; do not replace defaults, mix engines during a recording or silently fall
+back to another provider. Back-port a better OpenAI workflow only after comparison.
 
 Interaction is an independent application: web now, native/badge clients later.
 Human priority, 2026-11-01: implement native speech above the existing Sol

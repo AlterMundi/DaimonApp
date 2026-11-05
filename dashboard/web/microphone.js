@@ -7,7 +7,8 @@ window.VoiceInput = (() => {
   // uncertain original for capacity. Matching confirmation/explicit discard
   // retires it. Reload only reads. Older clients retain the unknown two-item
   // envelope rather than overwriting it; use this decoder to recover both.
-  function recoveryStore() {
+  function recoveryStore(key='pending') {
+    if(!['pending','codex_voice'].includes(key))throw Error('Unknown recording recovery key');
     if(!window.indexedDB)return;
     let opening;
     async function db(){
@@ -22,9 +23,13 @@ window.VoiceInput = (() => {
     }
     async function operation(mode,change){
       const value=await db();return new Promise((resolve,reject)=>{
-        const tx=value.transaction('capture',mode),store=tx.objectStore('capture'),request=store.get('pending');let result;
+        const tx=value.transaction('capture',mode),store=tx.objectStore('capture'),request=store.get(key);let result;
+        const other=mode==='readwrite'?store.get(key==='pending'?'codex_voice':'pending'):undefined;
+        let ready=false,otherReady=!other;
         const timer=setTimeout(()=>{try{tx.abort();}catch{}reject(Error('Local recording recovery timed out'));},3000);
-        request.onsuccess=()=>{try{result=change(store,request.result);}catch(error){tx.abort();reject(error);}};
+        const changeReady=()=>{if(!ready||!otherReady)return;try{result=change(store,request.result,other?.result);}catch(error){reject(error);tx.abort();}};
+        request.onsuccess=()=>{ready=true;changeReady();};
+        if(other)other.onsuccess=()=>{otherReady=true;changeReady();};
         tx.oncomplete=()=>{clearTimeout(timer);resolve(result);};tx.onerror=tx.onabort=()=>{clearTimeout(timer);reject(Error('Local recording recovery unavailable'));};
       });
     }
@@ -45,8 +50,8 @@ window.VoiceInput = (() => {
       return [old];
     }
     function storeRecords(store,items){
-      if(!items.length)store.delete('pending');
-      else store.put(items.length===1?items[0]:{schema:items.length>2?'telecodex.voice-recovery/v3':'telecodex.voice-recovery/v2',items},'pending');
+      if(!items.length)store.delete(key);
+      else store.put(items.length===1?items[0]:{schema:items.length>2?'telecodex.voice-recovery/v3':'telecodex.voice-recovery/v2',items},key);
     }
     return {
       read:()=>operation('readonly',(_store,old)=>records(old)[0]),
@@ -54,14 +59,15 @@ window.VoiceInput = (() => {
       put:(value,parallel=false)=>{
         const {blob,...meta}=value;
         if(!blob || blob.size>20*1024*1024 || new Blob([JSON.stringify(meta)]).size>65536)return Promise.reject(Error('Recording recovery limit reached'));
-        return operation('readwrite',(store,old)=>{
+        return operation('readwrite',(store,old,other)=>{
           const items=records(old),index=items.findIndex(v=>v.id===value.id);
           if(index>=0){if(items[index].audio_sha256!==value.audio_sha256)throw Error('Recording identity changed');items[index]=value;}
           else{
             if(items.length>=128||(parallel?items.filter(v=>v.native_review!==true&&v.reconnect_review!==true).length>=2:items.length>=1)||items.some(v=>v.binding!==value.binding))throw Error('Another unfinished recording is retained');
             items.push(value);
           }
-          if(items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery limit reached');
+          const combined=[...items,...records(other)];
+          if(combined.length>128||combined.some(v=>!Number.isFinite(v.blob?.size))||combined.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery limit reached');
           items.sort((a,b)=>(a.capture_started||0)-(b.capture_started||0));
           storeRecords(store,items);
         });
@@ -434,7 +440,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
-  return {mount};
+  return {mount,recoveryStore};
 })();

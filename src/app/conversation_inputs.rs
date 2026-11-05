@@ -129,6 +129,127 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("voice native attach ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Selected {
+            binding: String,
+            native_thread: String,
+            native_turn: String,
+        }
+        let selected: Selected = serde_json::from_str(body)?;
+        if !app.shared.config.codex.shared_app_server
+            || selected.native_thread.len() > 128
+            || selected.native_turn.is_empty()
+            || selected.native_turn.len() > 128
+            || selected.native_turn.chars().any(char::is_whitespace)
+        {
+            bail!("Select one existing native voice writer");
+        }
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        if current["binding"] != selected.binding
+            || current["entry_binding"][3] != selected.native_thread
+        {
+            bail!("Native voice entry changed");
+        }
+        app.shared
+            .store
+            .validate_owned_binding(cfg.entry(), human, &selected.native_thread)?;
+        if app.shared.store.stop_fenced(cfg.entry())?
+            || app.shared.store.maintenance_writer_held(cfg.entry())?
+        {
+            bail!("Native voice collection cannot release a writer hold");
+        }
+        if app
+            .shared
+            .codex
+            .live_native_turn(&selected.native_thread)
+            .await?
+            .as_deref()
+            != Some(selected.native_turn.as_str())
+        {
+            return Ok(
+                json!({"binding":current["binding"],"entry_binding":current["entry_binding"],"state":"not_current","native_turn":selected.native_turn,
+                "meaning":"Writer changed or completed; no input or replacement was started"}),
+            );
+        }
+        let worker = app.workers.lock().await.get(&cfg.entry()).cloned();
+        if let Some(worker) =
+            worker.filter(|w| w.cancel.lock().expect("cancel mutex poisoned").is_some())
+        {
+            let local = worker
+                .steer
+                .lock()
+                .expect("steer mutex poisoned")
+                .as_ref()
+                .map(|s| s.turn_id);
+            let collecting = local.and_then(|local| {
+                super::controller::collecting_native_turn(&app.shared, human, cfg.entry(), local)
+            });
+            return Ok(
+                json!({"binding":current["binding"],"entry_binding":current["entry_binding"],"state":if collecting.as_deref()==Some(selected.native_turn.as_str()) {"collecting"}else{"pending"},
+                "native_turn":selected.native_turn,
+                "meaning":"Existing collector observation only; no duplicate worker or input"}),
+            );
+        }
+        // Reuse the exact-current writer attachment. It never kicks off work,
+        // alters a goal or replays the voice delegation already admitted by Core.
+        let mut result = super::goals::attach_active(
+            app,
+            human,
+            &format!(
+                "{} {} {} {}",
+                cfg.chat_id, cfg.topic_id, selected.native_thread, selected.native_turn
+            ),
+        )
+        .await?;
+        result["binding"] = current["binding"].clone();
+        result["entry_binding"] = current["entry_binding"].clone();
+        Ok(result)
+    } else if matches!(args, "voice native capabilities" | "voice native current") {
+        let mut result = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        let native = result["entry_binding"][3]
+            .as_str()
+            .context("Native voice requires an enrolled thread")?
+            .to_owned();
+        app.shared
+            .store
+            .validate_owned_binding(cfg.entry(), human, &native)?;
+        if app.shared.store.stop_fenced(cfg.entry())?
+            || app.shared.store.maintenance_writer_held(cfg.entry())?
+        {
+            bail!("Native voice cannot release a writer hold");
+        }
+        result["native_codex_voice"] = json!(if app.shared.config.codex.shared_app_server {
+            Some("v1")
+        } else {
+            None
+        });
+        if args == "voice native current" {
+            if !app.shared.config.codex.shared_app_server {
+                bail!("Native voice requires the shared owner");
+            }
+            result["native_turn"] = json!(app.shared.codex.live_native_turn(&native).await?);
+        }
+        Ok(result)
+    } else {
+        command_input(app, human, args).await
+    }
+}
+
+async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
+    let cfg = app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .context("Missing integrating entry")?;
     if args == "workspace" {
         return app
             .shared

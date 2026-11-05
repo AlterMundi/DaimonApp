@@ -57,6 +57,28 @@ work may be the intended integration; measure its actual ownership/history/cost.
 identity/memory/results/questions and existing integrating responsibility, and
 redesign provider-specific transport when appropriate.
 
+Draft [#632](https://github.com/AlterMundi/DaimonApp/pull/632) now contains the
+separate, default-off native Codex WebRTC application route and explicit engine
+choice. Nicolas6ea37cd3 requires preserving Qwen/Gemini, frozen visit selection,
+and no silent fallback or default replacement. Capture-only original recovery,
+completed-source transcripts and existing native collector attachment are wired;
+mounted API and synthetic Chromium journeys qualify those application boundaries.
+Actual native application tests confirmed identity uptake, nonzero remote audio,
+original receipts and a surviving backend capability result. They also exposed
+lost inline corrections after reconnect. The candidate now restores a flat bounded
+window via native `initialItems`, with source hashes and a separate durable
+completeness barrier; incomplete histories reconcile from exact closed native
+sources or stay in review. Repeated corrected-word recall now passed across later connections. An explicit
+clarification returned the useful previous capability result through a completed
+native handoff, in audio, without repeating its tool. Retain the silent visit and
+misheard question as negative observations. The exact receiving-compatible native
+composition also returned the corrected word and committed its original. These
+are synthetic-media observations; receiving activation, sustained phone hearing
+and continuity beyond the bounded restore window remain open.
+See the [native mode contract](interaction-native-codex-voice.md). Production633
+contains only the session-status recovery UI; OpenAI remains disabled and current
+diagnostic/storage limits are unchanged.
+
 ## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound
