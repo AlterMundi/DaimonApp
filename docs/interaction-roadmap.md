@@ -149,12 +149,15 @@ its RPC. Under ordinary Default settings, an async structured question survives
 two visits and its spoken answer triggers actual native source work and the
 correct spoken result. Its metadata is absent from both application pending
 ledgers: the source now projects native async questions into existing For you task cards
-with source-linked ordinary input and explicit dismissal/retirement. Receiving
-delivery and automatic spoken-answer matching remain unqualified. Do not
+with source-linked ordinary input and explicit dismissal/retirement. Receiving649 delivery is verified on native9de7f956 (selected d359 plus the
+five-file native delta), web54014f82/UI fca27fce9778. Composed native tests and
+actual idle-scoped listener/collector/public-asset checks passed. Automatic
+spoken-answer matching and mounted actual-native combined UI remain unqualified. Do not
 invent an RPC responder or enable experimental regular questions globally.
 See the native voice guide for failed-control evidence, exact limits and verified
 originals. This is synthetic-engine evidence, not phone/hearing acceptance;
-production Core settings and source647 remain unchanged.
+production Core settings remain unchanged; native649 and its question UI are
+selected without changing providers, voice limits or original retention.
 
 The complete fullscreen controller had a separate inherited five-minute guard
 that closed continuous Avatar before its configured600second capture budget.

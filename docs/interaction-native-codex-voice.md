@@ -22,6 +22,32 @@ This is receiving delivery, not sustained phone/hearing acceptance or complete
 long-term continuity. Keep those gaps explicit. Roll back the web/configuration
 at voice idle while retaining the compatible native reader and current journals.
 
+## Receiving async-question update —5 November2026
+
+[PR649](https://github.com/AlterMundi/DaimonApp/pull/649), source54014f82,
+merge3d40d3fa and exact CI42091995935 passed. CompAII ITACA selects receiving
+native9de7f956, built on its exact prior d35949a5 composition with only the five
+native async-question files changed, plus web54014f82/UI fca27fce9778. The
+54,830,096byte default-feature binary has SHA256
+`4c4c40891e1fa6ac35aba61382ca41096db0ca661ed47500f194cbb0e029e8ce`.
+Composed Clippy and574unit tests/1ignored, updated upstream HTTP native-async,
+durable-task and regular-RPC journeys passed; independent composition review
+found no issue. The idle-scoped activation verified the loaded listener, public
+assets/health,44session bindings and the active successor collector with unchanged
+goal definition. Existing Core, TOML, briefv3, defaults and originals were preserved.
+No provider call or microphone capture accompanied activation.
+
+Anchor a receiving native update in its actual selected source and feature set.
+The upstream main build was valid upstream but omitted selected receiving
+Matrix/heartbeat/workflow code; it was refused before selection. Preserve the
+receiving composition and apply the qualified delta rather than substituting
+an upstream-only executable. Keep this check in the existing selection preflight.
+At voice idle, software rollback uses native d35949a5 plus web647; retain current
+journals/originals and compatible task readers, never restore the database or
+replay input. Async cards are now delivered; arbitrary spoken-answer matching
+and automatic retirement, mounted actual-native combined UI qualification and
+phone/hearing acceptance remain open.
+
 ## Configuration
 
 Keep existing voice defaults. Configure this only on a receiver whose native
@@ -574,8 +600,8 @@ These are engine-level digital qualifications, not fullscreen/phone/hearing test
    does not isolate backend-only recall. No typed fallback or client work loop.
 
 The async case exposes a concrete product gap: both existing request and human-task
-ledgers returned zero despite the structured native question. The current647
-For you UI therefore cannot surface this question. The native TUI treats its
+ledgers returned zero despite the structured native question. The then-selected647
+For you UI could not surface this question; PR649 addresses presentation below. The native TUI treats its
 answer as ordinary human input (with source-linked question context), not a
 regular-question RPC response. Follow that distinction when extending the existing
 ledger/card path; do not fabricate an RPC request/responder, force Plan mode or
