@@ -139,3 +139,10 @@ restores it without changing its content or pending tasks.
 
 Routing maps and saved-input routing-path disclosures remain in Under the hood,
 without per-message map shortcuts or routing details in the conversation.
+
+Session rows use one compact line for the title and four borderless reply, pin,
+mute and solo controls, followed by the readable status. Each control has a
+28px target and an 18px icon, matching the small audio-control vocabulary. Long
+titles truncate visually while retaining their full accessible name and tooltip.
+Pressed controls and keyboard focus remain visible; the menu stays anchored
+above the composer without changing its draft or selected input target.
