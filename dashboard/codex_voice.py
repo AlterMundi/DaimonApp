@@ -281,10 +281,14 @@ class CodexVoice:
             self._attempted = True
         # Let Codex assemble startup context and manage its own backend handoffs.
         # Do not replace the current thread, model, tools, prompt or goal.
+        # Preserve the native terminal transcript in backing history before
+        # closure. Recent role-bearing restore remains independent: native
+        # startup context alone does not guarantee post-compaction recall.
         params={'threadId':self.thread_id,
             'realtimeSessionId':self.session_id,'version':'v3','voice':voice,
             'outputModality':'audio','includeStartupContext':True,
-            'clientManagedHandoffs':False,'transport':{'type':'webrtc','sdp':sdp}}
+            'clientManagedHandoffs':False,'flushTranscriptTailOnSessionEnd':True,
+            'transport':{'type':'webrtc','sdp':sdp}}
         if initial:params['initialItems']=initial
         try:
             return self._rpc('thread/realtime/start', params)
