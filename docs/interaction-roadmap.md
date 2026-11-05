@@ -42,17 +42,42 @@ semantic checkpoint before voice opens. Actual Luna/Qwen correction-memory/PCM
 qualification recovered after its first20second preflight was pending. This is
 bounded recovery, not full useful phone latency or uninterrupted start acceptance.
 
-Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) prepares small
-continuation seeds during active canonical conversation. Its candidate supports
-repeatable nonce-bound full-read/checkpoint cycles without physical replacement,
-prefix commits with exact later tails, one outstanding operation and persisted
-finite rearming/request bounds. See [the context contract](interaction-live-context.md#active-continuation-preparation-5november2026).
-It remains unselected until exact native/mounted/actual-provider qualification and
-compatible receiving adoption. No diagnostic limit increase or provider switch.
-Full useful Qwen audio after replacements, manual reconnect, physical hearing and
-all prior milestone obligations remain open. OpenAI follows Qwen closure; Gemini
-is deferred without balance.606/607 UI foundation/grants are merged but unselected;
-the complete session workspace below remains part of this goal.
+Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) separates small
+semantic continuation preparation from physical replacement. PR610/612 are now
+receiving-selected, including nonce-bound full-read/checkpoint cycles, exact
+later tails, one outstanding operation and finite rearming/request bounds.
+Actual Luna low qualification produced two semantic checkpoints while Qwen stayed
+open, followed by two separately committed Qwen replacements and a manual
+reconnect, each with corrected-key text and decoded PCM. That digital fixture
+predated the subsequent negative phone trial; it did not prove sustained device
+use, natural-pressure renewal or physical hearing.
+
+The phone trial then exposed separate original-audio archive exhaustion, late
+input reservation while tools were pending, and recursively escaped inherited
+reconnect language. PR614/615 are receiving-selected with workspace613 over the
+compatible native590 composition. Reconnect preserves inherited language bytes;
+requested tool results can settle within the reserved input margin; selected
+original holds preserve pending audio through ASR/restart until matching archive
+handoff. Existing64k/48k/600s diagnostic and storage bounds remain unchanged.
+A new bounded digital regression against the selected composition completed in
+92.149seconds: two real Luna low semantic checkpoints, two committed Qwen
+replacements and one manual reconnect, with three complete corrected-key text/
+decoded-PCM responses and a1375byte reconnect seed. The selected native's separate
+20empty-visit regression passed with byte-identical inherited language. These
+checks cover different scopes; the paid provider fixture did not execute20visits
+and neither proves natural-pressure acoustic handover or sustained phone use.
+
+The pending hold is not permanent archive closure. Archive transfer/retirement,
+long/noisy real speech, useful latency and actual phone continuity remain open.
+See [the context contract](interaction-live-context.md#active-continuation-preparation-5november2026)
+and the concise Shared Resources current receiving guide for exact selection.
+
+The session workspace foundations606/607 and UI613 are also receiving-selected,
+with the619–622 compact-layout and shared title-control follow-ups. Source tests, actual receiving delivery
+and human acceptance remain distinct. OpenAI follows Qwen closure; Gemini is
+explicitly deferred without balance and must not be called for qualification.
+Full useful Qwen audio after repeated replacements, manual reconnect, physical
+hearing and every prior milestone obligation remain part of this goal.
 
 ## Session workspace and adaptive header —4November2026
 
@@ -76,14 +101,19 @@ Text and ordinary Conversation speech sent to a pinned worker bypass an integrat
 model turn; observer visibility does not imply another model call per message.
 Avatar delegation remains independent. Reuse existing native admission/history.
 
-Move Mute/Solo beside the session title and Reset audio filters to the rail before
-removing per-update controls. Expanded sessions expose a terminal-symbol view of
+Keep compact Mute/Solo and pin controls beside session titles in both the menu
+and individual updates, synchronized through the existing audio mix and one
+workspace pin store. Reset audio filters sits above the menu controls. Pin/reply
+selection closes the menu; audio controls keep it open. The destination line
+above input shows the selected pin and provides unpin. Expanded sessions expose
+a terminal-symbol view of
 the harness events actually available (tools, commands/output, exposed reasoning
 summaries), replacing session-specific Under the hood content while retaining
 useful app diagnostics. Do not invent hidden events or create a transcript store.
 
 The header compacts to one line on deliberate forward scrolling and reappears on
-reverse scrolling or header focus. Programmatic speech-follow scrolling must not
+reverse scrolling or header focus, including the pending/status lane. The compact
+session menu opens upward from above input. Programmatic speech-follow scrolling must not
 hide it. Preserve readable identity, header actions, keyboard/touch access and
 reduced motion. Qualify desktop/mobile combined pin/back/reply/text/voice/audio
 and live-tool journeys without Telegram or model/provider expertise.
