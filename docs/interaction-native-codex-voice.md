@@ -641,3 +641,60 @@ agent withdrawal uses the existing audited task controls and means neither human
 completion nor cancellation of native work. Spoken acknowledgement alone never
 retires a card; interpreted feedback and retirement remain separate observations.
 Automatic matching of arbitrary spoken answers to pending cards is not qualified.
+
+## Actual mounted async-question journey —5 November2026
+
+The selected649 shell, native receiving owner and real Codex WebRTC were mounted
+together with an isolated synthetic actor/microphone at390px. One new fictional
+landscape task emitted a structured async question. Its native item ID matched
+the pending card. Reviewing over Avatar preserved the connected peer and capture
+clock; closing review restored focus. Two explicit voice visits recalled the
+choices and then accepted the spoken choice. Native work read the new fixture
+once, only after that choice, and returned the correct word, lavanda. Three exact
+native final items, both complete closures and two originals/1,411,844bytes were
+verified against their retained bytes/hashes. The decoded remote outputs total
+914,862bytes with peaks0.298/0.324. Native transcripts and canonical results are
+verified; independent output ASR and physical hearing are not claimed.
+
+The question stayed pending after the voice task. This fixture prohibited other
+actions and retained a capabilities-only dynamic tool; it did not qualify ordinary
+proactive task retirement. A distinct synthetic reassessment then exercised the
+existing agent-owned controls through their generated scoped CLI fallback:
+
+1. Discover current controller capabilities.
+2. Call `human_task` with **only** `id`. Its result supplies the current source
+   and revision; do not pass a presentation revision into this read.
+3. When the action is obsolete, call `withdraw_task` with that inspected `id`,
+   `revision`, a source-grounded `reason` and optional links. This records an
+   agent decision, never inferred human completion, approval or cancellation.
+
+The actual corrected continuation completed these three operations and one
+withdrawal audit tied to its exact native physical turn. A fresh read-only mount
+then displayed zero pending actions. No additional voice/model work was used to
+repair the UI observation. Full question body rendering was separately verified
+against the authenticated source, with the completed read and enabled answer
+control; the earlier voice screenshot had captured that read while loading.
+
+Retained controls matter: the first reassessment incorrectly added `revision` to
+`human_task` and was rejected before any withdrawal. Its native final correctly
+reported no retirement. The later distinct corrective continuation used the
+proper read arguments; it did not replay an accepted action. After the successful
+withdrawal, its verifier attempted to click a hidden standalone refresh button.
+That timeout is a fixture failure, not a product rollback or failed withdrawal;
+the missing visual observation was finished read-only. Immediate live count
+transition remains unqualified. Earlier pre-input mount-prefix and constructor
+fixture failures admitted no native task or voice. The corrected mount emulates
+the production reverse proxy stripping its prefix before receiver authorization.
+All records fit the24MiB project bound (about6.5MiB observed); originals stay kept.
+
+Do not introduce transcript keyword matching or another task store to resolve
+this lifecycle. Next qualify ordinary Avatar handoff instructions and the existing
+scoped retirement tools together, without test-only reassessment directions.
+The [official App Server thread guide](https://learn.chatgpt.com/docs/app-server#start-or-resume-a-thread)
+documents persisted dynamic tools restored with the thread. Inspect the actual
+saved tool set rather than assuming resume installs new ones; the selected source
+admits dynamic tools at thread creation. Keep the existing CLI fallback for older
+threads. Neither this bounded journey nor source metadata establishes sustained
+full-view renewal, noise/interruption/phone acceptance or complete being memory.
+Production Core, owner briefv3, providers and capture/context/storage limits are
+unchanged. The complete roadmap remains active.
