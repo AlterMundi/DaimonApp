@@ -130,3 +130,9 @@ remains pending. Retain the compatible native workspace/hold reader on web
 rollback; old strict readers are not a rollback for held originals. Exact
 selection, rollback and remaining acceptance live in the Shared Resources
 Interaction receiving guide and the receiving owner's local operations record.
+
+The compact session toolbar sits below the reading area, immediately above the
+input dock. Its menu opens upward within that area on desktop and mobile, without
+shifting the conversation or input. The destination remains beside the menu
+control. Compact-header mode also hides the pending/status lane; reverse scrolling
+restores it without changing its content or pending tasks.

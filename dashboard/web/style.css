@@ -1069,18 +1069,22 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 /* Scroll-driven compact presence, retaining the identity and header actions. */
 .standalone-conversation header { transition:height 140ms ease,min-height 140ms ease; }
 .standalone-conversation.conversation-header-compact header { height:44px;min-height:44px;overflow:hidden; }
-.standalone-conversation.conversation-header-compact header #conversation-companion { display:block; }
+.standalone-conversation.conversation-header-compact header #conversation-companion { display:block;align-self:center; }
+.standalone-conversation.conversation-header-compact header .header-tools { display:flex;flex-wrap:nowrap;width:auto;max-width:none;align-self:center;padding:0; }
 .standalone-conversation.conversation-header-compact header #conversation-companion pre,
 .standalone-conversation.conversation-header-compact header .companion-caption,
 .standalone-conversation.conversation-header-compact header .companion-phases,
+.standalone-conversation.conversation-header-compact #conversation-presence,
 .standalone-conversation.conversation-header-compact header #conversation-account { display:none!important; }
 .standalone-conversation.conversation-header-compact header .companion-name { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 @media(prefers-reduced-motion:reduce) { .standalone-conversation header { transition:none; } }
 
 /* The workspace owns the reading area; the original draft/audio dock stays put. */
-.standalone-conversation #conversation > .session-workspace { grid-row:2; min-width:0;min-height:0;display:grid;grid-template-rows:auto auto minmax(0,1fr);overflow:hidden; }
+.standalone-conversation #conversation > .session-workspace { grid-row:2; min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto auto;overflow:hidden; }
 .session-workspace-toolbar,.session-view-toolbar { display:flex;align-items:center;gap:8px;min-width:0; }
 .session-workspace button { min-height:44px;min-width:44px;padding:6px 10px;font-size:16px; }
+.session-workspace-toolbar { padding:4px 0;border-top:1px solid var(--line); }
+.session-workspace-toolbar button { border:0;background:transparent;border-radius:var(--radius,12px); }
 .session-input-target { flex:1;min-width:0;overflow-wrap:anywhere;font-size:14px; }
 .session-workspace-status:empty,.session-history-status:empty { display:none; }
 .session-workspace-status,.session-history-status { margin:4px 0;font-size:14px;line-height:1.4;overflow-wrap:anywhere; }
@@ -1088,7 +1092,7 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .session-workspace-body { position:relative;display:flex;min-height:0;min-width:0;overflow:hidden; }
 .session-workspace-content { flex:1;min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr); }
 .standalone-conversation .session-workspace-content #conversation-timeline { grid-row:1;min-height:0;min-width:0;overflow:auto; }
-.session-rail { width:288px;flex:none;min-height:0;overflow:auto;padding:8px 12px 8px 0;margin-right:12px;border-right:1px solid var(--line);background:var(--bg); }
+.session-rail { position:absolute;z-index:4;bottom:0;left:0;width:min(100%,360px);max-height:100%;min-height:0;overflow:auto;overscroll-behavior:contain;box-sizing:border-box;padding:8px 12px;border:1px solid var(--line);border-radius:var(--radius,12px) var(--radius,12px) 0 0;background:var(--bg);box-shadow:0 -8px 24px color-mix(in srgb,var(--bg) 80%,transparent); }
 .session-rail h3 { margin:4px 0 12px;font-size:18px; }
 .session-row { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:8px;border-bottom:1px solid var(--line);padding:8px 0; }
 .session-workspace .session-name { display:block;text-align:left;width:100%;font-size:16px;line-height:1.35;border:0;border-radius:0;background:transparent;padding:6px 0;overflow-wrap:anywhere; }
@@ -1108,7 +1112,6 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .session-message time { display:block;margin-top:6px;font-size:14px;color:var(--muted); }
 @media(max-width:700px){
- .session-rail { position:absolute;z-index:4;inset:0 auto 0 0;width:min(85vw,320px);padding:10px 14px 20px 4px;box-shadow:12px 0 24px color-mix(in srgb,var(--bg) 85%,transparent); }
  .session-workspace-toolbar { gap:4px; }
 }
 
