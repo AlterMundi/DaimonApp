@@ -71,9 +71,19 @@ A subsequent sustained-phone trial again hit the local input bound: its semantic
 checkpoint covered nine events while all sixteen events had been incorporated.
 The first close preceded the UI deployment; a later reconnect ended with an
 observed client disconnection whose cause remains unproven. PR624 removes the
-checkpoint-tail barrier without changing bounds. The current Qwen renewal-yield
-change coordinates deferred controls and wholly unsent audio at the owner
-boundary; receiving delivery and a new sustained-phone trial remain outstanding.
+checkpoint-tail barrier without changing bounds. Receiving-selected625/626
+coordinates deferred controls and wholly unsent audio at the owner boundary,
+while preserving all required tool-result answers. Actual Qwen wire-induced
+pressure crossed two native replacements and returned three corrected-key text/
+PCM answers; sustained natural phone acceptance remains outstanding.627/628 are
+also receiving-selected for ordinary Conversation speech reserve and explicit
+failed-history recovery; these are separate from Avatar continuity.
+
+A later browser regression reproduces immediate first-response failure when a
+reconnected AudioContext inherits the prior visit's75second playback deadline.
+The browser repair resets that clock, keeps continuous PCM fragments adjacent
+with80ms arrival reserve, and separates distinct assistant interventions by180ms.
+Source qualification and physical receiving/hearing acceptance remain distinct.
 
 The pending hold is not permanent archive closure. Archive transfer/retirement,
 long/noisy real speech, useful latency and actual phone continuity remain open.
