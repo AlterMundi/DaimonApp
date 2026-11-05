@@ -113,6 +113,16 @@ quantity and foreground waiting still failed. Acknowledgement-filler and BEM
 experiments are not selected fixes. Keep #303 open for verified final-result
 delivery, natural waiting and useful spoken answers.
 
+The native role/channel follow-up qualifies a bounded two-visit case with the structured rolev3
+and native commentary routing, preserving automatic handoffs and suppressing
+acknowledgement filler. A real source read preceded the correct spoken result;
+after confirmed physical replacement the same result was recalled without
+re-executing its source command. Both original recordings, transcript barriers
+and useful remote audio were retained. This improves the evidence beyond an ACK
+or caption alone; long sustained/compaction/phone acceptance and the full #303
+surface remain open. Reusable role guidance lives in the native voice guide and
+its owner-rendered template, not only one conversation's instructions.
+
 ## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound

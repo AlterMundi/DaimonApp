@@ -59,6 +59,8 @@ class Voice(unittest.TestCase):
         p=frames[3]['params']
         self.assertEqual(p['transport'],{'type':'webrtc','sdp':'v=0\r\noffer'})
         self.assertTrue(p['includeStartupContext']);self.assertFalse(p['clientManagedHandoffs'])
+        self.assertEqual(p['codexResponseHandoffMode'],'commentary')
+        self.assertIs(p['delegationAckFiller'],False)
         self.assertNotIn('prompt',p);self.assertNotIn('model',p)
         self.assertNotIn('authorization',json.dumps(frames).lower())
         self.assertEqual([e['method'] for e in self.voice.receive(0)],['thread/realtime/started','thread/realtime/sdp'])
