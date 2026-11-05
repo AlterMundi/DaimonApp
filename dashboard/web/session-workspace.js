@@ -3,6 +3,9 @@
 (() => {
   const pinIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 6-4 1-3 5-5-5 5-3Z"/><path d="m9 15-6 6"/></svg>';
   const replyIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H9l-5 5Z"/><path d="M8 8h8M8 12h5"/></svg>';
+  const muteIcon=muted=>'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4Z"/>'+
+    (muted?'<path d="m16 9 5 6m0-6-5 6"/>':'<path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>')+'</svg>';
+  const active=row=>row.fresh===true&&(row.execution==='working'||row.execution==='running'||row.tools_running===true||row.goal_state==='active');
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
@@ -32,10 +35,10 @@
     viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
-    rail.append(el('h3','Sessions'),list);toolbar.append(toggle,back,target,unpin,reset);body.append(rail,content);shell.append(toolbar,status,body);
+    rail.append(el('h3','Sessions · 24h'),list);toolbar.append(toggle,back,target,unpin,reset);body.append(rail,content);shell.append(toolbar,status,body);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false;
-    let activeHistory,historyBusy=false,historyEpoch=0;
+    let activeHistory,historyBusy=false,historyEpoch=0,observedAt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){renderSelection();onTarget();}
@@ -70,19 +73,24 @@
       return states.join(' · ');
     }
     function syncAudio(){
-      let filtered=false;
+      let filtered=!!audio({}).filtered;
       for(const [id,row] of rows){
         const value=audio(row.data);filtered ||= !!value.filtered;
         row.mute.setAttribute('aria-pressed',String(!!value.muted));row.solo.setAttribute('aria-pressed',String(!!value.solo));
         row.mute.title=`${value.muted?'Unmute':'Mute'} ${row.data.title}`;row.mute.setAttribute('aria-label',row.mute.title);
         row.solo.title=`${value.solo?'Remove solo from':'Solo'} ${row.data.title}`;row.solo.setAttribute('aria-label',row.solo.title);
-        row.mute.textContent=value.muted?'◖×':'◖♪';
+        row.mute.innerHTML=muteIcon(!!value.muted);
       }
       reset.hidden=!filtered;
     }
     function render(){
-      for(const [id,row] of rows)if(!inventory.has(id)){row.box.remove();rows.delete(id);}
-      for(const data of inventory.values()){
+      // Visibility is separate from intent: an expired row must not silently
+      // erase a selected pin or change the target of an existing recording.
+      const recent=[...inventory.values()].filter(row=>active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
+        .sort((a,b)=>Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
+      const visible=new Set(recent.map(row=>row.id));
+      for(const [id,row] of rows)if(!visible.has(id)){row.box.remove();rows.delete(id);}
+      for(const data of recent){
         let row=rows.get(data.id);
         if(!row){
           row={data,box:el('article',undefined,'session-row')};
@@ -96,7 +104,7 @@
             changed();
           });
           row.pin.innerHTML=pinIcon;row.reply.innerHTML=replyIcon;
-          row.mute=button('◖♪','Mute this session',()=>onAudio('mute',row.data));
+          row.mute=button('','Mute this session',()=>onAudio('mute',row.data));
           row.solo=button('S','Solo this session',()=>onAudio('solo',row.data));
           const actions=el('div',undefined,'session-row-actions');actions.append(row.reply,row.pin,row.mute,row.solo);
           row.box.append(row.name,row.state,actions);rows.set(data.id,row);
@@ -119,6 +127,7 @@
       try{
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
+        observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
         inventory=new Map(value.sessions.map(row=>[row.id,row]));allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){

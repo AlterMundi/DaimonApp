@@ -60,8 +60,11 @@ Nicolas selected #602 as a complete interface/routing change, with #603 direct
 input, #604 session rail and #605 technical event view. Preserve the Avatar
 continuity work while implementing this base-experience refinement in milestone8.
 
-All owned sessions appear in a collapsible side column, ordered by conversation
-activity rather than observer refresh time. Existing Telecodex markers and fresh
+The authorized inventory covers all owned sessions. Following the5November
+phone feedback, the collapsible column shows sessions active within24hours, with
+fresh running/tool/active-goal sessions first, then conversation activity. Observer
+refresh alone does not qualify an idle session. Hidden old rows do not change
+existing pins, frozen captures or drafts. Existing Telecodex markers and fresh
 observer facts represent work, active/blocked goals, human requests and results
 to review. Unknown/stale observations stay explicit; color is not the only cue.
 The latest-message bubble uses an exact current source/revision reply. A separate

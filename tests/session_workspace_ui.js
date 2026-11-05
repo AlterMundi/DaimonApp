@@ -15,7 +15,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function boot(){
   const document={createElement:tag=>new Element(tag)},window={},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
-  const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent'});
+  const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:Date.now()/1000});
   let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held;
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
@@ -41,7 +41,9 @@ function boot(){
 (async()=>{
   const f=boot();await f.control.refresh('binding');
   assert.equal(f.control.active,true);assert.equal(f.control.capture(),undefined);
-  assert.deepEqual(f.rows().map(row=>row.children[0].textContent),['Busy work','Earlier work','Conversation']);
+  assert.deepEqual(f.rows().map(row=>row.children[0].textContent),['Earlier work','Busy work','Conversation']);
+  f.getSessions()[0].execution='working';await f.control.refresh('binding');
+  assert.equal(f.rows()[0].children[0].textContent,'Busy work');
   await f.rows()[0].children[2].children[1].click();
   assert.equal(f.control.capture().reference.source,'session:7');
   f.byText('Earlier work').click();await tick();
@@ -77,5 +79,18 @@ function boot(){
   assert(!f.root.textContent.includes('Retained answer'));
   f.byLabel('Send to the conversation').click();assert.equal(f.control.capture(),undefined);
   f.control.reset();assert.equal(f.control.active,false);
+  const aging=boot();const now=Date.now()/1000;const records=aging.getSessions();
+  records[0].last_activity_at=now-86399;records[1].last_activity_at=now-86401;
+  records[2].last_activity_at=now-172800;records[2].execution='working';
+  await aging.control.refresh('binding');
+  assert.deepEqual(aging.rows().map(row=>row.children[0].textContent),['Conversation','Busy work'],'Active now counts as activity; expired idle sessions are hidden');
+  aging.rows()[1].children[2].children[1].click();
+  records[0].last_activity_at=now-86401;await aging.control.refresh('binding');
+  assert.equal(aging.control.capture().reference.source,'session:7');
+  assert.equal(aging.control.canSend(),true,'Hiding an old row does not change an explicit destination');
+  assert.equal(aging.byText('Busy work'),undefined);
+  const icon=aging.rows()[0].children[2].children[2];assert(icon.innerHTML.includes('M11 5 6 9H3'));
+  icon.click();assert(icon.innerHTML.includes('m16 9 5 6m0-6-5 6'));
+
   console.log('Session workspace: exact reply, pin/expand/Back, stale generation, late history, technical view, audio and grant loss passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

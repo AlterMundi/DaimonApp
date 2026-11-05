@@ -8,6 +8,8 @@ const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
 {id:'2'.repeat(24),title:'Garden · Waiting for your choice',audio_key:'100:8',destination:ref(8),latest_reply:{...ref(8),source:'session:8/43'},fresh:true,human_action_pending:true,execution:'working',goal_state:'blocked'},
 {id:'3'.repeat(24),title:'Conversation',audio_key:'100:1',destination:null,is_entry:true,fresh:true,execution:'working',goal_state:'active'}];
+for(const row of sessions)row.last_activity_at=Date.now()/1000;
+sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 const base=()=>({binding,csrf:'fixture-csrf',items:[],cursor:0,newest:0,more:false});
@@ -60,7 +62,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
- await page.getByRole('button',{name:'Pin as the input destination',exact:true}).first().click();
+ assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
+ assert.deepEqual(await page.locator('.session-name').allTextContents(),[sessions[1].title,sessions[2].title,sessions[0].title]);
+ await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
  await page.locator('#conversation-message').fill('Keep this draft while I look around.');
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
  await page.getByRole('button',{name:sessions[1].title,exact:true}).click();
@@ -76,7 +80,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.locator('#conversation-send').click();await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');
  assert.equal(posts.at(-1).reply.source,'session:7');assert.equal(posts.at(-1).text,'Keep this draft while I look around.');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
- await page.getByRole('button',{name:'Reply to the latest message',exact:true}).first().click();
+ await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Reply to the latest message',exact:true}).click();
  await page.locator('#conversation-message').fill('About that exact result.');await page.locator('#conversation-send').click();
  await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');assert.equal(posts.at(-1).reply.source,'session:7/42');
  await page.getByRole('button',{name:`Mute ${sessions[0].title}`,exact:true}).click();
@@ -86,6 +90,14 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.setViewportSize({width:390,height:844});
  await page.locator('#conversation-message').fill('My draft stays here.');await page.screenshot({path:path.join(output,'mobile-sessions.png')});
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No horizontal page overflow');
+ const layout=await page.locator('.session-row').first().evaluate(row=>{
+  const rect=selector=>{const r=row.querySelector(selector).getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom};};
+  return {name:rect('.session-name'),actions:rect('.session-row-actions'),state:rect('.session-row-state')};
+ });
+ assert(layout.actions.x>=layout.name.right-1,'Controls sit to the right of the title');
+ assert(layout.state.y>=Math.max(layout.name.bottom,layout.actions.bottom)-1,'Status sits below title and controls');
+ assert((await page.getByRole('button',{name:`Mute ${sessions[0].title}`,exact:true}).innerHTML()).includes('M11 5 6 9H3'),'Canonical speaker mute icon');
+
  await page.getByRole('button',{name:'Hide sessions',exact:true}).click();
  const timeline=page.locator('#conversation-timeline');await timeline.evaluate(node=>{node.scrollTop=0;});await page.waitForTimeout(100);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Programmatic positioning does not compact header');
