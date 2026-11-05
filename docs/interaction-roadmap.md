@@ -119,9 +119,21 @@ acknowledgement filler. A real source read preceded the correct spoken result;
 after confirmed physical replacement the same result was recalled without
 re-executing its source command. Both original recordings, transcript barriers
 and useful remote audio were retained. This improves the evidence beyond an ACK
-or caption alone; long sustained/compaction/phone acceptance and the full #303
-surface remain open. Reusable role guidance lives in the native voice guide and
+or caption alone. A separate native compaction then retained the code in its
+canonical replacement history; a fresh voice visit recalled it without repeating
+tools, with its complete original and useful signal retained. This qualifies one
+compaction/replacement case, not repeated sustainable renewal, late returns or
+phone acceptance; the full #303 surface remains open. Reusable role guidance lives in the native voice guide and
 its owner-rendered template, not only one conversation's instructions.
+
+A further late-return case held one actual read-only tool reply across confirmed
+voice replacement and released it once. The task survived; a new spoken status
+request recovered the correct result with useful audio and all originals retained,
+without another tool call. There was no unsolicited offer during12seconds before
+that question. Automatic late-result attention therefore remains a concrete gap;
+context delivery or task completion alone does not qualify it. Preserve native
+handoff ownership and investigate the supported native speech/attention path,
+without user-input replay or another manual delegation loop.
 
 ## Qwen iteration checkpoint —5November2026
 

@@ -70,8 +70,9 @@ source verification. After confirmed closure and a second native voice generatio
 it recalled that code without another source command. Both generations retained
 their original recordings (1,611,182bytes total), complete transcripts and useful
 remote audio (peaks0.269/0.255; positive RTP audio energy). This establishes that
-case, not universal factual waiting, long sustained renewal, compaction recall,
-arbitrary tools/results, independent output ASR or physical phone/hearing.
+case, not universal factual waiting, long sustained renewal, arbitrary tools/results,
+independent output ASR or physical phone/hearing. The separate compaction result
+below qualifies one further replacement, not sustained continuity.
 
 Negative controls remain: acknowledgement filler alone permitted early invented
 facts; an earlier mounted role merely promised a lookup without invoking it.
@@ -202,7 +203,7 @@ omitted, returned the old value despite correct transcription. Preserve that
 negative observation; do not repeat compaction to make the verifier pass. The
 failed visit closed with its originals retained. A later read of the committed
 compaction replacement history still found the new fact. Thus the compaction
-record did not discard it; automatic retrieval into voice remains unqualified.
+record did not discard it; that visit did not qualify automatic retrieval into voice.
 Native startup alone is not
 qualified as the long-term voice memory bridge. Inspected source excludes
 contextual user fragments from its recent-turn section, advertises that memory
@@ -217,6 +218,67 @@ when reviewing earlier conversation. This qualifies that retrieval case, not
 complete long-term coverage of all inline speech. No existing diagnostic,
 visit or storage bound was increased. Do not remove the flat application restore
 window or claim complete long-term continuity based on a compaction ACK.
+
+## Qualified code recall after native compaction —5 November2026
+
+A distinct subsequent case used the selected version3 owner brief and native
+commentary settings on the existing idle synthetic test thread. It invoked the
+supported [`thread/compact/start`](https://learn.chatgpt.com/docs/app-server#api-overview)
+once, waited for the completed native turn and inspected the newly committed
+`compacted` record. Its replacement history retained the previously verified
+code. A fresh mounted voice visit then answered the code-recall question correctly
+without repeating the source command or dynamic tools. Recent application
+user/assistant restore items were omitted; canonical native context and source
+location hints remained available. The complete transcript, closed visit and
+779,650-byte original receipt were retained.
+
+The sole assistant utterance named the correct code and remote audio peak was
+0.293. The question transcription changed "ya" to "de A", preserving the code-recall
+intent. This is a bounded digital observation with no independent output ASR or
+physical hearing; RTP energy was not sampled during the answer in this case.
+The earlier failed compaction/correction case above remains negative evidence.
+
+The backing model's last pre-compaction request reported68,233 input tokens;
+the first subsequent request reported37,449. These are different requests, not
+a controlled cost comparison. Cached input also changed67,456 to11,648, so the
+smaller active input does not establish a cheaper first request. A compaction
+checkpoint's zero input counter is not evidence that compaction was free. These
+numbers concern the test backing model, not the realtime frontend's context
+capacity. Canonical journals remain append-only: model compaction does not free
+archive storage. Repeated renewal, corrections/questions and late result delivery
+still need their own evidence; no production context, visit or storage bound
+changed.
+
+## Late tool result across native voice replacement —5 November2026
+
+A bounded subsequent application case made one new actual read-only capabilities
+call on the existing synthetic native thread. The fixture held its one response,
+closed the first voice visit with its transcript and original confirmed, started
+a new native voice generation and released that exact response once. A fixture-only
+marker appended to the authentic tool response distinguished result delivery
+from guessing or replay; it was not a production capability or human instruction.
+The native task completed. A distinct spoken question about the pending result
+then received the correct marker, spoken digit by digit, without a second tool
+call. Remote peak0.347 and inbound RTP energy0.217 establish useful digital
+signal for that answer. Both visits closed with complete transcripts and original
+receipts, including the second visit's two ordered recording chunks.
+
+No unsolicited answer arrived during the12-second observation before the status
+question. The trace contained a standalone `session.context.appended` event;
+the installed Core routes standalone backing output through the selected
+commentary channel when the replacement generation has no active handoff.
+This is consistent with context availability without a speech trigger, not proof
+that every delayed result will remain silent or that a longer timeout fixes it.
+Native result survival and status-request retrieval are qualified in this case;
+spontaneous late-result presentation remains OPEN. Reuse the supported native
+speech/attention primitives for that gap rather than replaying a user request,
+repeating the tool or adopting a client-owned manual delegation loop.
+
+The original browser verifier expired because it accepted numerals/cardinal
+Spanish but not digit-by-digit Spanish. Its failed report is preserved. Semantic
+adjudication used the retained answer, native final message, audio measurements
+and committed original/closure receipts; no provider input was repeated to repair
+the verifier. There is no independent output ASR or physical hearing acceptance.
 
 ## Source-backed earlier memory
 
