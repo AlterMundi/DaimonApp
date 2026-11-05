@@ -79,6 +79,8 @@ class Mounted(unittest.TestCase):
             return {'human':100,'csrf':self.csrf}
         self.config={'state_dir':str(self.root/'dashboard'),'codex_voice':{
             'enabled':True,'identity_file':str(self.identity),'session_seconds':300}}
+        # Match create_app's private state prerequisite independently of umask.
+        Path(self.config['state_dir']).mkdir(mode=0o700)
         install(self.app,self.config,self.owner,authorize,['https://example.test'])
         self.client=TestClient(self.app,base_url='https://example.test')
         self.addCleanup(self.client.close)
