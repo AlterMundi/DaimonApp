@@ -74,6 +74,22 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   for(let n=0;n<299;n++)quiet.sources[0].emit({pcm:new ArrayBuffer(32000)});
   assert.equal(quiet.engine.active,false,'Unconfirmed resident tail ends before its300second hard bound');
   assert(quietWire.sent.some(v=>v.type==='close'&&v.recover_unassigned===true));
+  const paced=boot(),pacedWire=await ready(paced),pacedOutput=crypto.randomUUID();
+  const pcm=Buffer.alloc(4800,1).toString('base64');
+  pacedWire.push({type:'audio',id:pacedOutput,sample_rate:24000,end:4800,pcm});
+  await until(()=>paced.contexts[0].nodes.length===1);
+  const clock=paced.contexts[0],firstNode=clock.nodes[0];
+  assert.equal(firstNode.at,.08,'Initial PCM has a bounded80ms arrival reserve');
+  clock.currentTime=.13; //100ms PCM with30ms of transport/scheduling jitter.
+  pacedWire.push({type:'audio',id:pacedOutput,sample_rate:24000,end:9600,pcm});
+  await until(()=>clock.nodes.length===2);
+  assert.equal(clock.nodes[1].at,firstNode.at+.1,'Jitter inside the reserve cannot split a continuous phrase');
+  const following=crypto.randomUUID();
+  pacedWire.push({type:'audio',id:following,sample_rate:24000,end:4800,pcm});
+  await until(()=>clock.nodes.length===3);
+  assert(Math.abs(clock.nodes[2].at-(clock.nodes[1].at+.1+.18))<1e-9,'Different interventions leave180ms of silence');
+  assert.equal(pacedWire.sent.filter(v=>v.type==='playback').length,0,'Scheduling future buffers does not claim hearing');
+  paced.engine.hold();
   const observed=boot(),observationSocket=await ready(observed,true),observationOutput=crypto.randomUUID();
   observationSocket.push({type:'audio',id:observationOutput,sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
   await until(()=>observationSocket.sent.some(v=>v.type==='playback_status'&&v.handled===1));
@@ -227,6 +243,7 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   oldSocket.push({type:'phrase_end',id:originalId,start:0,end:3200});
   await until(()=>recovery.retained[0]?.audio_sha256);
   const oldDialogue=oldSocket.sent[0].id;
+  recovery.contexts[0].currentTime=75; // A long visit owns its own AudioContext clock.
   oldSocket.push({type:'review',message:'Voice ended.'});await until(()=>!recovery.engine.active);
   assert.equal(recovery.sockets.length,1,'An unexpected close never reconnects automatically');
   const again=recovery.engine.reconnect();
@@ -241,6 +258,11 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   successor.push({type:'reconnect_recorded'});successor.push({type:'ready',id:meta.id,activity_mode:'manual'});
   assert.equal(await again,true);assert.equal(recovery.permissionCalls,2);
   assert.equal(successor.sent.filter(v=>v instanceof ArrayBuffer).length,0,'Old captured audio is never replayed');
+  successor.push({type:'audio',id:crypto.randomUUID(),sample_rate:24000,end:640,pcm:Buffer.alloc(640,1).toString('base64')});
+  await tick();
+  assert.equal(recovery.engine.active,true,'A fresh context must not inherit the old75second scheduling clock');
+  assert.equal(recovery.contexts[1].nodes.length,1,'First response after reconnect is scheduled');
+  assert.equal(recovery.contexts[1].nodes[0].at,.08,'Reconnect starts with its own bounded reserve');
   oldSocket.push({type:'review',message:'Late old close'});await tick();assert(recovery.engine.active);
   recovery.engine.hold();
   const preparing=boot(),previousSocket=await ready(preparing),previousDialogue=previousSocket.sent[0].id;

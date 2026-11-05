@@ -5,7 +5,7 @@ window.NativeConversation=(()=>{
   const supported=()=>!!(window.StreamingVoice?.supported()&&window.crypto?.randomUUID&&window.navigator?.mediaDevices?.getUserMedia&&(!window.NativeSpeechAudio?.backgroundPlayback||nativePcm()));
   function create({headers,getBinding,getQuestions,retain,release,reviewOriginal=async()=>{},prepareReconnect=async originals=>{if(originals.length)throw Error('Recording recovery is unavailable');},onReview=()=>{},onState=()=>{},onCaption=()=>{},onUtterance=()=>{},onInterrupt=()=>{},onHandoff=()=>{},onTiming=()=>{}}){
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
-    let parts=[],bytes=0,originals=new Map(),rawRetained=new Set(),uninterpreted=new Set(),markedReview=new Set(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
+    let parts=[],bytes=0,originals=new Map(),rawRetained=new Set(),uninterpreted=new Set(),markedReview=new Set(),current,writing=Promise.resolve(),nodes=new Set(),next=0,scheduledOutput,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
     let playbackReporting=false,playbackReports=0,playbackCounts;
     let sessionSeconds=300,pcmBase=0,originalRanges=new Map(),closeSnapshot,contextEstablished=false,resumeBasis;
     const emitState=value=>onState({...value,audioPaused:userPaused,audioEnabled:audible});
@@ -23,7 +23,7 @@ window.NativeConversation=(()=>{
       if(nativeOutput)for(const id of nativeOutput.flush())retireOutput(id);
       if(retire&&latestOutput)retireOutput(latestOutput);
       for(const node of nodes){if(retire)retireOutput(node.id);node.cancelled=true;report(node.id,position(node));try{node.source.stop();node.source.disconnect();}catch{}}
-      nodes.clear();next=context?.currentTime||0;emitState({active,starting,floor,pending:false,playback:'paused'});
+      nodes.clear();next=context?.currentTime||0;scheduledOutput=undefined;emitState({active,starting,floor,pending:false,playback:'paused'});
     }
     function pendingTiming(stage){
       // Only actually queued output: a received-but-muted tail is not pending.
@@ -59,15 +59,21 @@ window.NativeConversation=(()=>{
         if(scheduled){playbackCounts.scheduled++;if(!played.has(value.id))played.set(value.id,0);onTiming(value.id,'output_scheduled');}
         if(begin===0)diagnosePlayback();return;
       }
-      if(nodes.size>=512||Math.max(next,context.currentTime)-context.currentTime+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
+      const now=context.currentTime;
+      // Reserve80ms only at startup/underrun. Once queued, preserve exact PCM
+      // adjacency instead of adding a small new gap for every late fragment.
+      // Distinct assistant interventions get a short natural separation.
+      const boundary=begin===0&&scheduledOutput&&scheduledOutput!==value.id;
+      const target=next+(boundary?0.18:0),at=target>now?target:now+.08;
+      if(nodes.size>=512||at-now+raw.length/48000>30)throw Error('Native playback exceeded its queue bound');
       const samples=new Float32Array(raw.length/2);
       for(let i=0;i<samples.length;i++){const n=raw.charCodeAt(2*i)|(raw.charCodeAt(2*i+1)<<8);samples[i]=(n>=32768?n-65536:n)/32768;}
       const buffer=context.createBuffer(1,samples.length,24000);buffer.copyToChannel(samples,0);
       const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
-      const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
+      const node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
       source.onended=()=>{if(owned!==epoch||stopped||node.cancelled)return;nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};
-      source.start(at);playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');emitState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
+      source.start(at);scheduledOutput=value.id;playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');emitState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
     }
     function slice(start,end){
       if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start||end>bytes||end-start>120*32000)throw Error('Original PCM range unavailable');
@@ -176,7 +182,11 @@ window.NativeConversation=(()=>{
           nativeOutput=window.NativeSpeechAudio.openPcm({onProgress:(id,count)=>{if(!stopped&&owned===epoch)report(id,count);},onBufferEnded:id=>{if(stopped||owned!==epoch)return;playbackCounts.ended++;onTiming(id,'output_buffer_ended');diagnosePlayback();},
             onState:playback=>{if(!stopped&&owned===epoch)emitState({active,starting,floor,pending:false,playback});},onUnavailable:message=>{if(owned===epoch)hold(message);}});
           await nativeOutput.ready;if(stopped||owned!==epoch)return false;
-        }else{context=new (window.AudioContext||window.webkitAudioContext)();context.onstatechange=()=>{if(owned===epoch)diagnosePlayback();};void context.resume().catch(()=>{});}
+        }else{context=new (window.AudioContext||window.webkitAudioContext)();
+          // AudioContext clocks restart at zero; a previous visit's deadline
+          // would exceed the new context's queue bound on its first response.
+          next=0;scheduledOutput=undefined;
+          context.onstatechange=()=>{if(owned===epoch)diagnosePlayback();};void context.resume().catch(()=>{});}
         if(reconnect){
           await writing;
           if(stopped||owned!==epoch)return false;
