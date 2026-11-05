@@ -481,6 +481,30 @@ reads to select a completed task and its own final-answer item, restricted to th
 exact turn. Commentary, another turn's message and task acceptance do not qualify
 as a completed result. Native automatic handoff ownership remains unchanged.
 
+Newly observed admitted work can retain the native API's opaque reverse cursor
+alongside its exact pending-turn reference. Probe at most four newest one-entry
+metadata pages, sharing a two-second RPC admission/response deadline. Lock waits
+count toward that deadline and never cancel or release an unrelated RPC. No
+cursor is manufactured from a turn ID. On a successor, reverse the returned
+cursor with ascending order and limit one; the returned turn must match the
+retained ID before any result items are read. This keeps located tasks visible
+when more than32newer turns move the recent window past them.
+
+The owner-scoped visit journal retains at most32locations of1024UTF8bytes each,
+within its existing per-visit/aggregate bounds. It stores no extra task output or
+model context. A failed/missing location keeps useful voice and the legacy
+recent32turn lookup; a stale anchored lookup stays unavailable rather than
+presenting another task. Old unlocated work still has the recent-window limit.
+No background scan, repeated model work or larger capture/context budget.
+
+Actual native metadata reads confirm reverse-cursor inclusion, and the candidate
+wrapper resolves an existing task to its exact original final/revision. Synthetic
+transport tests move more than32newer turns ahead of a pinned task; restart and
+mounted reconnect tests retain/reuse its location without rescanning recent
+turns. The admission-deadline correction is covered by the focused race test and
+independent review. No new model or voice start was needed for these checks;
+this is not new useful-audio, general legacy-history or phone acceptance.
+
 The browser sends a transport-only `ready` receipt after WebRTC connects. A
 predecessor completion can then be presented through native `appendSpeech`,
 without another acoustic question, backend turn, tool invocation or client-managed
@@ -497,7 +521,8 @@ journal holds source references rather than another copy of task output. At most
 32pending tasks/offers/outcomes fit in a visit under the existing512visit/32MiB
 history bounds. Native failed/interrupted outcomes stop accumulating as pending;
 they do not become successful-result offers or delete the original task. A task
-outside the bounded native read window remains unresolved, not guessed.
+outside the bounded native read window without a retained location remains
+unresolved, not guessed.
 
 An optional result-read failure keeps useful voice running and is not polled
 again during that visit. An unconfirmed speech submission keeps its retained

@@ -71,6 +71,15 @@ ASR mismatch; the exact retained speech window supports founder/date recall.
 This is one qualified case, not completion of full being-memory or device quality.
 See the native guide for closure, audio and selection limits.
 
+Pending native work can now retain an exact native opaque cursor when observed
+near admission. A successor reads that located task directly, preserving its
+ID/final revision after newer turns push it outside the recent32turn window.
+The bounded optional probe includes RPC lock admission in its deadline; it does
+not interrupt current work or start a background scan. Native metadata, transport,
+restart and mounted reconnect qualification cover the new path; new useful audio,
+unlocated legacy work and full sustained/device acceptance remain open. Deployment
+is separately recorded by the current receiving guide.
+
 Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
 voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
 #301/#304/#609; it is not a gate for starting the comparison and is not silently

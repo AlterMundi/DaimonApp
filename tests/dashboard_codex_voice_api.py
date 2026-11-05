@@ -66,7 +66,8 @@ class Native:
         if self.emit_turn:values.append({'method':'turn/started','params':{'turn':{'id':'native-work'}}})
         self.events.put(values)
     def remember(self,memory):self.memory=memory
-    def completed_result(self,turn):return self.results.get(turn)
+    def work_anchor(self,turn):return 'native-anchor-'+turn
+    def completed_result(self,turn,*,anchor=None):return self.results.get(turn)
     def offer_result(self,result):self.offers.append(result)
     def receive(self,timeout):
         try:return self.events.get(timeout=timeout)
@@ -332,6 +333,27 @@ class Mounted(unittest.TestCase):
         with self.socket()as socket:
             self.start(socket);socket.send_json({'type':'ready'});self.close(socket)
         self.assertEqual(Native.opened[-1].offers,[],'An exact result is not repeated across visits')
+    def test_reconnect_uses_retained_exact_work_anchor_without_recent_rescan(self):
+        self.owner.current='old-task'
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        with self.socket()as socket:
+            self.start(socket);self.close(socket)
+        self.assertEqual(history.work_anchors(100,self.owner.codex_voice_binding('a'*64),['old-task']),
+            {'old-task':'native-anchor-old-task'})
+        self.owner.current=None
+        self.visit=str(uuid.uuid4());self.meta={**self.meta,'id':self.visit}
+        result={'thread':'native','turn':'old-task','item':'final','revision':'a'*64,
+            'text':'Exact old-task completion','more':False}
+        observed=[]
+        def resolve(native,turn,*,anchor=None):
+            observed.append((turn,anchor));return result if anchor=='native-anchor-old-task' else None
+        with patch.object(Native,'completed_result',resolve),patch.object(Native,'work_anchor',side_effect=AssertionError('No recent scan on replacement')):
+            with self.socket()as socket:
+                self.start(socket);socket.send_json({'type':'ready'})
+                deadline=time.monotonic()+2
+                while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
+                self.assertEqual(Native.opened[-1].offers,[result]);self.close(socket)
+        self.assertEqual(observed,[('old-task','native-anchor-old-task')])
     def test_lost_native_offer_ack_keeps_intent_without_retry_after_reconnect(self):
         self.owner.current='pending-task'
         Native.results['pending-task']={'thread':'native','turn':'pending-task','item':'final',

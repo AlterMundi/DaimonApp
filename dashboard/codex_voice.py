@@ -6,6 +6,7 @@ answers native tool/approval requests, cancels backend work or retries writes.
 Application activation still needs original-media and native-collector ownership.
 """
 from collections import deque
+from contextlib import contextmanager
 import json
 import hashlib
 import os
@@ -202,20 +203,33 @@ class CodexVoice:
                 self._failed = True
                 self._guard.notify_all()
 
-    def _rpc(self, method, params, timeout=20):
-        with self._rpc_guard:
+    @contextmanager
+    def _rpc_slot(self,deadline):
+        if deadline is None:self._rpc_guard.acquire()
+        else:
+            remaining=deadline-self._clock()
+            if remaining<=0 or not self._rpc_guard.acquire(timeout=remaining):
+                raise CodexVoiceUnavailable('Native optional metadata read admission expired')
+        try:yield
+        finally:self._rpc_guard.release()
+
+    def _rpc(self, method, params, timeout=20, *, deadline=None):
+        with self._rpc_slot(deadline):
             with self._guard:
                 if self._closed or self._failed:
                     raise CodexVoiceUnavailable('Native voice owner unavailable')
+                if deadline is not None and self._clock()>=deadline:
+                    raise CodexVoiceUnavailable('Native optional metadata read admission expired')
                 self._sequence += 1
                 ident = self._sequence
                 self._waiting = ident
             try:
                 self._socket.send(json.dumps({'id':ident,'method':method,'params':params}))
-                deadline = self._clock() + timeout
+                response_deadline = self._clock() + timeout
+                if deadline is not None:response_deadline=min(response_deadline,deadline)
                 with self._guard:
                     while ident not in self._responses and not self._failed and not self._closed:
-                        remaining = deadline-self._clock()
+                        remaining = response_deadline-self._clock()
                         if remaining <= 0:
                             break
                         self._guard.wait(remaining)
@@ -324,16 +338,52 @@ class CodexVoice:
                 self._guard.notify_all()
             raise
 
-    def completed_result(self, turn):
+    def work_anchor(self, turn):
+        """Pin newly admitted work with a native opaque reverse cursor.
+
+        Probe only four newest metadata entries with a shared two-second RPC
+        admission/response deadline. A miss keeps the existing bounded fallback;
+        never invent a cursor from an ID.
+        """
+        if not isinstance(turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn):
+            raise ValueError('Select one native task')
+        cursor=None;deadline=self._clock()+2
+        for _ in range(4):
+            remaining=deadline-self._clock()
+            if remaining<=0:return None
+            params={'threadId':self.thread_id,'limit':1,'sortDirection':'desc','itemsView':'notLoaded'}
+            if cursor is not None:params['cursor']=cursor
+            page=self._rpc('thread/turns/list',params,timeout=remaining,deadline=deadline)
+            rows=page.get('data')
+            if not isinstance(rows,list) or len(rows)>1 or any(not isinstance(v,dict)for v in rows):
+                raise CodexVoiceUnavailable('Native task location unavailable')
+            if rows and rows[0].get('id')==turn:
+                anchor=page.get('backwardsCursor')
+                if isinstance(anchor,str) and 0<len(anchor.encode())<=1024:return anchor
+                return None
+            following=page.get('nextCursor')
+            if following is None:return None
+            if not isinstance(following,str) or not 0<len(following.encode())<=1024 or following==cursor:
+                raise CodexVoiceUnavailable('Native task cursor unavailable')
+            cursor=following
+        return None
+
+    def completed_result(self, turn, *, anchor=None):
         """Read one exact already-admitted completion; never infer from recency."""
         if not isinstance(turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn):
             raise ValueError('Select one native task')
-        page=self._rpc('thread/turns/list',{'threadId':self.thread_id,
-            'limit':32,'sortDirection':'desc','itemsView':'notLoaded'})
+        if anchor is not None and (not isinstance(anchor,str) or not 0<len(anchor.encode())<=1024):
+            raise ValueError('Select one bounded native task anchor')
+        params={'threadId':self.thread_id,'limit':32 if anchor is None else 1,
+            'sortDirection':'desc' if anchor is None else 'asc','itemsView':'notLoaded'}
+        if anchor is not None:params['cursor']=anchor
+        page=self._rpc('thread/turns/list',params)
         rows=page.get('data')
-        if not isinstance(rows,list) or len(rows)>32 or any(not isinstance(row,dict)for row in rows):
+        if not isinstance(rows,list) or len(rows)>params['limit'] or any(not isinstance(row,dict)for row in rows):
             raise CodexVoiceUnavailable('Native task status unavailable')
         task=next((row for row in rows if row.get('id')==turn),None)
+        if anchor is not None and task is None:
+            raise CodexVoiceUnavailable('Native task anchor no longer resolves its exact task')
         if task is not None and task.get('status')in ('failed','interrupted'):
             return {'thread':self.thread_id,'turn':turn,'status':task['status']}
         if task is None or task.get('status')!='completed':return None

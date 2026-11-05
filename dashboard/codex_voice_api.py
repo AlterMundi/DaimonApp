@@ -94,17 +94,31 @@ def install(app,config,provider,authorize,origins):
         await socket.accept()
         lease=voice=opening=remembering=starting=incoming=events=noticing=None
         visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
-        pending=[];unfinished=set();failed_notices=set();playback_ready=False
+        pending=[];anchors={};unfinished=set();failed_notices=set();playback_ready=False
         async def send(value):
             await recheck()
             await asyncio.wait_for(socket.send_json(value),3)
+        async def remember_anchor(turn):
+            if turn in anchors:return
+            try:
+                if await frozen(binding)!=owner:return
+                anchor=await asyncio.to_thread(voice.work_anchor,turn)
+                if anchor is None:return
+                await recheck()
+                if await frozen(binding)!=owner:return
+                await asyncio.to_thread(history.retain_anchor,visit,human,binding,turn,anchor)
+                anchors[turn]=anchor
+            except (CodexVoiceUnavailable,OSError,ValueError):
+                return  # Optional location metadata must not interrupt useful voice.
         async def collect(turn,check=True):
             # Observation only. Never infer that arbitrary concurrent work was
             # caused by a nearby transcript, and never replay its human input.
             for _ in range(20):
                 if check:await recheck()
                 value=await asyncio.to_thread(provider.codex_voice_collect,owner,turn)
-                if value['state']!='pending':return
+                if value['state']!='pending':
+                    await remember_anchor(turn)
+                    return
                 await asyncio.sleep(.25)
             raise ValueError('Native tools collector did not attach')
         async def offer_pending():
@@ -115,7 +129,7 @@ def install(app,config,provider,authorize,origins):
                     if turn in failed_notices:continue
                     await recheck()
                     if await frozen(binding)!=owner:raise ValueError('Native result owner changed')
-                    try:result=await asyncio.to_thread(voice.completed_result,turn)
+                    try:result=await asyncio.to_thread(voice.completed_result,turn,anchor=anchors.get(turn))
                     except (CodexVoiceUnavailable,OSError,ValueError):
                         failed_notices.add(turn)
                         await asyncio.to_thread(history.notice_status,visit,human,binding,'source_unavailable')
@@ -178,6 +192,8 @@ def install(app,config,provider,authorize,origins):
                 current=await asyncio.to_thread(provider.codex_voice_current,owner)
                 if current is not None and current not in pending:pending.append(current)
                 await asyncio.to_thread(history.retain_work,visit,human,binding,pending)
+                anchors=await asyncio.to_thread(history.work_anchors,human,owner,pending)
+                if current is not None:await remember_anchor(current)
                 await send({'type':'prepared','id':visit,'session_seconds':seconds,'mode':'codex_webrtc'})
                 raw=await asyncio.wait_for(socket.receive_text(),20)
                 if len(raw.encode())>70000:raise ValueError('Voice offer exceeds bound')
