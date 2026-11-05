@@ -16,13 +16,14 @@
     const rail=el('aside',undefined,'session-rail');rail.id='session-rail';rail.hidden=true;rail.setAttribute('aria-label','Your sessions');
     const list=el('div',undefined,'session-list'),target=el('span','Conversation','session-input-target');
     const toggle=button('☰','Show sessions',()=>showRail(rail.hidden));
-    function showRail(open){rail.hidden=!open;toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Hide sessions':'Show sessions';toggle.setAttribute('aria-label',toggle.title);}
+    function showRail(open){if(open)void refresh(binding);rail.hidden=!open;toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Hide sessions':'Show sessions';toggle.setAttribute('aria-label',toggle.title);}
     toggle.setAttribute('aria-controls',rail.id);toggle.setAttribute('aria-expanded','false');
     const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
     reset.className='session-workspace-reset';
     const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;expanded=undefined;leave();changed();});
     unpin.innerHTML=pinIcon;
     const status=el('p','','session-workspace-status');status.setAttribute('role','status');
+    const retryStatus=button('Retry status','Retry session status',()=>refresh(binding));retryStatus.hidden=true;retryStatus.className='session-workspace-retry';
     const body=el('div',undefined,'session-workspace-body'),content=el('div',undefined,'session-workspace-content');
     const view=el('section',undefined,'session-conversation');view.hidden=true;view.setAttribute('aria-label','Selected session conversation');
     const viewBar=el('div',undefined,'session-view-toolbar'),heading=el('h3','Session');
@@ -38,7 +39,7 @@
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
-    rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,toolbar);
+    rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
     let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0;
@@ -135,7 +136,7 @@
     }
     function resetBinding(next){
       epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;inventory.clear();rows.clear();list.replaceChildren();leave();
-      allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';onReady(false);onTarget();
+      allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';retryStatus.hidden=true;onReady(false);onTarget();
     }
     async function refresh(nextBinding){
       if(binding!==nextBinding)resetBinding(nextBinding);
@@ -145,7 +146,7 @@
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
         observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
-        inventory=new Map(value.sessions.map(row=>[row.id,row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';
+        inventory=new Map(value.sessions.map(row=>[row.id,row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';retryStatus.hidden=true;
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
@@ -158,11 +159,11 @@
         if(owned!==epoch)return;
         if(error.status===403||error.status===401){
           revoke();
-        }else {status.textContent='Session status could not be refreshed. Your input destination is unchanged.';}
+        }else {status.textContent='Session status could not be refreshed. Your input destination is unchanged.';retryStatus.hidden=false;}
       }finally{if(owned===epoch)loading=false;}
     }
     function revoke(){
-      allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
+      retryStatus.hidden=true;allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
       shell.hidden=false;rail.hidden=true;toolbar.hidden=!selected();
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
       onReady(false);
