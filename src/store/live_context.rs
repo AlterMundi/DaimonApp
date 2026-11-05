@@ -598,6 +598,8 @@ fn view(p: &Projection) -> Value {
 fn rollover_content(p: &Projection) -> Value {
     json!({"kind":"internal_integrator_checkpoint","dialogue":p.dialogue,
         "generation":p.generation,"checkpoint":p.checkpoint,
+        "through":p.high,
+        "events":p.events.iter().filter(|e|e.sequence>p.checkpoint.through).collect::<Vec<_>>(),
         "guidance":p.guidance.iter().filter(|g|g.checkpointed_text_hash.is_none()).map(|g|json!({"id":g.id,"basis":g.basis,
             "text":g.text,"mode":g.mode,"phase":g.phase})).collect::<Vec<_>>(),
         "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."})
@@ -624,7 +626,6 @@ fn resume_content(conn: &Connection, p: &Projection, generation: &str) -> Result
 fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
     if p.closed
         || p.checkpoint.text.is_empty()
-        || p.checkpoint.through != p.high
         || p.incorporated != p.high
         || p.range.is_some()
         || p.checkpoint_request
@@ -634,7 +635,9 @@ fn rollover_basis(conn: &Connection, p: &Projection) -> Result<Value> {
             .iter()
             .any(|g| matches!(g.phase.as_str(), "pending" | "submitting"))
     {
-        bail!("Live rollover needs a complete incorporated checkpoint and settled guidance");
+        bail!(
+            "Live rollover needs a checkpoint, completely incorporated tail and settled guidance"
+        );
     }
     if human_context_missing(conn, p)? {
         bail!("Live rollover must catch up canonical human context first");
@@ -2650,7 +2653,7 @@ mod tests {
     }
 
     #[test]
-    fn rollover_requires_exact_complete_checkpoint_and_preserves_once_only_sources() {
+    fn rollover_requires_checkpoint_and_incorporation_and_preserves_once_only_sources() {
         let mut f = Fixture::new();
         let mut generation = f.generation.clone();
         for cycle in 1..=2 {
@@ -2663,10 +2666,21 @@ mod tests {
             assert!(f.call(read.clone()).is_err());
             let batch = f.read(false);
             let ack = f.ack(&batch).unwrap();
-            assert!(
-                f.call(read.clone()).is_err(),
-                "Incorporated text alone is not a checkpoint"
-            );
+            if cycle == 1 {
+                assert!(
+                    f.call(read.clone()).is_err(),
+                    "An initial semantic checkpoint is required"
+                );
+            } else {
+                assert_eq!(
+                    f.call(read.clone()).unwrap()["rollover_basis"]["content"]["events"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    1,
+                    "A prior checkpoint plus the exact incorporated tail is complete continuity"
+                );
+            }
             f.checkpoint(&ack, cycle);
             let changes = f.store.conn.lock().unwrap().total_changes();
             let basis = f.call(read.clone()).unwrap();
@@ -2712,6 +2726,69 @@ mod tests {
             }
         }
         assert_eq!(f.read(true)["range"]["content"]["checkpoint"]["through"], 2);
+    }
+
+    #[test]
+    fn rollover_carries_incorporated_tail_without_resummarizing_or_retiring_sources() {
+        let mut f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Initial context")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        f.checkpoint(&ack, 1);
+        let original = Uuid::now_v7().to_string();
+        f.append(&original, "Correction: the key is indigo, not violet.")
+            .unwrap();
+        let read =
+            json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation});
+        assert!(
+            f.call(read.clone()).is_err(),
+            "An unread tail must not cross handover"
+        );
+        f.ack(&f.read(false)).unwrap();
+        let basis = f.call(read.clone()).unwrap()["rollover_basis"].clone();
+        assert_eq!(basis["through"], 2);
+        assert_eq!(basis["content"]["checkpoint"]["through"], 1);
+        assert_eq!(basis["content"]["events"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            basis["content"]["events"][0]["text"],
+            "Correction: the key is indigo, not violet."
+        );
+        let next = Uuid::now_v7().to_string();
+        let commit = json!({"action":"rollover_commit","dialogue":f.dialogue,"generation":f.generation,
+            "next_generation":next,"revision":basis["revision"]});
+        f.call(commit.clone()).unwrap();
+        assert_eq!(f.call(commit).unwrap()["generation"], next);
+        drop(f.store);
+        f.store = Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let after = f.read(true);
+        assert_eq!(after["range"]["content"]["checkpoint"]["through"], 1);
+        assert_eq!(
+            after["range"]["content"]["events"], basis["content"]["events"],
+            "Provider replacement must not retire uncheckpointed canonical language"
+        );
+    }
+
+    #[test]
+    fn rollover_rejects_oversized_exact_tail_without_clipping_or_retiring_it() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Initial meaning")
+            .unwrap();
+        let ack = f.ack(&f.read(false)).unwrap();
+        f.checkpoint(&ack, 1);
+        for _ in 0..2 {
+            f.append(&Uuid::now_v7().to_string(), &"x".repeat(14000))
+                .unwrap();
+        }
+        f.ack(&f.read_all(false)).unwrap();
+        let read =
+            json!({"action":"rollover_read","dialogue":f.dialogue,"generation":f.generation});
+        assert!(
+            f.call(read)
+                .unwrap_err()
+                .to_string()
+                .contains("setup reserve")
+        );
+        assert!(f.read(true)["range"]["characters"].as_u64().unwrap() > 28000);
     }
 
     #[test]
