@@ -152,6 +152,9 @@ class Owner(Receiver):
                 'events':list(context['sources'].values())}
             return {k:context[k] for k in ('dialogue','generation','closed')}|{'resume':{
                 'revision':'c'*64,'bytes':len(json.dumps(content,separators=(',',':')).encode()),'content':content}}
+        if body['action']=='checkpoint_needed':
+            return {k:context[k] for k in ('dialogue','generation','closed')}|{
+                'checkpoint_request':{'generation':generation,'reason':body['reason']}}
         if body['action']=='rollover_read':
             if not context['sources']:raise ProviderUnavailable('Synthetic checkpoint not yet ready')
             content={'kind':'internal_integrator_checkpoint','checkpoint':{'text':'Keep conversation purpose and pending integrating references.'}}
@@ -234,6 +237,88 @@ class Mounted(unittest.TestCase):
                         {'native_credential_file':'relative'}):
             invalid={**self.config,'streaming_transcription':{**self.config['streaming_transcription'],**updates}}
             with self.assertRaises(ValueError):create_app(invalid,self.owner,lambda raw,bot:int(raw))
+
+    def test_real_qwen_adapter_keeps_pending_admission_and_late_return_across_renewal(self):
+        # Compose the actual Qwen wire adapter with the mounted owner. Existing
+        # generic Stream fixtures alone do not cover deferred Qwen responses.
+        import base64
+        from dashboard.qwen_dialogue import QwenDialogue as RealQwen
+        opened=[]
+        class Wire:
+            def __init__(self):
+                self.sent=[];self.queue=queue.Queue();self.closed=threading.Event();self.sequence=0
+            def send(self,raw):
+                value=json.loads(raw);self.sent.append(value);kind=value['type']
+                if kind=='session.update':self.push({'type':'session.updated'})
+                elif kind=='input_audio_buffer.commit':
+                    self.push({'type':'input_audio_buffer.committed','item_id':'input-1'})
+                    self.push({'type':'conversation.item.input_audio_transcription.completed','item_id':'input-1','transcript':'Keep one task pending.'})
+                elif kind=='response.create':
+                    self.sequence+=1
+                    self.push({'type':'response.created','response':{'id':f'response-{self.sequence}'}})
+                    self.push({'type':'response.audio.delta','delta':base64.b64encode(b'\1\0'*320).decode()})
+                    text='Canonical integrating return.' if any('Canonical integrating return.' in json.dumps(v) for v in self.sent) else 'Synthetic acknowledgement.'
+                    self.push({'type':'response.audio_transcript.delta','delta':text})
+                    self.push({'type':'response.done','response':{'status':'completed'}})
+            def push(self,value):self.queue.put(json.dumps(value))
+            def recv(self):
+                try:return self.queue.get(timeout=.03)
+                except queue.Empty:raise TimeoutError()
+            def settimeout(self,value):pass
+            def close(self):self.closed.set()
+        class ActualQwen(RealQwen):
+            def __init__(self,*args,**kwargs):
+                kwargs.setdefault('connect',lambda *a,**k:Wire())
+                super().__init__(*args,**kwargs);opened.append(self)
+        self.client.__exit__(None,None,None)
+        key=self.root/'qwen-key';key.write_text('synthetic');key.chmod(0o600)
+        self.config['streaming_transcription'].update(native_provider='qwen',native_credential_file=str(key),native_voice_name='longanlufeng')
+        selected=patch('dashboard.qwen_dialogue.QwenDialogue',ActualQwen);self.patches.append(selected);selected.start()
+        self.app=create_app(self.config,self.owner,lambda raw,bot:int(raw))
+        self.client=TestClient(self.app,base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            old=opened[0];ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            utterance=original=None
+            while utterance is None or original is None:
+                value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                if value['type']=='assistant_utterance' and value['utterance']['closed']:utterance=value['utterance']
+                if value['type']=='original_completed':original=value['id']
+            wire=old._qsocket
+            wire.push({'type':'response.created','response':{'id':'delegate'}})
+            wire.push({'type':'response.function_call_arguments.done','call_id':'admit-once','name':'delegate_to_integrator',
+                'arguments':json.dumps({'original_ids':[original],'request':'Preserve one pending task across renewal.'})})
+            wire.push({'type':'response.done','response':{'status':'completed'}})
+            # The tool's required acknowledgement completes on the old socket.
+            while True:
+                value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                if value['type']=='assistant_utterance' and value['utterance']['closed'] and value['utterance']['id']!=utterance['id']:
+                    utterance=value['utterance'];break
+            self.assertEqual(len(self.owner.delegations),1)
+            old.context_estimate=55940
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            self.assertTrue(wire.closed.wait(3),'Settled Qwen output must reach a physical successor')
+            self.assertEqual(len(opened),2)
+            successor=opened[-1]
+            self.assertIn(original,successor._qbase,'Successor setup keeps the existing pending original reference')
+            self.assertIn(self.owner.delegations[0]['id'],successor._qbase,'Successor setup keeps the admitted intent, not another work request')
+            self.owner.return_ready=True;(self.root/'native.sqlite3').write_bytes(b'late canonical return')
+            successor._qsocket.push({'type':'response.created','response':{'id':'return-watch'}})
+            successor._qsocket.push({'type':'response.function_call_arguments.done','call_id':'late-watch','name':'await_integrator_update','arguments':'{}'})
+            successor._qsocket.push({'type':'response.done','response':{'status':'completed'}})
+            while True:
+                value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
+                if value['type']=='assistant_utterance' and value['utterance']['closed'] and value['utterance']['text']=='Canonical integrating return.':break
+            self.assertEqual(len(self.owner.inputs),1)
+            self.assertEqual(len(self.owner.delegations),1,'Renewal and return cannot repeat work admission')
+            self.assertEqual(sum(v['type']=='input_audio_buffer.commit' for stream in opened for v in stream._qsocket.sent),1,'No old captured PCM is replayed')
+            outputs=[v['item'] for v in wire.sent if v.get('item',{}).get('type')=='function_call_output']
+            self.assertEqual([v['call_id'] for v in outputs],['admit-once'])
+            self.assertIn('Canonical integrating return.',json.dumps(successor._qsocket.sent))
+            ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
 
     def test_reconnect_metadata_is_bounded_and_correlates_the_owned_close(self):
         import dashboard.native_voice as voice

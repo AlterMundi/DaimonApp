@@ -1718,3 +1718,17 @@ natural acknowledgment per human request when explaining a delay. It asks for
 plain-language observer status and avoids retained-original, consolidation and
 internal-role narration unless the human asks about the architecture. This is a
 source prompt change, not evidence of a new provider's spoken behavior.
+
+### Closing Qwen iteration: composed owner/wire regression
+
+The real QwenDialogue adapter is now exercised inside the mounted native voice
+owner, with synthetic provider transport/native control. It commits one original,
+admits one pending integrating request, completes its required function answer on
+the old socket, then renews. Successor setup retains that exact original/intent; a
+later canonical return traverses a new Qwen tool call and produces text/PCM. One
+input commit and one work admission remain across the transition. The fixture
+initially used an internal `formulation` field instead of the public tool's
+`request`, then lacked the native checkpoint-needed receipt; those were fixture
+defects, not product failures. Both were corrected before qualification. This is
+composed protocol evidence, not a real provider or physical-hearing trial. Nicolas
+now selects proceeding to OpenAI; remaining Qwen acceptance stays on the roadmap.
