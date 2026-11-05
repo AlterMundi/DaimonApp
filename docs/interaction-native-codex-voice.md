@@ -195,7 +195,14 @@ selected-archive bounds are unchanged. No automatic original retirement.
 ASR, submits ordinary input, opens voice or repeats a handoff. `Save audio`
 exports the local copy. `Discard local copy` removes only that browser copy and
 does not cancel server work. Failed persistence retains a local recovery action.
-Recent history reads return at most8visits. Recovery reads/uploads use current
+History reads return at most8visits per page, with a cursor scoped to the current
+human and conversation binding. **Earlier voice conversation** reads older retained
+visits through that same store; loading history never starts voice, ASR or native
+work. Sequence ordering keeps older pages stable as new visits arrive. A failed
+read exposes retry at the same cursor. A view reset or changed binding rejects
+late responses, and older-page insertion preserves the reading position without
+consuming a click as header-scroll intent. All existing512visit/32MiB bounds and
+original-retention rules remain unchanged. Recovery reads/uploads use current
 shared auth and binding even while work is held; they cannot start/attach work.
 
 ## Qualification and rollback

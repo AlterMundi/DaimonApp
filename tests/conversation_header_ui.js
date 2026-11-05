@@ -20,5 +20,9 @@ f.document.activeElement=f.header;f.timeline.handlers.wheel({deltaY:100});f.scro
 f.document.activeElement=null;f.timeline.handlers.keydown({key:'PageDown'});f.scroll(260);assert.equal(f.compact(),true);
 f.header.handlers.focusin();assert.equal(f.compact(),false);
 f.timeline.handlers.touchstart({touches:[{clientY:200}]});f.timeline.handlers.touchmove({touches:[{clientY:100}]});f.scroll(320);assert.equal(f.compact(),true);
+f.timeline.handlers.wheel({deltaY:-100});f.scroll(290);assert.equal(f.compact(),false);
+f.timeline.handlers.pointerdown();f.timeline.scrollTop=450;f.control.syncScroll();f.timeline.handlers.scroll();
+assert.equal(f.compact(),false,'Loading earlier history preserves the scroll anchor without consuming click intent as scrolling');
+f.timeline.handlers.wheel({deltaY:100});f.scroll(510);assert.equal(f.compact(),true,'Real scrolling works after anchor synchronization');
 f.control.destroy();assert.equal(f.compact(),false);assert.equal(Object.keys(f.timeline.handlers).length,0);
 console.log('Conversation header scroll/focus/touch/keyboard cases passed');

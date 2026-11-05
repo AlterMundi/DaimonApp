@@ -284,7 +284,7 @@ window.Conversation = (() => {
     document.body.classList.toggle("standalone-conversation",standalone);
     if(graph){$("#conversation-flow").hidden=false;$("#conversation-flow").open=readOnly;}
     const timeline = standalone ? $("#conversation-timeline") : undefined;
-    if(timeline)window.ConversationHeader?.mount({timeline});
+    const headerBehavior=timeline?window.ConversationHeader?.mount({timeline}):undefined;
     const responseDraft=node("article",undefined,"reply response-draft");
     const responseDraftBody=node("div",undefined,"reply-text");
     responseDraft.id="conversation-response-draft";responseDraft.hidden=true;
@@ -488,6 +488,15 @@ window.Conversation = (() => {
     const foregroundCards=new Map();let foregroundBefore=0,foregroundNewest=0,foregroundReading=false;
     const foregroundOlder=$("#conversation-foreground-older");foregroundOlder.hidden=true;
     historyTools?.append(foregroundOlder);
+    const codexHistoryOlder=node('button','Earlier voice conversation');codexHistoryOlder.type='button';codexHistoryOlder.hidden=true;
+    const codexHistoryTools=node('div',undefined,'conversation-tools timeline-history');codexHistoryTools.hidden=true;
+    codexHistoryTools.dataset.timelineTime='-Infinity';codexHistoryTools.dataset.timelineKey='voice-history';
+    codexHistoryTools.append(codexHistoryOlder);timeline?.prepend(codexHistoryTools);let retryCodexHistoryOlder=false;
+    codexHistoryOlder.addEventListener('click',async()=>{
+      const selected=binding,scroll=timeline?.scrollTop,height=timeline?.scrollHeight,older=retryCodexHistoryOlder;
+      try{await codexVoiceSession?.restoreHistory(older);}catch{}
+      finally{if(older&&timeline&&binding===selected){timeline.scrollTop=scroll+timeline.scrollHeight-height;headerBehavior?.syncScroll?.();}}
+    });
     function foregroundCard(value){
       if(!value||value.kind!=="voice_foreground"||value.speaker!=="assistant"||typeof value.text!=="string"||value.text.length>16384)return;
       const derived=value.derived_caption,caption=!!(derived?.draft===true&&typeof derived.parent_source==="string"&&derived.parent_source.length<=128);
@@ -773,6 +782,7 @@ window.Conversation = (() => {
       voiceMode?.close();showResponseDraft();
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();graph?.reset();graphCursor=0;timeline?.replaceChildren();
+      codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;timeline?.append(codexHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
       inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = undefined;
       latestComposerId = undefined; composerNotice("",false);clearFocus();routingChoices=[];
@@ -2183,6 +2193,9 @@ window.Conversation = (() => {
     if(standalone&&!readOnly&&microphone)codexVoiceSession=window.CodexConversation?.create({
       headers,getBinding:()=>binding,
       onCaption:text=>voiceMode?.update({caption:text}),
+      onHistory:value=>{codexHistoryTools.hidden=codexHistoryOlder.hidden=!value.more&&!value.error;codexHistoryOlder.disabled=value.loading===true;
+        codexHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';
+        retryCodexHistoryOlder=value.error?value.older===true:true;},
       onItem:value=>{
         if(!value||!value.item||!['user','assistant'].includes(value.item.role)||typeof value.item.text!=='string'||value.item.text.length>16384)return;
         const key='codex:'+value.visit+':'+value.item.id;
