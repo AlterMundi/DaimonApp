@@ -7,7 +7,7 @@ window.NativeConversation=(()=>{
     let active=false,starting=false,floor=false,epoch=0,binding,dialogue,questions,socket,media,capture,unsubscribe,context,timer,chain=Promise.resolve(),pendingEvents=0;
     let parts=[],bytes=0,originals=new Map(),rawRetained=new Set(),uninterpreted=new Set(),markedReview=new Set(),current,writing=Promise.resolve(),nodes=new Set(),next=0,played=new Map(),received=new Map(),retired=new Set(),stopped=true,audible=true,blocked=false,lastEnded,pendingScope,lastRemaining,latestOutput,questionScope,nativeOutput,userPaused=false;
     let playbackReporting=false,playbackReports=0,playbackCounts;
-    let sessionSeconds=300,pcmBase=0,originalRanges=new Map(),closeSnapshot;
+    let sessionSeconds=300,pcmBase=0,originalRanges=new Map(),closeSnapshot,contextEstablished=false,resumeBasis;
     const emitState=value=>onState({...value,audioPaused:userPaused,audioEnabled:audible});
     const state=message=>emitState({active,starting,floor,pending:stopped&&originals.size>0,working:false,message,remaining:current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined});
     function control(value){try{if(socket?.readyState===WebSocket.OPEN){socket.send(JSON.stringify(value));return true;}}catch{}return false;}
@@ -94,10 +94,10 @@ window.NativeConversation=(()=>{
     }
     function hold(message='Voice ended. Your unconfirmed originals are kept for review.',recoverUnassigned=false,cause='client_hold'){
       if(stopped)return;
-      closeSnapshot={previous_dialogue:dialogue,cause,audio_bytes:bytes,retained_originals:originals.size,
+      closeSnapshot=(contextEstablished||resumeBasis)?{previous_dialogue:contextEstablished?dialogue:resumeBasis,cause,audio_bytes:bytes,retained_originals:originals.size,
         pending_events:pendingEvents,queued_audio_bytes:Math.min(32000000,socket?.bufferedAmount||0),
         generated_audio_bytes:[...received.values()].reduce((a,b)=>a+b,0),played_audio_bytes:[...played.values()].reduce((a,b)=>a+b,0),
-        playback_context:nativeOutput?'native':context?.state||'unavailable',floor,blocked,user_paused:userPaused};
+        playback_context:nativeOutput?'native':context?.state||'unavailable',floor,blocked,user_paused:userPaused}:undefined;
       diagnosePlayback();stopped=true;active=starting=floor=false;clearTimeout(timer);silence();
       if(current&&bytes>current.start){const span={...current,end:bytes};current=undefined;try{void Promise.resolve(keep(span)).catch(()=>onReview([...originals.values()]));}catch{}}
       unsubscribe?.();unsubscribe=undefined;capture?.close();capture=undefined;
@@ -158,12 +158,14 @@ window.NativeConversation=(()=>{
           if(value.id===lastEnded&&!floor){blocked=false;resumeOutput();}
           onTiming(value.id,'input_interpreted');onCaption(value.text);break;
         case 'reconnect_recorded':break;
+        case 'context_preparing':if(starting)state('Keeping our conversation ready…');break;
         case 'review':case 'closing':hold(value.message||'Voice session ended.',false,'server_review');break;
       }
     }
     async function start({reconnect=false}={}){
       if(active||starting||originals.size&&!reconnect||document.hidden||!getBinding()||!supported())return false;
       const diagnostic=reconnect?closeSnapshot:undefined;
+      contextEstablished=false;resumeBasis=diagnostic?.previous_dialogue;
       const owned=++epoch;chain=Promise.resolve();pendingEvents=0;binding=getBinding();dialogue=crypto.randomUUID();questions=getQuestions?.();if(questions!==undefined)questions=JSON.parse(JSON.stringify(questions));stopped=false;audible=true;blocked=false;userPaused=false;questionScope=undefined;lastEnded=pendingScope=lastRemaining=latestOutput=undefined;starting=true;parts=[];bytes=0;current=undefined;rawRetained=new Set();uninterpreted=new Set();markedReview=new Set();received=new Map();played=new Map();retired=new Set();state('Preparing native voice');
       playbackReporting=false;playbackReports=0;playbackCounts={handled:0,scheduled:0,ended:0,skipped_floor:0,skipped_muted:0,skipped_retired:0};
       sessionSeconds=300;pcmBase=0;originalRanges=new Map();const requestedSeconds=nativePcm()?300:1800;
@@ -194,7 +196,7 @@ window.NativeConversation=(()=>{
               if(value.type==='ready'){
                 const seconds=value.session_seconds??300;
                 if(value.id!==dialogue||!['manual','automatic'].includes(value.activity_mode)||!Number.isSafeInteger(seconds)||seconds<300||seconds>requestedSeconds||seconds>300&&value.activity_mode!=='manual')throw Error('Native mode or duration changed');
-                sessionSeconds=seconds;clearTimeout(timer);timer=setTimeout(()=>hold('Voice session reached its time limit.',true),sessionSeconds*1000);
+                contextEstablished=true;sessionSeconds=seconds;clearTimeout(timer);timer=setTimeout(()=>hold('Voice session reached its time limit.',true),sessionSeconds*1000);
                 playbackReporting=value.playback_status===true;resolve();return;
               }
               if(value.type==='review'&&starting){reject(Error(value.message));return;}

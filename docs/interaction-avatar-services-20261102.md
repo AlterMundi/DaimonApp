@@ -66,8 +66,8 @@ with the integrator, bypass original admission, or restart an active native
 server just to audition a voice. Keep this route as an explicit alternative
 before requesting a separate API key. Nicolas selected checking the existing
 Codex/ChatGPT login first; the prior key-handoff task is withdrawn, not an access
-or trial completion. A read-only check reports the installed CLI uses ChatGPT
-login. The inspected source separates WebSocket API-key authentication from its
+or trial completion. A5November read-only check reports installed CLI0.163.0 uses ChatGPT
+login and advertises `realtime_conversation` enabled. The inspected source separates WebSocket API-key authentication from its
 experimental WebRTC/existing-call path. Protocol/source support does not establish
 that the installed build, selected account and voice service actually accept the
 route. Qualify that supported path without copying login tokens into the public

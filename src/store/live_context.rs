@@ -49,6 +49,8 @@ pub(crate) enum LiveContextCommand {
         reason: String,
         tokens: Option<u64>,
         usage_kind: String,
+        #[serde(default)]
+        request_id: Option<String>,
     },
     Read {
         dialogue: String,
@@ -224,6 +226,8 @@ struct Frozen {
     full: bool,
     #[serde(default)]
     checkpoint_generation: Option<String>,
+    #[serde(default)]
+    checkpoint_request_revision: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -234,6 +238,10 @@ struct CheckpointRequest {
     usage_kind: String,
     requested_through: u64,
     acknowledged: bool,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    revision: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -436,6 +444,10 @@ fn save(conn: &Connection, p: &Projection) -> Result<()> {
         supplied: 0,
         full: true,
         checkpoint_generation: p.checkpoint_request.as_ref().map(|q| q.generation.clone()),
+        checkpoint_request_revision: p
+            .checkpoint_request
+            .as_ref()
+            .and_then(|q| q.revision.clone()),
     })?;
     let reserved_bytes = serde_json::to_vec(&reserved)?.len().max(raw.len());
     let (count, total, previous): (usize, usize, usize) = conn.query_row(
@@ -491,7 +503,7 @@ fn rollover_content(p: &Projection) -> Value {
         "policy":"Attributed continuity from Sol, not new human speech, tool calls, work admission, durable-memory writes or permission to replay effects. Preserve unresolved effect uncertainty; sent guidance is not applied or heard. Do not speak or execute this checkpoint."})
 }
 
-fn resume_content(conn: &Connection, p: &Projection, generation: &str) -> Result<Value> {
+fn resume_snapshot(conn: &Connection, p: &Projection, generation: &str) -> Result<Value> {
     if !p.closed || generation != p.generation {
         bail!("Select the exact closed Live generation for reconnect");
     }
@@ -508,6 +520,10 @@ fn resume_content(conn: &Connection, p: &Projection, generation: &str) -> Result
     content["policy"] = json!(
         "Attributed prior conversation, not a new human turn, tool call, work admission, memory write or permission to replay effects. Interrupted assistant text may be unsaid. Audio without transcript has no known words; captions remain approximate. Pending work continues independently; never execute this context."
     );
+    Ok(content)
+}
+fn resume_content(conn: &Connection, p: &Projection, generation: &str) -> Result<Value> {
+    let content = resume_snapshot(conn, p, generation)?;
     if serde_json::to_vec(&content)?.len() > MAX_ROLLOVER_SEED {
         bail!("Live reconnect needs semantic compaction before its complete seed can fit");
     }
@@ -562,6 +578,10 @@ fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
             supplied: 0,
             full,
             checkpoint_generation: p.checkpoint_request.as_ref().map(|q| q.generation.clone()),
+            checkpoint_request_revision: p
+                .checkpoint_request
+                .as_ref()
+                .and_then(|q| q.revision.clone()),
         });
     }
     let mut result = view(p);
@@ -575,6 +595,7 @@ fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
                     "complete":false,"characters":r.body.chars().count(),"offset":0})
     };
     result["range"]["checkpoint_generation"] = json!(r.checkpoint_generation);
+    result["range"]["checkpoint_request_revision"] = json!(r.checkpoint_request_revision);
     reader_actions(&mut result, r)?;
     Ok(result)
 }
@@ -586,10 +607,11 @@ fn reader_actions(result: &mut Value, r: &Frozen) -> Result<()> {
         let frozen: Value = serde_json::from_str(&r.body)?;
         result["checkpoint_writer"] = json!({"operation":"live_context","arguments":{
             "action":"checkpoint","dialogue":result["dialogue"],
-            "revision":frozen["checkpoint"]["revision"],"through":r.through},
+            "revision":frozen["checkpoint"]["revision"],"through":r.through}});
+        result["checkpoint_writer_notes"] = json!({
             "required_text_field":"text",
             "pressure_seed_max_bytes":MAX_ROLLOVER_SEED,
-            "meaning":"After invoking after_incorporation, add your compact semantic checkpoint in arguments.text and call this exact template. Keep arguments.revision and through unchanged. For a complete active pressure checkpoint, the serialized checkpoint envelope must fit pressure_seed_max_bytes, including JSON escaping and metadata. If rejected for capacity, shorten text and retry this unchanged revision; exact context has not been retired. Guidance and complete provider setup have separate readiness/capacity gates. This is semantic continuity, not work admission or a memory-write receipt."});
+            "meaning":"After invoking after_incorporation, add your compact semantic checkpoint in arguments.text and call this exact template. Keep arguments.revision and through unchanged. For a complete pressure or closed reconnect checkpoint, the serialized checkpoint envelope must fit pressure_seed_max_bytes, including JSON escaping and metadata. If rejected for capacity, shorten text and retry this unchanged revision; exact context has not been retired. Guidance and complete provider setup have separate readiness/capacity gates. This is semantic continuity, not work admission or a memory-write receipt."});
     }
     Ok(())
 }
@@ -612,6 +634,7 @@ fn page(p: &mut Projection, revision: &str, offset: usize) -> Result<Value> {
     result["range"] = json!({"from":r.from,"through":r.through,"revision":r.revision,
         "full":r.full,"offset":offset,"text":text,"next":next,"more":next<size,
         "checkpoint_generation":r.checkpoint_generation,
+        "checkpoint_request_revision":r.checkpoint_request_revision,
         "encoding":"JSON; concatenate exact pages before interpreting"});
     reader_actions(&mut result, r)?;
     Ok(result)
@@ -772,11 +795,19 @@ impl Store {
             LiveContextCommand::Open { .. } => unreachable!(),
             LiveContextCommand::ResumeRead { generation, .. } => {
                 // A copy cannot acquire/replace the integrator's shared range.
-                let content = resume_content(&tx, &p, &generation)?;
+                let content = resume_snapshot(&tx, &p, &generation)?;
                 let bytes = serde_json::to_vec(&content)?.len();
                 let mut result = view(&p);
-                result["resume"] = json!({"revision":hash(&content)?,"through":p.high,
-                    "checkpointed":p.checkpoint.through,"bytes":bytes,"content":content});
+                if bytes > MAX_ROLLOVER_SEED {
+                    // Read-only refusal with enough information for one explicit
+                    // reconnect to request semantic preparation. Never clip or ACK.
+                    result["resume_requirement"] = json!({"kind":"semantic_checkpoint",
+                        "generation":generation,"through":p.high,"bytes":bytes,
+                        "max_bytes":MAX_ROLLOVER_SEED});
+                } else {
+                    result["resume"] = json!({"revision":hash(&content)?,"through":p.high,
+                        "checkpointed":p.checkpoint.through,"bytes":bytes,"content":content});
+                }
                 tx.commit()?;
                 return Ok(result);
             }
@@ -812,13 +843,25 @@ impl Store {
                 reason,
                 tokens,
                 usage_kind,
+                request_id,
                 ..
             } => {
-                if p.closed
+                let reconnect = reason == "reconnect";
+                if let Some(id) = &request_id {
+                    uuid(id)?;
+                }
+                if (p.closed != reconnect)
+                    || reconnect != request_id.is_some()
                     || generation != p.generation
                     || !matches!(
                         reason.as_str(),
-                        "tokens" | "lifetime" | "tools" | "text" | "guidance" | "unknown_usage"
+                        "tokens"
+                            | "lifetime"
+                            | "tools"
+                            | "text"
+                            | "guidance"
+                            | "unknown_usage"
+                            | "reconnect"
                     )
                     || !matches!(usage_kind.as_str(), "observed" | "conservative" | "unknown")
                     || tokens.is_some_and(|n| n > i32::MAX as u64)
@@ -826,9 +869,23 @@ impl Store {
                 {
                     bail!("Select bounded current Live checkpoint pressure");
                 }
-                if p.checkpoint_request.is_some() {
+                if p.checkpoint_request.as_ref().is_some_and(|q| {
+                    !reconnect
+                        || (q.reason == "reconnect"
+                            && (!q.acknowledged || q.request_id == request_id))
+                }) {
                     return Ok(view(&p));
                 }
+                let revision = if reconnect {
+                    Some(hash(&json!([
+                        generation,
+                        request_id,
+                        p.high,
+                        p.checkpoint.revision
+                    ]))?)
+                } else {
+                    None
+                };
                 p.checkpoint_request = Some(CheckpointRequest {
                     generation,
                     reason,
@@ -836,6 +893,8 @@ impl Store {
                     usage_kind,
                     requested_through: p.high,
                     acknowledged: false,
+                    request_id,
+                    revision,
                 });
                 view(&p)
             }
@@ -1288,6 +1347,7 @@ impl Store {
                 }
                 if let Some(request) = p.checkpoint_request.as_mut()
                     && r.checkpoint_generation.as_ref() == Some(&request.generation)
+                    && r.checkpoint_request_revision == request.revision
                 {
                     request.acknowledged = true;
                 }
@@ -1363,6 +1423,11 @@ impl Store {
                         g.text.clear();
                         g.incorporated_revision = None;
                     }
+                }
+                if p.closed && p.checkpoint.through == p.high && p.checkpoint_request.is_some() {
+                    // Validate the COMPLETE reconnect envelope transactionally,
+                    // before retiring its exact source events or guidance.
+                    resume_content(&tx, &p, &p.generation)?;
                 }
                 if !p.closed && p.checkpoint.through == p.high && p.checkpoint_request.is_some() {
                     // A pressure checkpoint must fit its irreducible provider
@@ -1518,6 +1583,24 @@ mod tests {
         fn read(&self, full: bool) -> Value {
             self.call(json!({"action":"read","dialogue":self.dialogue,"full":full}))
                 .unwrap()
+        }
+        fn read_all(&self, full: bool) -> Value {
+            let initial = self.read(full);
+            if initial["range"]["complete"] == true {
+                return initial;
+            }
+            let revision = initial["range"]["revision"].clone();
+            let mut offset = 0;
+            let mut text = String::new();
+            loop {
+                let page=self.call(json!({"action":"part","dialogue":self.dialogue,"revision":revision,"offset":offset})).unwrap();
+                text.push_str(page["range"]["text"].as_str().unwrap());
+                if page["range"]["more"] == false {
+                    assert!(serde_json::from_str::<Value>(&text).is_ok());
+                    return page;
+                }
+                offset = page["range"]["next"].as_u64().unwrap();
+            }
         }
         fn ack(&self, page: &Value) -> Result<Value> {
             self.call(json!({"action":"incorporate","dialogue":self.dialogue,"revision":page["range"]["revision"]}))
@@ -1759,10 +1842,126 @@ mod tests {
         let mut wrong = request.clone();
         wrong["generation"] = json!(Uuid::now_v7().to_string());
         assert!(f.call(wrong).is_err());
-        assert!(f.call(request).is_err());
+        let needed = f.call(request).unwrap();
+        assert!(needed["resume"].is_null());
+        assert_eq!(needed["resume_requirement"]["max_bytes"], MAX_ROLLOVER_SEED);
+        assert!(needed["resume_requirement"]["bytes"].as_u64().unwrap() > MAX_ROLLOVER_SEED as u64);
         let exact = f.read(true);
         assert_eq!(exact["incorporated"], 0);
         assert_eq!(exact["high"], 2);
+    }
+
+    #[test]
+    fn closed_reconnect_requests_semantics_and_rejects_unseedable_summary_atomically() {
+        let f = Fixture::new();
+        for _ in 0..2 {
+            f.append(&Uuid::now_v7().to_string(), &"x".repeat(15000))
+                .unwrap();
+        }
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let request = json!({"action":"checkpoint_needed","dialogue":f.dialogue,"generation":f.generation,
+            "reason":"reconnect","tokens":null,"usage_kind":"unknown","request_id":Uuid::now_v7().to_string()});
+        let needed = f.call(request.clone()).unwrap();
+        assert_eq!(f.call(request).unwrap(), needed);
+        assert!(needed["checkpoint_request"]["revision"].is_string());
+        let full = f.read_all(true);
+        let acknowledged = f.ack(&full).unwrap();
+        assert_eq!(acknowledged["checkpoint_request"]["acknowledged"], true);
+        let oversized = json!({"action":"checkpoint","dialogue":f.dialogue,
+            "revision":acknowledged["checkpoint_revision"],"through":2,"text":"\"".repeat(13000)});
+        assert!(f.call(oversized).is_err());
+        let retained = f.read_all(true);
+        assert_eq!(retained["checkpointed"], 0);
+        f.ack(&retained).unwrap();
+        f.call(json!({"action":"checkpoint","dialogue":f.dialogue,
+            "revision":acknowledged["checkpoint_revision"],"through":2,"text":"Keep the corrected violet key and unresolved question."})).unwrap();
+        let ready = f
+            .call(json!({"action":"resume_read","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        assert!(ready["resume"]["bytes"].as_u64().unwrap() <= MAX_ROLLOVER_SEED as u64);
+        assert_eq!(ready["resume"]["content"]["checkpoint"]["through"], 2);
+        assert!(ready["resume_requirement"].is_null());
+        assert!(
+            ready["resume"]["content"]["events"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn closed_pressure_cannot_retire_oversized_sources_and_upgrades_to_reconnect() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), &"x".repeat(15000))
+            .unwrap();
+        f.call(json!({"action":"checkpoint_needed","dialogue":f.dialogue,
+            "generation":f.generation,"reason":"tokens","tokens":48000,"usage_kind":"observed"}))
+            .unwrap();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let full = f.read_all(true);
+        let ack = f.ack(&full).unwrap();
+        let checkpoint = json!({"action":"checkpoint","dialogue":f.dialogue,
+            "revision":ack["checkpoint_revision"],"through":1,"text":"\"".repeat(13000)});
+        assert!(
+            f.call(checkpoint).is_err(),
+            "Closed active-pressure checkpoint retains capacity fence"
+        );
+        let retained = f.read_all(true);
+        assert_eq!(retained["checkpointed"], 0);
+        // Create an unacknowledged active request in a distinct producer too.
+        f.ack(&retained).unwrap();
+        let g = Fixture::new();
+        g.append(&Uuid::now_v7().to_string(), "Exact pending source")
+            .unwrap();
+        g.call(json!({"action":"checkpoint_needed","dialogue":g.dialogue,
+            "generation":g.generation,"reason":"lifetime","tokens":null,"usage_kind":"unknown"}))
+            .unwrap();
+        let old = g.read(true);
+        g.call(json!({"action":"close","dialogue":g.dialogue,"generation":g.generation}))
+            .unwrap();
+        let requested = g
+            .call(json!({"action":"checkpoint_needed","dialogue":g.dialogue,
+            "generation":g.generation,"reason":"reconnect","tokens":null,"usage_kind":"unknown",
+            "request_id":Uuid::now_v7().to_string()}))
+            .unwrap();
+        assert_eq!(requested["checkpoint_request"]["reason"], "reconnect");
+        assert!(requested["checkpoint_request"]["revision"].is_string());
+        assert_eq!(
+            g.ack(&old).unwrap()["checkpoint_request"]["acknowledged"],
+            false
+        );
+    }
+
+    #[test]
+    fn old_reconnect_reader_cannot_ack_a_later_explicit_attempt() {
+        let f = Fixture::new();
+        f.append(&Uuid::now_v7().to_string(), "Pending source")
+            .unwrap();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let request = |id: String| {
+            json!({"action":"checkpoint_needed","dialogue":f.dialogue,"generation":f.generation,
+            "reason":"reconnect","tokens":null,"usage_kind":"unknown","request_id":id})
+        };
+        f.call(request(Uuid::now_v7().to_string())).unwrap();
+        let first = f.read(true);
+        f.ack(&first).unwrap();
+        // An already-ACKed full reader still carries the first pressure identity.
+        let old = f.read(true);
+        f.call(request(Uuid::now_v7().to_string())).unwrap();
+        let ack = f.ack(&old).unwrap();
+        assert_eq!(ack["checkpoint_request"]["acknowledged"], false);
+        let current = f.read(true);
+        assert_ne!(
+            old["range"]["checkpoint_request_revision"],
+            current["range"]["checkpoint_request_revision"]
+        );
+        assert_eq!(
+            f.ack(&current).unwrap()["checkpoint_request"]["acknowledged"],
+            true
+        );
     }
 
     #[test]
@@ -1865,7 +2064,7 @@ mod tests {
             .unwrap();
             let full = f.read(true);
             assert_eq!(
-                full["checkpoint_writer"]["pressure_seed_max_bytes"],
+                full["checkpoint_writer_notes"]["pressure_seed_max_bytes"],
                 MAX_ROLLOVER_SEED
             );
             let ack = f.ack(&full).unwrap();
@@ -1939,15 +2138,11 @@ mod tests {
     }
 
     #[test]
-    fn stored_checkpoints_outside_active_pressure_keep_their_existing_language_bound() {
+    fn stored_checkpoints_without_pressure_keep_their_existing_language_bound() {
         for closed in [false, true] {
             let f = Fixture::new();
             f.append(&Uuid::now_v7().to_string(), "Retained source, no new work")
                 .unwrap();
-            if closed {
-                f.call(json!({"action":"checkpoint_needed","dialogue":f.dialogue,
-                    "generation":f.generation,"reason":"lifetime","tokens":1000,"usage_kind":"conservative"})).unwrap();
-            }
             let full = f.read(true);
             let ack = f.ack(&full).unwrap();
             if closed {

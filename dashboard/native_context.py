@@ -11,7 +11,13 @@ from .provider import ProviderUnavailable
 from .native_dialogue import DialogueCapacity
 
 
+class ResumePending(ValueError):
+    """Prior context is retained; its semantic preparation is not ready yet."""
+
+
 class NativeContext:
+    resume_wait_seconds=20
+    resume_observations=12
     max_producers=64
     max_sources=4096
 
@@ -39,7 +45,7 @@ class NativeContext:
         self.status='active'
         self.notify()
 
-    async def resume_context(self,previous):
+    async def resume_context(self,previous,*,on_preparing=None,recheck=None):
         """Before provider opening, copy the explicitly selected closed visit.
 
         The receiving owner must first exclude another live visit. Settle only
@@ -54,6 +60,26 @@ class NativeContext:
             await asyncio.to_thread(self.history.context_seal,record)
             await self._finish(record)
         value=await self._call(record,'resume_read')
+        if self._resume_requirement(value,record):
+            if on_preparing is not None:await on_preparing()
+            try:
+                async with asyncio.timeout(self.resume_wait_seconds):
+                    # One source-bound request per explicit reconnect attempt.
+                    # Its ACK is not compaction; only a complete fitting seed
+                    # permits a new producer/provider to be opened.
+                    await self._call(record,'checkpoint_needed',reason='reconnect',
+                        tokens=None,usage_kind='unknown',request_id=self.dialogue)
+                    for attempt in range(self.resume_observations):
+                        # Observe promptly, then back off within the same
+                        # deadline instead of exhausting all reads in six
+                        # seconds while the integrator is still preparing.
+                        await asyncio.sleep(min(2.,.25*2**attempt))
+                        if recheck is not None:await recheck()
+                        value=await self._call(record,'resume_read')
+                        if not self._resume_requirement(value,record):break
+                    else:raise ResumePending('Prior conversation is still being prepared')
+            except TimeoutError as error:
+                raise ResumePending('Prior conversation is still being prepared') from error
         seed=value.get('resume')
         if (value.get('closed') is not True or not isinstance(seed,dict)
                 or not isinstance(seed.get('content'),dict)
@@ -65,6 +91,21 @@ class NativeContext:
             raise ValueError('Prior Live context receipt is incomplete or oversized')
         self.resume_source={'dialogue':previous,'generation':record['generation'],'revision':seed['revision']}
         return seed
+
+    @staticmethod
+    def _resume_requirement(value,record):
+        requirement=value.get('resume_requirement')
+        if requirement is None:return False
+        if (value.get('closed') is not True or value.get('resume') is not None
+                or not isinstance(requirement,dict)
+                or set(requirement)!={'kind','generation','through','bytes','max_bytes'}
+                or requirement['kind']!='semantic_checkpoint'
+                or requirement['generation']!=record['generation']
+                or requirement['max_bytes']!=24576
+                or type(requirement['bytes']) is not int or not 24576<requirement['bytes']<=2*1024*1024
+                or type(requirement['through']) is not int or not 0<=requirement['through']<=2**63-1):
+            raise ValueError('Prior Live compaction requirement changed source or bounds')
+        return True
 
     async def _call(self,record,action,**values):
         result=await self.owner(self.provider.conversation_live_context,{

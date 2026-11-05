@@ -410,6 +410,12 @@ continuity qualifies. No always-on microphone or background listener is implied.
    This candidate is not receiving/device acceptance. Qualify reconnect after an
    acknowledged checkpoint; keep pending-effect receipts independent and never
    reopen old provider sockets or replay work.
+   The closed-oversize candidate now requests the existing integrator's complete
+   semantic checkpoint and waits boundedly before opening another provider.
+   Prior pressure requests and reader revisions remain fenced, and an oversized
+   summary cannot retire exact sources. Pending preparation retains the last
+   established visit for another explicit reconnect. Native integration and
+   receiving/useful-audio qualification remain separate from preparation.
 2. Keep canonical human originals and assistant utterances available to the
    integrator through ordered deltas with an acknowledged cursor. A complete
    selected history remains readable on demand; do not resend it each update.
