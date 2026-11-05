@@ -89,6 +89,8 @@ class Voice(unittest.TestCase):
         self.assertEqual(call['method'],'thread/realtime/appendSpeech')
         self.assertIn('Current verified result',call['params']['text'])
         self.assertIn('not a new request',call['params']['text'])
+        data=json.loads(call['params']['text'].split('new request: ',1)[1])
+        self.assertFalse(data['excerpt_truncated'])
         self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
     def test_native_work_anchor_finds_exact_result_after_recent_window_moves_on(self):
         self.socket.results['thread/turns/list']={'data':[{'id':'old-task','status':'inProgress'}],
@@ -145,7 +147,18 @@ class Voice(unittest.TestCase):
         self.assertLessEqual(len(('[BACKEND] '+text).encode()),500)
         data=json.loads(text.split('new request: ',1)[1])
         self.assertEqual((data['turn'],data['revision']),('task','a'*64))
-        self.assertTrue(data['partial'])
+        self.assertTrue(data['excerpt_truncated'])
+        self.assertIn('The work is finished.',text)
+        self.assertIn('one short sentence',text)
+    def test_source_excerpt_does_not_mark_completed_work_as_partial(self):
+        self.voice.start('v=0\r\noffer')
+        self.voice.offer_result({'thread':'owned','turn':'task','item':'final','revision':'a'*64,
+            'text':'A completed report excerpt','more':True})
+        text=self.socket.sent[-1]['params']['text']
+        data=json.loads(text.split('new request: ',1)[1])
+        self.assertTrue(data['excerpt_truncated'])
+        self.assertNotIn('partial',data)
+        self.assertIn('full result is ready to review',text)
     def test_foreign_thread_and_noisy_deltas_are_not_retained(self):
         self.socket.event('thread/realtime/sdp',threadId='foreign',sdp='private unrelated answer')
         self.socket.event('thread/realtime/transcript/delta',delta='partial')

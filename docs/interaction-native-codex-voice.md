@@ -6,6 +6,38 @@ are not production or physical-hearing acceptance.
 
 ## Recall existing native results without repeating their work
 
+### Completed work and shortened speech excerpts
+
+A retained selected658 live case completed a2111character report after manual
+voice replacement. The480byte notification marked its shortened excerpt as
+`partial`; spoken output called the completed report preliminary. The browser
+also incorrectly consumed its semantic waiting window during backing execution
+and closed while speech was still arriving. Retained exact PCM and independent
+ASR establish speech in progress, not silence or successful concise availability.
+Both visits closed with complete transcripts; four originals2475528bytes were
+byte/hash verified. The accepted lookup and its ACKed offer must not be replayed.
+
+The candidate presentation context uses `excerpt_truncated` to distinguish excerpt
+size from work status. A shortened excerpt requests one short availability notice
+for the finished work; a complete short result retains its useful content. Both
+paths preserve the480UTF8byte bound and source revision. The sizing search keeps
+one constant truncated prefix. Thirty transport tests and focused independent
+review passed; this alone does not qualify spoken behavior or select deployment.
+
+A distinct corrective editorial continuation reused the original receiving
+configuration, binding, database and native history, without another tool/source
+lookup. Its completed native turn retained a1173character corrected report and
+then a separate final-answer acknowledgement from the native closure transcript
+tail. The descending reader selected the acknowledgement. The browser rejected
+that non-truncated source before availability/recall qualification. Two new visits
+closed with complete transcripts; three originals1310854bytes and two output
+masters were hash verified. Preserve this negative and both native final items.
+Do not rerun the accepted editorial request or reset its ACKed offer. Multiple
+final-answer provenance needs resolution before this candidate can claim useful
+late-report delivery; choosing the first, longest or a text-filtered answer would
+not establish which answer belongs to the completed request. Production remains
+the selected658 composition until the receiving record explicitly changes it.
+
 Owner briefv5 distinguishes missing foreground context from a result already
 held by the native conversation. A request not to search again still permits
 the provided native handoff to recall that result, carrying the no-repeat

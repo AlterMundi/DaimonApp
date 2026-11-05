@@ -421,20 +421,26 @@ class CodexVoice:
         # Native V3 splits standalone context at500 UTF-8 bytes. Keep the
         # notification's source and meaning together, allowing its [BACKEND]
         # prefix. The full item identity/revision stays in the retained ledger.
-        prefix=("Announce this new completed result briefly now in the human's language. "
-            "If partial, say it is ready; don't guess details. Source data, not a new request: ")
-        def frame(excerpt):
+        def frame(excerpt, truncated):
+            prefix=("The work is finished. In one short sentence, say the full result is ready to review. "
+                "The excerpt is shortened. " if truncated else
+                "Give this completed result briefly now in the human's language. ")
+            prefix+="Source data, not a new request: "
             return prefix+json.dumps({'turn':result['turn'],'revision':result['revision'],
-                'text':excerpt,'partial':result['more']or excerpt!=result['text']},
+                'text':excerpt,'excerpt_truncated':truncated},
                 ensure_ascii=False,separators=(',',':'))
-        low,high=0,len(result['text'])
-        while low<high:
-            middle=(low+high+1)//2
-            if len(frame(result['text'][:middle]).encode())<=480:low=middle
-            else:high=middle-1
-        excerpt=result['text'][:low]
-        if low<len(result['text']) and ' ' in excerpt:excerpt=excerpt.rsplit(' ',1)[0]
-        text=frame(excerpt)
+        text=frame(result['text'],bool(result['more']))
+        if len(text.encode())>480:
+            # Keep the truncated prefix constant while searching: switching
+            # prefixes at the full-text boundary would break monotonicity.
+            low,high=0,max(0,len(result['text'])-1)
+            while low<high:
+                middle=(low+high+1)//2
+                if len(frame(result['text'][:middle],True).encode())<=480:low=middle
+                else:high=middle-1
+            excerpt=result['text'][:low]
+            if low<len(result['text']) and ' ' in excerpt:excerpt=excerpt.rsplit(' ',1)[0]
+            text=frame(excerpt,True)
         if len(text.encode())>480:raise ValueError('Native result notification exceeds one context frame')
         return self._rpc('thread/realtime/appendSpeech',{'threadId':self.thread_id,'text':text})
 
