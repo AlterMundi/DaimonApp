@@ -67,6 +67,60 @@ while redesigning their transport-specific implementation where necessary.
 
 ## Decisions from inspected sources
 
+### Receiving native WebRTC qualification —5November2026
+
+The existing loaded Codex0.163 owner accepted two WebRTC connections using its
+existing ChatGPT authentication. No API key was supplied or extracted. Both used
+one persistent, test-owned native thread, synthetic Spanish audio, muted Chromium
+and the native default automatic handoff/return path. No production thread,
+provider selection, service or diagnostic limit changed. This establishes current
+native access for this receiver; public GPT-Live API entitlement remains separate.
+
+The initial spoken request asked Codex to read two values in a fixture file and
+write their sum, unit and control word to a result file. Voice emitted one native
+delegation and the same thread started a real backend turn. A fixture bug placed
+Playwright's timeout options in the argument position, leaving its default30second
+timeout; the browser closed early. The accepted backend survived voice closure and
+completed. Its final answer claimed the result was saved, but its only command
+read the input and no result file existed. Keep this negative task outcome; a
+native final answer is not proof of the claimed effect.
+
+After correcting the browser wait, the second connection resumed that same
+native thread with its own startup history. A new synthetic spoken correction
+reported the missing file and asked for a real write and verification. It did not
+replay the original request. One further native handoff wrote and read the file;
+direct inspection confirmed `43 semillas cedro`. Voice then returned that exact
+result. The retained remote Opus recording is290,405bytes, decoded successfully,
+and browser WebAudio observed nonzero signal. The browser exited normally and
+native voice closure was observed. Physical hearing and independent audio
+transcription were not performed; this is not phone acceptance.
+
+Both native turns are terminal-completed in the same persisted history. Four
+backend model responses consumed cumulative135,821reported tokens, including
+135,589input/112,384cached-input and232output tokens. The last response included
+34,157input tokens,33,792cached. These are native backend counters, not unique
+context size or a complete voice bill. Voice usage updates remained partial and
+did not account for that backend work; do not infer free execution or a total
+price from them. The sizeable ordinary Codex context is a concrete efficiency
+question even when much of it is cached; no relative cost advantage is established.
+
+This supports implementing the native Codex rich-client route first, not wrapping
+GPT-Live inside the Qwen manual-turn adapter. Use the existing shared App Server
+and the selected integrating thread; do not spawn another owner. Browser WebRTC
+owns media, while the application retains authorized thread selection, native
+event subscription and the presentation of pending work, questions and artifacts.
+The first application integration must demonstrate original/correction retention,
+existing-work admission, role-appropriate context size and same-thread reconnect.
+Native transcript history alone does not establish retention of original media,
+and a model assertion alone must not mark a task's effect verified. Preserve the
+existing journal requirements without mandating their present transport plumbing.
+
+One bounded fixture and its retained failed fixture observation occupy
+approximately2.3MB locally. Keep it through native integration qualification; then
+retain reports, code and the tiny verified artifact, retiring disposable synthetic
+media. Do not retire production originals or native history. No public transcript
+or institutional archive of this synthetic media is needed.
+
 | Evidence | What changes in our design | What still needs qualification |
 | --- | --- | --- |
 | Official migration guide: continuous audio, no Realtime manual commits/response triggers; Live lacks the same spoken-response completion event | Build a Live lifecycle adapter instead of subclassing the Qwen turn loop. Drive speaking state from actual playback, not a guessed final transcript/response event. | Browser playback, interruption and bounded recording boundaries under continuous input. |
