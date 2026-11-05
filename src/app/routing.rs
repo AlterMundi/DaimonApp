@@ -15,7 +15,13 @@ pub(super) struct Run {
 /// native control keeps its original return path; this marker is not human text
 /// or a fabricated application request.
 pub(super) fn begin(shared: &Arc<AppShared>, queued: &QueuedTurn) -> Result<Option<String>> {
-    if !enrolled(shared, queued.request.session_key)
+    let pinned = queued.interaction.as_ref().is_some_and(|id| {
+        shared
+            .store
+            .conversation_pinned_instruction(queued.request.from_user_id, id)
+            .unwrap_or(false)
+    });
+    if (!enrolled(shared, queued.request.session_key) && !pinned)
         || shared.config.interaction.as_ref().map(|c| c.human_id)
             != Some(queued.request.from_user_id)
     {
@@ -71,6 +77,14 @@ pub(super) fn profile(shared: &AppShared) -> Result<crate::interaction::Interact
 
 pub(super) fn enrolled(shared: &AppShared, key: SessionKey) -> bool {
     profile(shared).is_ok_and(|c| c.chat_id == key.chat_id && c.target(key.thread_id).is_some())
+}
+
+pub(super) fn instruction_available(shared: &AppShared, instruction: &Instruction) -> bool {
+    enrolled(shared, instruction.target)
+        || shared
+            .store
+            .conversation_pinned_instruction(instruction.human_id, &instruction.id)
+            .unwrap_or(false)
 }
 
 pub(super) fn relayed(input: &Instruction) -> bool {
@@ -1003,7 +1017,10 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
 
 pub(super) fn dispatch_allowed(shared: &Arc<AppShared>, i: &Instruction) -> Result<bool> {
     let current = shared.store.stop_admission_epoch(i.target)?;
-    if i.admission_epoch.as_deref() != Some(current.as_str())
+    if !shared
+        .store
+        .conversation_pin_dispatch_allowed(i.human_id, &i.id)?
+        || i.admission_epoch.as_deref() != Some(current.as_str())
         || !shared
             .store
             .interaction_session_input_allowed(&i.id, i.human_id)?
@@ -1278,8 +1295,11 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                         if let Some(external) = &original.tribu_source {
                             super::tribu::validate_integrated_source(&shared, external).await?;
                         }
-                        if epoch.as_deref()
-                            != Some(shared.store.stop_admission_epoch(target)?.as_str())
+                        if !shared
+                            .store
+                            .conversation_pin_dispatch_allowed(human, &input_id)?
+                            || epoch.as_deref()
+                                != Some(shared.store.stop_admission_epoch(target)?.as_str())
                             || !shared
                                 .store
                                 .interaction_session_input_allowed(&input_id, human)?
