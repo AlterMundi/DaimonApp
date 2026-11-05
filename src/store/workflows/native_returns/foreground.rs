@@ -78,6 +78,7 @@ pub(super) fn current(
                 || p.checkpoint_request.as_ref().is_some_and(|q| {
                     q["acknowledged"] == false
                         && r.envelope["checkpoint_generation"] == q["generation"]
+                        && r.envelope["checkpoint_request_revision"] == q["revision"]
                 }))))
 }
 pub(super) fn retained(

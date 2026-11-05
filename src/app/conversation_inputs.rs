@@ -256,6 +256,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         result["foreground_guidance"] = json!("v1");
         result["foreground_rollover"] = json!("v1");
         result["foreground_resume"] = json!("v1");
+        result["foreground_resume_compaction"] = json!("v1");
         result["foreground_completed_reader"] = json!(
             app.shared
                 .config
