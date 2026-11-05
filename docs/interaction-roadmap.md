@@ -35,7 +35,29 @@ than one frontend importing or depending on the other frontend's lifecycle.
 This remaining refactor is explicitly **not the current priority or a new gate**
 for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
-## Current Qwen continuation work —5November2026
+## Current provider priority —5November2026
+
+Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
+voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
+#301/#304/#609; it is not a gate for starting the comparison and is not silently
+marked achieved. Keep Qwen available while the next provider is qualified.
+Gemini remains deferred without balance. The existing ordinary integrating
+provider/model, active work, original journals and diagnostic bounds stay intact.
+
+First reuse the supported Codex/ChatGPT WebRTC route, before asking for an API
+key. The18October #118 comparison actually decoded/transcribed corrected Spanish
+voice through native login; today's loaded native metadata confirms ChatGPT/Pro
+but is not a fresh voice entitlement test. The public GPT-Live WebRTC endpoint
+requires project access; the existing Realtime adapter is a distinct protocol.
+`clientManagedHandoffs` alone does not define native work ownership. Nicolas
+1eb74b0e selects evaluating OpenAI/Codex native handoffs and managed Responses
+first, without assuming our current custom architecture is better. Native backend
+work may be the intended integration; measure its actual ownership/history/cost. Use the
+[official-practice comparison](interaction-gpt-live-practices.md), preserve full
+identity/memory/results/questions and existing integrating responsibility, and
+redesign provider-specific transport when appropriate.
+
+## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound
 semantic checkpoint before voice opens. Actual Luna/Qwen correction-memory/PCM
@@ -92,7 +114,7 @@ and the concise Shared Resources current receiving guide for exact selection.
 
 The session workspace foundations606/607 and UI613 are also receiving-selected,
 with the619–622 compact-layout and shared title-control follow-ups. Source tests, actual receiving delivery
-and human acceptance remain distinct. OpenAI follows Qwen closure; Gemini is
+and human acceptance remain distinct. OpenAI comparison is now current; Gemini is
 explicitly deferred without balance and must not be called for qualification.
 Full useful Qwen audio after repeated replacements, manual reconnect, physical
 hearing and every prior milestone obligation remain part of this goal.

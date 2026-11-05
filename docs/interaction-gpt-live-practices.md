@@ -7,15 +7,55 @@ check or production adoption. The current diagnostic limits remain unchanged.
 The [roadmap](interaction-roadmap.md#current-refinement-toward-an-approachable-avatar--4-november-2026)
 owns implementation and family-pilot acceptance; this note records the rationale.
 
-## Starting architecture
+## Selected next step —5November2026
 
-Use GPT-Live client delegation with our persistent integrating agent as the
-backend. Keep identity and conversation style in a short voice prompt; keep
-tools, detailed workflows, durable memory, permissions and task execution in
-the backend. Client delegation is selected for ownership of our existing
-agent/state, not because it is universally better than Responses delegation.
-The official design supports both. The backend model remains independently
-selectable; GPT-Live does not require the integrator to become an OpenAI model.
+Nicolas2a453b61 explicitly moves the provider comparison forward now, closing the
+Qwen iteration without claiming its sustained phone/hearing acceptance. Preserve
+those pending checks in the roadmap/issues; do not prolong Qwen as a prerequisite.
+
+Reuse the existing Codex/ChatGPT WebRTC investigation before requesting separate
+credentials. The retained [18October actual comparison](https://github.com/AlterMundi/DaimonApp/issues/118#issuecomment-6243154764)
+connected through native login and independently transcribed a spoken correction.
+Today's loaded App Server read reports ChatGPT/Pro; no current voice session was
+opened by that metadata check. CLI feature selection and the experimental native
+protocol are not current account entitlement. No token was exported or treated as
+an API key, and no active native conversation was changed.
+
+Current [official WebRTC guidance](https://developers.openai.com/api/docs/guides/voice-webrtc)
+continues to require project access for public GPT-Live applications. The native
+Codex route is separate. Source inspection and the retained comparison agree that
+`clientManagedHandoffs` controls response forwarding, not admission of backing
+work. Evaluate native handoff ownership directly: it can use the intended persistent
+Codex backend. That flag alone does not prove how work is admitted, persisted or
+charged; this is a measurement requirement, not a reason to reject native handoffs.
+The [App Server interface](https://developers.openai.com/codex/app-server)
+is the supported rich-client boundary, with explicit experimental opt-in where
+needed. Current receiving access/bridge qualification is the next concrete step.
+
+## Architecture comparison reopened —Nicolas1eb74b0e,5November2026
+
+Our present foreground/integrator separation is not a superiority claim or a
+requirement to recreate that implementation. All current reasoning uses Codex;
+first evaluate OpenAI's native voice/handoff architecture on a persistent Codex
+thread. A native backend handoff may be exactly the desired operation, rather
+than an unwanted second agent. Preserve real task ownership, original history,
+identity, correction semantics and visible results; their implementation can move
+to native mechanisms when those provide the better experience.
+
+Compare three concrete candidates before selecting the bridge:
+
+| Candidate | Starting point | What must be demonstrated |
+| --- | --- | --- |
+| Native Codex WebRTC voice | Existing native login, persistent Codex thread, provider-owned voice handoffs and streamed backend returns | Same CompAII/integrating ownership; explicit behavior with active work; recoverable history/originals, questions, tools/artifacts, interruption and reconnect; observed native turns/cost rather than treating all backend work as a defect |
+| Public GPT-Live with Responses delegation | The official recommended starting point when managed requests and supported backend tools fit | Actual project access; identity/history and existing work continuity; available local/native capabilities, result presentation and total cost |
+| Public GPT-Live with client delegation | Our application supplies context and backend execution | Use only for demonstrated requirements the other routes do not cover; do not choose it merely to preserve our existing custom machinery |
+
+Current [official delegation guidance](https://developers.openai.com/api/docs/guides/live-delegation)
+recommends starting with Responses delegation for managed requests, and choosing
+client delegation for custom workflows or result review. Both retain application
+responsibility for permissions and business/task records. The earlier unconditional
+client-delegation selection above was superseded by this human correction.
+Backend model selection remains independent of the spoken voice model.
 [Official overview](https://developers.openai.com/api/docs/guides/live).
 
 Prefer the documented WebRTC media/data-channel architecture for the browser,
@@ -63,9 +103,10 @@ Inspected implementations and research:
 
 ## Reuse, replace and measure
 
-Reuse shared login, exact human-source/correction history, persistent tasks,
-permission checks, canonical results/questions, viewers and the integrating
-role. Replace provider-specific assumptions: manual audio commits, response-end
+Preserve shared identity/access, exact human-source/correction history, ongoing
+work, permissions and useful results/questions. Reuse existing native mechanisms
+where qualified; our present journal/bridge/viewer implementation is not mandatory.
+Replace provider-specific assumptions: manual audio commits, response-end
 events, synchronous tools, a prompt containing every backend tool procedure,
 and reconnection that starts with unrelated recent excerpts.
 
