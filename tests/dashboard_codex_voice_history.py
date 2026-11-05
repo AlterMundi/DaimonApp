@@ -57,7 +57,14 @@ class History(unittest.TestCase):
         item={'id':'remembered','type':'transcriptSegment','role':'user','text':'Actual retained correction',
               'realtimeSessionId':self.session}
         self.history.item(self.visit,100,'a'*64,item)
-        self.assertIsNone(self.history.memory_context(100,self.frozen))
+        initial=self.history.memory_context(100,self.frozen)
+        self.assertIn('Avatar backing policy:',initial)
+        self.assertIn('No completed voice source is indexed yet',initial)
+        initial_index=json.loads(next((self.history.root/'memory').glob('*.json')).read_text())
+        self.assertEqual(initial_index['visits'],[])
+        self.assertNotIn('latest_completed_visit',initial_index)
+        self.assertNotIn('Actual retained correction',initial)
+        self.assertLess(len(initial.encode()),2048)
         self.history.complete_transcript(self.visit,100,'a'*64)
         foreign=str(uuid.uuid4())
         self.history.open(foreign,101,{**self.frozen,'entry_binding':[101,101,9,'other']},str(uuid.uuid4()))
