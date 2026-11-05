@@ -61,6 +61,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
+ assert.equal(await page.getByRole('button',{name:'Show routing map',exact:true}).count(),0,'Messages have no routing-map shortcut');
+ await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+ await page.locator('#conversation-flow > summary').click();
+ assert(await page.locator('#routing-graph-viewport').isVisible(),'Routing map remains under the hood');
+ await page.getByRole('button',{name:'Under the hood',exact:true}).click();
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  async function bottomMenu(){
   const rect=async selector=>page.locator(selector).evaluate(node=>{const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};});
@@ -88,6 +93,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
  await page.locator('#conversation-send').click();await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');
  assert.equal(posts.at(-1).reply.source,'session:7');assert.equal(posts.at(-1).text,'Keep this draft while I look around.');
+ assert.equal(await page.locator('#conversation-timeline .routing-trace').count(),0,'Conversation messages have no routing-path disclosure');
+ assert(await page.locator('#conversation-diagnostics #conversation-inputs .routing-trace').count()>0,'Routing evidence remains under the hood');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Reply to the latest message',exact:true}).click();
  await page.locator('#conversation-message').fill('About that exact result.');await page.locator('#conversation-send').click();

@@ -258,43 +258,12 @@ window.Conversation = (() => {
       if(!card)return;
       if(selection.input){$("#conversation-sent").open=true;card.trace.open=true;readTrace(card);}
       if(timeline && card.source?.kind==="worker_progress")$("#conversation-diagnostics").open=true;
-      card.box.scrollIntoView({block:"nearest"});
+      (selection.input?card.trace:card.box).scrollIntoView({block:"nearest"});
     }}) : undefined;
     document.body.classList.toggle("standalone-conversation",standalone);
     if(graph){$("#conversation-flow").hidden=false;$("#conversation-flow").open=readOnly;}
     const timeline = standalone ? $("#conversation-timeline") : undefined;
     if(timeline)window.ConversationHeader?.mount({timeline});
-    let routeMapReturn;
-    const mapBack=$("#routing-graph-return"),mapPanel=$("#conversation-flow"),mapInspector=$("#conversation-diagnostics");
-    function closeRoutingMap(restore=true){
-      const saved=routeMapReturn;if(!saved)return;routeMapReturn=undefined;mapBack.hidden=true;mapPanel.open=false;
-      if(!restore)return;
-      if(!saved.inspectorOpen && mapInspector.open)inspectorReturnFocus=saved.origin;
-      mapInspector.open=saved.inspectorOpen;
-      requestAnimationFrame(()=>{
-        if(timeline)timeline.scrollTop=saved.timelineTop;
-        const content=mapInspector.querySelector?.(".conversation-diagnostics-content");if(content)content.scrollTop=saved.inspectorTop;
-        if(saved.origin?.isConnected!==false)saved.origin.focus?.({preventScroll:true});
-      });
-    }
-    function openRoutingMap(source,origin){
-      if(!graph || !source?.id)return;
-      const content=mapInspector.querySelector?.(".conversation-diagnostics-content");
-      const saved={origin,inspectorOpen:mapInspector.open,timelineTop:timeline?.scrollTop||0,inspectorTop:content?.scrollTop||0};routeMapReturn=saved;
-      mapBack.hidden=false;mapInspector.open=true;mapPanel.open=true;
-      graph.result(source);graph.flush();
-      requestAnimationFrame(()=>{if(routeMapReturn!==saved)return;mapPanel.scrollIntoView?.({block:"start"});graph.focus(source.id);});
-    }
-    function routingMapButton(source){
-      const button=node("button",undefined,"routing-map-open");button.type="button";button.hidden=!graph;
-      button.setAttribute("aria-label","Show routing map");button.title="Show routing map";
-      button.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="5" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="5" cy="19" r="2"/><path d="M7 5h3v14H7m3-7h7"/></svg>';
-      button.addEventListener("click",()=>openRoutingMap(source(),button));return button;
-    }
-    mapBack?.addEventListener("click",()=>closeRoutingMap());
-    mapPanel?.addEventListener("toggle",()=>{if(!mapPanel.open)closeRoutingMap();});
-    mapInspector?.addEventListener("toggle",()=>{if(!mapInspector.open)closeRoutingMap();});
-
     const responseDraft=node("article",undefined,"reply response-draft");
     const responseDraftBody=node("div",undefined,"reply-text");
     responseDraft.id="conversation-response-draft";responseDraft.hidden=true;
@@ -316,7 +285,7 @@ window.Conversation = (() => {
       const diagnostics=$("#conversation-diagnostics");
       diagnostics.open=false;
       diagnostics.querySelector?.(".conversation-diagnostics-content")?.prepend($("#conversation-observation"));
-      timeline.hidden=false;$("#conversation-replies").hidden=false;$("#conversation-sent").hidden=true;
+      timeline.hidden=false;$("#conversation-replies").hidden=false;$("#conversation-sent").hidden=false;
       $("#conversation-inputs-older").textContent="Earlier messages";
       historyTools.append($("#conversation-inputs-older"),$("#conversation-older"),$("#conversation-telegram-older"));
       diagnostics.querySelector?.(".conversation-diagnostics-content")?.append(historyTools);
@@ -554,7 +523,7 @@ window.Conversation = (() => {
         const box=node("article",undefined,"reply session-update"),title=node("h3"),body=node("p",undefined,"reply-text"),listen=node("button","Listen");
         const time=node("time",undefined,"message-time"),reply=node("button","Reply to this update");reply.type="button";reply.className="session-update-reply";
         const read=node("button","Read reply"),error=node("p","","reply-error");read.type="button";read.className="session-update-read";error.setAttribute("role","status");
-        listen.type="button";listen.className="session-update-listen";box.append(title,body,listen,reply,routingMapButton(()=>cards.get(card.source)?.source),copyButton(()=>copySource(cards.get(card.source))),read,error,time);card={box,title,body,listen,reply,read,error,time};progressCards.set(key,card);
+        listen.type="button";listen.className="session-update-listen";box.append(title,body,listen,reply,copyButton(()=>copySource(cards.get(card.source))),read,error,time);card={box,title,body,listen,reply,read,error,time};progressCards.set(key,card);
         read.addEventListener("click",()=>{const original=cards.get(card.source);if(!original || original.source.revision!==card.revision)return;return readCard(original);});
         reply.addEventListener("click",()=>{const original=cards.get(card.source);if(!original || original.source.revision!==card.revision || !canReplyUpdates || readOnly)return;selectFocus({source:card.source,revision:card.revision},original.source.label||"this session");});
         listen.addEventListener("click",()=>{const original=cards.get(card.source);if(!original || original.source.revision!==card.revision || !canListen)return;return listenCard(original);});
@@ -767,7 +736,7 @@ window.Conversation = (() => {
       presentState({transcribing:[...inputs.values()].some(c=>c.value.voice && c.value.phase==="preparing"),
         routing:[...inputs.values()].some(c=>["requested","queued","submitting","steering"].includes(c.value.routing?.phase))});
     }
-    function resetInputs() {closeRoutingMap(false);
+    function resetInputs() {
       voiceMode?.close();showResponseDraft();
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();graph?.reset();graphCursor=0;timeline?.replaceChildren();
@@ -889,8 +858,8 @@ window.Conversation = (() => {
         traceRefresh.type="button";traceState.setAttribute("role","status");trace.append(traceSummary,traceState,traceContent,traceRefresh);
         if(timeline){box.classList.add?.("human-message");box.append(node("h3","You"));}
         const time=node("time",undefined,"message-time");
-        box.append(text,status,actions,routeBox,imageButton,imageView,trace,time);
-        card = {box, text,time, imageButton,imageView,status, check, retry, value, observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceState,traceContent,traceRefresh,traceText:new Map()};
+        box.append(text,status,actions,routeBox,imageButton,imageView,...(timeline?[]:[trace]),time);
+        card = {box, text,time, imageButton,imageView,status, check, retry, value, observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
         trace.addEventListener("toggle",()=>trace.open&&readTrace(card));
         traceRefresh.addEventListener("click",()=>readTrace(card));
         continueButton.addEventListener("click",()=>card.value.continuation&&selectFocus(card.value.continuation,`#${card.value.routing?.label||"session"}`));
@@ -997,6 +966,12 @@ window.Conversation = (() => {
       if(timeline){
         const original=cards.get(card.value.reply?.source)?.source;
         card.box.children[0].textContent=card.value.reply?`You · reply to ${original?.kind?.startsWith("integrator_")?"Conversation":original?.label||"earlier message"}`:"You";
+      }
+      if(timeline){
+        card.traceSummary.textContent=`Routing path · ${(card.value.text||card.value.preview||"Saved voice input").slice(0,80)}`;
+        card.trace.dataset.sequence=card.box.dataset.sequence;
+        const next=[...container.children].find(item=>item!==card.trace&&Number(item.dataset.sequence)<Number(card.trace.dataset.sequence));
+        container.insertBefore(card.trace,next||null);
       }
       if(timeline)placeInTimeline(card.box,`input:${card.value.id}`,card.value.received_at || (card.value.origin_kind==="telegram"?"1970-01-01T00:00:00Z":undefined),followingLive);
       else container.insertBefore(card.box, following || null);
@@ -1638,7 +1613,7 @@ window.Conversation = (() => {
         const error = node("p", "", "reply-error"); error.setAttribute("role", "status");
         const reply=node("button",source.kind.startsWith("integrator_")?"Reply to this message":"Reply to this session");reply.type="button";reply.hidden=readOnly || !["worker_result","matrix_result","integrator_answer","integrator_progress"].includes(source.kind);
         const time=node("time",undefined,"message-time");
-        actions.append(read, listen,reply,routingMapButton(()=>card.source),copyButton(()=>copySource(card))); box.append(title, status, body, actions, error,time);
+        actions.append(read, listen,reply,copyButton(()=>copySource(card))); box.append(title, status, body, actions, error,time);
         box.dataset.sequence = String(source.sequence);
         const following = [...container.children].find((item) => Number(item.dataset.sequence) < source.sequence);
         if(!timeline || source.kind==="worker_progress")container.insertBefore(box, following || null);

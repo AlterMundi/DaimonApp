@@ -136,3 +136,6 @@ input dock. Its menu opens upward within that area on desktop and mobile, withou
 shifting the conversation or input. The destination remains beside the menu
 control. Compact-header mode also hides the pending/status lane; reverse scrolling
 restores it without changing its content or pending tasks.
+
+Routing maps and saved-input routing-path disclosures remain in Under the hood,
+without per-message map shortcuts or routing details in the conversation.
