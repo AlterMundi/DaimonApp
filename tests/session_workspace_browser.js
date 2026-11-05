@@ -76,6 +76,22 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert(menu.left>=0&&menu.right<=await page.evaluate(()=>innerWidth),'Session menu stays inside viewport');
  }
  await bottomMenu();
+ async function compactControls(){
+  const rows=await page.locator('.session-row').evaluateAll(nodes=>nodes.map(row=>{
+   const buttons=[...row.querySelectorAll('.session-row-actions button')];
+   return buttons.map(button=>{const r=button.getBoundingClientRect(),svg=button.querySelector('svg');return {top:r.top,width:r.width,height:r.height,icon:svg?.getBoundingClientRect().width,label:button.getAttribute('aria-label')};});
+  }));
+  for(const buttons of rows){
+   assert.equal(buttons.length,4,'Every row retains reply, pin, mute and solo');
+   for(const control of buttons){
+    assert.equal(control.top,buttons[0].top,'All four controls share one compact line');
+    assert(control.width>=24&&control.width<=32&&control.height>=24&&control.height<=32,'Compact controls retain usable targets');
+    if(control.icon)assert(control.icon<=18,'Icons match the small audio-control scale');
+    assert(control.label,'Compact icon actions retain accessible names');
+   }
+  }
+ }
+ await compactControls();
  assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
  assert.deepEqual(await page.locator('.session-name').allTextContents(),[sessions[1].title,sessions[2].title,sessions[0].title]);
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
@@ -114,6 +130,14 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert(layout.actions.x>=layout.name.right-1,'Controls sit to the right of the title');
  assert(layout.state.y>=Math.max(layout.name.bottom,layout.actions.bottom)-1,'Status sits below title and controls');
  assert((await page.getByRole('button',{name:`Mute ${sessions[0].title}`,exact:true}).innerHTML()).includes('M11 5 6 9H3'),'Canonical speaker mute icon');
+ await compactControls();
+ await page.setViewportSize({width:320,height:740});await bottomMenu();await compactControls();
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No horizontal overflow at 320px');
+ const focused=page.locator('.session-row-actions button').first();await page.locator('.session-name').first().focus();await page.keyboard.press('Tab');
+ assert(await focused.evaluate(button=>button.matches(':focus-visible')&&getComputedStyle(button).outlineStyle!=='none'),'Keyboard focus remains visible on compact controls');
+ await page.screenshot({path:path.join(output,'narrow-sessions.png')});
+ await page.setViewportSize({width:390,height:844});
+
 
  await page.getByRole('button',{name:'Hide sessions',exact:true}).click();
  const timeline=page.locator('#conversation-timeline');await timeline.evaluate(node=>{node.scrollTop=0;});await page.waitForTimeout(100);
@@ -135,7 +159,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert(await page.locator('#conversation-timeline').isVisible());assert(await page.locator('#conversation-account').isVisible(),'Workspace denial is not a global sign-out');
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();assert.equal(errors.length,0,errors.join('\n'));
- report.state='qualified-synthetic-browser';report.posts=posts.map(v=>({text:v.text,reply:v.reply}));report.viewports=['1280x800','390x844'];report.errors=errors;
+ report.state='qualified-synthetic-browser';report.posts=posts.map(v=>({text:v.text,reply:v.reply}));report.viewports=['1280x800','390x844','320x740'];report.errors=errors;
  }finally{
  if(browser)await browser.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  report.errors=errors;fs.writeFileSync(path.join(output,'browser.json'),JSON.stringify(report,null,2));
