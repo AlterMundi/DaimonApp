@@ -39,7 +39,12 @@ impl ConversationReply {
                 id.parse::<i64>()
                     .is_ok_and(|n| n > 0 && id == n.to_string())
             });
-        if !(question || delivery || native)
+        let destination = !self.context_only
+            && self.source.strip_prefix("session:").is_some_and(|id| {
+                id.parse::<i64>()
+                    .is_ok_and(|n| n > 0 && id == n.to_string())
+            });
+        if !(question || delivery || native || destination)
             || self.revision.len() != 64
             || !self
                 .revision
@@ -138,6 +143,56 @@ pub(super) fn continuation_on(
 ) -> Result<Option<ConversationReply>> {
     Ok(input_focus_on(conn, human, entry, input)?.map(|(reply, _)| reply))
 }
+fn destination_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    id: i64,
+) -> Result<(ConversationReply, ConversationFocus, String)> {
+    let (session, _) = super::presentation::entry_on(conn, human, entry)?;
+    let entry_binding = super::presentation::entry_binding(conn, human, entry, session)?;
+    let (chat, topic, native, label): (i64, i64, String, Option<String>) = conn.query_row(
+        "SELECT s.chat_id,s.thread_id,s.codex_thread_id,s.session_title FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.id=?1 AND s.creator_user_id=?2 AND u.allowed=1 AND s.force_fresh_thread=0 AND s.codex_thread_id IS NOT NULL AND s.codex_thread_id!=''",
+        params![id,human], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    let target = SessionKey::new(chat, Some(topic));
+    if target == entry
+        || super::stopping::fenced_on(conn, entry)?
+        || super::stopping::fenced_on(conn, target)?
+    {
+        bail!("Selected session is unavailable for direct input");
+    }
+    let epoch = super::stopping::admission_epoch_on(conn, target)?;
+    let revision = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&json!([
+            "session-destination/v1",
+            human,
+            entry_binding,
+            id,
+            target,
+            native,
+            epoch
+        ]))?)
+    );
+    Ok((
+        ConversationReply {
+            source: format!("session:{id}"),
+            revision,
+            context_only: false,
+        },
+        ConversationFocus {
+            target,
+            session: id,
+            native: Some(native),
+            retired: false,
+            requests: vec![],
+        },
+        label
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "Untitled session".into()),
+    ))
+}
+
 pub(super) fn reply_on(
     conn: &Connection,
     human: i64,
@@ -151,6 +206,14 @@ pub(super) fn reply_on(
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
         bail!("Invalid reply source revision");
+    }
+    if let Some(id) = reply.source.strip_prefix("session:") {
+        reply.validate_context()?;
+        let (expected, focus, _) = destination_on(conn, human, entry, id.parse()?)?;
+        if *reply != expected {
+            bail!("Selected session destination changed");
+        }
+        return Ok(focus);
     }
     if let Some(id) = reply.source.strip_prefix("request:") {
         let snapshot = super::conversation_requests::read_on(conn, human, entry, id)?;
@@ -235,6 +298,81 @@ fn save_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
     Ok(())
 }
 impl Store {
+    /// Exact retained pin provenance, including current owner and generation.
+    pub fn conversation_pinned_instruction(&self, human: i64, instruction: &str) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let source:Option<(String,String)>=conn.query_row(
+            "SELECT source.event_id,i.doc FROM interaction_instructions i JOIN interaction_sources source ON source.id=i.input_id WHERE i.id=?1 AND source.human_id=?2 AND source.channel='conversation'",
+            params![instruction,human],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let Some((id, raw)) = source else {
+            return Ok(false);
+        };
+        let input = super::conversation_inputs::read_on(&conn, &id, human)?;
+        super::conversation_inputs::eligible_on(&conn, &input)?;
+        let Some(reference) = input
+            .reply
+            .as_ref()
+            .filter(|r| r.source.starts_with("session:"))
+        else {
+            return Ok(false);
+        };
+        let (expected, focus, _) =
+            destination_on(&conn, human, input.entry, reference.source[8..].parse()?)?;
+        let selected: crate::interaction::Instruction = serde_json::from_str(&raw)?;
+        Ok(*reference == expected
+            && selected.target == focus.target
+            && input.routing.as_ref().is_some_and(|r| {
+                r.instruction.as_deref() == Some(instruction) && r.target == focus.target
+            }))
+    }
+
+    /// Revalidate a retained session pin at every native admission boundary.
+    /// Ordinary routes keep their existing admission contract.
+    pub fn conversation_pin_dispatch_allowed(&self, human: i64, instruction: &str) -> Result<bool> {
+        let pinned = {
+            let conn = self.conn.lock().expect("store mutex poisoned");
+            let id: Option<String> = conn.query_row(
+                "SELECT source.event_id FROM interaction_instructions i JOIN interaction_sources source ON source.id=i.input_id WHERE i.id=?1 AND source.human_id=?2 AND source.channel='conversation'",
+                params![instruction, human], |r| r.get(0)).optional()?;
+            match id {
+                Some(id) => super::conversation_inputs::read_on(&conn, &id, human)?
+                    .reply
+                    .is_some_and(|r| r.source.starts_with("session:")),
+                None => false,
+            }
+        };
+        if !pinned {
+            return Ok(true);
+        }
+        // Missing or retired pin authority is a refusal, never an ordinary route.
+        Ok(self
+            .conversation_pinned_instruction(human, instruction)
+            .unwrap_or(false))
+    }
+
+    /// Current owned targets for an explicit UI pin, not router enrollment.
+    pub fn conversation_workspace_destinations(
+        &self,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, native) = super::presentation::entry_on(&conn, human, entry)?;
+        let binding = super::presentation::entry_binding(&conn, human, entry, session)?;
+        let mut q = conn.prepare("SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.creator_user_id=?1 AND u.allowed=1 ORDER BY s.id LIMIT 129")?;
+        let ids = q
+            .query_map([human], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if ids.len() > 128 {
+            bail!("Session workspace exceeds qualified bound");
+        }
+        let items=ids.into_iter().filter_map(|id| destination_on(&conn,human,entry,id).ok().map(|(reference,focus,label)|
+            json!({"audio_key":format!("{}:{}",focus.target.chat_id,focus.target.thread_id),"label":label,"destination":reference}))).collect::<Vec<_>>();
+        Ok(
+            json!({"schema":"daimon.session-destinations/v1","binding":binding,"entry_binding":[human,entry,session,native],"items":items,
+            "meaning":"Owned current destination references. Listing does not admit input, enroll routing or start work."}),
+        )
+    }
     /// Only current originals expose their exact retained, definitely-unsent routes.
     pub fn conversation_recoverable_routes(
         &self,
@@ -405,7 +543,14 @@ impl Store {
             bail!("Input no longer accepts routing selection");
         }
         let explicit = crate::interaction::explicit_selector(&input.text);
-        let (targets, body) = if let Some(selector) = resolve {
+        let (targets, body) = if input
+            .reply
+            .as_ref()
+            .is_some_and(|r| r.source.starts_with("session:"))
+        {
+            let focus = input.focus.as_ref().context("Pinned destination missing")?;
+            (vec![focus.target], input.text.as_str())
+        } else if let Some(selector) = resolve {
             (
                 profile.resolve(selector.strip_prefix('#').unwrap_or(selector)),
                 explicit.map_or(input.text.as_str(), |(_, body)| body),
@@ -434,16 +579,41 @@ impl Store {
             return Ok(None);
         }
         let target = targets[0];
-        if profile.target(target.thread_id) != Some(target) {
-            bail!("Target is not enrolled");
+        let pinned = input
+            .reply
+            .as_ref()
+            .filter(|r| r.source.starts_with("session:"));
+        if profile.target(target.thread_id) != Some(target)
+            && !(pinned.is_some() && input.focus.as_ref().is_some_and(|f| f.target == target))
+        {
+            bail!("Target is not enrolled or explicitly pinned");
         }
-        let label = profile
-            .targets
-            .iter()
-            .find(|t| t.topic_id == target.thread_id)
-            .context("Missing target label")?
-            .name
-            .clone();
+        let label = if let Some(reference) = pinned {
+            let (expected, focus, label) =
+                destination_on(&tx, human, input.entry, reference.source[8..].parse()?)?;
+            if *reference != expected {
+                bail!("Pinned session changed during input preparation");
+            }
+            if focus.target == target {
+                label
+            } else {
+                profile
+                    .targets
+                    .iter()
+                    .find(|t| t.topic_id == target.thread_id)
+                    .context("Missing target label")?
+                    .name
+                    .clone()
+            }
+        } else {
+            profile
+                .targets
+                .iter()
+                .find(|t| t.topic_id == target.thread_id)
+                .context("Missing target label")?
+                .name
+                .clone()
+        };
         if body.trim().is_empty() {
             bail!("Write a message after the selector");
         }
@@ -530,6 +700,8 @@ impl Store {
                 "human_clarification"
             } else if explicit.is_some() {
                 "explicit_selector"
+            } else if pinned.is_some() {
+                "session_destination"
             } else {
                 "reply"
             }
@@ -621,6 +793,120 @@ impl Store {
 mod tests {
     use super::*;
     use crate::interaction::{InputReference, InteractionConfig, RequestRelation};
+    #[test]
+    fn workspace_pin_routes_exact_original_without_integrating_turn_or_router_enrollment() {
+        let (_file, store, mut profile, binding) = setup();
+        profile.targets.clear();
+        let destinations = store
+            .conversation_workspace_destinations(100, profile.entry())
+            .unwrap();
+        let source = destinations["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["audio_key"] == "100:7")
+            .unwrap();
+        let reference: ConversationReply =
+            serde_json::from_value(source["destination"].clone()).unwrap();
+        let id = capture(
+            &store,
+            &profile,
+            &binding,
+            "#Other Keep these exact human words",
+            Some(reference),
+        );
+        let instruction = worker(store.conversation_route(100, &id, &profile, None).unwrap());
+        assert_eq!(instruction.target, SessionKey::new(100, Some(7)));
+        let original = store
+            .conversation_input_read(100, profile.entry(), &id)
+            .unwrap();
+        assert_eq!(original.text, "#Other Keep these exact human words");
+        assert_eq!(original.phase, "routed");
+        assert_eq!(original.local_turn, None);
+        assert!(
+            store
+                .conversation_pinned_instruction(100, &instruction.id)
+                .unwrap()
+        );
+        assert!(
+            store
+                .conversation_route(100, &id, &profile, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .conversation_pin_dispatch_allowed(100, &instruction.id)
+                .unwrap()
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("UPDATE sessions SET codex_thread_id='replacement' WHERE chat_id=100 AND thread_id=7", []).unwrap();
+        }
+        assert!(
+            !store
+                .conversation_pin_dispatch_allowed(100, &instruction.id)
+                .unwrap()
+        );
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_enrollments", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn workspace_pin_refuses_stale_owner_generation_and_foreign_references() {
+        let (_file, store, profile, binding) = setup();
+        let destinations = store
+            .conversation_workspace_destinations(100, profile.entry())
+            .unwrap();
+        let source = destinations["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["audio_key"] == "100:7")
+            .unwrap();
+        let reference: ConversationReply =
+            serde_json::from_value(source["destination"].clone()).unwrap();
+        let id = capture(
+            &store,
+            &profile,
+            &binding,
+            "Prepared before native replacement",
+            Some(reference.clone()),
+        );
+        store
+            .set_session_codex_thread(SessionKey::new(100, Some(7)), "replacement-native")
+            .unwrap();
+        assert!(store.conversation_route(100, &id, &profile, None).is_err());
+        let new_id = Uuid::now_v7().to_string();
+        assert!(
+            store
+                .conversation_input_capture_reply(
+                    100,
+                    profile.entry(),
+                    &binding,
+                    &new_id,
+                    "Stale pin",
+                    Some(reference)
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_workspace_destinations(101, profile.entry())
+                .is_err()
+        );
+        let original = store
+            .conversation_input_read(100, profile.entry(), &id)
+            .unwrap();
+        assert_eq!(original.phase, "retained");
+        assert_eq!(original.local_turn, None);
+    }
+
     #[test]
     fn integrator_message_reference_is_compact_context_without_a_worker_target() {
         let (_file, store, profile, binding) = setup();

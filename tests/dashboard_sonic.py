@@ -62,6 +62,7 @@ topic_id=8
         # Registry selection is owned by the receiving control service. These
         # cache/HTTP cases isolate that read; conversation_cold_entry_http_io
         # covers the actual registry rather than duplicating its SQL here.
+        self.destinations=[]
         self.choices=[{'selector':'t7','label':'Alpha'},{'selector':'t8','label':'Selected but not owned'}]
         self.registry=patch.object(self.provider,'presentation',side_effect=self.presentation)
         self.registry.start()
@@ -70,6 +71,7 @@ topic_id=8
         self.owner={'authorization':'Bearer '+login.json()['session_token']}
     def save(self):atomic_json(self.state/'topics.json',self.observation)
     def presentation(self,command):
+        if command=='input workspace':return {'schema':'daimon.session-destinations/v1','items':self.destinations}
         self.assertEqual(command,f'input list {2**63-1} after')
         return {'routing_choices':self.choices}
     def tearDown(self):self.client.close();self.provider.close();self.registry.stop();self.temp.cleanup()
@@ -77,6 +79,32 @@ topic_id=8
         response=self.client.get('/api/interaction/sonic',headers=self.owner)
         self.assertEqual(response.status_code,200,response.text)
         return {s['id']:s for s in response.json()['sources']}
+    def test_workspace_joins_only_native_owned_destination_references_and_validates_shape(self):
+        self.destinations=[{'audio_key':'100:7','destination':{'source':'session:2','revision':'b'*64}},
+            {'audio_key':'100:8','destination':{'source':'session:3','revision':'c'*64}}]
+        response=self.client.get('/api/interaction/sessions',headers=self.owner)
+        self.assertEqual(response.status_code,200,response.text)
+        items={v['audio_key']:v for v in response.json()['sessions']}
+        self.assertEqual(items['100:7']['destination'],self.destinations[0]['destination'])
+        self.assertNotIn('100:8',items)
+        self.destinations[0]['destination']['source']='native:1'
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=self.owner).status_code,503)
+
+    def test_workspace_lists_owned_unrouted_sessions_by_activity_not_observer_refresh(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute("INSERT INTO sessions VALUES(4,100,9,100,'unrouted',0,'Unrouted owned session')")
+            db.execute("INSERT INTO turns VALUES(4,100,'2024-01-02T00:00:00Z')")
+            db.execute("INSERT INTO turns VALUES(1,100,'2024-01-01T00:00:00Z')");db.commit()
+        response=self.client.get('/api/interaction/sessions',headers=self.owner)
+        self.assertEqual(response.status_code,200,response.text)
+        rows=response.json()['sessions']
+        self.assertEqual([r['title'] for r in rows],['Unrouted owned session','Entry','Worker'])
+        self.assertNotIn('foreign',json.dumps(rows).lower())
+        self.assertFalse(rows[0]['fresh']);self.assertEqual(rows[0]['goal_state'],'unknown')
+        self.assertTrue(rows[2]['human_action_pending']);self.assertEqual(rows[2]['goal_state'],'blocked')
+        self.assertEqual(rows[2]['results_review'],'unknown')
+        self.assertIsNone(self.provider.native,'Metadata must not open native processes')
+
     def test_live_owner_bound_goal_and_human_wait_are_distinct_from_foreign_unknown(self):
         items=self.sources()
         self.assertEqual(items['100:7']['goal_state'],'blocked')
@@ -106,6 +134,7 @@ topic_id=8
             grants.enroll('Synthetic sonic monitor',destination,60,scope='monitor_readonly')
         header={'authorization':json.loads(destination.read_text())['authorization']}
         self.assertEqual(self.client.get('/api/interaction/sonic',headers=header).status_code,200)
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=header).status_code,403)
         self.assertEqual(self.client.post('/api/interaction/sonic',headers=header,json={}).status_code,403)
         self.assertTrue(permitted('GET','/api/interaction/sonic'))
         self.assertFalse(permitted('POST','/api/interaction/sonic'))

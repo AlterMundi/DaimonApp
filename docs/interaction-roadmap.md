@@ -35,6 +35,55 @@ than one frontend importing or depending on the other frontend's lifecycle.
 This remaining refactor is explicitly **not the current priority or a new gate**
 for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
+## Session workspace and adaptive header —4November2026
+
+Nicolas selected #602 as a complete interface/routing change, with #603 direct
+input, #604 session rail and #605 technical event view. Preserve the Avatar
+continuity work while implementing this base-experience refinement in milestone8.
+
+All owned sessions appear in a collapsible side column, ordered by conversation
+activity rather than observer refresh time. Existing Telecodex markers and fresh
+observer facts represent work, active/blocked goals, human requests and results
+to review. Unknown/stale observations stay explicit; color is not the only cue.
+The latest-message bubble uses an exact current source/revision reply. A separate
+pin selects the default destination; no pin means integration. Expanding a session
+shows its live conversation and temporarily targets it; Back restores the previous
+explicit pin. Freeze destination and question scope at capture/submission, keep
+drafts and uncertain originals, and never silently route a stale target elsewhere.
+Text and ordinary Conversation speech sent to a pinned worker bypass an integrating
+model turn; observer visibility does not imply another model call per message.
+Avatar delegation remains independent. Reuse existing native admission/history.
+
+Move Mute/Solo beside the session title and Reset audio filters to the rail before
+removing per-update controls. Expanded sessions expose a terminal-symbol view of
+the harness events actually available (tools, commands/output, exposed reasoning
+summaries), replacing session-specific Under the hood content while retaining
+useful app diagnostics. Do not invent hidden events or create a transcript store.
+
+The header compacts to one line on deliberate forward scrolling and reappears on
+reverse scrolling or header focus. Programmatic speech-follow scrolling must not
+hide it. Preserve readable identity, header actions, keyboard/touch access and
+reduced motion. Qualify desktop/mobile combined pin/back/reply/text/voice/audio
+and live-tool journeys without Telegram or model/provider expertise.
+
+Implementation checkpoint: the initial candidate adds a bounded model-free
+all-owned-session metadata read for full owner sessions; limited Companion grants
+remain unchanged and require an explicit supported workspace grant path before
+phone rollout. Unreviewed-result status is currently unknown, not inferred from
+work completion. The adaptive header candidate has static actual-shell Chromium
+coverage at1280px/390px and interaction/focus tests; it is not deployed or phone
+acceptance. The next native candidate adds exact generation-bound session destination references
+through the existing retained reply field. A pin can select an owned native
+session without enrolling it as a router target; literal selector-like words do
+not override that explicit destination. Text and recorded voice retain their
+original words and destination through preparation. Shared queued submission and
+final steer admission revalidate the pin; a replaced native binding refuses
+submission rather than redirecting it. Existing routing journals, return
+registration and known-unsent recovery remain in use. The workspace API joins
+only native-owned descriptors; an older listener exposes metadata without pins.
+This contract is not selected on the receiver. Sidebar rendering, device grants,
+technical events and the complete combined experience remain unfinished.
+
 ## Shared attention backend —4November2026
 
 Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,

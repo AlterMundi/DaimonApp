@@ -81,7 +81,7 @@ fn decorate_recovery(
     value: &mut Value,
 ) -> Result<()> {
     let recoveries=app.shared.store.conversation_recoverable_routes(human,entry,id)?.into_iter()
-        .filter(|i|super::routing::enrolled(&app.shared,i.target))
+        .filter(|i|super::routing::instruction_available(&app.shared,i))
         .map(|i|json!({"instruction":i.id,"label":super::routing::label(&app.shared,i.target),"target":i.target})).collect::<Vec<_>>();
     if !recoveries.is_empty() {
         value["binding"] = app
@@ -128,6 +128,12 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         .context("Missing integrating entry")?;
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
+    }
+    if args == "workspace" {
+        return app
+            .shared
+            .store
+            .conversation_workspace_destinations(human, cfg.entry());
     }
     if let Some(body) = args.strip_prefix("foreground context ") {
         let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;
@@ -311,7 +317,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .store
             .interaction_instruction(&selected.instruction, human)?
             .context("Selected recovery unavailable")?;
-        if !super::routing::enrolled(&app.shared, current.target) {
+        if !super::routing::instruction_available(&app.shared, &current) {
             bail!("Recovery target no longer enrolled");
         }
         let (changed, _) = app.shared.store.conversation_recover_route(
