@@ -258,7 +258,7 @@ window.Conversation = (() => {
       if(!card)return;
       if(selection.input){$("#conversation-sent").open=true;card.trace.open=true;readTrace(card);}
       if(timeline && card.source?.kind==="worker_progress")$("#conversation-diagnostics").open=true;
-      card.box.scrollIntoView({block:"nearest"});
+      (selection.input?card.trace:card.box).scrollIntoView({block:"nearest"});
     }}) : undefined;
     document.body.classList.toggle("standalone-conversation",standalone);
     if(graph){$("#conversation-flow").hidden=false;$("#conversation-flow").open=readOnly;}
@@ -285,7 +285,7 @@ window.Conversation = (() => {
       const diagnostics=$("#conversation-diagnostics");
       diagnostics.open=false;
       diagnostics.querySelector?.(".conversation-diagnostics-content")?.prepend($("#conversation-observation"));
-      timeline.hidden=false;$("#conversation-replies").hidden=false;$("#conversation-sent").hidden=true;
+      timeline.hidden=false;$("#conversation-replies").hidden=false;$("#conversation-sent").hidden=false;
       $("#conversation-inputs-older").textContent="Earlier messages";
       historyTools.append($("#conversation-inputs-older"),$("#conversation-older"),$("#conversation-telegram-older"));
       diagnostics.querySelector?.(".conversation-diagnostics-content")?.append(historyTools);
@@ -858,8 +858,8 @@ window.Conversation = (() => {
         traceRefresh.type="button";traceState.setAttribute("role","status");trace.append(traceSummary,traceState,traceContent,traceRefresh);
         if(timeline){box.classList.add?.("human-message");box.append(node("h3","You"));}
         const time=node("time",undefined,"message-time");
-        box.append(text,status,actions,routeBox,imageButton,imageView,trace,time);
-        card = {box, text,time, imageButton,imageView,status, check, retry, value, observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceState,traceContent,traceRefresh,traceText:new Map()};
+        box.append(text,status,actions,routeBox,imageButton,imageView,...(timeline?[]:[trace]),time);
+        card = {box, text,time, imageButton,imageView,status, check, retry, value, observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
         trace.addEventListener("toggle",()=>trace.open&&readTrace(card));
         traceRefresh.addEventListener("click",()=>readTrace(card));
         continueButton.addEventListener("click",()=>card.value.continuation&&selectFocus(card.value.continuation,`#${card.value.routing?.label||"session"}`));
@@ -966,6 +966,12 @@ window.Conversation = (() => {
       if(timeline){
         const original=cards.get(card.value.reply?.source)?.source;
         card.box.children[0].textContent=card.value.reply?`You · reply to ${original?.kind?.startsWith("integrator_")?"Conversation":original?.label||"earlier message"}`:"You";
+      }
+      if(timeline){
+        card.traceSummary.textContent=`Routing path · ${(card.value.text||card.value.preview||"Saved voice input").slice(0,80)}`;
+        card.trace.dataset.sequence=card.box.dataset.sequence;
+        const next=[...container.children].find(item=>item!==card.trace&&Number(item.dataset.sequence)<Number(card.trace.dataset.sequence));
+        container.insertBefore(card.trace,next||null);
       }
       if(timeline)placeInTimeline(card.box,`input:${card.value.id}`,card.value.received_at || (card.value.origin_kind==="telegram"?"1970-01-01T00:00:00Z":undefined),followingLive);
       else container.insertBefore(card.box, following || null);
