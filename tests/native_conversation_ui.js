@@ -37,6 +37,14 @@ function boot(android=false,pcmReady=true,overrides={}){
 }
 async function ready(value,diagnostics=false,mode='manual',seconds){const pending=value.engine.start();await until(()=>value.sockets[0]?.sent.length);assert.equal(value.permissionCalls,0,'Preflight precedes microphone acquisition');const socket=value.sockets[0],id=socket.sent[0].id;socket.push({type:'ready',id,activity_mode:mode,...(seconds===undefined?{}:{session_seconds:seconds}),...(diagnostics?{playback_status:true}:{})});assert.equal(await pending,true);return socket;}
 (async()=>{
+  const stalePlayback=boot(),staleWire=await ready(stalePlayback);
+  staleWire.push({type:'audio',id:crypto.randomUUID(),end:640,pcm:Buffer.alloc(640,1).toString('base64'),sample_rate:24000});
+  await until(()=>stalePlayback.contexts[0].nodes.length===1);
+  const cancelled=stalePlayback.contexts[0].nodes[0];
+  stalePlayback.engine.hold('Disconnected; retained originals stay available.');
+  const afterHold=stalePlayback.states.length;
+  cancelled.finish();
+  assert.equal(stalePlayback.states.length,afterHold,'Cancelled audio completion must not publish over the terminal voice state');
   const long=boot(),longSocket=await ready(long,false,'manual',600);
   assert.equal(longSocket.sent[0].session_seconds,1800);
   assert.equal(long.sources[0].options.sessionSeconds,600);
