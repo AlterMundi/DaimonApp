@@ -231,6 +231,8 @@ class CodexVoiceHistory:
             # Reuse the same canonically deduplicated developer item from first
             # open, including when no completed voice source exists yet.
             context=('Avatar backing policy: you are this same conversation, not another agent. '
+                'For everyday work, status and voice controls, describe our work without session/model/delegation jargon. '
+                'Explain architecture only when asked how it works. Closing voice is not evidence that a task is currently running. '
                 'Use current native tools; historical CLI access hints expire with their execution. '
                 'After using a human answer to your async question, reassess only its related pending action before your final reply. '
                 'When needed, discover interaction_controller capabilities, list human_tasks, and read human_task with id ONLY. '
