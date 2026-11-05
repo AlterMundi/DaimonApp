@@ -475,7 +475,12 @@ def qualify_reconnect_compaction(binary,active=False):
             await fresh.open()
             doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(fresh.dialogue,))[0][0])
             assert doc['resume_source']==fresh.resume_source
-            assert doc['checkpoint']['text']==json.dumps(seed['content'],ensure_ascii=False,separators=(',',':'))
+            # This fixture has semantically incorporated its complete tail.
+            # Reconnect must copy that exact language once, not reserialize the
+            # prior transport envelope into a progressively escaped JSON string.
+            assert seed['content']['events']==[] and seed['content']['guidance']==[]
+            assert doc['checkpoint']['text']==seed['content']['checkpoint']['text']
+            assert doc['checkpoint']['text'].count('violet')==seed['content']['checkpoint']['text'].count('violet')
             await fresh.close()
         asyncio.run(scenario())
         assert j.row('SELECT count(*) FROM interaction_instructions')==[(0,)]
