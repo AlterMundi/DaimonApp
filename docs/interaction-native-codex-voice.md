@@ -40,7 +40,9 @@ owner or change ordinary model defaults to qualify it.
 ## Media and accepted work
 
 An authenticated control WebSocket exchanges one SDP offer and answer. Media
-flows directly through WebRTC. The application sends no manual PCM, text turn or
+flows directly through WebRTC, with the native-required `oai-events` data channel
+negotiated before the offer. Core owns handoffs; the browser sends no commands on
+that channel. The application sends no manual PCM, text turn or
 response request to the provider. Shared auth, Origin, fresh action token and
 owner binding are checked before native start and throughout the visit.
 
@@ -51,10 +53,33 @@ Tools/results continue independently of the browser. A stop acknowledgement alon
 is not closure. Missing closure or failed collection retains review state;
 cleanup never cancels accepted work or replays its original request.
 
-Duration stays300–600seconds. Native context handling remains native: stored
-visits never become a recursively serialized reconnect prompt. Completed
-transcripts retain source IDs, voice generation and observation times. They are
-not proof of the precise words a person heard.
+Duration stays300–600seconds. The actual native fixture exposed a reconnect
+continuity gap: it accepted a new control word, then answered with the old word
+after reconnect, even though the final question was transcribed correctly.
+Native working-thread startup context alone did not preserve inline voice turns.
+
+Restore recent completed voice transcripts through the native V3 `initialItems`
+contract, alongside native startup context. Keep their actual user/assistant roles
+and order; a bounded developer provenance item identifies them as history, not
+new work. No `appendText`, `turn/start`, repeated tool request or app-owned
+compaction worker is used. The window contains at most32complete source items
+and18432UTF-8 bytes including source references. All initial text, including the
+identity brief and provenance, is bounded to28672UTF-8 bytes. Each retained visit
+stores source IDs, SHA256 values, digest and omission flag, never a copy of a
+previous startup envelope. Empty reconnects cannot recursively grow context.
+Older omitted history remains retained, but this window does not claim complete
+long-term recall. ASR sources are not proof of the precise words a person heard.
+
+A separate durable transcript-completeness marker is committed only after
+observed native closure and successful event drain, before releasing voice
+ownership to a successor. Backend collector status remains separate. Failed
+source writes, uncertain closure or interrupted cleanup block automatic restore
+with an explicit reconciliation message. Older visits without the marker require
+reconciliation too; never infer completeness from their display state. Cancelling
+before `voice.start` is attempted records an empty, confirmed-not-started outcome
+and permits another visit. Original bytes and accepted backend work are preserved.
+The actual correction/recall check must be repeated on the final qualified pair;
+unit and synthetic-browser success do not establish semantic acceptance.
 
 ## Original recovery and bounds
 

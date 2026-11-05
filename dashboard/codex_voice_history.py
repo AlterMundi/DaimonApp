@@ -2,7 +2,8 @@
 
 Core's original thread history remains canonical. These records link its public
 transcripts to app-captured original audio; they are not a model memory/context
-store and are never fed back as another copy of the native conversation.
+store. A bounded flat startup window restores actual voice sources through
+V3 initialItems; previous startup envelopes are never included recursively.
 """
 import hashlib
 import json
@@ -14,6 +15,10 @@ import uuid
 
 from .private_state import private_directory, read_json, write_json
 from scripts.speech_render import lock
+
+
+class IncompleteTranscript(ValueError):
+    """Retained sources are not confirmed complete for a safe reconnect."""
 
 
 class CodexVoiceHistory:
@@ -40,7 +45,7 @@ class CodexVoiceHistory:
             raise ValueError('Native voice history reached its retention bound')
         write_json(path,value)
 
-    def open(self,ident,human,frozen,native_session,session_seconds=600,*,identity_sha256=None):
+    def open(self,ident,human,frozen,native_session,session_seconds=600,*,identity_sha256=None,startup=None):
         self.ident(ident);self.ident(native_session)
         if type(session_seconds)is not int or not 1<=session_seconds<=600:
             raise ValueError('Select a bounded native voice duration')
@@ -49,14 +54,66 @@ class CodexVoiceHistory:
         with lock(self.root/'.lock'):
             if (self.root/(ident+'.json')).exists():
                 raise ValueError('Native voice visit already exists; inspect it instead of starting again')
+            sequence=max((read_json(path).get('sequence',0)for path in self.root.glob('*.json')),default=0)+1
             value={'schema':'daimon.codex-voice-visit/v1','id':ident,'human':human,
                 'binding':frozen['binding'],'entry_binding':frozen['entry_binding'],
                 'native_thread':frozen['native_thread'],'native_session':native_session,
-                'identity_sha256':identity_sha256,
-                'created_at':time.time(),'state':'opening','items':[],'recordings':[],
+                'identity_sha256':identity_sha256,'sequence':sequence,
+                'startup_sources':[]if startup is None else startup['sources'],
+                'startup_digest':None if startup is None else startup['digest'],
+                'startup_more':False if startup is None else startup['more'],
+                'created_at':time.time(),'state':'opening','transcript_complete':False,'items':[],'recordings':[],
                 'max_input_pcm_bytes':session_seconds*32000}
             self._write(value)
             return value
+
+    def continuation(self,human,frozen):
+        """Flat immutable source window, never another visit's startup envelope."""
+        with lock(self.root/'.lock'):
+            visits=[read_json(path)for path in self.root.glob('*.json')]
+            visits=[value for value in visits if value.get('human')==human
+                and value.get('binding')==frozen['binding']
+                and value.get('entry_binding')==frozen['entry_binding']
+                and value.get('native_thread')==frozen['native_thread']]
+            if any(value.get('transcript_complete')is not True for value in visits):
+                raise IncompleteTranscript('Previous native voice transcript needs reconciliation before reconnecting')
+            visits.sort(key=lambda value:(value.get('sequence',0),value['created_at'],value['id']))
+            rows=[(value,item)for value in visits for item in value['items']]
+            selected=[]
+            # Complete newest items only. No clipping, summary inference or
+            # previously serialized startup history becomes a source again.
+            for value,item in reversed(rows):
+                role=item['role'];text=item['text']
+                if role not in ('user','assistant')or not isinstance(text,str)or not text or'\0'in text:
+                    raise ValueError('Retained native transcript changed')
+                row={'item':{'role':role,'text':text},'source':{'visit':value['id'],
+                    'id':item['id'],'sha256':hashlib.sha256(text.encode()).hexdigest()}}
+                candidate=[row,*selected]
+                if len(candidate)>32 or len(json.dumps(candidate,ensure_ascii=False).encode())>18432:break
+                selected=candidate
+            sources=[row['source']for row in selected];items=[row['item']for row in selected]
+            digest=hashlib.sha256(json.dumps(selected,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+            return {'items':items,'sources':sources,'digest':digest,'more':len(selected)<len(rows)}
+
+    def abandon_unstarted(self,ident,human,binding):
+        """Caller confirms voice.start was never invoked; no native media existed."""
+        with lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            if value['state']!='opening' or value['items']:
+                raise ValueError('Only an empty unstarted visit can be abandoned')
+            value.update(state='closed',transcript_complete=True,native_start='not_attempted')
+            self._write(value);return value
+
+    def complete_transcript(self,ident,human,binding):
+        """Commit after observed native closure and successful event drain.
+
+        Independent of backend collector completion. Failed item writes or a
+        process crash leave this false and prevent silent incomplete restore.
+        """
+        with lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            value['transcript_complete']=True
+            self._write(value);return value
 
     def read(self,ident,human,binding):
         value=read_json(self.root/(self.ident(ident)+'.json'))

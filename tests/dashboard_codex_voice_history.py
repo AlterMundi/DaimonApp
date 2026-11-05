@@ -89,5 +89,55 @@ class History(unittest.TestCase):
         self.assertEqual(self.retain()['id'],original)
         self.assertEqual(len(self.history.read(self.visit,100,'a'*64)['recordings']),1)
 
+    def test_flat_source_restore_survives_repeated_visits_without_recursive_growth(self):
+        text='Use "hojasol", not \"brisacedro\". '+('\\'*4)
+        self.history.item(self.visit,100,'a'*64,{'id':'correction','type':'transcriptSegment',
+            'role':'user','text':text,'realtimeSessionId':self.session})
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        expected=self.history.continuation(100,self.frozen)
+        self.assertEqual(expected['items'],[{'role':'user','text':text}])
+        for _ in range(20):
+            visit=str(uuid.uuid4())
+            self.history.open(visit,100,self.frozen,str(uuid.uuid4()),startup=expected)
+            self.history.complete_transcript(visit,100,'a'*64)
+            self.history.state(visit,100,'a'*64,'closed')
+            self.assertEqual(self.history.continuation(100,self.frozen),expected)
+        self.assertEqual(expected['sources'][0]['visit'],self.visit)
+        self.assertEqual(expected['sources'][0]['sha256'],hashlib.sha256(text.encode()).hexdigest())
+
+    def test_restore_keeps_latest_complete_sources_and_reports_older_omission(self):
+        for index in range(40):
+            self.history.item(self.visit,100,'a'*64,{'id':'source_'+str(index),'type':'transcriptSegment',
+                'role':'user'if index%2==0 else'assistant','text':'Source '+str(index),
+                'realtimeSessionId':self.session})
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        value=self.history.continuation(100,self.frozen)
+        self.assertTrue(value['more']);self.assertEqual(len(value['items']),32)
+        self.assertEqual(value['items'][0]['text'],'Source 8')
+        self.assertEqual(value['items'][-1]['text'],'Source 39')
+        long=str(uuid.uuid4());generation=str(uuid.uuid4())
+        self.history.open(long,100,self.frozen,generation)
+        self.history.item(long,100,'a'*64,{'id':'newest','type':'transcriptSegment','role':'user',
+            'text':'x'*16384,'realtimeSessionId':generation})
+        self.history.complete_transcript(long,100,'a'*64)
+        value=self.history.continuation(100,self.frozen)
+        self.assertTrue(value['more']);self.assertEqual(value['items'][-1]['text'],'x'*16384)
+        self.assertLessEqual(len(__import__('json').dumps(value['items']).encode()),18432)
+
+    def test_incomplete_transcript_is_not_silently_restored_even_after_closed(self):
+        self.history.item(self.visit,100,'a'*64,{'id':'old','type':'transcriptSegment',
+            'role':'user','text':'Old value','realtimeSessionId':self.session})
+        self.history.state(self.visit,100,'a'*64,'closed')
+        with self.assertRaisesRegex(ValueError,'needs reconciliation'):
+            CodexVoiceHistory(self.root/'visits').continuation(100,self.frozen)
+
+    def test_restore_does_not_cross_binding_human_or_native_owner(self):
+        self.history.item(self.visit,100,'a'*64,{'id':'source','type':'transcriptSegment','role':'user',
+            'text':'Owned word','realtimeSessionId':self.session})
+        for human,frozen in ((101,self.frozen),(100,{**self.frozen,'binding':'b'*64}),
+                (100,{**self.frozen,'entry_binding':[100,100,8,'native']}),
+                (100,{**self.frozen,'native_thread':'another'})):
+            self.assertEqual(self.history.continuation(human,frozen)['items'],[])
+
 
 if __name__=='__main__':unittest.main()

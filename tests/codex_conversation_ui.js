@@ -17,6 +17,7 @@ async function fixture(){
  }
  class Peer{
   constructor(){peers.push(this);this.connectionState='new';}
+  createDataChannel(label){this.channel={label,closed:false,close(){this.closed=true;}};return this.channel;}
   addTrack(){}async createOffer(){return {type:'offer',sdp:'v=0 synthetic-offer'};}
   async setLocalDescription(v){this.localDescription=v;}
   async setRemoteDescription(v){assert.equal(v.type,'answer');this.connectionState='connected';this.onconnectionstatechange();}
@@ -46,6 +47,7 @@ async function fixture(){
  assert(!requests.some(r=>/transcrib|\/inputs/.test(r.url)));
  assert.deepEqual(sockets[0].sent.map(v=>v.type||'binding'),['binding','offer','close']);
  assert.equal(peers[0].connectionState,'closed');assert(stops>0);
+ assert.equal(peers[0].channel.label,'oai-events');assert(peers[0].channel.closed);
  failUpload=true;assert.equal(await engine.start(),true);listener({pcm:new Uint8Array(32000).buffer});
  await engine.hold();assert.equal(records.length,1);assert.equal(recoveryValues.length,1);
  const original=records[0],digest=original.audio_sha256;

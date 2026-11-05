@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import unittest
+import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashboard.codex_voice import AvatarVoiceLease, CodexVoice, CodexVoiceRejected, CodexVoiceUnavailable
 
@@ -77,6 +78,34 @@ class Voice(unittest.TestCase):
         self.assertNotIn('model',params)
         self.assertFalse(params['clientManagedHandoffs'])
         self.assertFalse(any(v['method']in('turn/start','thread/realtime/appendText')for v in self.socket.sent))
+    def test_restore_uses_native_initial_items_without_new_input_or_task(self):
+        from dashboard.codex_voice_history import CodexVoiceHistory
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory()as root:
+            history=CodexVoiceHistory(Path(root)/'visits')
+            visit=str(uuid.uuid4());generation=str(uuid.uuid4())
+            frozen={'binding':'a'*64,'entry_binding':[100,100,7,'owned'],'native_thread':'owned'}
+            history.open(visit,100,frozen,generation)
+            history.item(visit,100,'a'*64,{'id':'correction','type':'transcriptSegment','role':'user',
+                'text':'The new word is hojasol.','realtimeSessionId':generation})
+            history.complete_transcript(visit,100,'a'*64)
+            startup=history.continuation(100,frozen)
+        self.voice.start('v=0 offer',context='Identity',continuation=startup)
+        params=self.socket.sent[-1]['params'];items=params['initialItems']
+        self.assertEqual(items[0],{'role':'developer','text':'Identity'})
+        self.assertIn('historical completed voice transcripts',items[1]['text'])
+        self.assertIn(startup['sources'][0]['sha256'],items[1]['text'])
+        self.assertEqual(items[-1],{'role':'user','text':'The new word is hojasol.'})
+        self.assertFalse(any(v['method']in('turn/start','thread/realtime/appendText')for v in self.socket.sent))
+
+    def test_mismatched_restore_source_refuses_before_native_start(self):
+        startup={'items':[{'role':'user','text':'Changed source'}],
+            'sources':[{'visit':str(uuid.uuid4()),'id':'source','sha256':'a'*64}],
+            'digest':'a'*64,'more':False}
+        with self.assertRaises(ValueError):self.voice.start('v=0 offer',continuation=startup)
+        self.assertFalse(self.voice._attempted)
+
     def test_invalid_owner_context_never_attempts_native_start(self):
         for context in ('', 'x'*8193, 'bad\0context', {'role':'user','text':'fake human'}):
             with self.assertRaises(ValueError):self.voice.start('v=0\r\noffer',context=context)

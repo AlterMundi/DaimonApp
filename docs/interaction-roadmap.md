@@ -63,7 +63,13 @@ choice. Nicolas6ea37cd3 requires preserving Qwen/Gemini, frozen visit selection,
 and no silent fallback or default replacement. Capture-only original recovery,
 completed-source transcripts and existing native collector attachment are wired;
 mounted API and synthetic Chromium journeys qualify those application boundaries.
-Combined actual native tools/identity/provider and phone acceptance remain open.
+Actual native application tests confirmed identity uptake, nonzero remote audio,
+original receipts and a surviving backend capability result. They also exposed
+lost inline corrections after reconnect. The candidate now restores a flat bounded
+window via native `initialItems`, with source hashes and a separate durable
+completeness barrier; incomplete histories require reconciliation. Actual final
+correction/recall, useful spoken return, receiving deployment and phone acceptance
+remain open.
 See the [native mode contract](interaction-native-codex-voice.md); production629
 and current diagnostic/storage limits remain unchanged.
 

@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from .codex_voice import AvatarVoiceLease, CodexVoice
-from .codex_voice_history import CodexVoiceHistory
+from .codex_voice_history import CodexVoiceHistory, IncompleteTranscript
 from .live_transcription import bind_voice_actor
 from .provider import ProviderUnavailable
 
@@ -89,7 +89,7 @@ def install(app,config,provider,authorize,origins):
             await socket.close(code=1008);return
         await socket.accept()
         lease=voice=opening=starting=incoming=events=None
-        visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False
+        visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
         async def send(value):
             await recheck()
             await asyncio.wait_for(socket.send_json(value),3)
@@ -118,11 +118,13 @@ def install(app,config,provider,authorize,origins):
                 from .native_voice import being_identity
                 identity=being_identity({'native_identity_file':selected['identity_file']})
                 context=identity['text']
+                startup=await asyncio.to_thread(history.continuation,human,owner)
                 opening=asyncio.create_task(asyncio.to_thread(CodexVoice,provider.native_home,
                     owner['native_thread'],lease=lease))
                 voice=await asyncio.shield(opening)
                 await asyncio.to_thread(history.open,visit,human,owner,voice.session_id,seconds,
-                    identity_sha256=identity['sha256'])
+                    identity_sha256=identity['sha256'],startup=startup)
+                retained_visit=True
                 await send({'type':'prepared','id':visit,'session_seconds':seconds,'mode':'codex_webrtc'})
                 raw=await asyncio.wait_for(socket.receive_text(),20)
                 if len(raw.encode())>70000:raise ValueError('Voice offer exceeds bound')
@@ -132,7 +134,7 @@ def install(app,config,provider,authorize,origins):
                 await recheck()
                 if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
                 starting=asyncio.create_task(asyncio.to_thread(voice.start,offer['sdp'],
-                    voice=selected.get('voice','cove'),context=context))
+                    voice=selected.get('voice','cove'),context=context,continuation=startup))
                 await asyncio.shield(starting)
                 incoming=asyncio.create_task(socket.receive_text())
                 events=asyncio.create_task(asyncio.to_thread(voice.receive,.25))
@@ -151,7 +153,9 @@ def install(app,config,provider,authorize,origins):
                             raise ValueError('Native voice accepts media through WebRTC only')
                         break
                     if events in done:
-                        for event in events.result():
+                        try:batch=events.result()
+                        except Exception:transcript_failed=True;raise
+                        for event in batch:
                             method=event['method'];p=event['params']
                             if method=='thread/realtime/started':
                                 await asyncio.to_thread(history.state,visit,human,binding,'active')
@@ -162,7 +166,8 @@ def install(app,config,provider,authorize,origins):
                             elif method=='thread/realtime/item/completed':
                                 item=p.get('item',{})
                                 if item.get('type')=='transcriptSegment':
-                                    saved=await asyncio.to_thread(history.item,visit,human,binding,item)
+                                    try:saved=await asyncio.to_thread(history.item,visit,human,binding,item)
+                                    except (OSError,ValueError):transcript_failed=True;raise
                                     source=next(v for v in saved['items']if v['id']==item['id'])
                                     await send({'type':'transcript','id':visit,
                                         'item':source})
@@ -176,10 +181,12 @@ def install(app,config,provider,authorize,origins):
                         if closed:break
                         events=asyncio.create_task(asyncio.to_thread(voice.receive,.25))
                     await actor()
-        except (Exception,asyncio.CancelledError):
+        except (Exception,asyncio.CancelledError)as error:
             # No native/provider payload, identity or credentials in diagnostics.
             with suppress(Exception):await asyncio.wait_for(socket.send_json({'type':'review','id':visit,
-                'message':'Voice paused. Original recordings and accepted work remain available.'}),1)
+                'message':('Previous voice history needs reconciliation before reconnecting. Recordings and accepted work are kept.'
+                    if isinstance(error,IncompleteTranscript)else
+                    'Voice paused. Original recordings and accepted work remain available.')}),1)
         finally:
             with CancelScope(shield=True):
                 for task in (incoming,):
@@ -201,22 +208,26 @@ def install(app,config,provider,authorize,origins):
                     # Native observed closure drains parsed handoffs before ending
                     # its fanout. Reconcile the admitted writer after that barrier;
                     # backend tools/results must not depend on an open browser.
-                    if lease is not None and closed:lease.release()
-                    with suppress(Exception):await asyncio.wait_for(socket.send_json({
-                        'type':'closed','id':visit,'confirmed':closed}),1)
                     try:
                         async with asyncio.timeout(10):
                             tail=[]
                             try:
                                 if events is not None:tail.extend(await events)
                                 tail.extend(await asyncio.to_thread(voice.receive,0))
-                            except Exception:collection_failed=True
+                            except Exception:collection_failed=True;transcript_failed=True
                             for event in tail:
                                 if event.get('method')=='thread/realtime/item/completed':
                                     item=event.get('params',{}).get('item',{})
                                     if item.get('type')=='transcriptSegment':
                                         try:await asyncio.to_thread(history.item,visit,human,binding,item)
-                                        except (OSError,ValueError):collection_failed=True
+                                        except (OSError,ValueError):collection_failed=True;transcript_failed=True
+                            # Persist the previous visit's last completed sources
+                            # before admitting a successor startup snapshot.
+                            if retained_visit and closed and not transcript_failed:
+                                await asyncio.to_thread(history.complete_transcript,visit,human,binding)
+                            if lease is not None and closed:lease.release()
+                            with suppress(Exception):await asyncio.wait_for(socket.send_json({
+                                'type':'closed','id':visit,'confirmed':closed}),1)
                             if collectors:
                                 results=await asyncio.gather(*collectors,return_exceptions=True)
                                 if any(isinstance(value,BaseException)for value in results):collection_failed=True
@@ -237,7 +248,9 @@ def install(app,config,provider,authorize,origins):
                         for task in collectors:
                             with suppress(Exception,asyncio.CancelledError):await task
                     with suppress(Exception):await asyncio.to_thread(voice.close)
-                if visit is not None and human is not None:
+                if retained_visit:
+                    if starting is None:
+                        with suppress(Exception):await asyncio.to_thread(history.abandon_unstarted,visit,human,binding)
                     with suppress(Exception):await asyncio.to_thread(history.state,visit,human,binding,'closed'if closed and not collection_failed else'review')
                 if lease is not None:lease.release()
                 with suppress(Exception):await asyncio.wait_for(socket.close(),1)

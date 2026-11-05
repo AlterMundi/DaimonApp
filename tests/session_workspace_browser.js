@@ -79,6 +79,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   };
   window.RTCPeerConnection=class{
    constructor(){this.connectionState='new';fixture.peers.push(this);}addTrack(){}
+   createDataChannel(label){if(label!=='oai-events')throw Error('Unexpected native channel');return {close(){}};}
    async createOffer(){return {type:'offer',sdp:'v=0 synthetic-offer'};}
    async setLocalDescription(value){this.localDescription=value;}
    async setRemoteDescription(value){if(value.sdp!=='v=0 synthetic-answer')throw Error('Unexpected answer');this.connectionState='connected';this.onconnectionstatechange();}

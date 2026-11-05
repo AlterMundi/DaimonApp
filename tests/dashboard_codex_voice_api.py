@@ -51,7 +51,7 @@ class Native:
         self.opening_seen.set();time.sleep(self.open_delay)
     def start(self,sdp,**kwargs):
         self.starting_seen.set();time.sleep(self.start_delay)
-        self.started=True;self.sdp=sdp;self.context=kwargs['context']
+        self.started=True;self.sdp=sdp;self.context=kwargs['context'];self.continuation=kwargs['continuation']
         values=[{'method':'thread/realtime/started','params':{}},
                 {'method':'thread/realtime/sdp','params':{'sdp':'v=0\r\nsynthetic-answer'}}]
         values.append({'method':'thread/realtime/item/completed','params':{'item':{
@@ -101,6 +101,58 @@ class Mounted(unittest.TestCase):
         socket.send_json({'type':'close'})
         self.assertEqual(socket.receive_json()['type'],'closed')
         with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+    def test_failed_final_correction_write_blocks_successor_before_start(self):
+        original_stop=Native.stop
+        original_item=CodexVoiceHistory.item
+        def stop(native):
+            native.events.put([{'method':'thread/realtime/item/completed','params':{'item':{
+                'id':'final_correction','type':'transcriptSegment','role':'user',
+                'text':'The corrected value','realtimeSessionId':native.session_id}}}])
+            original_stop(native)
+        def item(history,ident,human,binding,value):
+            if value['id']=='final_correction':raise OSError('Synthetic full store')
+            return original_item(history,ident,human,binding,value)
+        with patch.object(Native,'stop',stop),patch.object(CodexVoiceHistory,'item',item):
+            with self.socket()as socket:
+                self.start(socket);self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        retained=history.read(self.visit,100,'a'*64)
+        self.assertFalse(retained['transcript_complete'])
+        self.assertEqual(retained['state'],'review')
+        with self.socket()as socket:
+            socket.send_json({**self.meta,'id':str(uuid.uuid4())})
+            review=socket.receive_json()
+            self.assertEqual(review['type'],'review')
+            self.assertIn('needs reconciliation',review['message'])
+            # No SDP negotiation, new voice input or native start was admitted.
+        self.assertEqual(len(Native.opened),1)
+        self.assertEqual(self.app.state.voice_active,set())
+
+    def test_cancel_before_offer_does_not_block_successor(self):
+        with self.socket()as socket:
+            socket.send_json(self.meta)
+            self.assertEqual(socket.receive_json()['type'],'prepared')
+        deadline=time.monotonic()+2
+        while not Native.opened[0].closed and time.monotonic()<deadline:time.sleep(.01)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        first=history.read(self.visit,100,'a'*64)
+        self.assertTrue(first['transcript_complete'])
+        self.assertEqual(first['native_start'],'not_attempted')
+        self.assertFalse(Native.opened[0].started)
+        self.visit=str(uuid.uuid4());self.meta['id']=self.visit
+        with self.socket()as socket:
+            self.start(socket);self.close(socket)
+        self.assertEqual(sum(native.started for native in Native.opened),1)
+
+    def test_refused_same_id_does_not_rewrite_prior_incomplete_visit(self):
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        prior=history.open(self.visit,100,self.owner.codex_voice_binding('a'*64),str(uuid.uuid4()))
+        with self.socket()as socket:
+            socket.send_json(self.meta)
+            self.assertEqual(socket.receive_json()['type'],'review')
+        self.assertEqual(history.read(self.visit,100,'a'*64),prior)
+        self.assertEqual(Native.opened,[])
+
     def test_default_configuration_has_no_native_openai_endpoint(self):
         other=FastAPI()
         self.assertFalse(install(other,{},self.owner,None,[]))
@@ -196,14 +248,16 @@ class Mounted(unittest.TestCase):
             self.assertEqual(Native.opened[-1].stops,1)
             self.assertEqual(self.app.state.voice_active,set())
         self.assertEqual(len(Native.opened),2)
-    def test_network_disconnect_keeps_reconciliation_until_terminal_metadata(self):
+    def test_network_disconnect_and_reconnect_preserve_each_terminal_metadata(self):
         import socket as sockets
         import uvicorn
         import websocket
-        entered=threading.Event();release=threading.Event()
+        entered=threading.Event();release=threading.Event();reads=[]
         def current(owner):
-            entered.set()
-            if not release.wait(3):raise TimeoutError('Synthetic reconciliation was not released')
+            reads.append(owner)
+            if len(reads)==1:
+                entered.set()
+                if not release.wait(5):raise TimeoutError('Synthetic reconciliation was not released')
             return None
         self.owner.codex_voice_current=current
         listener=sockets.socket();listener.bind(('127.0.0.1',0));listener.listen(5)
@@ -224,12 +278,31 @@ class Mounted(unittest.TestCase):
                 socket.send(json.dumps({'type':'close'}))
                 self.assertTrue(json.loads(socket.recv())['confirmed'])
             finally:socket.close()
-            self.assertTrue(entered.wait(2));release.set()
-            history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+            self.assertTrue(entered.wait(2))
+            successor=str(uuid.uuid4())
+            socket=websocket.create_connection('ws://127.0.0.1:'+str(listener.getsockname()[1])+
+                '/api/interaction/voice/codex',origin='https://example.test',timeout=3)
+            try:
+                socket.send(json.dumps({**self.meta,'id':successor}))
+                self.assertEqual(json.loads(socket.recv())['type'],'prepared')
+                socket.send(json.dumps({'type':'offer','sdp':'v=0\r\nsynthetic-successor'}))
+                self.assertEqual(json.loads(socket.recv())['type'],'answer')
+                self.assertEqual(json.loads(socket.recv())['type'],'transcript')
+                self.assertEqual(Native.opened[-1].continuation['sources'][0]['visit'],self.visit)
+                self.assertEqual(Native.opened[-1].continuation['items'][0]['text'],'A native original')
+                release.set()
+                history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+                deadline=time.monotonic()+3
+                while history.read(self.visit,100,'a'*64)['state']=='active'and time.monotonic()<deadline:time.sleep(.01)
+                self.assertEqual(history.read(self.visit,100,'a'*64)['state'],'closed')
+                self.assertEqual(self.app.state.voice_active,{100},'Old cleanup released its successor')
+                socket.send(json.dumps({'type':'close'}))
+                self.assertTrue(json.loads(socket.recv())['confirmed'])
+            finally:socket.close()
             deadline=time.monotonic()+3
-            while history.read(self.visit,100,'a'*64)['state']=='active'and time.monotonic()<deadline:time.sleep(.01)
-            self.assertEqual(history.read(self.visit,100,'a'*64)['state'],'closed')
-            self.assertTrue(Native.opened[-1].closed)
+            while history.read(successor,100,'a'*64)['state']=='active'and time.monotonic()<deadline:time.sleep(.01)
+            self.assertEqual(history.read(successor,100,'a'*64)['state'],'closed')
+            self.assertTrue(all(native.closed for native in Native.opened))
         finally:
             release.set();server.should_exit=True;thread.join(timeout=5);listener.close()
         self.assertFalse(thread.is_alive())

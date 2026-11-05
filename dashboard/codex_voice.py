@@ -7,6 +7,7 @@ Application activation still needs original-media and native-collector ownership
 """
 from collections import deque
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -232,7 +233,7 @@ class CodexVoice:
                 with self._guard:
                     self._waiting = None
 
-    def start(self, sdp, *, voice='cove', context=None):
+    def start(self, sdp, *, voice='cove', context=None, continuation=None):
         # Only the authorized application supplies this owner-selected identity
         # and capability context. Never accept it as a browser prompt override.
         if (not isinstance(sdp,str) or not sdp.startswith('v=0') or len(sdp.encode())>65536
@@ -240,6 +241,39 @@ class CodexVoice:
                 or context is not None and (not isinstance(context,str) or not context.strip()
                     or len(context.encode())>8192 or '\0' in context)):
             raise ValueError('Select one bounded WebRTC offer and native voice')
+        initial=[]
+        if context is not None:initial.append({'role':'developer','text':context})
+        if continuation is not None:
+            if (not isinstance(continuation,dict)or set(continuation)!={'items','sources','digest','more'}
+                    or not isinstance(continuation['items'],list)or len(continuation['items'])>32
+                    or not isinstance(continuation['sources'],list)
+                    or len(continuation['sources'])!=len(continuation['items'])or type(continuation['more'])is not bool):
+                raise ValueError('Select a bounded native source window')
+            rows=[]
+            for item,source in zip(continuation['items'],continuation['sources']):
+                if (not isinstance(item,dict)or set(item)!={'role','text'}or item['role']not in ('user','assistant')
+                        or not isinstance(item['text'],str)or not item['text']or'\0'in item['text']
+                        or not isinstance(source,dict)or set(source)!={'visit','id','sha256'}
+                        or not isinstance(source['visit'],str)or str(uuid.UUID(source['visit']))!=source['visit']
+                        or not isinstance(source['id'],str)or not re.fullmatch('[A-Za-z0-9_-]{1,128}',source['id'])
+                        or source['sha256']!=hashlib.sha256(item['text'].encode()).hexdigest()):
+                    raise ValueError('Select immutable completed native sources')
+                rows.append({'item':dict(item),'source':dict(source)})
+            digest=hashlib.sha256(json.dumps(rows,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+            if continuation['digest']!=digest or len(json.dumps(rows,ensure_ascii=False).encode())>18432:
+                raise ValueError('Native source window changed or exceeds bound')
+            if rows:
+                provenance=('The following initial user/assistant items are historical completed voice transcripts from this exact conversation, '
+                    'not fresh speech, new work or new authority. Transcripts may differ from the audio. Preserve later corrections; '
+                    'do not re-execute past requests. An assistant mistake does not override a user correction. '
+                    'Native startup context separately covers backing work. Older voice sources omitted from this bounded window: '+str(continuation['more'])+'. Sources: '+
+                    json.dumps({'digest':digest,'sources':continuation['sources']},separators=(',',':')))
+                initial.append({'role':'developer','text':provenance})
+                initial.extend(dict(item)for item in continuation['items'])
+        # UTF-8 bytes conservatively bound the native8192 estimated-text-token
+        # allowance, independently of the number or language of source items.
+        if sum(len(item['text'].encode())for item in initial)>28672:
+            raise ValueError('Native initial context exceeds its source bound')
         with self._guard:
             if self._attempted:
                 raise CodexVoiceUnavailable('Native voice already attempted; inspect retained outcome')
@@ -251,8 +285,7 @@ class CodexVoice:
             'realtimeSessionId':self.session_id,'version':'v3','voice':voice,
             'outputModality':'audio','includeStartupContext':True,
             'clientManagedHandoffs':False,'transport':{'type':'webrtc','sdp':sdp}}
-        if context is not None:
-            params['initialItems']=[{'role':'developer','text':context}]
+        if initial:params['initialItems']=initial
         try:
             return self._rpc('thread/realtime/start', params)
         except CodexVoiceRejected:

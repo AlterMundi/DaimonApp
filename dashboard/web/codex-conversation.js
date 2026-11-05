@@ -5,7 +5,7 @@ window.CodexConversation=(()=>{
   const supported=()=>!!(window.RTCPeerConnection&&window.StreamingVoice?.supported()&&window.VoiceInput?.recoveryStore&&window.indexedDB);
   function create({headers,getBinding,onState=()=>{},onCaption=()=>{},onItem=()=>{},onRecovery=()=>{}}){
     const recovery=window.VoiceInput?.recoveryStore('codex_voice');
-    let socket,peer,media,capture,unsubscribe,audio,visit,binding,active=false,starting=false,closing=false;
+    let socket,peer,channel,media,capture,unsubscribe,audio,visit,binding,active=false,starting=false,closing=false;
     let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),timer;
     let audible=true,paused=false,connected=false,restored,restoring,openingCount=0;
     const originals=new Map();
@@ -55,7 +55,7 @@ window.CodexConversation=(()=>{
         const complete=await Promise.race([finished,new Promise(resolve=>setTimeout(()=>resolve(false),1000))]);
         flush(complete?undefined:'audio_flush_unconfirmed');unsubscribe?.();unsubscribe=undefined;capture.close();capture=undefined;
       }else flush();
-      peer?.close();peer=undefined;if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
+      channel?.close();channel=undefined;peer?.close();peer=undefined;if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
       if(socket?.readyState===WebSocket.OPEN){
         const ended=new Promise(resolve=>{closeAck=resolve;});
         try{socket.send(JSON.stringify({type:'close'}));}catch{closeAck(false);}
@@ -69,10 +69,10 @@ window.CodexConversation=(()=>{
       if(openingCount>=2){state('Finish the pending microphone permission before starting again.');return false;}
       openingCount++;
       binding=getBinding();const owned=++epoch;visit=crypto.randomUUID();parts=[];bytes=total=ordinal=0;
-      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedAudio;
+      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&selectedBinding===getBinding();
       function closeRetired(){
-        ownedCapture?.close();ownedPeer?.close();ownedAudio?.pause();
+        ownedCapture?.close();ownedChannel?.close();ownedPeer?.close();ownedAudio?.pause();
         for(const track of ownedMedia?.getTracks()||[])track.stop();
       }
       starting=true;paused=false;connected=false;state('Preparing voice');
@@ -112,7 +112,11 @@ window.CodexConversation=(()=>{
         if(!current())throw Error('Voice conversation changed');
         ownedMedia=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
         if(!current()||document.hidden)throw Error('Microphone activation ended');
-        media=ownedMedia;peer=ownedPeer=new RTCPeerConnection();audio=ownedAudio=new Audio();audio.autoplay=true;audio.muted=!audible;
+        media=ownedMedia;peer=ownedPeer=new RTCPeerConnection();
+        // Native WebRTC SDP includes the provider's events channel. Native Core
+        // owns its handoffs; this client sends no response/turn control on it.
+        channel=ownedChannel=ownedPeer.createDataChannel('oai-events');ownedChannel.onmessage=()=>{};
+        audio=ownedAudio=new Audio();audio.autoplay=true;audio.muted=!audible;
         ownedPeer.ontrack=event=>{if(!current()||audio!==ownedAudio)return;ownedAudio.srcObject=event.streams[0]||new MediaStream([event.track]);ownedAudio.play().catch(()=>{if(current()){paused=true;state('Tap Resume audio to listen.');}});};
         ownedPeer.onconnectionstatechange=()=>{
           if(!current()||peer!==ownedPeer)return;
