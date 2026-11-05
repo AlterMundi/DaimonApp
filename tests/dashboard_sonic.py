@@ -71,6 +71,7 @@ topic_id=8
         self.owner={'authorization':'Bearer '+login.json()['session_token']}
     def save(self):atomic_json(self.state/'topics.json',self.observation)
     def presentation(self,command):
+        if command=='presentation list 0 0':return {'binding':'a'*64,'items':[]}
         if command=='input workspace':return {'schema':'daimon.session-destinations/v1','items':self.destinations}
         self.assertEqual(command,f'input list {2**63-1} after')
         return {'routing_choices':self.choices}
@@ -79,6 +80,39 @@ topic_id=8
         response=self.client.get('/api/interaction/sonic',headers=self.owner)
         self.assertEqual(response.status_code,200,response.text)
         return {s['id']:s for s in response.json()['sources']}
+    def test_workspace_grant_is_explicit_and_revocation_blocks_new_pin_text_and_voice(self):
+        import uuid
+        grants=Grants(self.config,self.provider);output=self.root/'workspace-device.json'
+        enrolled=grants.enroll('Workspace device',output,3600)
+        device=json.loads(output.read_text());headers={'authorization':device['authorization'],'origin':self.config['origin'],'x-dashboard-csrf':device['csrf']}
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=headers).status_code,403)
+        grants.workspace(enrolled['grant_id'],True)
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=headers).status_code,200)
+        grants.workspace(enrolled['grant_id'],False)
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=headers).status_code,403)
+        reply={'source':'session:2','revision':'b'*64}
+        body={'id':str(uuid.uuid4()),'binding':'a'*64,'text':'Frozen original','reply':reply}
+        self.assertEqual(self.client.post('/api/interaction/inputs',json=body,headers=headers).status_code,403)
+        voice={**headers,'content-type':'audio/wav','x-input-id':str(uuid.uuid4()),'x-input-binding':'a'*64,'x-audio-sha256':'c'*64,'x-reply-source':reply['source'],'x-reply-revision':reply['revision']}
+        self.assertEqual(self.client.post('/api/interaction/voice',content=b'RIFF',headers=voice).status_code,403)
+        self.assertFalse(permitted('GET','/api/interaction/sessions','monitor_readonly',workspace_access=True))
+        self.assertFalse(permitted('POST','/api/stop','interaction_only',workspace_access=True))
+
+    def test_shared_home_workspace_permission_is_explicit_and_actor_bound(self):
+        import time
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],'expires':int(time.time())+300,'actor':{'kind':'human','ref':'human:telegram:100'}}
+        self.config['shared_auth']={'enabled':True,'home_origin':self.config['origin']}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            for allowed,expected in ((False,403),(True,200)):
+                self.config['shared_auth']['workspace_access']=allowed
+                with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=self.config['origin']) as client:
+                    client.cookies.set('__Host-home','h'*43)
+                    self.assertEqual(client.get('/api/interaction/sessions').status_code,expected)
+            identity['actor']['ref']='human:telegram:101'
+            with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=self.config['origin']) as client:
+                client.cookies.set('__Host-home','h'*43)
+                self.assertEqual(client.get('/api/interaction/sessions').status_code,403)
+
     def test_workspace_joins_only_native_owned_destination_references_and_validates_shape(self):
         self.destinations=[{'audio_key':'100:7','destination':{'source':'session:2','revision':'b'*64}},
             {'audio_key':'100:8','destination':{'source':'session:3','revision':'c'*64}}]
