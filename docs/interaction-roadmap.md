@@ -67,9 +67,11 @@ reduced motion. Qualify desktop/mobile combined pin/back/reply/text/voice/audio
 and live-tool journeys without Telegram or model/provider expertise.
 
 Implementation checkpoint: the initial candidate adds a bounded model-free
-all-owned-session metadata read for full owner sessions; limited Companion grants
-remain unchanged and require an explicit supported workspace grant path before
-phone rollout. Unreviewed-result status is currently unknown, not inferred from
+all-owned-session metadata read. The next candidate adds an explicit optional
+`workspace_access` permission through existing shared Home/Companion grants;
+restricted devices default to false, monitors remain denied and no Sessions
+administrative permission is implied. This permission is not yet selected on the
+receiver. Unreviewed-result status is currently unknown, not inferred from
 work completion. The adaptive header candidate has static actual-shell Chromium
 coverage at1280px/390px and interaction/focus tests; it is not deployed or phone
 acceptance. The next native candidate adds exact generation-bound session destination references

@@ -213,7 +213,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 grant = companions.authenticate(device.group(1))
                 if grant is None:
                     raise HTTPException(401, 'Companion access is unavailable; operator enrollment required')
-                if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False), coordination_control_access=grant.get('coordination_control_access', False)):
+                if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False), coordination_control_access=grant.get('coordination_control_access', False), workspace_access=grant.get('workspace_access', False)):
                     raise HTTPException(403, 'Companion access is limited to the integrating conversation')
                 return grant
             # A restricted WebView may omit cookies. Never downgrade an invalid
@@ -579,6 +579,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_download_files':can_files,'artifacts':files,
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
+                'can_session_workspace':workspace_granted(session),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('continuous') is True
@@ -668,6 +669,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             body = await request.json()
             from starlette.concurrency import run_in_threadpool
+            require_pin_grant(session,body.get('reply') if isinstance(body,dict) else None)
             result = await run_in_threadpool(provider.conversation_input_submit, body)
         except VisualSelectionInvalid:
             return JSONResponse({'detail':'Select the captured image again. This attempt did not submit a message.','code':'visual_reselection','submission_attempted':False},status_code=400)
@@ -826,6 +828,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 # Older receivers reject this source form before ASR rather
                 # than silently interpreting context as an explicit answer.
                 metadata['reply'].update(source=reply_source[8:], context_only=True)
+        require_pin_grant(session,metadata.get('reply'))
         playback=request.headers.get('x-playback-context')
         if playback is not None:
             try:
@@ -866,10 +869,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         await authorize_async(request)
         return result
 
+    def workspace_granted(session):
+        return dict(session).get('scope') is None or (dict(session).get('scope')=='interaction_only' and dict(session).get('workspace_access') is True)
+
+    def require_pin_grant(session,reply):
+        if isinstance(reply,dict) and str(reply.get('source','')).startswith('session:') and not workspace_granted(session):
+            raise HTTPException(403,'This device has no session destination permission')
+
     @app.get('/api/interaction/sessions')
     async def conversation_session_workspace(request: Request):
         session=await authorize_async(request)
-        if dict(session).get('scope') is not None:
+        if not workspace_granted(session):
             raise HTTPException(403,'This device has no complete session workspace grant')
         try:
             from starlette.concurrency import run_in_threadpool
@@ -877,7 +887,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(503,'Session list unavailable; no work was started') from None
         session=await authorize_async(request)
-        if dict(session).get('scope') is not None:
+        if not workspace_granted(session):
             raise HTTPException(403,'Session workspace grant changed')
         return result
 

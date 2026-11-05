@@ -19,7 +19,9 @@ def authority(config, provider):
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False):
+    if path == '/api/interaction/sessions' or path.startswith('/api/interaction/sessions/'):
+        return method == 'GET' and scope == 'interaction_only' and workspace_access is True and re.fullmatch(r'/api/interaction/sessions(?:/[a-f0-9]{24})?',path) is not None
     if path == '/api/interaction/coordination/control':
         return method == 'POST' and scope == 'interaction_only' and coordination_control_access is True
     if path == '/api/interaction/coordination':
@@ -81,6 +83,7 @@ class Grants:
                     or not now < grant['expires'] <= now + 30 * 86400
                     or not isinstance(grant.get('csrf'), str)
                     or not re.fullmatch(r'[A-Za-z0-9_-]{43}', grant['csrf'])
+                    or type(grant.get('workspace_access', False)) is not bool
                     or type(grant.get('coordination_access', False)) is not bool
                     or type(grant.get('coordination_control_access', False)) is not bool
                     or not self.provider.authorized(grant['human'])):
@@ -90,7 +93,7 @@ class Grants:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def enroll(self, label, output, seconds, *, scope='interaction_only', profile=None, artifact_access=False, coordination_access=False):
+    def enroll(self, label, output, seconds, *, scope='interaction_only', profile=None, artifact_access=False, coordination_access=False, workspace_access=False):
         profile = self.default_profile if profile is None else profile
         if profile not in ('simple','explorer'):
             raise ValueError('Unknown companion presentation profile')
@@ -102,6 +105,8 @@ class Grants:
             raise ValueError('File access requires an interaction device')
         if type(coordination_access) is not bool or coordination_access and scope != 'interaction_only':
             raise ValueError('Budget access requires an interaction device')
+        if type(workspace_access) is not bool or workspace_access and scope != 'interaction_only':
+            raise ValueError('Workspace access requires an interaction device')
         output = Path(output)
         if not output.is_absolute() or output.exists() or output.is_symlink():
             raise ValueError('Select a new absolute private device credential file')
@@ -118,6 +123,8 @@ class Grants:
             'label':label, 'human':human, 'authority':authority(self.config, self.provider),
             'presentation_profile':profile,
             'expires':int(time.time()) + seconds, 'csrf':csrf}
+        if workspace_access:
+            grant['workspace_access'] = True
         if artifact_access:
             grant['artifact_access'] = True
         if coordination_access:
@@ -151,6 +158,27 @@ class Grants:
             sync_directory(self.root)
             raise
         return {'grant_id':ident, 'scope':scope, 'expires':grant['expires']}
+
+    def workspace(self, ident, allow):
+        if self.root is None or not re.fullmatch(r'[a-f0-9]{64}', ident) or type(allow) is not bool:
+            raise ValueError('Select an enrolled interaction workspace grant')
+        with lock(self.root / 'owner-mutation.lock'):
+            path = self.root / (ident + '.json')
+            grant = read_json(path)
+            now = time.time()
+            if (not isinstance(grant,dict) or grant.get('schema') != 'telecodex.companion-grant/v1'
+                    or grant.get('scope') != 'interaction_only'
+                    or grant.get('authority') != authority(self.config, self.provider)
+                    or type(grant.get('human')) is not int
+                    or grant.get('human') != self.provider.human
+                    or type(grant.get('expires')) is not int
+                    or not now < grant['expires'] <= now + 30 * 86400
+                    or not self.provider.authorized(grant['human'])):
+                raise ValueError('Existing current owner interaction grant required')
+            self.provider.assert_binding()
+            grant['workspace_access'] = allow
+            write_json(path, grant)
+            return {'grant_id':ident,'workspace_access':allow,'scope':grant['scope']}
 
     def revoke(self, ident):
         if self.root is None or not re.fullmatch(r'[a-f0-9]{64}', ident):
@@ -294,6 +322,7 @@ def main():
     enroll.add_argument('--profile', choices=['simple','explorer'])
     enroll.add_argument('--artifact-access', action='store_true')
     enroll.add_argument('--coordination-access', action='store_true')
+    enroll.add_argument('--workspace-access', action='store_true')
     revoke = commands.add_parser('revoke')
     revoke.add_argument('grant_id')
     renew = commands.add_parser('renew')
@@ -313,6 +342,11 @@ def main():
     budget_decision=budgets.add_mutually_exclusive_group(required=True)
     budget_decision.add_argument('--allow',dest='allow',action='store_true')
     budget_decision.add_argument('--deny',dest='allow',action='store_false')
+    workspace=commands.add_parser('workspace')
+    workspace.add_argument('grant_id')
+    workspace_decision=workspace.add_mutually_exclusive_group(required=True)
+    workspace_decision.add_argument('--allow',dest='allow',action='store_true')
+    workspace_decision.add_argument('--deny',dest='allow',action='store_false')
     args = parser.parse_args()
     from .provider import Provider
     provider = None
@@ -321,7 +355,9 @@ def main():
         provider = Provider(config)
         grants = Grants(config, provider)
         if args.command == 'enroll':
-            result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access,coordination_access=args.coordination_access)
+            result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access,coordination_access=args.coordination_access,workspace_access=args.workspace_access)
+        elif args.command == 'workspace':
+            result = grants.workspace(args.grant_id, args.allow)
         elif args.command == 'coordination':
             result = grants.coordination(args.grant_id, args.allow, control=args.control)
         elif args.command == 'renew':

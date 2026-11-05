@@ -259,3 +259,30 @@ interaction identity, CSRF token, current entry binding and exact task revision.
 The only action is `dismiss`; arbitrary state changes and native decisions are
 not supported. Monitor grants remain read-only and have no task access. The
 receipt records human attention cancellation, never work completion or approval.
+
+## Explicit session workspace permission
+
+The session workspace is a separate optional capability of an existing
+`interaction_only` grant. It defaults to false for both shared Home access and
+Companion devices. Enable `shared_auth.workspace_access = true` only for the
+selected paired-human app experience. Existing Companion devices use the same
+owner-local grant writer:
+
+```sh
+python -m dashboard.companion --config /absolute/dashboard.toml workspace GRANT_ID --allow
+python -m dashboard.companion --config /absolute/dashboard.toml workspace GRANT_ID --deny
+```
+
+New explicit device enrollment also accepts `--workspace-access`. The current
+candidate exposes the all-owned-session inventory and generation-bound pin
+references; expanded history and its technical event view remain in development.
+Read-only monitors never gain this permission. It grants neither Sessions
+administration, Stop/Resume nor funding controls. Expiry, actor and receiving
+binding checks continue to apply. Inventory reads recheck permission after I/O.
+
+New text and ordinary recorded-voice inputs carrying a `session:` destination
+require workspace permission before retention/admission. Revocation blocks new
+pin captures and workspace reads; it does not cancel existing work or change the
+existing same-original recovery contract. Captured originals never silently
+change destination. Avatar's independent foreground/delegation scope is unchanged.
+A published capability is not receiving selection or phone acceptance.
