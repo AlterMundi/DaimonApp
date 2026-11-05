@@ -750,3 +750,53 @@ injected native context or accepted task withdrawals. Any needed corrective
 context is a separate supported action; never restore history or replay work.
 Sustained full-view renewal, device/noise acceptance and full being/memory
 continuity remain in the complete roadmap.
+
+
+## Selected full-view sustained replacement journey —5 November2026
+
+The selected652 application, native receiving owner and actual Codex WebRTC were
+mounted together at390px, using a synthetic microphone on the existing isolated
+Luna test thread. The complete Avatar view stayed connected for540seconds before
+a deliberately closed peer, crossing the earlier five-minute view boundary.
+An initial Coral/seven statement was corrected to Faro/nine. A question after
+315seconds returned the corrected facts while the view remained open.
+
+One new read-only capabilities call then had its actual response held across
+that first connection replacement. The fixture appended a clearly synthetic
+verification word to that response, without asserting a production capability.
+The user-facing Reconnect voice button opened the successor; the exact held reply
+was released once. Its canonical native final and the successor's retained
+source-linked result offer agree. The Avatar announced jacarandá before another
+spoken request. A later recall retained Faro/nine/jacarandá with no repeated tool.
+A second explicit UI reconnect retained those same three facts. There was exactly
+one backing turn, one controller call and one response; no shell work, new owner,
+ordinary input submission or changed model/provider/default/visit limit.
+
+All three visits closed with complete transcript barriers;23original segments
+and20,532,896bytes matched retained hashes. Their microphone durations were
+556.928,42.581375 and42.112seconds, each within the unchanged600second budget.
+Decoded remote masters retain540.16,25.7706875 and34.304seconds. Independent
+configured Whisper recognition on source-linked output derivatives found the
+correct facts after five minutes and both replacements, including the unsolicited
+late-result announcement. This is machine recognition, not phone/hearing proof.
+
+The raw verifier still ended unsuccessfully and remains retained: its last
+synthetic utterance was recognized as "cómo se llama", rather than "cómo te
+llamás", and the output caption split Faro as "Far o". It therefore failed the
+literal identity/name assertion. Independent output ASR recognized Faro/nine/
+jacarandá; identity after the second replacement remains unproven in this case.
+Do not call that changed input evidence of forgotten identity or replay work to
+repair the verifier. Its final Back-button check was not reached; existing
+cleanup used ordered engine hold and all original/closure receipts were verified.
+The final output ASR also added an unmatched Gracias; do not treat that extra
+recognition as verified speech. Earlier interleaved transcript fragments remain
+ordered rather than being rewritten into a fabricated single utterance.
+
+This qualifies a bounded complete-view correction/replacement/late-return case,
+not natural network-fault recovery, background/screen-lock/noise/interruption,
+arbitrary long work or full being memory. It uses ordinary application history
+restoration and adds no new compaction proof; separate native compaction evidence
+retains its scope. The project retained about45.4MB below its80MiB bound, preserving
+all originals and terminal failures. Production remains selected652; no rollout,
+new provider call during deployment or human microphone capture was involved.
+The full roadmap and physical-device acceptance remain unfinished.
