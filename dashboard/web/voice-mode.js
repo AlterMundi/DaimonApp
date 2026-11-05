@@ -74,7 +74,15 @@ window.ConversationVoiceMode=(()=>{
       if(continuous&&value.handoff)showDetection(value.handoff);
       const wasStopped=!listening&&!preparing&&!!directMessage;
       if(value.continuousState?.starting){detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;}
-      if(value.continuousState){directMessage=value.continuousState.message;listening=value.continuousState.active;preparing=value.continuousState.starting;directPending=value.continuousState.pending;directWorking=value.continuousState.working;remaining=Number.isInteger(value.continuousState.remaining)&&value.continuousState.remaining>=0&&value.continuousState.remaining<=120?value.continuousState.remaining:undefined;}
+      if(value.continuousState){
+        const state=value.continuousState;
+        if(Object.hasOwn(state,'message'))directMessage=state.message;
+        if(typeof state.active==='boolean')listening=state.active;
+        if(typeof state.starting==='boolean')preparing=state.starting;
+        if(typeof state.pending==='boolean')directPending=state.pending;
+        if(typeof state.working==='boolean')directWorking=state.working;
+        if(Object.hasOwn(state,'remaining'))remaining=Number.isInteger(state.remaining)&&state.remaining>=0&&state.remaining<=120?state.remaining:undefined;
+      }
       if(typeof value.continuousState?.audioPaused==='boolean')audioPaused=value.continuousState.audioPaused;
       if(typeof value.continuousState?.audioEnabled==='boolean')audioEnabled=value.continuousState.audioEnabled;
       if(Object.hasOwn(value,'capture'))phase=value.capture||'idle';
@@ -84,7 +92,7 @@ window.ConversationVoiceMode=(()=>{
       if(value.sent){waiting=true;heard=false;}
       if(continuous){
         const left=remaining===undefined?'':` · ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`;
-        status.textContent=preparing?'Preparing voice':directPending?'Recording needs review':directWorking?'Saving your voice':listening&&!audioEnabled?'Audio off · listening'+left:listening&&audioPaused?'Audio paused · listening'+left:playing&&listening?'Speaking · listening'+left:playing?'Speaking · microphone paused':listening?'Listening'+left:'Voice paused';
+        status.textContent=preparing?'Preparing voice':directPending?'Recording needs review':directWorking?'Saving your voice':listening&&!audioEnabled?'Audio off · listening'+left:listening&&audioPaused?'Audio paused · listening'+left:playing&&listening?'Speaking · listening'+left:playing?'Reply playback · microphone off':listening?'Listening'+left:'Voice paused';
         status.dataset.nearLimit=String(listening&&remaining!==undefined&&remaining<=15);
         status.setAttribute('aria-label',status.textContent+(listening&&remaining!==undefined?`. ${remaining} seconds of recording remaining`:''));
         if(Object.hasOwn(value,'caption'))caption.textContent=value.caption;

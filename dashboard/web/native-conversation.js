@@ -66,7 +66,7 @@ window.NativeConversation=(()=>{
       const source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);
       const at=Math.max(context.currentTime+.01,next),node={source,at,id:value.id,begin,end:value.end,cancelled:false};
       next=at+buffer.duration;nodes.add(node);
-      source.onended=()=>{if(owned!==epoch)return;nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};
+      source.onended=()=>{if(owned!==epoch||stopped||node.cancelled)return;nodes.delete(node);source.disconnect();if(!node.cancelled){playbackCounts.ended++;report(node.id,node.end);onTiming(node.id,'output_buffer_ended');if(node.begin===0)diagnosePlayback();}if(!nodes.size)emitState({active,starting,floor,pending:false,playback:'idle'});};
       source.start(at);playbackCounts.scheduled++;if(begin===0)diagnosePlayback();onTiming(value.id,'output_scheduled');emitState({active,starting,floor,pending:false,playback:context.state==='suspended'?'paused':'playing'});
     }
     function slice(start,end){

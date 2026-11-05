@@ -1701,3 +1701,20 @@ This uses Qwen's documented manual `input_audio_buffer.commit` / commit ACK /
 `response.done` completes one response; it must not implicitly force another
 control response before the owner can choose renewal. This implementation and
 synthetic protocol/owner journeys are not sustained phone or hearing acceptance.
+
+
+### Client reconnect status after the negative phone trial
+
+Partial playback notifications no longer replace absent connection/review fields.
+A stopped or cancelled PCM node cannot publish a late completion over the held
+voice state. Ordinary reply playback while the microphone is disconnected is
+labeled separately from an active Avatar connection; it does not prove a
+successful reconnect. Source tests exercise delayed audio completion, review
+preservation and reconnect preparation across partial callbacks. Actual phone
+connection timing and audible chunk clicks remain separate open checks.
+
+The foreground instruction now defaults to silent tool use and at most one
+natural acknowledgment per human request when explaining a delay. It asks for
+plain-language observer status and avoids retained-original, consolidation and
+internal-role narration unless the human asks about the architecture. This is a
+source prompt change, not evidence of a new provider's spoken behavior.
