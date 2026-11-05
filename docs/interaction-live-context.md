@@ -342,7 +342,7 @@ The `checkpoint_writer` object is an executable controller call after adding
 A complete closed pressure checkpoint must fit the complete reconnect envelope
 before its exact source projection is retired. Rejection leaves sources intact.
 
-Web preparation waits at most20seconds and12half-second-spaced observations,
+Web preparation waits at most20seconds and12backoff-spaced observations,
 rechecking the authenticated binding, before any new producer/provider/microphone
 opens. An ACK is insufficient: only a complete fitting seed permits continuation.
 Pending preparation preserves the previous established visit in browser recovery

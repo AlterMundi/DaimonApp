@@ -69,8 +69,11 @@ class NativeContext:
                     # permits a new producer/provider to be opened.
                     await self._call(record,'checkpoint_needed',reason='reconnect',
                         tokens=None,usage_kind='unknown',request_id=self.dialogue)
-                    for _ in range(self.resume_observations):
-                        await asyncio.sleep(.5)
+                    for attempt in range(self.resume_observations):
+                        # Observe promptly, then back off within the same
+                        # deadline instead of exhausting all reads in six
+                        # seconds while the integrator is still preparing.
+                        await asyncio.sleep(min(2.,.25*2**attempt))
                         if recheck is not None:await recheck()
                         value=await self._call(record,'resume_read')
                         if not self._resume_requirement(value,record):break

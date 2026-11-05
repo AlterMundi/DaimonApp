@@ -139,23 +139,25 @@ class Context(unittest.IsolatedAsyncioTestCase):
     async def test_oversized_resume_requests_one_semantic_checkpoint_before_opening(self):
         old=self.producer();await old.open();await old.close()
         fresh=self.producer(str(uuid.uuid4()));original=self.provider.conversation_live_context
-        reads=0;progress=[];checks=[]
+        reads=0;progress=[];checks=[];delays=[]
         def compact(body):
             nonlocal reads
             value=original(body)
             if body['action']=='resume_read':
                 reads+=1
-                if reads==1:
+                if reads<=3:
                     value.pop('resume');value['resume_requirement']={'kind':'semantic_checkpoint','generation':old.record['generation'],'through':0,'bytes':30000,'max_bytes':24576}
             return value
         async def preparing():progress.append('preparing')
         async def recheck():checks.append('checked')
-        with patch.object(self.provider,'conversation_live_context',side_effect=compact):
+        async def pause(delay):delays.append(delay)
+        with patch.object(self.provider,'conversation_live_context',side_effect=compact),patch('dashboard.native_context.asyncio.sleep',side_effect=pause):
             seed=await fresh.resume_context(self.dialogue,on_preparing=preparing,recheck=recheck)
         requests=[c for c in self.provider.calls if c['action']=='checkpoint_needed']
         self.assertEqual(len(requests),1);self.assertEqual(requests[0]['request_id'],fresh.dialogue)
         self.assertEqual(requests[0]['reason'],'reconnect');self.assertIsNone(requests[0]['tokens'])
-        self.assertEqual(progress,['preparing']);self.assertEqual(checks,['checked'])
+        self.assertEqual(progress,['preparing']);self.assertEqual(checks,['checked']*3)
+        self.assertEqual(delays,[.25,.5,1.])
         self.assertLessEqual(seed['bytes'],24576);self.assertIsNone(fresh.record)
         self.assertEqual(set(self.provider.producers),{self.dialogue})
 
