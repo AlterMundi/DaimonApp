@@ -4,6 +4,36 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Recall existing native results without repeating their work
+
+Owner briefv5 distinguishes missing foreground context from a result already
+held by the native conversation. A request not to search again still permits
+the provided native handoff to recall that result, carrying the no-repeat
+condition. Resolve names from conversation evidence rather than substituting
+implementation vocabulary; ask briefly if the reference remains ambiguous.
+Avoid generic follow-up offers or unverified claims about pending work.
+
+A distinct actual-native case used selected655 code, a fresh app receiving
+binding with no hydrated voice history, and only the candidate briefv5. One
+native backing turn recalled the earlier verified founder/date result with
+zero new MCP or dynamic-tool calls. The source result was already in canonical
+native history; no expected facts were added to the brief or developer scope.
+
+The browser verifier failed because its explicit-name expression rejected the
+spoken self-reference, although founder/date were correct. Keep that raw failure:
+the final UI Back assertion was not reached. Ordered cleanup nevertheless closed
+one transcript-complete visit; two originals1299886bytes and the output master
+were hash-verified. Whole-output independent ASR returned unrelated words at
+silent edges; an exact retained10–19second PCM window recognized the useful
+founder/date answer, with a phonetic name variation. Both drafts remain. This
+qualifies one cold-scope native recall, not general memory, repeated replacements,
+full UI closure, pagination/curation or physical phone/hearing acceptance.
+
+The brief remains below8192bytes. Native/Core, code, providers/defaults, context,
+visit and storage bounds are unchanged. Publication and actual owner-brief
+selection are separate; the receiving record owns deployment status. Rollback
+restores the previous brief for future visits, never native history or work.
+
 ## Selective being-memory through the native owner
 
 Actual selected655 qualifies one current identity memory through the existing
