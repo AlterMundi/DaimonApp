@@ -147,12 +147,17 @@ questions from native async questions. The regular question survives replacement
 and accepts one exact typed reply; spoken acknowledgement alone does not resolve
 its RPC. Under ordinary Default settings, an async structured question survives
 two visits and its spoken answer triggers actual native source work and the
-correct spoken result. Its metadata is absent from both application pending
-ledgers: the source now projects native async questions into existing For you task cards
+correct spoken result. That earlier trial exposed missing pending metadata;
+the selected implementation now projects native async questions into For you task cards
 with source-linked ordinary input and explicit dismissal/retirement. Receiving649 delivery is verified on native9de7f956 (selected d359 plus the
 five-file native delta), web54014f82/UI fca27fce9778. Composed native tests and
 actual idle-scoped listener/collector/public-asset checks passed. Automatic
-spoken-answer matching and mounted actual-native combined UI remain unqualified. Do not
+spoken-answer matching remains unqualified. A later actual mounted649 question/
+card/two-voice-visit journey now qualifies correct source work after a spoken
+choice, all original receipts and explicit agent retirement through existing
+controls. A separate read-only mount verified completed full-card reading and
+zero pending actions after retirement. Natural proactive retirement, immediate
+live count transition and sustained full-view/phone acceptance remain open. Do not
 invent an RPC responder or enable experimental regular questions globally.
 See the native voice guide for failed-control evidence, exact limits and verified
 originals. This is synthetic-engine evidence, not phone/hearing acceptance;
