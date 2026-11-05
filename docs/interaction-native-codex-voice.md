@@ -43,6 +43,45 @@ that makes internal procedures sound like phrases to recite. Its SHA256 is retai
 per visit. A native developer initial item preserves the native prompt, model,
 tools and automatic handoffs. No browser prompt override or credential extraction.
 
+Use [the versioned role template](templates/native-avatar-voice-brief.txt) as a
+starting point for the owner-selected brief. Render only its being, human and
+short identity fields into the existing private file; never load another being's
+identity or bulk history. Version3 separates tool decisions, waiting/evidence,
+speech and continuity. A request needing a real read/action must invoke the
+provided native handoff in the same turn; an acknowledgement is not execution.
+An already verified result can be recalled without repeating its tools.
+
+This follows the tool-eagerness and preamble principles in the official
+[voice prompting guide](https://developers.openai.com/api/docs/guides/voice-prompting).
+That guide describes public Realtime models; it does not establish the identity
+or settings of Codex's native frontend. This adapter retains the inspected native
+contract and prompt rather than sending a public GA session schema to it.
+
+Native V3 automatic backing responses use `codexResponseHandoffMode=commentary`
+and `delegationAckFiller=false`, while `clientManagedHandoffs=false` preserves
+native execution ownership. The selected Core must support these start fields;
+another receiver's capability label alone does not establish that compatibility.
+This is a native channel selection, not client-owned delegation, a manual turn
+loop, a replacement native prompt or an ordinary model/default change.
+
+In one bounded actual application case, version3 plus these native options read
+a selected historical test source and spoke the correct new code only after
+source verification. After confirmed closure and a second native voice generation,
+it recalled that code without another source command. Both generations retained
+their original recordings (1,611,182bytes total), complete transcripts and useful
+remote audio (peaks0.269/0.255; positive RTP audio energy). This establishes that
+case, not universal factual waiting, long sustained renewal, compaction recall,
+arbitrary tools/results, independent output ASR or physical phone/hearing.
+
+Negative controls remain: acknowledgement filler alone permitted early invented
+facts; an earlier mounted role merely promised a lookup without invoking it.
+Standalone analysis-only media controls did not qualify useful audio; a tiny
+nonzero peak with zero RTP energy is insufficient. Native V3 `appendText` mapped
+to context append, not an acoustic question/response trigger in the actual test.
+Do not replay accepted questions to repair a verifier or generalize those
+observations into a provider outage. The successful case used the mounted
+application's actual media, original-retention and reconnection paths.
+
 The browser defaults to the existing provider. Explicitly choose
 `OpenAI · Codex voice` before entering Avatar. Freeze engine and enrolled
 integrating thread per visit. Disable switching during capture. Failure or loss
