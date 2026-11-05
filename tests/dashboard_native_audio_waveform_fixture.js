@@ -1,5 +1,8 @@
 // Real browser audio nodes; synthetic socket/capture only, no physical device.
 (async()=>{
+ async function bounded(promise,stage){
+  let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Synthetic audio stage did not finish: '+stage)),10000);})]);}finally{clearTimeout(timer);}
+ }
  async function render(gap){
  const rate=48000,sockets=[],contexts=[];let captureListener,stopped=false,interruptions=0;
  class OfflineDevice{
@@ -46,7 +49,7 @@
    await new Promise(resolve=>setTimeout(resolve,0));
   }catch(error){failures.push(error);}finally{await device.audio.resume();}
   });
-  const data=(await device.audio.startRendering()).getChannelData(0);
+  const data=(await bounded(device.audio.startRendering(),'offline interruption gap='+gap)).getChannelData(0);
   if(failures.length)throw failures[0];
   let beforePeak=0,afterPeak=0,freshVoicePeak=0,lastNonzero=0;
   for(let i=0;i<data.length;i++){
@@ -68,7 +71,7 @@
  }
  async function provisional(){
   let listener,device,socket;const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-  class Output extends AudioContext{constructor(){super();device=this;}}
+  class Output extends AudioContext{constructor(){super({sinkId:{type:'none'}});device=this;}}
   class Socket{
    static OPEN=1;constructor(){socket=this;this.readyState=1;this.bufferedAmount=0;this.sent=[];queueMicrotask(()=>this.onopen());}
    send(raw){if(typeof raw!=='string')return;const v=JSON.parse(raw);this.sent.push(v);if(v.binding)queueMicrotask(()=>this.push({type:'ready',id:v.id,activity_mode:'manual'}));}
@@ -82,7 +85,7 @@
   const engine=api.create({headers:()=>({}),getBinding:()=> 'a'.repeat(64)}),id='55555555-5555-4555-8555-555555555555';
   const packet=end=>({type:'audio',id,end,sample_rate:24000,pcm:btoa(String.fromCharCode(...new Uint8Array(9600).fill(1)))});
   try{
-   if(!await engine.start())throw Error('Realtime output did not start');
+   if(!await bounded(engine.start(),'synthetic output start'))throw Error('Realtime output did not start');
    socket.push(packet(9600));await wait(40);if(device.state!=='running')throw Error('Output did not run');
    const at=device.currentTime;
    // Intermittent loudness and delayed nonspeech verdicts cannot suspend audio.
