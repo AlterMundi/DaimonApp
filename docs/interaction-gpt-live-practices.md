@@ -162,7 +162,7 @@ ended. Do not repeat the work to repair this observation. Final client-only
 claim and close-wait corrections are covered by synthetic regressions rather
 than another provider call.
 
-Fourteen transport/ownership/cleanup tests pass on Python3.13 and locked3.11;
+Sixteen transport/ownership/cleanup/context tests pass on Python3.13 and locked3.11;
 the unchanged mounted provider route's68tests and browser native/fullscreen
 state suites also pass. Independent review found and verified the duplicate
 claim and overflow-stop corrections. These checks do not activate the feature.
@@ -202,6 +202,17 @@ provider call was needed. The selector, WebRTC application endpoints, capture-on
 browser recovery, identity/startup-context fit and combined native/device journey
 remain to be connected. No public app capability or selectable OpenAI button is
 advertised, and production remains unchanged.
+
+The inspected native startup-context builder explicitly excludes AGENTS, repo
+memory instructions and memory summaries. Do not claim that the foreground voice
+inherits CompAII's identity merely by resuming its backend thread. The client now
+supports a bounded owner-selected identity/capability item using native V3
+`initialItems` with the `developer` role. This preserves native prompt, startup
+context and handoffs; it is not fabricated human speech or a new backend turn.
+The item is optional and capped at8192UTF-8 bytes. Synthetic wire tests and
+independent review qualify construction/refusal, not actual provider uptake.
+The future application caller must load it from the owner's selected context,
+never a browser prompt override, and include it in the combined qualification.
 
 | Evidence | What changes in our design | What still needs qualification |
 | --- | --- | --- |

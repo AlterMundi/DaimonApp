@@ -68,6 +68,20 @@ class Voice(unittest.TestCase):
         self.socket.event('thread/realtime/item/completed',item={'text':'complete retained source'})
         self.wait(lambda:len(self.voice._events)==1)
         self.assertEqual(self.voice.receive(0)[0]['params']['item']['text'],'complete retained source')
+    def test_owner_context_uses_native_developer_item_without_prompt_replacement(self):
+        context='Owner-selected CompAII identity and concise conversational style.'
+        self.voice.start('v=0\r\noffer',context=context)
+        params=self.socket.sent[-1]['params']
+        self.assertEqual(params['initialItems'],[{'role':'developer','text':context}])
+        self.assertNotIn('prompt',params)
+        self.assertNotIn('model',params)
+        self.assertFalse(params['clientManagedHandoffs'])
+        self.assertFalse(any(v['method']in('turn/start','thread/realtime/appendText')for v in self.socket.sent))
+    def test_invalid_owner_context_never_attempts_native_start(self):
+        for context in ('', 'x'*8193, 'bad\0context', {'role':'user','text':'fake human'}):
+            with self.assertRaises(ValueError):self.voice.start('v=0\r\noffer',context=context)
+        self.assertFalse(self.voice._attempted)
+        self.assertFalse(any(v['method']=='thread/realtime/start'for v in self.socket.sent))
     def test_stop_never_interrupts_a_backend_and_is_not_repeated(self):
         self.voice.start('v=0 offer')
         self.voice.stop();self.voice.stop()

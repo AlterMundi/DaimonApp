@@ -229,9 +229,13 @@ class CodexVoice:
                 with self._guard:
                     self._waiting = None
 
-    def start(self, sdp, *, voice='cove'):
+    def start(self, sdp, *, voice='cove', context=None):
+        # Only the authorized application supplies this owner-selected identity
+        # and capability context. Never accept it as a browser prompt override.
         if (not isinstance(sdp,str) or not sdp.startswith('v=0') or len(sdp.encode())>65536
-                or not isinstance(voice,str) or not re.fullmatch('[a-z]{1,32}',voice)):
+                or not isinstance(voice,str) or not re.fullmatch('[a-z]{1,32}',voice)
+                or context is not None and (not isinstance(context,str) or not context.strip()
+                    or len(context.encode())>8192 or '\0' in context)):
             raise ValueError('Select one bounded WebRTC offer and native voice')
         with self._guard:
             if self._attempted:
@@ -240,11 +244,14 @@ class CodexVoice:
             self._attempted = True
         # Let Codex assemble startup context and manage its own backend handoffs.
         # Do not replace the current thread, model, tools, prompt or goal.
+        params={'threadId':self.thread_id,
+            'realtimeSessionId':self.session_id,'version':'v3','voice':voice,
+            'outputModality':'audio','includeStartupContext':True,
+            'clientManagedHandoffs':False,'transport':{'type':'webrtc','sdp':sdp}}
+        if context is not None:
+            params['initialItems']=[{'role':'developer','text':context}]
         try:
-            return self._rpc('thread/realtime/start', {'threadId':self.thread_id,
-                'realtimeSessionId':self.session_id,'version':'v3','voice':voice,
-                'outputModality':'audio','includeStartupContext':True,
-                'clientManagedHandoffs':False,'transport':{'type':'webrtc','sdp':sdp}})
+            return self._rpc('thread/realtime/start', params)
         except CodexVoiceRejected:
             with self._guard:
                 self._start_rejected = True
