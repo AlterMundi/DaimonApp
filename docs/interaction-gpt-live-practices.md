@@ -306,7 +306,9 @@ visit and a misheard question remain negative observations, not successful runs.
 The exact compatible native composition also passed spoken recall and original
 retention. See the [native mode contract](interaction-native-codex-voice.md) for
 qualification and remaining activation/phone/long-term continuity gaps.
-Production633 only changes workspace metadata recovery; OpenAI is still disabled.
+The compatible app/native pair is now receiving-selected as a separate choice
+in UI0976269baac7. Default providers and bounds are unchanged; actual phone/hearing
+and sustained continuity remain unqualified.
 
 ## Reuse, replace and measure
 

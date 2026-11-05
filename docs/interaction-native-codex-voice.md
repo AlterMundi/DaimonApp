@@ -4,6 +4,24 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Receiving checkpoint —5 November2026
+
+CompAII ITACA now exposes the separately selectable mode in UI `0976269baac7`,
+web source `a96d1910`, merged PR632. Its native receiving composition `d35949a5`
+retains selected heartbeat, Matrix, held-original and workspace behavior. Actual
+idle-scoped delivery preserved44session bindings, four active successor collectors
+and their goal definitions, the existing Core and native configuration. Only the
+owner's `codex_voice` configuration section was added; Qwen/Gemini and ordinary
+conversation defaults remain unchanged. Current-owner capability, public shell,
+exact native/browser assets and local health passed. No provider call, voice
+session or microphone capture accompanied activation.
+
+Choose **OpenAI · Codex voice** before entering Avatar. Engine selection remains
+frozen during a visit. The existing mode stays available; no automatic fallback.
+This is receiving delivery, not sustained phone/hearing acceptance or complete
+long-term continuity. Keep those gaps explicit. Roll back the web/configuration
+at voice idle while retaining the compatible native reader and current journals.
+
 ## Configuration
 
 Keep existing voice defaults. Configure this only on a receiver whose native
@@ -114,10 +132,10 @@ probe had closed on an answer to a partial question; it did not establish failed
 recall. Subsequent qualification waited for the requested semantic answer.
 
 These test-owned observations use synthetic media and existing native login.
-The candidate is built and published, not receiving-selected. Production633
-retains its native81538275 selection and default-off OpenAI configuration. Next
-select the complete app/native pair through the existing idle-scoped receiving
-route, preserving current configuration, enrolled threads, collectors and work.
+The prepared candidate was subsequently receiving-selected through the existing
+idle-scoped route, as recorded above. The prior production633 web/native selection
+remains the software rollback; current journals, held originals, enrolled threads
+and work are preserved rather than restored.
 Phone hearing, sustained use and complete long-term recall remain unqualified.
 
 ## Original recovery and bounds
