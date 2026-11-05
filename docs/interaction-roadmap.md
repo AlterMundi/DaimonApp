@@ -86,8 +86,8 @@ reduced motion. Qualify desktop/mobile combined pin/back/reply/text/voice/audio
 and live-tool journeys without Telegram or model/provider expertise.
 
 Implementation checkpoint: #606/#607 provide the merged metadata, exact
-session-destination and explicit workspace-grant foundations. The next complete
-source candidate adds the rail, temporary expansion, exact latest-message reply,
+session-destination and explicit workspace-grant foundations. Merged #613 adds
+the rail, temporary expansion, exact latest-message reply,
 grouped audio and selected native technical history, preserving the existing
 composer and Avatar scope. Its bounded reader exposes available tool/output and
 reasoning-summary events without widening the global feed or adding a transcript
@@ -99,10 +99,18 @@ the latter remains unknown rather than being inferred from work completion or
 viewing. The adaptive header and combined workspace have synthetic actual-shell
 Chromium coverage at1280px/390px, including deliberate scroll/focus and draft
 preservation. Native/HTTP text and recorded-ASR voice qualification uses synthetic
-peers with zero models. These are source qualification, not deployed grants,
-phone/hearing acceptance or closure of the complete base-experience roadmap.
-Current receiving still selects its separately qualified Qwen continuity
-composition until a compatible native/web workspace successor is adopted.
+peers with zero models. On5November2026 the combined workspace613/phone614-615
+composition was receiving-adopted: native590-compatible sourceb5d300a9,
+web613-615 composition, UIb7092302eace. The existing shared-Home owner has its
+explicit workspace grant; other device scopes remain unchanged. Actual owner
+metadata, capabilities and served assets were verified while preserving native
+work, Core, journals and original protection. Combined exact-staged HTTP/ASR/
+restart and desktop/mobile Chromium journeys passed. This is receiving delivery,
+not phone/hearing acceptance or closure of the complete base-experience roadmap.
+The preceding Avatar phone trial was negative; sustained Qwen acceptance remains
+open. Keep the compatible native reader on rollback; never restore journals or
+replay originals. The current operator selection and qualification remain in
+Shared Resources' maintained Interaction receiving record.
 
 ## Shared attention backend —4November2026
 

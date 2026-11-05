@@ -112,3 +112,17 @@ composition must preserve its current heartbeat/continuity features, and the
 browser must have its actual selected workspace grant before this becomes a
 usable feature. Real device/voice, repeated continuity, useful latency and the
 broader roadmap remain required acceptance; tests do not close those obligations.
+
+
+Receiving checkpoint —5November2026: workspace613 is selected with the separately
+qualified phone614/615 fixes, native590-compatible sourceb5d300a9 and
+UIb7092302eace. The explicit shared-Home owner workspace grant is enabled; this
+does not alter Companion/monitor grants or enroll another user. Combined native
+all-feature568 tests (one ignored), clippy, exact staged text/recorded-ASR voice,
+archive-hold/restart and desktop/mobile Chromium journeys passed. Actual owner
+metadata and public assets were observed after adoption, preserving live
+collectors, Core, goals and all other settings. Human browser/device acceptance
+remains pending. Retain the compatible native workspace/hold reader on web
+rollback; old strict readers are not a rollback for held originals. Exact
+selection, rollback and remaining acceptance live in the Shared Resources
+Interaction receiving guide and the receiving owner's local operations record.
