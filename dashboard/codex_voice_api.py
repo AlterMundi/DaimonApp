@@ -124,6 +124,9 @@ def install(app,config,provider,authorize,origins):
         async def offer_pending():
             nonlocal noticing
             if not playback_ready or not pending:return
+            async def notice(status):
+                try:await asyncio.to_thread(history.notice_status,visit,human,binding,status)
+                except (OSError,ValueError):pass  # The same store may be full.
             async def present():
                 for turn in list(pending):
                     if turn in failed_notices:continue
@@ -132,13 +135,17 @@ def install(app,config,provider,authorize,origins):
                     try:result=await asyncio.to_thread(voice.completed_result,turn,anchor=anchors.get(turn))
                     except (CodexVoiceUnavailable,OSError,ValueError):
                         failed_notices.add(turn)
-                        await asyncio.to_thread(history.notice_status,visit,human,binding,'source_unavailable')
+                        await notice('source_unavailable')
                         return  # Optional presentation must not end useful voice.
                     if result is None:continue
                     if result.get('status')in ('failed','interrupted'):
                         await asyncio.to_thread(history.finish_work,visit,human,binding,turn,result['status'])
                         pending.remove(turn);continue
-                    claimed=await asyncio.to_thread(history.claim_result,visit,human,owner,result)
+                    try:claimed=await asyncio.to_thread(history.claim_result,visit,human,owner,result)
+                    except (OSError,ValueError):
+                        failed_notices.add(turn)
+                        await notice('source_unavailable')
+                        return  # Optional provenance capacity must not end voice.
                     pending.remove(turn)
                     if not claimed:continue
                     # This retained source is assistant presentation, not a new
@@ -146,7 +153,7 @@ def install(app,config,provider,authorize,origins):
                     await recheck()
                     try:await asyncio.to_thread(voice.offer_result,result)
                     except (CodexVoiceUnavailable,OSError,ValueError):
-                        await asyncio.to_thread(history.notice_status,visit,human,binding,'submission_unconfirmed')
+                        await notice('submission_unconfirmed')
                         return  # Retained intent prevents an uncertain replay.
                     await asyncio.to_thread(history.confirm_result,visit,human,binding,turn)
                     break  # Let the native utterance finish before another offer.

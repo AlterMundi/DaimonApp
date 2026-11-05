@@ -21,6 +21,21 @@ from dashboard.provider import Provider, ProviderUnavailable
 
 
 class History(unittest.TestCase):
+    def test_ordered_final_collection_survives_restart_and_lost_ack_without_replay(self):
+        self.history.retain_work(self.visit,100,'a'*64,['task'])
+        result={'thread':'native','turn':'task','finals':[
+            {'item':'report','revision':'a'*64},{'item':'ack','revision':'b'*64}],
+            'source_window_complete':False}
+        self.assertTrue(self.history.claim_result(self.visit,100,self.frozen,result))
+        restarted=CodexVoiceHistory(self.root/'visits')
+        offer=restarted.read(self.visit,100,'a'*64)['result_offers'][0]
+        self.assertEqual(offer['finals'],result['finals'])
+        self.assertFalse(offer['source_window_complete'])
+        self.assertNotIn('item',offer)
+        self.assertEqual(restarted.pending_work(100,self.frozen),[])
+        self.assertFalse(restarted.claim_result(self.visit,100,self.frozen,result))
+        with self.assertRaises(ValueError):
+            restarted.claim_result(self.visit,100,self.frozen,{**result,'finals':[result['finals'][0]]*2})
     def test_work_anchor_survives_restart_and_remains_owner_and_task_scoped(self):
         self.history.retain_work(self.visit,100,'a'*64,['task'])
         self.history.retain_anchor(self.visit,100,'a'*64,'task','opaque-native-cursor')

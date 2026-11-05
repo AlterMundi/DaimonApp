@@ -92,6 +92,42 @@ class Voice(unittest.TestCase):
         data=json.loads(call['params']['text'].split('new request: ',1)[1])
         self.assertFalse(data['excerpt_truncated'])
         self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_multiple_finals_preserve_report_ack_and_correction_without_choosing(self):
+        import hashlib
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        sources=[('report','Full report'),('ack','Entendido.'),('correction','Corrected report')]
+        rows=[{'turnId':'target','item':{'type':'agentMessage','phase':'final_answer',
+            'id':ident,'text':text}}for ident,text in reversed(sources)]
+        self.socket.results['thread/items/list']={'data':rows,'nextCursor':None}
+        result=self.voice.completed_result('target')
+        self.assertEqual(result['finals'],[{'item':ident,'revision':hashlib.sha256(text.encode()).hexdigest()}
+            for ident,text in sources])
+        self.assertTrue(result['source_window_complete'])
+        self.assertNotIn('text',result)
+        self.voice.start('v=0\r\noffer');self.voice.offer_result(result)
+        notice=self.socket.sent[-1]['params']['text']
+        self.assertIn('ready to review',notice)
+        self.assertNotIn('Full report',notice)
+        self.assertNotIn('Entendido',notice)
+        data=json.loads(notice.split('new request: ',1)[1]);self.assertEqual(data['final_count'],3)
+        self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_partial_item_window_cannot_claim_a_unique_final(self):
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        self.socket.results['thread/items/list']={'data':[{'turnId':'target','item':{
+            'type':'agentMessage','phase':'final_answer','id':'latest','text':'Only visible final'}}],
+            'nextCursor':'older-items'}
+        result=self.voice.completed_result('target')
+        self.assertFalse(result['source_window_complete'])
+        self.assertEqual([v['item']for v in result['finals']],['latest'])
+        self.assertEqual(len([v for v in self.socket.sent if v['method']=='thread/items/list']),1)
+    def test_collection_notice_fits_native_frame_at_maximum_source_bounds(self):
+        self.voice.start('v=0\r\noffer')
+        result={'thread':'owned','turn':'t'*128,'finals':[
+            {'item':str(n)+'x'*125,'revision':'a'*64}for n in range(32)],'source_window_complete':False}
+        self.voice.offer_result(result)
+        text=self.socket.sent[-1]['params']['text']
+        self.assertLessEqual(len(('[BACKEND] '+text).encode()),500)
+        data=json.loads(text.split('new request: ',1)[1]);self.assertFalse(data['source_window_complete'])
     def test_native_work_anchor_finds_exact_result_after_recent_window_moves_on(self):
         self.socket.results['thread/turns/list']={'data':[{'id':'old-task','status':'inProgress'}],
             'backwardsCursor':'opaque-native-anchor','nextCursor':None}

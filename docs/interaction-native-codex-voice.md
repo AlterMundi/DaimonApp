@@ -32,11 +32,39 @@ tail. The descending reader selected the acknowledgement. The browser rejected
 that non-truncated source before availability/recall qualification. Two new visits
 closed with complete transcripts; three originals1310854bytes and two output
 masters were hash verified. Preserve this negative and both native final items.
-Do not rerun the accepted editorial request or reset its ACKed offer. Multiple
-final-answer provenance needs resolution before this candidate can claim useful
-late-report delivery; choosing the first, longest or a text-filtered answer would
-not establish which answer belongs to the completed request. Production remains
-the selected658 composition until the receiving record explicitly changes it.
+Do not rerun the accepted editorial request or reset its ACKed offer. Choosing the
+first, longest or a text-filtered answer would not establish which answer belongs
+to the completed request.
+
+The candidate now preserves an ordered collection of exact item IDs and full-text
+revisions when the bounded native item window contains several finals, or cannot
+prove uniqueness because another page exists. It does not concatenate text under
+one item's identity. Collection notices announce finished-work availability only;
+the existing complete single-final path remains useful. The retained source
+collection and its digest distinguish an incomplete32item window from a complete
+one; no archive scan or inference is added. Existing per-turn persisted intent
+still prevents replay after lost ACK or replacement. Optional reference/diagnostic
+capacity failure preserves connected voice and unclaimed work. Older selected
+readers consume the same turn/state fields and ignore the optional source set;
+rollback preserves that set rather than restoring an old database.
+
+Two actual native metadata reads of the already accepted corrective turn recovered
+the exact report and acknowledgement IDs/revisions in source order, with no model,
+tool, capture or offer replay. Focused tests cover legitimate corrections as well
+as acknowledgements, incomplete windows, maximum UTF8 framing, retained collections
+and lost ACKs, mounted API no-repeat behavior and a full diagnostic store. Focused
+independent review found two issues (multiplicity wording and diagnostic storage
+failure); both were corrected and rechecked.
+
+A distinct new appendix used the same retained receiver and no source/tool calls.
+It completed before the first voice closure; no pending reference reached the
+successor, so no result offer occurred. The browser correctly failed its expected
+availability observation. That does not test the new collection speech context.
+Retain the appendix and its originals; do not repeat accepted work to repair this
+fixture. Continuity around completion just before closure remains to resolve.
+The live case ran the pre-review-correction candidate; count-neutral wording and
+optional storage handling have targeted test/review evidence only. Production
+remains selected658; this candidate is not spoken/receiving acceptance.
 
 Owner briefv5 distinguishes missing foreground context from a result already
 held by the native conversation. A request not to search again still permits

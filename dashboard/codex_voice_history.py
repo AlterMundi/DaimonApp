@@ -16,6 +16,7 @@ import time
 import uuid
 
 from .private_state import private_directory, read_json, write_json
+from .codex_voice import result_source_refs
 from scripts.speech_render import lock, RenderError
 
 
@@ -149,12 +150,8 @@ class CodexVoiceHistory:
 
     def claim_result(self,ident,human,frozen,result):
         """Persist before speech submission; a lost ACK is never a retry signal."""
-        if (not isinstance(result,dict) or result.get('thread')!=frozen['native_thread']
-                or not isinstance(result.get('turn'),str)
-                or not re.fullmatch('[A-Za-z0-9_-]{1,128}',result['turn'])
-                or not isinstance(result.get('item'),str) or not 1<=len(result['item'])<=128
-                or not isinstance(result.get('revision'),str)
-                or not re.fullmatch('[a-f0-9]{64}',result['revision'])):
+        refs=result_source_refs(result)
+        if result.get('thread')!=frozen['native_thread']:
             raise ValueError('Select one source-linked native completion')
         with history_lock(self.root/'.lock'):
             current=self.read(ident,human,frozen['binding'])
@@ -169,7 +166,7 @@ class CodexVoiceHistory:
                     return False
             offers=current.setdefault('result_offers',[])
             if len(offers)>=32:raise ValueError('Native result offers reached the visit bound')
-            offers.append({**{key:result[key]for key in ('turn','item','revision')},
+            offers.append({**refs,
                 'state':'pending','meaning':'Presentation intent; neither native ACK nor hearing receipt'})
             self._write(current);return True
 
