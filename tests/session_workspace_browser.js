@@ -3,6 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+const codexCase=process.env.QUALIFICATION_CODEX==='1';let uploadFailed=false;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -20,6 +21,14 @@ const server=http.createServer(async(req,res)=>{
  try{
  if(url.pathname.startsWith('/api/')){
   const route=url.pathname.slice(5);
+  if(route==='interaction/voice/codex/visits')return json({visits:[],more:false});
+  if(route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST'){
+   const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks);
+   const parts=route.split('/'),visit=parts[4],ordinal=Number(parts[6]);
+   voiceUploads.push({visit,ordinal,bytes:raw.length,sha:require('node:crypto').createHash('sha256').update(raw).digest('hex')});
+   if(!uploadFailed){uploadFailed=true;return json({detail:'Synthetic first receipt unavailable'},503);}
+   return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,native_replay:'never'}});
+  }
   if(route==='interaction/access')return json({csrf:'fixture-csrf',label:'Synthetic operator'});
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
@@ -35,7 +44,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_reply_updates:true,can_listen:false,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_reply_updates:true,can_listen:false,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
   if(route==='interaction/alerts')return json({state:'available',producers:[],incidents:[],csrf:'fixture-csrf'});
@@ -54,14 +63,70 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
 (async()=>{let browser;const report={state:'started',source:'shipped source assets with synthetic HTTP fixtures; no native/provider/audio hearing claim'};
  try{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
- browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--mute-audio','--disk-cache-size=1048576','--media-cache-size=1048576']});
+ browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--mute-audio','--autoplay-policy=no-user-gesture-required','--disk-cache-size=1048576','--media-cache-size=1048576']});
  const context=await browser.newContext({viewport:{width:1280,height:800}});await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
  });
+ if(codexCase)await context.addInitScript(()=>{
+  const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
+  const fixture=window.codexFixture={opens:0,contexts:[],peers:[]};
+  window.AudioContext=class extends ActualContext{constructor(...args){super(...args);fixture.contexts.push(this);}};
+  navigator.mediaDevices.getUserMedia=async()=>{
+   const ctx=new window.AudioContext(),source=ctx.createOscillator(),gain=ctx.createGain(),dest=ctx.createMediaStreamDestination();
+   gain.gain.value=.04;source.connect(gain);gain.connect(dest);source.start();await ctx.resume();
+   const track=dest.stream.getAudioTracks()[0],stop=track.stop.bind(track);track.stop=()=>{stop();source.stop();void ctx.close();};return dest.stream;
+  };
+  window.RTCPeerConnection=class{
+   constructor(){this.connectionState='new';fixture.peers.push(this);}addTrack(){}
+   createDataChannel(label){if(label!=='oai-events')throw Error('Unexpected native channel');return {close(){}};}
+   async createOffer(){return {type:'offer',sdp:'v=0 synthetic-offer'};}
+   async setLocalDescription(value){this.localDescription=value;}
+   async setRemoteDescription(value){if(value.sdp!=='v=0 synthetic-answer')throw Error('Unexpected answer');this.connectionState='connected';this.onconnectionstatechange();}
+   close(){this.connectionState='closed';this.onconnectionstatechange?.();}
+  };
+  window.WebSocket=class{
+   static OPEN=1;constructor(url){if(!String(url).endsWith('/voice/codex'))return new actualSocket(url);fixture.opens++;this.readyState=1;queueMicrotask(()=>this.onopen());}
+   send(raw){const value=JSON.parse(raw),emit=value=>queueMicrotask(()=>this.onmessage({data:JSON.stringify(value)}));
+    if(value.binding){this.visit=value.id;emit({type:'prepared',id:this.visit,session_seconds:600});}
+    if(value.type==='offer'){emit({type:'answer',id:this.visit,sdp:'v=0 synthetic-answer'});emit({type:'transcript',id:this.visit,item:{id:'source-1',role:'assistant',text:'A synthetic native voice reply.'}});}
+    if(value.type==='close')emit({type:'closed',id:this.visit,confirmed:true});
+   }
+   close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
+  };
+ });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
+ if(codexCase){
+  await page.locator('#conversation-voice-choice').waitFor({state:'visible'});
+  assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','OpenAI never replaces the default');
+  assert.equal(await page.evaluate(()=>codexFixture.opens),0);
+  await page.locator('#conversation-voice-engine').selectOption('codex');
+  await page.locator('#conversation-companion pre').click();
+  await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});
+  assert(await page.locator('#conversation-voice-engine').isDisabled());
+  await page.locator('#conversation-voice-engine').evaluate(select=>{select.value='provider';select.dispatchEvent(new Event('change'));});
+  assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'codex','Active mode stays frozen');
+  await page.screenshot({path:path.join(output,'codex-desktop-voice.png')});
+  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(450);
+  await page.screenshot({path:path.join(output,'codex-mobile-voice.png')});
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.waitForFunction(()=>codexFixture.contexts.every(ctx=>ctx.state==='closed')&&codexFixture.peers.every(peer=>peer.connectionState==='closed'),null,{timeout:10000});
+  await page.locator('#conversation-codex-recovery').waitFor({state:'visible'});
+  await page.locator('#conversation-codex-recovery summary').click();
+  await page.screenshot({path:path.join(output,'codex-mobile-recovery.png')});
+  await page.getByRole('button',{name:'Retry saving',exact:true}).click();
+  await page.locator('#conversation-codex-recovery').waitFor({state:'hidden'});
+  assert.equal(voiceUploads.length,2);assert.deepEqual(voiceUploads[0],voiceUploads[1],'Retry retains the exact original and visit');
+  assert.equal(posts.length,0,'Native original recovery never uses ordinary Send');
+  assert.equal(await page.evaluate(()=>codexFixture.opens),1,'Recovery does not reopen or replay voice');
+  assert.equal(await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('daimon-voice-recovery',1);r.onsuccess=()=>{const db=r.result,tx=db.transaction('capture','readonly'),q=tx.objectStore('capture').get('pending');q.onsuccess=()=>{resolve(q.result===undefined);db.close();};q.onerror=reject;};r.onerror=reject;})),true);
+  await page.locator('#conversation-voice-engine').selectOption('provider');
+  assert.equal(await page.evaluate(()=>codexFixture.opens),1);
+  assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.viewports=['1280x800','390x844'];
+ }else{
  assert.equal(await page.getByRole('button',{name:'Show routing map',exact:true}).count(),0,'Messages have no routing-map shortcut');
  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
  await page.locator('#conversation-flow > summary').click();
@@ -228,6 +293,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();assert.equal(errors.length,0,errors.join('\n'));
  report.state='qualified-synthetic-browser';report.posts=posts.map(v=>({text:v.text,reply:v.reply}));report.viewports=['1280x800','390x844','320x740'];report.errors=errors;
+ }
  }finally{
  if(browser)await browser.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  report.errors=errors;fs.writeFileSync(path.join(output,'browser.json'),JSON.stringify(report,null,2));

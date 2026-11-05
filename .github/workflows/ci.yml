@@ -309,6 +309,7 @@ jobs:
       - run: python3 -m pip install -r dashboard/requirements.lock
       - run: python3 -B tests/live_context_voice_io.py target/release/telecodex
       - run: python3 -B tests/conversation_http_io.py target/release/telecodex
+      - run: python3 -B tests/codex_voice_collection_io.py target/release/telecodex
       - run: python3 -B tests/conversation_requests_http_io.py target/release/telecodex
       - run: python3 -B tests/conversation_tasks_http_io.py target/release/telecodex
       - run: python3 -B tests/conversation_question_answer_http_io.py target/release/telecodex
@@ -428,6 +429,10 @@ jobs:
       - run: python -B tests/dashboard_live.py
       - run: python -B tests/dashboard_transcription.py
       - run: python -B tests/dashboard_native_dialogue.py
+      - run: python -B tests/dashboard_codex_voice.py
+      - run: python -B tests/dashboard_codex_voice_history.py
+      - run: python -B tests/dashboard_codex_voice_api.py
+      - run: node tests/codex_conversation_ui.js
       - run: python -B tests/dashboard_qwen_dialogue.py
       - run: python -B tests/dashboard_openai_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py

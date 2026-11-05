@@ -63,6 +63,27 @@ window.Conversation = (() => {
       finally{clearTimeout(deadline);if(fileDownloads.get(file.id)===controller)fileDownloads.delete(file.id);refreshFiles();}
     }
     let voiceEnabled=false,voiceSuspended=false,captureBusy=false,voiceBusy=false,voiceContext,voiceMode,conversationOnly=false,voiceModePrevious,voiceSession,continuousEnabled=false,nativeEnabled=false,nativeVoiceSession,legacyVoiceSession;
+    let providerVoiceSession,codexVoiceSession,voiceChoice='provider',codexEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
+    const voiceEngine=$('#conversation-voice-engine'),voiceChoiceBox=$('#conversation-voice-choice');
+    function selectVoiceEngine(){
+      const nextNative=voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
+      const next=voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
+      if((next!==voiceSession||nextNative!==nativeEnabled)&&voiceMode?.active)voiceMode.close();
+      nativeEnabled=nextNative;nativeVoiceSession=nextNative?next:providerVoiceSession;voiceSession=next;
+      continuousEnabled=voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
+      voiceMode?.configure(voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
+      if(voiceEngine){
+        voiceEngine.value=voiceChoice;voiceEngine.disabled=!!voiceSession?.active;
+        const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
+        if(codexOption)codexOption.disabled=!codexEnabled;
+      }
+      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&voiceChoice!=='codex';
+    }
+    voiceEngine?.addEventListener('change',()=>{
+      if(voiceSession?.active||voiceMode?.active){voiceEngine.value=voiceChoice;return;}
+      if(!['provider','codex'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled)return;
+      voiceChoice=voiceEngine.value;selectVoiceEngine();
+    });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
     if(standalone){
       const presence=$("#conversation-companion"),identity=$("header .identity"),tools=$("header .header-tools"),beacon=$("#conversation-sound-toggle");
@@ -1701,11 +1722,11 @@ window.Conversation = (() => {
       refreshFiles();
       await goalControls?.observe(value.goal_controls);
       microphone?.configure(value.can_speak,value.can_stream_transcribe,value.streaming_transcription_mode);
-      const nextNative=value.can_converse_native===true&&window.NativeConversation?.supported()===true;
-      if(nextNative!==nativeEnabled&&voiceMode?.active)voiceMode.close();
-      nativeEnabled=nextNative;voiceSession=nativeEnabled?nativeVoiceSession:legacyVoiceSession;
-      continuousEnabled=nativeEnabled||value.can_converse_continuous===true;
-      voiceMode?.configure(value.can_converse===true||nativeEnabled,continuousEnabled);
+      providerNativeEnabled=value.can_converse_native===true&&window.NativeConversation?.supported()===true;
+      providerContinuousEnabled=value.can_converse_continuous===true;providerVoiceAvailable=value.can_converse===true;
+      codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
+      selectVoiceEngine();
+      if(codexEnabled)void codexVoiceSession?.restoreHistory().catch(()=>{});
       setCsrf(value.csrf);void foregroundHistory();
       canListen = !readOnly && value.can_listen;canStreamSpeech=canListen && !!value.can_stream_speech;
       canSpeakLive=canListen && value.can_speak_live_response===true;
@@ -2148,7 +2169,7 @@ window.Conversation = (() => {
       }
     });
     voiceSession=legacyVoiceSession;
-    if(standalone&&!readOnly&&microphone)nativeVoiceSession=window.NativeConversation?.create({
+    if(standalone&&!readOnly&&microphone)providerVoiceSession=window.NativeConversation?.create({
       headers,getBinding:()=>binding,getQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,
       prepareReconnect:originals=>microphone.prepareReconnect(originals),retain:original=>microphone.retainContinuous(original),reviewOriginal:original=>microphone.reviewNativeContinuous(original),release:(original,hash)=>microphone.releaseContinuous(original,hash),
       onReview:originals=>{if(!voiceMode?.active)void microphone.reviewContinuous(originals);},
@@ -2160,10 +2181,43 @@ window.Conversation = (() => {
         if(value.playback)audioState(value.playback==='playing'?'Playing voice conversation':value.playback==='paused'?'Paused voice conversation':'Waiting for voice');
         else playerStatus();}
     });
+    if(standalone&&!readOnly&&microphone)codexVoiceSession=window.CodexConversation?.create({
+      headers,getBinding:()=>binding,
+      onCaption:text=>voiceMode?.update({caption:text}),
+      onItem:value=>{
+        if(!value||!value.item||!['user','assistant'].includes(value.item.role)||typeof value.item.text!=='string'||value.item.text.length>16384)return;
+        const key='codex:'+value.visit+':'+value.item.id;
+        let card=foregroundCards.get(key);
+        if(!card){const box=node('article',undefined,'reply'),body=node('div',undefined,'reply-text'),status=node('p',undefined,'reply-status'),time=node('time',undefined,'message-time');
+          box.append(node('h3',value.item.role==='user'?'You · voice':'Voice conversation'),status,body,time);card={box,body,status,time};foregroundCards.set(key,card);$('#conversation-answers').append(box);}
+        setReplyText(card.body,value.item.text);card.status.textContent='Native voice transcript · words may differ from what was heard.';
+        const observed=new Date((value.item.observed_at||value.observed_at)*1000).toISOString();messageTime(card.time,observed);placeInTimeline(card.box,key,observed);
+      },
+      onRecovery:values=>{
+        const panel=$('#conversation-codex-recovery');if(!panel)return;
+        panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
+        panel.append(node('summary',`${selected.length} voice recording${selected.length===1?'':'s'} kept locally`));
+        for(const original of selected){
+          const row=node('div',undefined,'conversation-tools'),label=node('span',`Voice recording · ${Math.ceil((original.blob.size-44)/32000)}s · local copy`);
+          const retry=node('button','Retry saving'),save=node('button','Save audio'),discard=node('button','Discard local copy');
+          for(const button of [retry,save,discard])button.type='button';
+          retry.title='Save this same original; never send the conversation again';
+          discard.title='Discard this local copy; accepted work continues';
+          retry.addEventListener('click',async()=>{retry.disabled=true;try{await codexVoiceSession.retry(original);}catch{label.textContent='Original not confirmed; your local audio is kept.';}finally{retry.disabled=false;}});
+          save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.codex_visit+'-'+original.ordinal+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+          discard.addEventListener('click',()=>{void codexVoiceSession.discard(original);});
+          row.append(label,retry,save,discard);panel.append(row);
+        }
+      },
+      onState:value=>{if(voiceChoice!=='codex')return;if(voiceEngine)voiceEngine.disabled=!!codexVoiceSession?.active||!!voiceMode?.active;
+        if(!voiceModePrevious?.continuous)return;captureBusy=false;presentState({capture:value.starting?'permission':'idle',playback:value.playback});voiceMode?.update({continuousState:value});}
+    });
+    nativeVoiceSession=providerVoiceSession;
     if(standalone && !readOnly)voiceMode=window.ConversationVoiceMode?.mount({
-      portrait:$("#conversation-companion pre"),canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&microphone.canStartContinuous()),
-      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&microphone.canStartContinuous():!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
+      portrait:$("#conversation-companion pre"),canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice==='codex'?microphone.canStartNative():microphone.canStartContinuous())),
+      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice==='codex'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
+        if(voiceEngine)voiceEngine.disabled=true;
         voiceModePrevious={enabled:voiceEnabled,suspended:voiceSuspended,continuous:continuousEnabled};
         if(continuousEnabled)microphone.continuousOwner(true);
         conversationOnly=true;stop();audioFilterChanged();enableVoice();sound?.update({conversationOnly:true});
@@ -2179,6 +2233,7 @@ window.Conversation = (() => {
         if(voiceModePrevious?.enabled){voiceSuspended=voiceModePrevious.suspended;voiceStatus();}
         else disableVoice();
         voiceModePrevious=undefined;audioFilterChanged();companion?.update({});
+        if(voiceEngine)voiceEngine.disabled=!!voiceSession?.active;
       }
     });
     setMode(initialMode(), true, false);
