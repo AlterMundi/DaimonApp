@@ -37,7 +37,9 @@ while a visit is active, without closing it or acquiring/acknowledging a reader.
 Canonical source reconciliation may atomically request a semantic checkpoint at16KiB,
 before dispatch freezes the supplied range. The owner selects Sync.prepare_continuation;
 older producers default false and finishing/recovery never opt in. Native capability
-foreground_continuation:v1 identifies the compatible writer. Its
+foreground_continuation:v1 identifies the compatible writer. The mounted voice
+preflight requires it before provider opening or microphone acquisition, so a
+new web adapter cannot start against an older listener that rejects the Sync field. Its
 suggested target is8KiB; the24KiB hard seed bound and64k/48k/600s diagnostic
 limits remain unchanged. A checkpoint never replaces a provider, claims an
 acoustic floor, injects guidance, replays audio/work or resets usage accounting.

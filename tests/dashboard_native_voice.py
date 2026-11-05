@@ -99,7 +99,7 @@ class Owner(Receiver):
         self.input_id=Provider.input_id
         self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event();self.guidance_done=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1','foreground_resume':'v1'}
+        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_continuation':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1','foreground_resume':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -536,13 +536,14 @@ class Mounted(unittest.TestCase):
 
     def test_context_incompatible_listener_is_refused_before_provider_opening(self):
         presentation=self.owner.presentation
-        def without_context(command):
-            value=presentation(command)
-            if command=='input voice capabilities':value.pop('foreground_context')
-            return value
-        with patch.object(self.owner,'presentation',side_effect=without_context),self.open() as ws:
-            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
-        self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.contexts,{})
+        for capability in ('foreground_context','foreground_continuation'):
+            def without_context(command):
+                value=presentation(command)
+                if command=='input voice capabilities':value.pop(capability)
+                return value
+            with self.subTest(capability=capability),patch.object(self.owner,'presentation',side_effect=without_context),self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+            self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.contexts,{})
 
     def test_missing_caption_incompatible_listener_is_refused_before_provider_opening(self):
         presentation=self.owner.presentation
