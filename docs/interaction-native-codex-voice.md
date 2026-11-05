@@ -138,6 +138,32 @@ remains the software rollback; current journals, held originals, enrolled thread
 and work are preserved rather than restored.
 Phone hearing, sustained use and complete long-term recall remain unqualified.
 
+## Native tail persistence and compaction observation —5 November2026
+
+The installed Core's own generated experimental schema advertises
+`flushTranscriptTailOnSessionEnd`. Native start now enables this supported path.
+An actual synthetic voice visit introduced a new fact, repeated it in audio,
+closed and retained its original. The native backing history then contained the
+source-marked `transcript_tail_flush` fragment before closure, with no new backend
+inference or tool call. Native persistence supplements the application's recent
+role-bearing source window; it does not replace it.
+
+One distinct test then invoked supported native compaction on that idle test
+thread and waited for completion. A new voice question, with application history
+omitted, returned the old value despite correct transcription. Preserve that
+negative observation; do not repeat compaction to make the verifier pass. The
+failed visit closed with its originals retained. A later read of the committed
+compaction replacement history still found the new fact. Thus the compaction
+record did not discard it; automatic retrieval into voice remains unqualified.
+Native startup alone is not
+qualified as the long-term voice memory bridge. Inspected source excludes
+contextual user fragments from its recent-turn section, advertises that memory
+summaries are excluded, and bounds the rendered terminal transcript tail to4KiB.
+These source constraints identify gaps to address; they do not by themselves
+prove which stage lost the new fact in the actual test. No existing diagnostic,
+visit or storage bound was increased. Do not remove the flat application restore
+window or claim complete long-term continuity based on a compaction ACK.
+
 ## Original recovery and bounds
 
 Capture starts before enabling the WebRTC microphone track. Raw microphone WAV

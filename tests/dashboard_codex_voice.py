@@ -77,6 +77,7 @@ class Voice(unittest.TestCase):
         self.assertNotIn('prompt',params)
         self.assertNotIn('model',params)
         self.assertFalse(params['clientManagedHandoffs'])
+        self.assertTrue(params['flushTranscriptTailOnSessionEnd'])
         self.assertFalse(any(v['method']in('turn/start','thread/realtime/appendText')for v in self.socket.sent))
     def test_restore_uses_native_initial_items_without_new_input_or_task(self):
         from dashboard.codex_voice_history import CodexVoiceHistory
