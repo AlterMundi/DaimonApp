@@ -123,6 +123,83 @@ class CodexVoiceHistory:
                 and value.get('binding')==frozen['binding']and value.get('entry_binding')==frozen['entry_binding']
                 and value.get('native_thread')==frozen['native_thread']and value.get('transcript_complete')is not True]
 
+    def pending_work(self,human,frozen):
+        """Carry exact work references, not copies of results or new work requests."""
+        with history_lock(self.root/'.lock'):
+            visits=sorted((value for path in self.root.glob('*.json')
+                if (value:=read_json(path)).get('human')==human
+                and value.get('binding')==frozen['binding']
+                and value.get('entry_binding')==frozen['entry_binding']
+                and value.get('native_thread')==frozen['native_thread']),key=lambda v:v['sequence'])
+            claimed={offer['turn'] for value in visits for offer in value.get('result_offers',[])}
+            claimed.update(outcome['turn']for value in visits for outcome in value.get('work_outcomes',[]))
+            pending=list(dict.fromkeys(turn for value in visits
+                for turn in value.get('pending_work',[]) if turn not in claimed))
+            if len(pending)>32:raise ValueError('Native pending result references reached their bound')
+            return pending
+
+    def retain_work(self,ident,human,binding,turns):
+        if (not isinstance(turns,list) or len(turns)>32 or any(not isinstance(turn,str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn) for turn in turns)):
+            raise ValueError('Select bounded admitted native work')
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            value['pending_work']=list(dict.fromkeys(turns))
+            self._write(value)
+
+    def claim_result(self,ident,human,frozen,result):
+        """Persist before speech submission; a lost ACK is never a retry signal."""
+        if (not isinstance(result,dict) or result.get('thread')!=frozen['native_thread']
+                or not isinstance(result.get('turn'),str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}',result['turn'])
+                or not isinstance(result.get('item'),str) or not 1<=len(result['item'])<=128
+                or not isinstance(result.get('revision'),str)
+                or not re.fullmatch('[a-f0-9]{64}',result['revision'])):
+            raise ValueError('Select one source-linked native completion')
+        with history_lock(self.root/'.lock'):
+            current=self.read(ident,human,frozen['binding'])
+            if current.get('native_thread')!=frozen['native_thread'] or current.get('entry_binding')!=frozen['entry_binding']:
+                raise ValueError('Native result owner changed')
+            for path in self.root.glob('*.json'):
+                value=read_json(path)
+                if (value.get('human')==human and value.get('binding')==frozen['binding']
+                        and value.get('entry_binding')==frozen['entry_binding']
+                        and value.get('native_thread')==frozen['native_thread']
+                        and any(v['turn']==result['turn'] for v in value.get('result_offers',[]))):
+                    return False
+            offers=current.setdefault('result_offers',[])
+            if len(offers)>=32:raise ValueError('Native result offers reached the visit bound')
+            offers.append({**{key:result[key]for key in ('turn','item','revision')},
+                'state':'pending','meaning':'Presentation intent; neither native ACK nor hearing receipt'})
+            self._write(current);return True
+
+    def finish_work(self,ident,human,binding,turn,status):
+        if status not in ('failed','interrupted') or not isinstance(turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn):
+            raise ValueError('Select an observed unsuccessful native task')
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            outcomes=value.setdefault('work_outcomes',[])
+            if any(row['turn']==turn for row in outcomes):return
+            if len(outcomes)>=32:raise ValueError('Native task outcomes reached the visit bound')
+            outcomes.append({'turn':turn,'status':status})
+            self._write(value)
+
+    def confirm_result(self,ident,human,binding,turn):
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            offer=next(row for row in value.get('result_offers',[])if row['turn']==turn)
+            offer['state']='acknowledged'
+            offer['meaning']='Native context accepted; semantic speech and hearing are separate observations'
+            self._write(value)
+
+    def notice_status(self,ident,human,binding,status):
+        if status not in ('source_unavailable','submission_unconfirmed'):
+            raise ValueError('Unknown native result presentation status')
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            value['result_notice_status']=status
+            self._write(value)
+
     def memory_context(self,human,frozen):
         """A scoped source index for native tools, not another transcript copy.
 

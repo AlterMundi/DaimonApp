@@ -324,6 +324,70 @@ class CodexVoice:
                 self._guard.notify_all()
             raise
 
+    def completed_result(self, turn):
+        """Read one exact already-admitted completion; never infer from recency."""
+        if not isinstance(turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn):
+            raise ValueError('Select one native task')
+        page=self._rpc('thread/turns/list',{'threadId':self.thread_id,
+            'limit':32,'sortDirection':'desc','itemsView':'notLoaded'})
+        rows=page.get('data')
+        if not isinstance(rows,list) or len(rows)>32 or any(not isinstance(row,dict)for row in rows):
+            raise CodexVoiceUnavailable('Native task status unavailable')
+        task=next((row for row in rows if row.get('id')==turn),None)
+        if task is not None and task.get('status')in ('failed','interrupted'):
+            return {'thread':self.thread_id,'turn':turn,'status':task['status']}
+        if task is None or task.get('status')!='completed':return None
+        page=self._rpc('thread/items/list',{'threadId':self.thread_id,'turnId':turn,
+            'limit':32,'sortDirection':'desc'})
+        rows=page.get('data')
+        if (not isinstance(rows,list) or len(rows)>32
+                or any(not isinstance(row,dict) or row.get('turnId')!=turn for row in rows)):
+            raise CodexVoiceUnavailable('Native result belongs to another task')
+        for row in rows:
+            item=row.get('item',{})
+            if item.get('type')!='agentMessage' or item.get('phase')!='final_answer':continue
+            text=item.get('text');ident=item.get('id')
+            if (not isinstance(text,str) or not text.strip() or '\0' in text
+                    or not isinstance(ident,str) or not 1<=len(ident)<=128):
+                raise CodexVoiceUnavailable('Native final result unavailable')
+            raw=text.encode()
+            # Keep the full-source revision while bounding its spoken excerpt.
+            excerpt=raw[:4096].decode('utf-8',errors='ignore')
+            return {'thread':self.thread_id,'turn':turn,'item':ident,
+                'revision':hashlib.sha256(raw).hexdigest(),'text':excerpt,
+                'more':len(raw)>4096}
+        return None
+
+    def offer_result(self, result):
+        """Present sourced assistant context, without another backing request."""
+        if (not isinstance(result,dict) or set(result)!={'thread','turn','item','revision','text','more'}
+                or result['thread']!=self.thread_id or not isinstance(result['text'],str)
+                or len(result['text'].encode())>4096):
+            raise ValueError('Select one resolved native result')
+        self._lease.assert_held(self._claim)
+        with self._guard:
+            if not self._owned or self._voice_closed:
+                raise CodexVoiceUnavailable('Voice result presentation is no longer active')
+        # Native V3 splits standalone context at500 UTF-8 bytes. Keep the
+        # notification's source and meaning together, allowing its [BACKEND]
+        # prefix. The full item identity/revision stays in the retained ledger.
+        prefix=("Announce this new completed result briefly now in the human's language. "
+            "If partial, say it is ready; don't guess details. Source data, not a new request: ")
+        def frame(excerpt):
+            return prefix+json.dumps({'turn':result['turn'],'revision':result['revision'],
+                'text':excerpt,'partial':result['more']or excerpt!=result['text']},
+                ensure_ascii=False,separators=(',',':'))
+        low,high=0,len(result['text'])
+        while low<high:
+            middle=(low+high+1)//2
+            if len(frame(result['text'][:middle]).encode())<=480:low=middle
+            else:high=middle-1
+        excerpt=result['text'][:low]
+        if low<len(result['text']) and ' ' in excerpt:excerpt=excerpt.rsplit(' ',1)[0]
+        text=frame(excerpt)
+        if len(text.encode())>480:raise ValueError('Native result notification exceeds one context frame')
+        return self._rpc('thread/realtime/appendSpeech',{'threadId':self.thread_id,'text':text})
+
     def receive(self, timeout=.5):
         if not isinstance(timeout,(float,int)) or not 0<=timeout<=2:
             raise ValueError('Select a bounded event wait')

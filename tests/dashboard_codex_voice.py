@@ -14,7 +14,7 @@ from dashboard.codex_voice import AvatarVoiceLease, CodexVoice, CodexVoiceReject
 class Socket:
     def __init__(self):
         self.sent=[]; self.incoming=queue.Queue(); self.closed=False
-        self.reject=False; self.lose=False
+        self.reject=False; self.lose=False;self.results={}
     def event(self, method, **params):
         self.incoming.put(json.dumps({'method':method,'params':{'threadId':'owned',**params}}))
     def send(self, raw):
@@ -28,7 +28,7 @@ class Socket:
             self.event('thread/realtime/started',realtimeSessionId=value['params']['realtimeSessionId'])
             self.event('thread/realtime/sdp',sdp='v=0\r\nanswer')
         if method=='thread/realtime/stop':self.event('thread/realtime/closed',reason='requested')
-        result={'thread':{'id':'owned'}} if method=='thread/resume' else {}
+        result=self.results.get(method,{'thread':{'id':'owned'}} if method=='thread/resume' else {})
         self.incoming.put(json.dumps({'id':value['id'],'result':result}))
     def recv(self):
         try:return self.incoming.get(timeout=.05)
@@ -64,6 +64,39 @@ class Voice(unittest.TestCase):
         self.assertNotIn('prompt',p);self.assertNotIn('model',p)
         self.assertNotIn('authorization',json.dumps(frames).lower())
         self.assertEqual([e['method'] for e in self.voice.receive(0)],['thread/realtime/started','thread/realtime/sdp'])
+    def test_exact_completed_result_excludes_commentary_and_other_turns(self):
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        self.socket.results['thread/items/list']={'data':[
+            {'turnId':'target','item':{'type':'agentMessage','phase':'commentary','id':'p','text':'I will check'}},
+            {'turnId':'target','item':{'type':'agentMessage','phase':'final_answer','id':'f','text':'Verified result'}}]}
+        result=self.voice.completed_result('target')
+        self.assertEqual((result['turn'],result['item'],result['text']),('target','f','Verified result'))
+        self.socket.results['thread/items/list']['data'][1]['turnId']='foreign'
+        with self.assertRaises(CodexVoiceUnavailable):self.voice.completed_result('target')
+        self.socket.results['thread/turns/list']['data'][0]['status']='inProgress'
+        n=len(self.socket.sent)
+        self.assertIsNone(self.voice.completed_result('target'))
+        self.assertEqual(len(self.socket.sent),n+1,'Running work does not read a supposed final result')
+        self.socket.results['thread/turns/list']['data'][0]['status']='failed'
+        self.assertEqual(self.voice.completed_result('target'),{'thread':'owned','turn':'target','status':'failed'})
+    def test_result_offer_is_sourced_assistant_context_not_another_task(self):
+        self.voice.start('v=0\r\noffer')
+        self.voice.offer_result({'thread':'owned','turn':'task','item':'final','revision':'a'*64,
+            'text':'Current verified result','more':False})
+        call=self.socket.sent[-1]
+        self.assertEqual(call['method'],'thread/realtime/appendSpeech')
+        self.assertIn('Current verified result',call['params']['text'])
+        self.assertIn('not a new request',call['params']['text'])
+        self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_long_unicode_result_offer_keeps_source_and_notice_in_one_native_frame(self):
+        self.voice.start('v=0\r\noffer')
+        self.voice.offer_result({'thread':'owned','turn':'task','item':'final','revision':'a'*64,
+            'text':('Unicode result ñ🙂 "quoted"\n'*100),'more':False})
+        text=self.socket.sent[-1]['params']['text']
+        self.assertLessEqual(len(('[BACKEND] '+text).encode()),500)
+        data=json.loads(text.split('new request: ',1)[1])
+        self.assertEqual((data['turn'],data['revision']),('task','a'*64))
+        self.assertTrue(data['partial'])
     def test_foreign_thread_and_noisy_deltas_are_not_retained(self):
         self.socket.event('thread/realtime/sdp',threadId='foreign',sdp='private unrelated answer')
         self.socket.event('thread/realtime/transcript/delta',delta='partial')

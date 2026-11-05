@@ -10,7 +10,7 @@ import secrets
 from fastapi import HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
-from .codex_voice import AvatarVoiceLease, CodexVoice
+from .codex_voice import AvatarVoiceLease, CodexVoice, CodexVoiceUnavailable
 from .codex_voice_history import CodexVoiceHistory, IncompleteTranscript
 from .live_transcription import bind_voice_actor
 from .provider import ProviderUnavailable
@@ -89,8 +89,9 @@ def install(app,config,provider,authorize,origins):
         if socket.headers.get('origin')not in origins:
             await socket.close(code=1008);return
         await socket.accept()
-        lease=voice=opening=remembering=starting=incoming=events=None
+        lease=voice=opening=remembering=starting=incoming=events=noticing=None
         visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
+        pending=[];unfinished=set();failed_notices=set();playback_ready=False
         async def send(value):
             await recheck()
             await asyncio.wait_for(socket.send_json(value),3)
@@ -103,6 +104,37 @@ def install(app,config,provider,authorize,origins):
                 if value['state']!='pending':return
                 await asyncio.sleep(.25)
             raise ValueError('Native tools collector did not attach')
+        async def offer_pending():
+            nonlocal noticing
+            if not playback_ready or not pending:return
+            async def present():
+                for turn in list(pending):
+                    if turn in failed_notices:continue
+                    await recheck()
+                    if await frozen(binding)!=owner:raise ValueError('Native result owner changed')
+                    try:result=await asyncio.to_thread(voice.completed_result,turn)
+                    except (CodexVoiceUnavailable,OSError,ValueError):
+                        failed_notices.add(turn)
+                        await asyncio.to_thread(history.notice_status,visit,human,binding,'source_unavailable')
+                        return  # Optional presentation must not end useful voice.
+                    if result is None:continue
+                    if result.get('status')in ('failed','interrupted'):
+                        await asyncio.to_thread(history.finish_work,visit,human,binding,turn,result['status'])
+                        pending.remove(turn);continue
+                    claimed=await asyncio.to_thread(history.claim_result,visit,human,owner,result)
+                    pending.remove(turn)
+                    if not claimed:continue
+                    # This retained source is assistant presentation, not a new
+                    # user turn, tool invocation or client-managed delegation.
+                    await recheck()
+                    try:await asyncio.to_thread(voice.offer_result,result)
+                    except (CodexVoiceUnavailable,OSError,ValueError):
+                        await asyncio.to_thread(history.notice_status,visit,human,binding,'submission_unconfirmed')
+                        return  # Retained intent prevents an uncertain replay.
+                    await asyncio.to_thread(history.confirm_result,visit,human,binding,turn)
+                    break  # Let the native utterance finish before another offer.
+            noticing=asyncio.create_task(present())
+            await asyncio.shield(noticing)
         try:
             async with asyncio.timeout(seconds+60):
                 raw=await asyncio.wait_for(socket.receive_text(),5)
@@ -139,6 +171,10 @@ def install(app,config,provider,authorize,origins):
                 await asyncio.to_thread(history.open,visit,human,owner,voice.session_id,seconds,
                     identity_sha256=identity['sha256'],startup=startup)
                 retained_visit=True
+                pending=await asyncio.to_thread(history.pending_work,human,owner)
+                current=await asyncio.to_thread(provider.codex_voice_current,owner)
+                if current is not None and current not in pending:pending.append(current)
+                await asyncio.to_thread(history.retain_work,visit,human,binding,pending)
                 await send({'type':'prepared','id':visit,'session_seconds':seconds,'mode':'codex_webrtc'})
                 raw=await asyncio.wait_for(socket.receive_text(),20)
                 if len(raw.encode())>70000:raise ValueError('Voice offer exceeds bound')
@@ -163,9 +199,13 @@ def install(app,config,provider,authorize,origins):
                             except Exception:collection_failed=True;raise
                     if incoming in done:
                         raw=incoming.result()
-                        if len(raw)>128 or json.loads(raw)!={'type':'close'}:
+                        message=json.loads(raw)if len(raw)<=128 else None
+                        if message=={'type':'close'}:break
+                        if message!={'type':'ready'}:
                             raise ValueError('Native voice accepts media through WebRTC only')
-                        break
+                        playback_ready=True
+                        incoming=asyncio.create_task(socket.receive_text())
+                        await offer_pending()
                     if events in done:
                         try:batch=events.result()
                         except Exception:transcript_failed=True;raise
@@ -185,11 +225,18 @@ def install(app,config,provider,authorize,origins):
                                     source=next(v for v in saved['items']if v['id']==item['id'])
                                     await send({'type':'transcript','id':visit,
                                         'item':source})
+                                    if source['role']=='assistant':await offer_pending()
                             elif method=='turn/started':
                                 turn=p.get('turn',{}).get('id')
                                 if turn not in turns:
                                     if len(turns)>=32 or len(collectors)>=2:raise ValueError('Native collector bound reached')
-                                    turns.add(turn);collectors.add(asyncio.create_task(collect(turn)))
+                                    turns.add(turn);unfinished.add(turn)
+                                    await asyncio.to_thread(history.retain_work,visit,human,binding,
+                                        list(dict.fromkeys([*pending,*sorted(unfinished)])))
+                                    collectors.add(asyncio.create_task(collect(turn)))
+                            elif method=='turn/completed':
+                                turn=p.get('turn',{}).get('id');unfinished.discard(turn)
+                                if turn in pending:await offer_pending()
                             elif method=='thread/realtime/closed':closed=True;break
                             elif method=='thread/realtime/error':raise ValueError('Native voice failed')
                         if closed:break
@@ -216,6 +263,8 @@ def install(app,config,provider,authorize,origins):
                     with suppress(Exception):await asyncio.shield(remembering)
                 if starting is not None:
                     with suppress(Exception):await asyncio.shield(starting)
+                if noticing is not None:
+                    with suppress(Exception):await asyncio.shield(noticing)
                 if voice is not None:
                     try:
                         await asyncio.to_thread(voice.stop)
@@ -232,11 +281,18 @@ def install(app,config,provider,authorize,origins):
                                 tail.extend(await asyncio.to_thread(voice.receive,0))
                             except Exception:collection_failed=True;transcript_failed=True
                             for event in tail:
+                                if event.get('method')=='turn/started':
+                                    turn=event.get('params',{}).get('turn',{}).get('id')
+                                    if isinstance(turn,str):unfinished.add(turn)
+                                elif event.get('method')=='turn/completed':
+                                    unfinished.discard(event.get('params',{}).get('turn',{}).get('id'))
                                 if event.get('method')=='thread/realtime/item/completed':
                                     item=event.get('params',{}).get('item',{})
                                     if item.get('type')=='transcriptSegment':
                                         try:await asyncio.to_thread(history.item,visit,human,binding,item)
                                         except (OSError,ValueError):collection_failed=True;transcript_failed=True
+                            carried=list(dict.fromkeys([*pending,*sorted(unfinished)]))
+                            if retained_visit:await asyncio.to_thread(history.retain_work,visit,human,binding,carried)
                             # Persist the previous visit's last completed sources
                             # before admitting a successor startup snapshot.
                             if retained_visit and closed and not transcript_failed:
@@ -248,6 +304,8 @@ def install(app,config,provider,authorize,origins):
                                 results=await asyncio.gather(*collectors,return_exceptions=True)
                                 if any(isinstance(value,BaseException)for value in results):collection_failed=True
                             current=await asyncio.to_thread(provider.codex_voice_current,owner)
+                            if current is not None and current not in carried and retained_visit:
+                                await asyncio.to_thread(history.retain_work,visit,human,binding,[*carried,current])
                             if current is not None and current not in turns:
                                 turns.add(current)
                                 # Enrolled owner rechecks remain in the provider.

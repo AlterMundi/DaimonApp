@@ -120,7 +120,10 @@ window.CodexConversation=(()=>{
         ownedPeer.ontrack=event=>{if(!current()||audio!==ownedAudio)return;ownedAudio.srcObject=event.streams[0]||new MediaStream([event.track]);ownedAudio.play().catch(()=>{if(current()){paused=true;state('Tap Resume audio to listen.');}});};
         ownedPeer.onconnectionstatechange=()=>{
           if(!current()||peer!==ownedPeer)return;
-          if(ownedPeer.connectionState==='connected'){connected=true;starting=false;active=true;state('Listening');}
+          if(ownedPeer.connectionState==='connected'){
+            const first=!connected;connected=true;starting=false;active=true;state('Listening');
+            if(first&&transport.readyState===WebSocket.OPEN)transport.send(JSON.stringify({type:'ready'}));
+          }
           else if(['failed','closed','disconnected'].includes(ownedPeer.connectionState))void hold('Voice connection paused. Your originals are kept.');
         };
         // Preserve microphone PCM before enabling its WebRTC sender. No manual
