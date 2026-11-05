@@ -95,6 +95,31 @@ and the user transcript completed during close. Keep both results; repeated usef
 audio/return acceptance remains open. The terminal fixtures must not be replayed.
 Unit and synthetic-browser success do not establish sustained semantic acceptance.
 
+## Receiving composition qualification —5 November2026
+
+Later actual synthetic WebRTC connections recalled the corrected word, and a
+distinct clarification returned the prior useful capability result through one
+completed native handoff with no repeated tool. A misheard earlier noun did not
+qualify that result question. Preserve the silent observation above as unresolved.
+
+The receiving-native candidate `d35949a5` adds only the two owner-control source
+files to selected `81538275`; its existing heartbeat, Matrix, held originals and
+workflows remain present. Locked all-feature build, formatting, text checks
+(569passed/1ignored), text clippy and exact owner IPC/SQLite collection passed.
+Focused review found no material defect. The exact composed executable and app
+then received a new spoken question, returned the corrected word with nonzero
+remote audio, closed and retained its458796byte microphone original. No new
+backend work or tool call accompanied that clarification. The first composition
+probe had closed on an answer to a partial question; it did not establish failed
+recall. Subsequent qualification waited for the requested semantic answer.
+
+These test-owned observations use synthetic media and existing native login.
+The candidate is built and published, not receiving-selected. Production633
+retains its native81538275 selection and default-off OpenAI configuration. Next
+select the complete app/native pair through the existing idle-scoped receiving
+route, preserving current configuration, enrolled threads, collectors and work.
+Phone hearing, sustained use and complete long-term recall remain unqualified.
+
 ## Original recovery and bounds
 
 Capture starts before enabling the WebRTC microphone track. Raw microphone WAV

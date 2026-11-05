@@ -68,12 +68,16 @@ original receipts and a surviving backend capability result. They also exposed
 lost inline corrections after reconnect. The candidate now restores a flat bounded
 window via native `initialItems`, with source hashes and a separate durable
 completeness barrier; incomplete histories reconcile from exact closed native
-sources or stay in review. Actual single corrected-word recall passed, but the
-following visit retained its originals without useful output. Repeated final
-correction/recall, useful spoken return, receiving deployment and phone acceptance
-remain open.
-See the [native mode contract](interaction-native-codex-voice.md); production629
-and current diagnostic/storage limits remain unchanged.
+sources or stay in review. Repeated corrected-word recall now passed across later connections. An explicit
+clarification returned the useful previous capability result through a completed
+native handoff, in audio, without repeating its tool. Retain the silent visit and
+misheard question as negative observations. The exact receiving-compatible native
+composition also returned the corrected word and committed its original. These
+are synthetic-media observations; receiving activation, sustained phone hearing
+and continuity beyond the bounded restore window remain open.
+See the [native mode contract](interaction-native-codex-voice.md). Production633
+contains only the session-status recovery UI; OpenAI remains disabled and current
+diagnostic/storage limits are unchanged.
 
 ## Qwen iteration checkpoint —5November2026
 

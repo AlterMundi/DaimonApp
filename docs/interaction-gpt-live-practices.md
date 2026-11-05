@@ -297,6 +297,17 @@ Inspected implementations and research:
   submitted2November2026. Abstract inspected; the full harness and experiments
   were not reproduced. It is an evaluation lead, not an implementation choice.
 
+## Current receiving comparison checkpoint —5 November2026
+
+Repeated synthetic native application connections now return the corrected word.
+After an explicitly clarified result question, native handoff returned useful
+retained capability information in speech without rerunning its tool. A silent
+visit and a misheard question remain negative observations, not successful runs.
+The exact compatible native composition also passed spoken recall and original
+retention. See the [native mode contract](interaction-native-codex-voice.md) for
+qualification and remaining activation/phone/long-term continuity gaps.
+Production633 only changes workspace metadata recovery; OpenAI is still disabled.
+
 ## Reuse, replace and measure
 
 Preserve shared identity/access, exact human-source/correction history, ongoing
