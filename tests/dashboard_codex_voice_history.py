@@ -14,7 +14,7 @@ import uuid
 from unittest.mock import Mock
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from dashboard.codex_voice_history import CodexVoiceHistory, native_transcripts
+from dashboard.codex_voice_history import CodexVoiceHistory, native_transcripts, native_memory_proof
 from dashboard.live_transcription import wav_bytes
 from dashboard.media_retention import RetentionUnavailable
 from dashboard.provider import Provider, ProviderUnavailable
@@ -35,6 +35,147 @@ class History(unittest.TestCase):
         self.audio=wav_bytes(b'\x01\x00'*8000)
     def retain(self,ordinal=0,audio=None):
         return self.history.recording(self.visit,100,'a'*64,ordinal,audio or self.audio,self.provider)
+    def test_memory_catalog_scopes_sources_and_never_copies_transcripts(self):
+        item={'id':'remembered','type':'transcriptSegment','role':'user','text':'Actual retained correction',
+              'realtimeSessionId':self.session}
+        self.history.item(self.visit,100,'a'*64,item)
+        self.assertIsNone(self.history.memory_context(100,self.frozen))
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        foreign=str(uuid.uuid4())
+        self.history.open(foreign,101,{**self.frozen,'entry_binding':[101,101,9,'other']},str(uuid.uuid4()))
+        self.history.complete_transcript(foreign,101,'a'*64)
+        context=self.history.memory_context(100,self.frozen)
+        index=list((self.history.root/'memory').glob('*.json'));self.assertEqual(len(index),1)
+        value=json.loads(index[0].read_text())
+        self.assertEqual([row['id']for row in value['visits']],[self.visit])
+        self.assertEqual(value['source_root'],str(self.history.root.resolve()))
+        self.assertIn(str(index[0]),context)
+        self.assertNotIn('Actual retained correction',index[0].read_text()+context)
+        self.assertNotIn(foreign,index[0].read_text()+context)
+        self.assertLess(len(context.encode()),2048)
+        self.assertEqual(self.history.memory_context(100,self.frozen),context)
+        self.assertEqual(len(list((self.history.root/'memory').glob('*.json'))),1)
+        self.assertEqual(len(self.history.list(100,'a'*64)),1)
+
+    def test_memory_catalog_contains_all512_sources_and_refuses_unsafe_destination(self):
+        # Assemble the already bounded store directly; avoid512 fsyncs for a
+        # catalog check. Real source admission/restart is covered separately.
+        sample=self.history.read(self.visit,100,'a'*64)
+        sample.update(transcript_complete=True,items=[{'id':'word','role':'user','text':'source'}])
+        for sequence in range(512):
+            ident=self.visit if sequence==0 else str(uuid.uuid4())
+            value={**sample,'id':ident,'sequence':sequence+1}
+            path=self.history.root/(ident+'.json');path.write_text(json.dumps(value));path.chmod(0o600)
+        self.history.memory_context(100,self.frozen)
+        path=next((self.history.root/'memory').glob('*.json'))
+        self.assertEqual(len(json.loads(path.read_text())['visits']),512)
+        self.assertLess(path.stat().st_size,65536)
+        original=self.history.root/(self.visit+'.json');before=original.read_bytes()
+        path.unlink();path.symlink_to(original)
+        with self.assertRaises((OSError,ValueError)):self.history.memory_context(100,self.frozen)
+        self.assertEqual(original.read_bytes(),before)
+
+    def test_memory_catalog_accepts_reconciled_legacy_record_without_sequence(self):
+        from dashboard.private_state import write_json
+        record=self.history.read(self.visit,100,'a'*64);record.pop('sequence')
+        write_json(self.history.root/(self.visit+'.json'),record)
+        self.history.reconcile(100,self.frozen,{self.session:{'items':[
+            {'id':'legacy','role':'user','text':'Retained legacy source'}],'source_sha256':'c'*64}})
+        self.assertIsNotNone(self.history.memory_context(100,self.frozen))
+        path=next((self.history.root/'memory').glob('*.json'))
+        self.assertEqual(json.loads(path.read_text())['visits'][0]['sequence'],0)
+
+    def test_memory_context_deduplicates_reconnects_and_lost_ack_with_native_proof(self):
+        self.history.item(self.visit,100,'a'*64,{'id':'source','type':'transcriptSegment',
+            'role':'user','text':'Old source','realtimeSessionId':self.session})
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        context=self.history.memory_context(100,self.frozen)
+        native=self.root/'native.jsonl'
+        def append(value):
+            with native.open('a')as stream:stream.write(json.dumps(value)+'\n')
+        append({'type':'session_meta','payload':{'id':'native'}})
+        def observe(owner,text,checkpoint=None):
+            info=native.stat()
+            return native_memory_proof(native,'native',text,checkpoint,expected_file=(info.st_dev,info.st_ino))
+        provider=Mock();provider.codex_voice_memory.side_effect=observe
+        def inject(text):
+            append({'type':'response_item','payload':{'type':'message','role':'developer',
+                'content':[{'type':'input_text','text':text}]}})
+            raise OSError('Native saved context; ACK was lost')
+        first=Mock();first.remember.side_effect=inject
+        with self.assertRaises(OSError):self.history.remember(100,self.frozen,context,first,provider)
+        self.history=CodexVoiceHistory(self.history.root)
+        self.assertEqual(self.history.memory_context(100,self.frozen),context)
+        successor=Mock()
+        for _ in range(3):
+            self.assertEqual(self.history.remember(100,self.frozen,context,successor,provider),'confirmed')
+        self.assertEqual(first.remember.call_count,1);successor.remember.assert_not_called()
+        # A native compaction explicitly removed this confirmed context. Its
+        # successor receives one fresh context, not a replay of uncertain work.
+        append({'type':'compacted','payload':{'replacement_history':[]}})
+        def admit(text):append({'type':'response_item','payload':{'type':'message','role':'developer',
+            'content':[{'type':'input_text','text':text}]}})
+        successor.remember.side_effect=admit
+        self.assertEqual(self.history.remember(100,self.frozen,context,successor,provider),'confirmed')
+        self.assertEqual(self.history.remember(100,self.frozen,context,successor,provider),'confirmed')
+        self.assertEqual(successor.remember.call_count,1)
+
+    def test_queued_or_missing_memory_write_is_not_repeated_on_new_connection(self):
+        self.history.item(self.visit,100,'a'*64,{'id':'source','type':'transcriptSegment',
+            'role':'user','text':'Old source','realtimeSessionId':self.session})
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        context=self.history.memory_context(100,self.frozen)
+        provider=Mock();provider.codex_voice_memory.return_value={
+            'file':[1,1],'offset':100,'found':False,'compacted':False}
+        first=Mock();second=Mock()
+        self.assertEqual(self.history.remember(100,self.frozen,context,first,provider),'pending')
+        self.history=CodexVoiceHistory(self.history.root)
+        self.history.memory_context(100,self.frozen)
+        self.assertEqual(self.history.remember(100,self.frozen,context,second,provider),'pending')
+        self.assertEqual(first.remember.call_count,1);second.remember.assert_not_called()
+
+    def test_native_memory_proof_rejects_forged_role_wrong_thread_and_truncation(self):
+        path=self.root/'proof.jsonl';text='Owner memory location'
+        def line(value):return json.dumps(value)+'\n'
+        header=line({'type':'session_meta','payload':{'id':'native'}})
+        message={'type':'message','role':'user','content':[{'type':'input_text','text':text}]}
+        path.write_text(header+line({'type':'response_item','payload':message}))
+        info=path.stat();file=(info.st_dev,info.st_ino)
+        proof=native_memory_proof(path,'native',text,None,expected_file=file)
+        self.assertFalse(proof['found'])
+        with self.assertRaises(ValueError):native_memory_proof(path,'foreign',text,None,expected_file=file)
+        path.write_text(header)
+        with self.assertRaises(ValueError):native_memory_proof(path,'native',text,proof,expected_file=file)
+
+    def test_pending_proof_advances_across_more_than_four_mib_without_reinjection(self):
+        self.history.item(self.visit,100,'a'*64,{'id':'source','type':'transcriptSegment',
+            'role':'user','text':'Old source','realtimeSessionId':self.session})
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        context=self.history.memory_context(100,self.frozen)
+        native=self.root/'native.jsonl'
+        native.write_text(json.dumps({'type':'session_meta','payload':{'id':'native'}})+'\n')
+        def observe(owner,text,checkpoint=None):
+            info=native.stat()
+            return native_memory_proof(native,'native',text,checkpoint,expected_file=(info.st_dev,info.st_ino))
+        provider=Mock();provider.codex_voice_memory.side_effect=observe
+        voice=Mock()
+        self.assertEqual(self.history.remember(100,self.frozen,context,voice,provider),'pending')
+        for _ in range(5):
+            with native.open('a')as stream:stream.write(json.dumps({'type':'unrelated','payload':'x'*1024*1024})+'\n')
+            self.assertEqual(self.history.remember(100,self.frozen,context,Mock(),provider),'pending')
+        catalog=json.loads(self.history._memory_path(100,self.frozen).read_text())
+        self.assertGreater(catalog['native_context']['proof']['offset'],4*1024*1024)
+        self.assertEqual(voice.remember.call_count,1)
+        # A disconnected interval may itself exceed the observation bound.
+        # Keep the uncertainty, advance a bounded observation, and keep voice
+        # available without replaying the unconfirmed context operation.
+        with native.open('a')as stream:
+            for _ in range(5):stream.write(json.dumps({'type':'unrelated','payload':'x'*1024*1024})+'\n')
+        successor=Mock()
+        self.assertEqual(self.history.remember(100,self.frozen,context,successor,provider),'pending')
+        successor.remember.assert_not_called()
+        catalog=json.loads(self.history._memory_path(100,self.frozen).read_text())
+        self.assertTrue(catalog['native_context']['proof']['gap'])
     def test_recording_waits_for_concurrent_close_and_both_commits_survive(self):
         from scripts.speech_render import lock
         entered=threading.Event();finished=threading.Event();results=[]

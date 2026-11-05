@@ -4,9 +4,9 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
-## Receiving checkpoint —5 November2026
+## Initial receiving activation —5 November2026
 
-CompAII ITACA now exposes the separately selectable mode in UI `0976269baac7`,
+CompAII ITACA first exposed the separately selectable mode in UI `0976269baac7`,
 web source `a96d1910`, merged PR632. Its native receiving composition `d35949a5`
 retains selected heartbeat, Matrix, held-original and workspace behavior. Actual
 idle-scoped delivery preserved44session bindings, four active successor collectors
@@ -178,6 +178,47 @@ when reviewing earlier conversation. This qualifies that retrieval case, not
 complete long-term coverage of all inline speech. No existing diagnostic,
 visit or storage bound was increased. Do not remove the flat application restore
 window or claim complete long-term continuity based on a compaction ACK.
+
+## Source-backed earlier memory
+
+The native memory catalog adds a metadata-only index of complete retained visits
+from the exact authenticated human, entry binding and native thread. It references
+the existing source files; it copies no transcript, media or startup envelope.
+The foreground receives the index location, and a context-only developer fragment
+supplies it to native backing work through `thread/inject_items`. This starts no
+user turn or inference. Backing tools read the local index and selected original
+records using native read-only commands; they do not enumerate tool descriptions,
+bulk-load the archive, replay old tasks or treat quoted sources as instructions.
+This supplements the recent role-bearing restore and native terminal tail.
+
+The retained context journal deduplicates across connections using canonical
+native readback, not an RPC acknowledgement. Queued or lost-ACK writes stay
+pending and are not repeated by reconnecting. Successful observations advance
+their checkpoint even while pending. A confirmed fragment is refreshed only
+after observed compaction removal, a changed owner revision, or an unobserved
+native-history interval exceeding4MiB. A large interval does not repeat an
+uncertain write or block voice merely because it exceeds the read window.
+Inode replacement, truncation, wrong identity and incomplete records remain
+explicit unavailable proofs. Context writes are shielded and awaited before
+closing their connection or releasing ownership.
+
+Catalogs are at most64KiB each,512files and1MiB combined, refreshed in place under
+the existing metadata lock. Native context hints are at most2048UTF-8 bytes and
+share the existing total initial-context allowance. Proof reads inspect at most
+4MiB and2MiB per record. No model/voice defaults, native retention flags or original
+retention policy changes. Missing/legacy sequence values retain the established
+fallback. No cleanup removes retained speech or native work.
+
+Actual synthetic qualification omitted the recent application transcript window.
+Native backing commands read the index and oldest source, and returned both its
+first user utterance and, on a distinct question, its first assistant response in
+audio, with completed backing turns and original receipts. Earlier attempts and
+their failures remain retained. Source retrieval is established for these cases;
+the foreground also made premature unverified claims before correcting itself
+with the source result, even after an explicit wait instruction. That behavior is
+an open interaction defect, not qualified factual waiting or full long-term
+continuity. Phone/hearing, repeated physical renewal and useful latency remain
+separate unfinished acceptance. Do not infer completion from catalog readback.
 
 ## Original recovery and bounds
 

@@ -42,6 +42,8 @@ class Owner:
         raise IncompleteTranscript('Synthetic canonical closure unavailable')
     def codex_voice_collect(self,owner,turn):
         self.collected.append(turn);return {'state':'collecting'}
+    def codex_voice_memory(self,owner,text,checkpoint=None):
+        return {'file':[1,1],'offset':1,'found':hasattr(Native.opened[-1],'memory'),'compacted':False}
     def codex_voice_current(self,owner):return self.current
 
 
@@ -62,6 +64,7 @@ class Native:
             'realtimeSessionId':str(uuid.uuid4())if self.bad_generation else self.session_id}}})
         if self.emit_turn:values.append({'method':'turn/started','params':{'turn':{'id':'native-work'}}})
         self.events.put(values)
+    def remember(self,memory):self.memory=memory
     def receive(self,timeout):
         try:return self.events.get(timeout=timeout)
         except queue.Empty:return []
@@ -174,6 +177,48 @@ class Mounted(unittest.TestCase):
         with self.socket()as socket:
             self.start(socket);self.close(socket)
         self.assertEqual(sum(native.started for native in Native.opened),1)
+
+    def test_unconfirmed_memory_hint_preserves_sources_without_starting_visit(self):
+        with self.socket()as socket:self.start(socket);self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        retained=history.read(self.visit,100,'a'*64)
+        next_visit=str(uuid.uuid4())
+        with patch.object(Native,'remember',side_effect=ValueError('Unconfirmed memory context'))as remember:
+            with self.socket()as socket:
+                socket.send_json({**self.meta,'id':next_visit})
+                self.assertEqual(socket.receive_json()['type'],'review')
+                self.assertEqual(socket.receive_json()['type'],'closed')
+                with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        self.assertEqual(remember.call_count,1)
+        self.assertEqual(history.read(self.visit,100,'a'*64),retained)
+        self.assertFalse((history.root/(next_visit+'.json')).exists())
+        self.assertFalse(Native.opened[-1].started)
+        self.assertTrue(Native.opened[-1].closed)
+        self.assertEqual(self.app.state.voice_active,set())
+
+    def test_disconnected_browser_waits_for_memory_writer_before_releasing_lease(self):
+        with self.socket()as socket:self.start(socket);self.close(socket)
+        entered=threading.Event();finished=threading.Event();release=threading.Event()
+        def remember(native,memory):
+            entered.set();release.wait(2)
+            self.assertFalse(native.closed)
+            self.assertEqual(self.app.state.voice_active,{100})
+            native.memory=memory;finished.set()
+        with patch.object(Native,'remember',remember):
+            with self.socket()as socket:
+                socket.send_json({**self.meta,'id':str(uuid.uuid4())})
+                self.assertTrue(entered.wait(1))
+                self.assertEqual(self.app.state.voice_active,{100})
+                self.assertFalse(Native.opened[-1].closed)
+                # Closing the browser cannot cancel/retry the native context
+                # writer. Release its controlled completion from another thread.
+                timer=threading.Timer(.05,release.set);timer.start()
+            timer.join()
+        self.assertTrue(finished.is_set())
+        deadline=time.monotonic()+2
+        while not Native.opened[-1].closed and time.monotonic()<deadline:time.sleep(.01)
+        self.assertTrue(Native.opened[-1].closed)
+        self.assertEqual(self.app.state.voice_active,set())
 
     def test_refused_same_id_does_not_rewrite_prior_incomplete_visit(self):
         history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')

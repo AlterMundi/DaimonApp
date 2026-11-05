@@ -655,6 +655,29 @@ class Provider:
             raise ProviderUnavailable('Native voice history binding changed')
         return result
 
+    def codex_voice_memory(self,frozen,text,checkpoint=None):
+        """Canonical context proof for the exact current enrolled native owner."""
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if row is None:raise ProviderUnavailable('Native memory source unavailable')
+        path=Path(row['rollout_path']).resolve()
+        if not path.is_relative_to((self.native_home/'sessions').resolve()):
+            raise ProviderUnavailable('Native memory source is outside its root')
+        meta=path.stat()
+        from .codex_voice_history import native_memory_proof
+        proof=native_memory_proof(path,frozen['native_thread'],text,checkpoint,expected_file=(meta.st_dev,meta.st_ino))
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native memory ownership changed')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            current=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if current is None or Path(current['rollout_path']).resolve()!=path:
+            raise ProviderUnavailable('Native memory source binding changed')
+        return proof
+
     def codex_voice_collect(self, frozen, native_turn):
         """Collect an already admitted native voice turn; never submit its input."""
         if (not isinstance(frozen,dict) or set(frozen)!={'binding','entry_binding','native_thread'}

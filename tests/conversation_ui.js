@@ -28,6 +28,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       removeAttribute(name) { delete this[name]; },
       addEventListener(name, fn) { this.handlers[name] = fn; },
       append(...children) { this.appendCalls=(this.appendCalls||0)+1;for(const child of children){if(child.parentNode&&child.parentNode!==this)child.remove();child.parentNode=this;const at=this.children.indexOf(child);if(at>=0)this.children.splice(at,1);this.children.push(child);} },
+      prepend(...children) {for(const child of [...children].reverse())this.insertBefore(child,this.children[0]);},
       replaceChildren(...children) { this.children = children; },
       insertBefore(child, before) {
         if(child.parentNode&&child.parentNode!==this)child.remove();child.parentNode=this;
@@ -565,11 +566,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(order().at(-2),'input:reply-earlier','A different source revision is not silently used as the reply parent');
   threaded.ui.stop();
   const stream=single.nodes.get('#conversation-timeline');
-  assert.deepEqual(stream.children.filter(c=>c.dataset.timelineKey).map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
+  assert.equal(stream.children[0].dataset.timelineKey,'voice-history','The history toolbar remains above ordered message cards');
+  const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&c.dataset.timelineKey!=='voice-history');
+  assert.deepEqual(messageCards().map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='native:1').children[1].textContent,'Progress update.');
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='input:between').children[0].textContent,'You');
   await single.ui.refresh();
-  assert.equal(stream.children.filter(c=>c.dataset.timelineKey).length,9,'Refreshing keeps one card per saved input or native item');
+  assert.equal(messageCards().length,9,'Refreshing keeps one card per saved input or native item');
   assert.equal(single.nodes.get('#conversation-replies').hidden,false,'raw session updates remain available inside collapsed inspection');
   // Real browser review exposed lost follow mode when an existing voice card
   // grows from a placeholder into its transcript. Measure before DOM mutation.

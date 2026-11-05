@@ -1,7 +1,7 @@
 """Native Codex WebRTC control, independent of the provider PCM dialogue loop.
 
 The caller supplies an already authorized, frozen native-thread binding. This
-client neither creates a thread nor submits text/PCM, supplies credentials,
+client neither creates a thread nor submits human text/PCM, supplies credentials,
 answers native tool/approval requests, cancels backend work or retries writes.
 Application activation still needs original-media and native-collector ownership.
 """
@@ -95,6 +95,7 @@ class CodexVoice:
         self._failed = False
         self._event_failed = False
         self._attempted = False
+        self._memory_attempted = False
         self._start_rejected = False
         self._voice_closed = False
         self._owned = False
@@ -233,7 +234,24 @@ class CodexVoice:
                 with self._guard:
                     self._waiting = None
 
-    def start(self, sdp, *, voice='cove', context=None, continuation=None):
+    def remember(self,memory):
+        """Supply only the owner-scoped source location to native backing work.
+
+        One context-only operation per connection, never a user turn. An ACK
+        can mean queued context during active work; it is not readback evidence.
+        Never repeat an uncertain write on this connection or cancel that work.
+        """
+        if not isinstance(memory,str)or not memory.strip()or'\0'in memory or len(memory.encode())>2048:
+            raise ValueError('Select one bounded owner memory index')
+        with self._guard:
+            if self._attempted or self._memory_attempted:
+                raise CodexVoiceUnavailable('Native memory context already attempted')
+            self._lease.assert_held(self._claim)
+            self._memory_attempted=True
+        return self._rpc('thread/inject_items',{'threadId':self.thread_id,'items':[
+            {'type':'message','role':'developer','content':[{'type':'input_text','text':memory}]}]})
+
+    def start(self, sdp, *, voice='cove', context=None, continuation=None, memory=None):
         # Only the authorized application supplies this owner-selected identity
         # and capability context. Never accept it as a browser prompt override.
         if (not isinstance(sdp,str) or not sdp.startswith('v=0') or len(sdp.encode())>65536
@@ -243,6 +261,10 @@ class CodexVoice:
             raise ValueError('Select one bounded WebRTC offer and native voice')
         initial=[]
         if context is not None:initial.append({'role':'developer','text':context})
+        if memory is not None:
+            if not isinstance(memory,str)or not memory.strip()or'\0'in memory or len(memory.encode())>2048:
+                raise ValueError('Select one bounded owner memory index')
+            initial.append({'role':'developer','text':memory})
         if continuation is not None:
             if (not isinstance(continuation,dict)or set(continuation)!={'items','sources','digest','more'}
                     or not isinstance(continuation['items'],list)or len(continuation['items'])>32

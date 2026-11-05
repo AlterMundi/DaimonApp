@@ -79,6 +79,23 @@ class Voice(unittest.TestCase):
         self.assertFalse(params['clientManagedHandoffs'])
         self.assertTrue(params['flushTranscriptTailOnSessionEnd'])
         self.assertFalse(any(v['method']in('turn/start','thread/realtime/appendText')for v in self.socket.sent))
+    def test_memory_location_is_context_only_and_bounded(self):
+        self.voice.remember('Owner-scoped historical source index')
+        self.voice.start('v=0\r\noffer',memory='Owner-scoped historical source index')
+        self.assertEqual(self.socket.sent[-1]['params']['initialItems'],[
+            {'role':'developer','text':'Owner-scoped historical source index'}])
+        context=next(value['params']for value in self.socket.sent if value['method']=='thread/inject_items')
+        self.assertEqual(context['items'][0]['role'],'developer')
+        self.assertFalse(any(value['method']=='turn/start'for value in self.socket.sent))
+        with self.assertRaises(CodexVoiceUnavailable):self.voice.remember('same source hint')
+        with self.assertRaises(ValueError):self.voice.start('v=0\r\noffer',memory='x'*2049)
+    def test_unconfirmed_memory_context_is_not_repeated_or_stopped_as_voice(self):
+        from unittest.mock import patch
+        with patch.object(self.voice,'_rpc',side_effect=CodexVoiceUnavailable('Uncertain context'))as rpc:
+            with self.assertRaises(CodexVoiceUnavailable):self.voice.remember('Owner source location')
+            with self.assertRaises(CodexVoiceUnavailable):self.voice.remember('Owner source location')
+            self.assertIsNone(self.voice.stop())
+            self.assertEqual(rpc.call_count,1)
     def test_restore_uses_native_initial_items_without_new_input_or_task(self):
         from dashboard.codex_voice_history import CodexVoiceHistory
         import tempfile
@@ -106,6 +123,25 @@ class Voice(unittest.TestCase):
             'digest':'a'*64,'more':False}
         with self.assertRaises(ValueError):self.voice.start('v=0 offer',continuation=startup)
         self.assertFalse(self.voice._attempted)
+
+    def test_source_window_reserves_memory_hint_without_clipping_sources(self):
+        from dashboard.codex_voice_history import CodexVoiceHistory
+        import tempfile
+        with tempfile.TemporaryDirectory()as root:
+            history=CodexVoiceHistory(Path(root)/'visits')
+            visit=str(uuid.uuid4());generation=str(uuid.uuid4())
+            frozen={'binding':'a'*64,'entry_binding':[100,100,7,'owned'],'native_thread':'owned'}
+            history.open(visit,100,frozen,generation)
+            for index in range(3):history.item(visit,100,'a'*64,{'id':str(index),
+                'type':'transcriptSegment','role':'user','text':str(index)+'x'*5799,
+                'realtimeSessionId':generation})
+            history.complete_transcript(visit,100,'a'*64)
+            startup=history.continuation(100,frozen,reserve=2048)
+        self.assertTrue(startup['more']);self.assertEqual(len(startup['items']),2)
+        self.assertTrue(all(len(item['text'])==5800 for item in startup['items']))
+        self.voice.start('v=0 offer',context='I'*8192,memory='M'*2048,continuation=startup)
+        initial=self.socket.sent[-1]['params']['initialItems']
+        self.assertLessEqual(sum(len(item['text'].encode())for item in initial),28672)
 
     def test_invalid_owner_context_never_attempts_native_start(self):
         for context in ('', 'x'*8193, 'bad\0context', {'role':'user','text':'fake human'}):

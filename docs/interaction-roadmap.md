@@ -75,7 +75,8 @@ misheard question as negative observations. The exact receiving-compatible nativ
 composition also returned the corrected word and committed its original. These
 are synthetic-media observations; sustained phone hearing and continuity beyond
 the bounded restore window remain open.
-See the [native mode contract](interaction-native-codex-voice.md). Receiving UI0976269baac7 now exposes OpenAI as a separate choice. Its compatible
+See the [native mode contract](interaction-native-codex-voice.md). Initial receiving
+activation632 exposed OpenAI as a separate choice in UI0976269baac7. Its compatible
 native d35949a5 preserved44bindings/four active collectors/Core/goals; no voice
 provider or capture was started during adoption. Existing provider defaults and
 diagnostic/storage limits are unchanged.
@@ -90,6 +91,20 @@ source-linked backing-memory retrieval and retained negative observations. The
 open under [301](https://github.com/AlterMundi/DaimonApp/issues/301#issuecomment-6656496340).
 Owner briefv2 requests natural native-memory lookup instead of guessing. Current
 UI/defaults/bounds remain unchanged; phone acceptance is still pending.
+
+Source-backed native memory now uses an owner-scoped metadata index over complete
+retained voice visits. The native backing conversation reads selected original
+records through its existing tools instead of receiving the entire archive again.
+Canonical native proof deduplicates the short location context across reconnects;
+queued/lost-ACK writes are retained without retry, and observed compaction can
+refresh confirmed context. Existing source/window/visit bounds remain, with
+at most1MiB of bounded index metadata. Actual native tool reads returned the
+oldest user and assistant sources in audio with originals retained, without
+application transcript restoration. However the foreground also invented early
+answers before correcting them from the source. Factual waiting remains an OPEN
+interaction defect under [303](https://github.com/AlterMundi/DaimonApp/issues/303#issuecomment-6657695743),
+including after explicit wait instructions. Neither source retrieval nor a
+compaction/context acknowledgement completes sustainable or children-ready voice.
 
 ## Qwen iteration checkpoint —5November2026
 
