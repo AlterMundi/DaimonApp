@@ -698,3 +698,55 @@ threads. Neither this bounded journey nor source metadata establishes sustained
 full-view renewal, noise/interruption/phone acceptance or complete being memory.
 Production Core, owner briefv3, providers and capture/context/storage limits are
 unchanged. The complete roadmap remains active.
+
+
+## Backing policy and ordinary spoken correction —5 November2026
+
+A foreground brief alone did not retire an obsolete async-question action: a
+spoken clarification produced the correct source-derived word but left its card
+pending. The candidate now supplies the task procedure to the native backing
+conversation through the existing canonically journaled developer context. This
+follows the [official delegation guidance](https://developers.openai.com/api/docs/guides/live-prompting#delegation)
+on putting the full task procedure in backend instructions; it does not import
+the public GPT-Live protocol into native Codex voice.
+
+The policy is present from first open, including when no completed voice source
+exists. The existing scoped catalog then contains an empty visits list and omits
+latest_completed_visit; native conversation history may still exist. Context stays
+within2048UTF8bytes and existing catalog/journal bounds. Changed source references
+reuse canonical proof and uncertain submissions are never automatically replayed.
+No new store, control grant, model turn or delegation loop is introduced.
+
+Only after using an actual answer does backing work reassess its related action:
+inspect current capabilities, human_tasks and human_task(id only), verify the
+native_question source and current revision, then withdraw an obsolete action
+with that revision and a source-grounded reason. Missing tools or an uncertain
+relation leave it pending without blocking a useful answer. Retirement asserts
+neither human completion nor approval and never answers a regular-question RPC.
+The version4 foreground brief passes the answer and available source to that
+same native conversation instead of treating acknowledgement as resolution.
+
+Actual candidate shell/native owner/WebRTC qualification accepted a distinct
+spoken correction from Cielo to Tierra, returned the correct salvia result and
+used the current native controller to read and retire exactly that question.
+One source-attributed withdrawal audit and canonical completed turn agree. Three
+visits closed with complete transcripts; all six original segments/4,335,198bytes
+matched retained hashes. The final decoded output was1,564,716bytes with peak0.328.
+The first misheard utterance and foreground-only negative remain retained.
+
+Its verifier incorrectly required the withdrawn item in a pending-only list.
+The raw failure stays retained; a separate read-only mounted390px observation
+confirmed zero pending cards, without model input, media or repeated withdrawal.
+Immediate live count transition, independent output ASR and physical hearing are
+not established. A separate actual native lookup recovered from an expired CLI
+hint through its persisted dynamic controller; absence of fresh attached-turn
+CLI context is not proof of missing tools in that tested thread.
+
+This candidate does not change native/Core selection, Qwen default, Gemini
+deferral or capture/context/storage limits. Deploy web and the rendered owner
+brief only at actual voice idle. Software rollback restores previous code and
+brief while preserving originals, journals and work: it does not retract already
+injected native context or accepted task withdrawals. Any needed corrective
+context is a separate supported action; never restore history or replay work.
+Sustained full-view renewal, device/noise acceptance and full being/memory
+continuity remain in the complete roadmap.

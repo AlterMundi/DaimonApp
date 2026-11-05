@@ -235,7 +235,7 @@ class CodexVoice:
                     self._waiting = None
 
     def remember(self,memory):
-        """Supply only the owner-scoped source location to native backing work.
+        """Supply bounded owner backing policy and source location as context.
 
         One context-only operation per connection, never a user turn. An ACK
         can mean queued context during active work; it is not readback evidence.

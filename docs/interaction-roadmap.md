@@ -156,8 +156,13 @@ spoken-answer matching remains unqualified. A later actual mounted649 question/
 card/two-voice-visit journey now qualifies correct source work after a spoken
 choice, all original receipts and explicit agent retirement through existing
 controls. A separate read-only mount verified completed full-card reading and
-zero pending actions after retirement. Natural proactive retirement, immediate
-live count transition and sustained full-view/phone acceptance remain open. Do not
+zero pending actions after retirement. A subsequent candidate places the task
+procedure in the existing bounded backend context: an ordinary spoken correction
+then used current native tools to retire exactly its obsolete question and gave
+the correct source-derived answer. One canonical audit and a read-only zero-pending
+UI observation agree; foreground instructions alone had left the card pending.
+The candidate remains unselected. Immediate live count transition and sustained
+full-view/phone acceptance remain open. Do not
 invent an RPC responder or enable experimental regular questions globally.
 See the native voice guide for failed-control evidence, exact limits and verified
 originals. This is synthetic-engine evidence, not phone/hearing acceptance;
