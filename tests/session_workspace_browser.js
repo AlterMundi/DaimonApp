@@ -61,6 +61,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
+ assert.equal(await page.getByRole('button',{name:'Show routing map',exact:true}).count(),0,'Messages have no routing-map shortcut');
+ await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+ await page.locator('#conversation-flow > summary').click();
+ assert(await page.locator('#routing-graph-viewport').isVisible(),'Routing map remains under the hood');
+ await page.getByRole('button',{name:'Under the hood',exact:true}).click();
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  async function bottomMenu(){
   const rect=async selector=>page.locator(selector).evaluate(node=>{const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};});
