@@ -199,7 +199,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             return task
         def guidance_floor():
             return (acoustic is not None and not stopping and not acoustic.closed
-                and acoustic.local is None and acoustic.provider is None and not acoustic.spans
+                and acoustic.handover_ready()
                 and not stream.input_active and not stream.response_pending)
         async def guide_if_idle():
             if context_producer is None or not guidance_floor():return
@@ -217,10 +217,22 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     return await asyncio.to_thread(stream.guide,frame)
             await context_producer.offer_guidance(deliver,ready)
         async def control_if_idle():
+            due=context_producer is not None and getattr(stream,'rollover_due',False)
+            if due and hasattr(stream,'hold_for_renewal'):
+                await asyncio.to_thread(stream.hold_for_renewal)
+                async with acoustic.lock:acoustic.renewal_hold=True
             if context_producer is not None:
                 await context_producer.request_checkpoint(getattr(stream,'checkpoint_pressure',None))
-            await guide_if_idle()
             await rollover_if_idle()
+            if acoustic.renewal_hold and renewal['blocked'] in ('successor_setup','same_basis'):
+                # Candidate setup failed without replacing this provider. Keep
+                # the same captured spans/results; release, never replay them.
+                await asyncio.to_thread(stream.hold_for_renewal,False)
+                async with acoustic.lock:
+                    acoustic.renewal_hold=False
+                    await acoustic._pump()
+            await guide_if_idle()
+            if context_producer is not None and getattr(stream,'rollover_due',False):return
             # Existing pending tools already stream returns. A new session or
             # cancelled watch needs one event-driven, attributed control notice.
             def available():
@@ -259,9 +271,15 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     or bridge.pending_acoustic is not None or output_queue is None):return 'active_floor'
             if output_pending or output_queue.items:return 'output_pending'
             if stream.activity_mode=='manual':
-                if acoustic.analyzed!=acoustic.captured:return 'acoustic_analysis'
+                if acoustic.analyzed!=acoustic.captured and not acoustic.renewal_hold:return 'acoustic_analysis'
             elif acoustic.boundary!=acoustic.sent or acoustic.unassigned:return 'acoustic_unassigned'
+            unsent=acoustic.unsent_originals() if acoustic.renewal_hold else set()
             for c in bridge.captures.values():
+                if c.ident in unsent:
+                    if (c.transcript is not None or c.completion is not None
+                            or not task_completed(c.reservation)
+                            or not task_completed(raw_notifications.get(c.ident))):return 'unsent_original_retention'
+                    continue
                 if c.phase=='unconfirmed':
                     # An explicitly empty final is terminal for this provider
                     # span, not an input still in flight. The exact raw original
@@ -273,6 +291,12 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             if any(t is not watch and not task_completed(t) for t in proposals.values()):return 'tool_pending'
             return None
         def rollover_floor():
+            renewal['floor']={'local_span':acoustic.local is not None,
+                'provider_span':acoustic.provider is not None,'queued_spans':len(acoustic.spans),
+                'unsent_spans':len(acoustic.unsent_originals()),'input_active':bool(stream.input_active),
+                'response_pending':bool(stream.response_pending),'utterance_open':utterance is not None,
+                'output_batch_pending':bool(output_batch_pending),'output_events':len(output_pending),
+                'renewal_hold':acoustic.renewal_hold}
             reason=rollover_blocker()
             renewal['blocked']=reason
             return reason is None
@@ -288,7 +312,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             if basis is None:
                 renewal['blocked']='checkpoint_unavailable';return False
             attempt=(basis['revision'],getattr(stream,'turns_finished',0))
-            if attempt==attempted_rollover_basis or not rollover_floor():return False
+            if attempt==attempted_rollover_basis:
+                renewal['blocked']='same_basis';return False
+            if not rollover_floor():return False
             intent=await context_producer.begin_rollover(basis,str(uuid.uuid4()))
             if intent is None:return False
             attempted_rollover_basis=attempt
@@ -364,6 +390,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             if installed:
                 await asyncio.to_thread(old.close)
                 retiring=None
+                async with acoustic.lock:await acoustic._pump()
                 return True
             return False
 
@@ -658,6 +685,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             'kind':'result','label':'Integrator'},in_context=True)
                 acoustic=(NativeAcousticSession(bridge,worker,meta.get('capture_questions'),acoustic_event)
                     if activity_mode=='manual' else NativeAutomaticAcousticSession(bridge,meta.get('capture_questions'),acoustic_event))
+                bridge.unsent_originals=acoustic.unsent_originals
                 acoustic.max_bytes=session_seconds*32000
                 if session_seconds>300:acoustic.max_spans=1024
                 if configured_seconds>300:

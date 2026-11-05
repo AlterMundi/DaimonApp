@@ -66,6 +66,17 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         await capture.reservation;self.owner.text=text
         await self.bridge.transcript(ident,text)
         return ident,pcm,capture
+    async def test_source_query_rejects_wholly_unsent_original_without_waiting_or_admitting_work(self):
+        ident=str(uuid.uuid4());capture=self.bridge.capture(ident,b'\1\0'*160,{})
+        await capture.reservation
+        self.bridge.unsent_originals=lambda:{ident}
+        result=await asyncio.wait_for(self.bridge.tool({'type':'source_query','call_id':'unsent','before':None}),1)
+        self.assertEqual(result['kind'],'not_ready')
+        self.assertIn('retained locally',result['reason'])
+        self.assertIsNone(capture.completion)
+        self.assertEqual(self.owner.delegations,[])
+        self.assertEqual(self.stream.results,[('unsent',result)])
+
     async def test_invalid_proposal_returns_feedback_without_owner_operation(self):
         result=await self.bridge.tool({'type':'tool_rejected','call_id':'invalid'})
         self.assertEqual(result['kind'],'invalid_arguments')

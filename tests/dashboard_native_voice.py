@@ -276,14 +276,19 @@ class Mounted(unittest.TestCase):
             with self.assertRaises(ValueError):create_app(invalid,self.owner,lambda raw,bot:int(raw))
 
     def test_failed_candidate_setup_keeps_current_voice_available(self):
-        attempted=threading.Event()
+        attempted=threading.Event();released=threading.Event()
+        class Holding(Stream):
+            def hold_for_renewal(self,enabled=True):
+                self.holding=enabled
+                if not enabled:released.set()
         def fail(*args,**kwargs):
             attempted.set();raise DialogueUnavailable('Synthetic candidate setup unavailable')
-        with patch.object(Stream,'successor',side_effect=fail),self.open() as ws:
+        with patch('dashboard.native_voice.NativeDialogue',Holding),patch.object(Stream,'successor',side_effect=fail),self.open() as ws:
             ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
             old=Stream.opened[0];old.rollover_due=True
             old.queue.put([{'type':'output_transcript','text':'Current purpose.'},{'type':'turn_complete'}])
             self.assertTrue(attempted.wait(2))
+            self.assertTrue(released.wait(2),'A failed candidate must release the same provider, not strand queued speech')
             old.queue.put([{'type':'audio','pcm':b'\1\0'*320,'sample_rate':24000}])
             while True:
                 value=ws.receive_json();self.assertNotEqual(value['type'],'review',value)
@@ -294,6 +299,53 @@ class Mounted(unittest.TestCase):
             with self.app.state.native_history.database() as db:
                 record=dict(db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(self.ident,)).fetchone())
             self.assertTrue(closed,f'actions={[c["action"] for c in self.owner.context_calls]}, local={record}')
+
+    def test_renewal_installs_successor_before_transmitting_queued_new_phrase(self):
+        held=threading.Event();release=threading.Event()
+        class Yielding(Stream):
+            def hold_for_renewal(self,enabled=True):self.holding=enabled
+            def successor(stream,basis,**kwargs):
+                held.set()
+                if not release.wait(3):raise TimeoutError('Synthetic successor setup')
+                return super(Yielding,stream).successor(basis,**kwargs)
+        class Repeated(Detector):
+            async def feed(self,pcm):
+                self.total+=len(pcm);generation=(self.total+6399)//6400;first=self.total%6400==3200
+                await self.queue.put({'type':'activity','audio_bytes':self.total,'generation':generation,
+                    'speaking':first,'speech_seen':True,
+                    'onset' if first else 'endpoint':{'generation':generation,'audio_bytes':self.total,
+                        **({} if first else {'authority':'analysis_only','probability':.9})}})
+        with patch('dashboard.native_voice.NativeDialogue',Yielding),patch('dashboard.native_voice.Detector',Repeated),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            old=Stream.opened[0]
+            ws.send_bytes(b'\1\0'*1600);ws.send_bytes(b'\0\0'*1600)
+            utterance=original=None
+            while utterance is None or original is None:
+                event=ws.receive_json();self.assertNotEqual(event['type'],'review',event)
+                if event['type']=='original_completed':original=event['id']
+                if event['type']=='assistant_utterance' and event['utterance']['closed']:utterance=event['utterance']
+            old.rollover_due=True
+            ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
+            try:
+                self.assertTrue(held.wait(2));self.assertTrue(old.holding)
+                ws.send_bytes(b'\2\0'*1600);ws.send_bytes(b'\0\0'*1600)
+                queued=None
+                while queued is None:
+                    event=ws.receive_json();self.assertNotEqual(event['type'],'review',event)
+                    if event['type']=='original_retained':queued=event['id']
+                self.assertNotEqual(queued,original)
+                self.assertEqual(old.total,6400,'New phrase stays local while candidate prepares')
+                release.set()
+                while True:
+                    event=ws.receive_json();self.assertNotEqual(event['type'],'review',event)
+                    if event['type']=='original_completed' and event['id']==queued:break
+                self.assertTrue(old.closed_event.wait(2))
+                self.assertEqual(len(Stream.opened),2)
+                self.assertEqual(Stream.opened[1].total,6400)
+                self.assertEqual(len(self.owner.inputs),2,'No replacement original or work admission')
+                self.assertEqual(self.owner.delegations,[])
+            finally:
+                release.set();ws.send_json({'type':'close'})
 
     def test_preparing_a_successor_keeps_old_audio_and_defers_changed_floor(self):
         held=threading.Event();release=threading.Event();created=threading.Event();successor=Stream.successor
