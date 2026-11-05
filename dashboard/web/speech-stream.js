@@ -8,20 +8,41 @@ window.SpeechStream=(()=>{
     if(!available())throw Error("Progressive audio unavailable");
     const native=nativeAvailable()?window.NativeSpeechAudio.openStream():undefined;
     const media=native?undefined:new window.MediaSource(),url=native?.url||URL.createObjectURL(media),reader=response.body.getReader();
-    let buffer,queue=[],all=[],bytes=0,sequence=0,complete=false,closed=false,failure,handler,decoderError,decoderHandler,verifiedBlob,words,alignmentOffset;
+    let buffer,queue=[],all=[],readyWaiters=new Set(),bytes=0,sequence=0,complete=false,closed=false,failure,handler,decoderError,decoderHandler,verifiedBlob,words,alignmentOffset;
     const timer=setTimeout(()=>fail(Error("Speech stream deadline exceeded")),145000);
+    function buffered(position){
+      const ranges=buffer?.buffered;
+      if(!ranges)return 0;
+      for(let n=0;n<ranges.length;n++)if(ranges.start(n)<=position+.05&&ranges.end(n)>position)return ranges.end(n)-position;
+      return 0;
+    }
+    function notifyReady(){for(const check of [...readyWaiters])check();}
+    function ready(position=0){
+      if(native)return Promise.resolve(); // Native player owns its buffering.
+      if(!Number.isFinite(position)||position<0)return Promise.reject(Error('Invalid playback position'));
+      if(readyWaiters.size>=4)return Promise.reject(Error('Audio readiness already pending'));
+      return new Promise((resolve,reject)=>{
+        let waiting;
+        const finish=error=>{clearTimeout(waiting);readyWaiters.delete(check);error?reject(error):resolve();};
+        const check=()=>{
+          if(failure||closed||decoderError)return finish(failure||decoderError||Error('Speech stream closed'));
+          if(complete||buffered(position)>=1.2)finish();
+        };
+        readyWaiters.add(check);waiting=setTimeout(()=>finish(Error('Audio buffering delayed')),12000);check();
+      });
+    }
     function cancel(){
       if(closed)return;closed=true;clearTimeout(timer);signal?.removeEventListener("abort",cancel);
       Promise.resolve(reader.cancel()).catch(()=>{});queue=[];all=[];
       try{if(buffer?.updating)buffer.abort();}catch{}
-      if(native)native.cancel();else URL.revokeObjectURL(url);
+      if(native)native.cancel();else URL.revokeObjectURL(url);notifyReady();
     }
     function fail(error){if(closed)return;failure=error;cancel();handler?.(error);}
     function decoderFail(error){
       if(closed || decoderError)return;
       decoderError=error;queue=[];
       try{if(buffer?.updating)buffer.abort();}catch{}
-      decoderHandler?.(error);
+      notifyReady();decoderHandler?.(error);
     }
     function pump(){
       if(native || closed || decoderError || !buffer || buffer.updating || media.readyState!=="open")return;
@@ -32,7 +53,7 @@ window.SpeechStream=(()=>{
     }
     media?.addEventListener("sourceopen",()=>{
       if(closed)return;
-      try{buffer=media.addSourceBuffer("audio/mpeg");buffer.addEventListener("updateend",pump);buffer.addEventListener("error",()=>decoderFail(Error("Audio decoding failed")));pump();}
+      try{buffer=media.addSourceBuffer("audio/mpeg");buffer.addEventListener("updateend",()=>{pump();notifyReady();});buffer.addEventListener("error",()=>decoderFail(Error("Audio decoding failed")));pump();}
       catch(error){decoderFail(error);}
     },{once:true});
     signal?.addEventListener("abort",cancel,{once:true});
@@ -68,7 +89,7 @@ window.SpeechStream=(()=>{
           }
           verifiedBlob=new Blob([merged],{type:"audio/mpeg"});
           if(native)native.finish(value);
-          complete=true;all=[];clearTimeout(timer);pump();
+          complete=true;all=[];clearTimeout(timer);pump();notifyReady();
         }else throw Error("Speech outcome retained; no automatic retry");
       }
       try{
@@ -89,7 +110,7 @@ window.SpeechStream=(()=>{
       for(const word of words){if(word[3]>millis)break;offset=word[1];}
       return offset;
     }
-    return {url,cancel,done,position,onError(fn){handler=fn;if(failure)fn(failure);},onDecoderError(fn){decoderHandler=fn;if(decoderError)fn(decoderError);}};
+    return {url,cancel,done,position,ready,onError(fn){handler=fn;if(failure)fn(failure);},onDecoderError(fn){decoderHandler=fn;if(decoderError)fn(decoderError);}};
   }
   return {available,open};
 })();
