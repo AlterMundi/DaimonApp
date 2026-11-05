@@ -260,6 +260,32 @@ class Context(unittest.IsolatedAsyncioTestCase):
         self.provider.producers[p.dialogue].pop('checkpoint_request')
         self.assertTrue(await p.request_checkpoint(pressure))
 
+    async def test_pending_semantic_request_does_not_consume_physical_pressure_slot(self):
+        p=self.producer();await p.open()
+        native=self.provider.producers[p.dialogue]
+        native['checkpoint_request']={'generation':p.record['generation'],'reason':'continuation'}
+        pressure={'reason':'tokens','tokens':48000,'usage_kind':'observed'}
+        await p.request_checkpoint(pressure)
+        self.assertIsNone(p.checkpoint_requested_generation)
+        native.pop('checkpoint_request')
+        self.assertTrue(await p.request_checkpoint(pressure))
+        self.assertEqual(p.checkpoint_requested_generation,p.record['generation'])
+        self.assertFalse(await p.request_checkpoint(pressure))
+
+    async def test_active_preparation_is_atomic_with_canonical_sync_not_recovery(self):
+        p=self.producer();await p.open()
+        self.retain('Exact correction');await p._sync(p.record)
+        calls=[c for c in self.provider.calls if c['action']=='sync']
+        self.assertTrue(calls[-1]['prepare_continuation'])
+        self.assertFalse(any(c['action']=='checkpoint_needed' for c in self.provider.calls))
+        self.assertEqual(len(self.provider.fresh),1)
+        p.stopping=True;await p._sync(p.record)
+        calls=[c for c in self.provider.calls if c['action']=='sync']
+        self.assertFalse(calls[-1]['prepare_continuation'])
+        old=self.producer(str(uuid.uuid4()));await old.open()
+        calls=[c for c in self.provider.calls if c['action']=='sync' and c['dialogue']==p.dialogue]
+        self.assertFalse(calls[-1]['prepare_continuation'])
+
     async def test_lost_local_settle_ack_reconciles_the_same_exact_transition(self):
         for committed in (False,True):
             p=self.producer(str(uuid.uuid4()));await p.open();basis=await p.prepare_rollover()

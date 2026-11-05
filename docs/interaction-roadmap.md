@@ -35,6 +35,25 @@ than one frontend importing or depending on the other frontend's lifecycle.
 This remaining refactor is explicitly **not the current priority or a new gate**
 for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
+## Current Qwen continuation work —5November2026
+
+PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound
+semantic checkpoint before voice opens. Actual Luna/Qwen correction-memory/PCM
+qualification recovered after its first20second preflight was pending. This is
+bounded recovery, not full useful phone latency or uninterrupted start acceptance.
+
+Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) prepares small
+continuation seeds during active canonical conversation. Its candidate supports
+repeatable nonce-bound full-read/checkpoint cycles without physical replacement,
+prefix commits with exact later tails, one outstanding operation and persisted
+finite rearming/request bounds. See [the context contract](interaction-live-context.md#active-continuation-preparation-5november2026).
+It remains unselected until exact native/mounted/actual-provider qualification and
+compatible receiving adoption. No diagnostic limit increase or provider switch.
+Full useful Qwen audio after replacements, manual reconnect, physical hearing and
+all prior milestone obligations remain open. OpenAI follows Qwen closure; Gemini
+is deferred without balance.606/607 UI foundation/grants are merged but unselected;
+the complete session workspace below remains part of this goal.
+
 ## Session workspace and adaptive header —4November2026
 
 Nicolas selected #602 as a complete interface/routing change, with #603 direct
