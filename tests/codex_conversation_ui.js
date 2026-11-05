@@ -78,6 +78,44 @@ async function fixture(){
  assert.equal(engine.active,true);assert.equal(retainedPeer.connectionState,'connected');await engine.hold();
  console.log('Native WebRTC capture: separate durable recovery, exact original retry without ASR/work replay, explicit closure and retired callback fences passed.');
 }
+async function captureDeadlineFixture(){
+ let now=0,listener,expired=false,finished=false,put;const timers=new Set(),sockets=[];
+ const setTimer=(fn,ms)=>{const timer={fn,at:now+ms};timers.add(timer);return timer;};
+ const clearTimer=timer=>timers.delete(timer);
+ const binding='c'.repeat(64),media={getTracks:()=>[{stop(){}}],getAudioTracks:()=>[{}]};
+ class Socket{
+  static OPEN=1;constructor(){sockets.push(this);this.readyState=1;queueMicrotask(()=>this.onopen());}
+  send(raw){const v=JSON.parse(raw);if(v.binding){this.id=v.id;queueMicrotask(()=>this.onmessage({data:JSON.stringify({type:'prepared',id:v.id,session_seconds:600})}));}
+   if(v.type==='offer')queueMicrotask(()=>this.onmessage({data:JSON.stringify({type:'answer',id:this.id,sdp:'v=0 answer'})}));
+   if(v.type==='close')queueMicrotask(()=>this.onmessage({data:JSON.stringify({type:'closed',id:this.id,confirmed:true})}));}
+  close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
+ }
+ class Peer{
+  createDataChannel(){return {close(){}};}addTrack(){}
+  async createOffer(){return {type:'offer',sdp:'v=0 offer'};}async setLocalDescription(v){this.localDescription=v;}
+  async setRemoteDescription(){now+=7000;this.connectionState='connected';this.onconnectionstatechange();}
+  close(){this.connectionState='closed';this.onconnectionstatechange?.();}
+ }
+ const store={list:async()=>[],put:async v=>{put=v;},remove:async()=>{}};
+ const window={location:{href:'https://example.test/interaction/'},RTCPeerConnection:Peer,indexedDB:{},
+  VoiceInput:{recoveryStore:()=>store},StreamingVoice:{supported:()=>true,wav:parts=>new Blob([new Uint8Array(44),...parts]),
+   openCapture:async()=>{let deadline;return {subscribe(fn){listener=fn;return ()=>{};},
+    start(){deadline=setTimer(()=>{expired=true;listener({captureError:'session_limit'});},600000);},
+    finish(){if(!expired){finished=true;listener({finished:true});}},close(){clearTimer(deadline);}};}}};
+ async function fetch(url,options){return {ok:true,json:async()=>({visit:put.codex_visit,binding,
+  recording:{ordinal:put.ordinal,audio_sha256:put.audio_sha256,audio_bytes:options.body.size,native_replay:'never'}})};}
+ const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch','setTimeout','clearTimeout',source+';return window.CodexConversation;')(
+  window,{mediaDevices:{getUserMedia:async()=>media}},{hidden:false},crypto,Socket,Peer,class{pause(){}},fetch,setTimer,clearTimer);
+ const engine=api.create({headers:()=>({'x-dashboard-csrf':'action'}),getBinding:()=>binding});
+ assert.equal(await engine.start(),true);listener({pcm:new Uint8Array(32000).buffer});
+ // Seven seconds of SDP negotiation must not move the capture budget's deadline.
+ now=599000;for(const timer of [...timers].sort((a,b)=>a.at-b.at))if(timer.at<=now&&timers.delete(timer))timer.fn();
+ for(let n=0;n<50&&engine.active;n++)await sleep(2);
+ assert.equal(engine.active,false,'Planned closure must precede the worklet limit even after slow SDP');
+ assert.equal(expired,false);assert.equal(finished,true,'Capture must flush before its own deadline');
+ assert.equal(put.captureStop,undefined,'A planned stop must not manufacture an unconfirmed tail');
+ console.log('Native capture budget: delayed SDP cannot defer planned closure past the recorder deadline.');
+}
 async function historyFixture(){
  let binding='a'.repeat(64),failOlder=true,delayed,delay=false;const calls=[],items=[],states=[];
  const cursor='12345678-1234-4234-8234-123456789012';
@@ -109,4 +147,4 @@ async function historyFixture(){
  assert(!calls.some(v=>/transcrib|inputs/.test(v.pathname)));
  console.log('Voice history paging: retry preserves cursor, exhausted pages stop, stale bindings cannot publish, zero capture/work.');
 }
-(async()=>{await fixture();await historyFixture();})().catch(error=>{console.error(error);process.exitCode=1;});
+(async()=>{await fixture();await captureDeadlineFixture();await historyFixture();})().catch(error=>{console.error(error);process.exitCode=1;});

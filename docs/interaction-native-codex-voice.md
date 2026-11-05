@@ -433,3 +433,34 @@ To disable future activation remove `enabled = true` through the existing
 configuration route at voice idle. Preserve metadata, originals, input journals,
 active collectors and native work. Keep the compatible native reader on web
 rollback; do not restore a database, replay media or retire history.
+
+
+## Sustained corrections and microphone deadline
+
+The5November receiving-qualified644 source was exercised on the existing actual
+native test thread for540.16seconds, followed by one canonical compaction and two
+explicit new microphone visits. Eight spoken questions preserved two corrections
+(Aurora/4, then Aurora/5, then Brisa/5), identified CompAII and Avatar correctly,
+and recalled the final facts after both replacements. All three visits closed
+with complete transcript barriers;22 original recording receipts total19071946bytes.
+Three decoded16kHz mono output masters retain540.16,24.917375 and10.069375seconds.
+Independent configured Whisper ASR on two selected output clips recognized
+“Aurora a las5” after compaction and “Brisa a la5” after the final replacement.
+These are machine transcripts, not physical hearing acceptance.
+
+This case uses ordinary app context restoration. It does not isolate backend-only
+recall, arbitrary long tasks, simultaneous handoffs and speech, noise or phone
+behavior. A broad compaction substring flag is not factual proof; exact source
+item IDs and output indexes resolve visit attribution where the fixture's question
+visit field precedes the first caption. The retained adjudication records those
+limits without replaying the terminal case.
+
+A separate deterministic client regression reproduced a capture clock mismatch:
+the recorder budget started before SDP, while planned closure was scheduled
+after SDP. With7seconds of negotiation, the recorder could expire before the
+ordered finish/flush path. Schedule planned closure when capture starts,2seconds
+before its unchanged hard limit, allowing the existing1second finish-ACK window.
+The regression checks confirmed flush and original retention without a manufactured
+unconfirmed tail. This repairs the native client deadline; it does not establish
+the cause of historical Qwen phone failures. The600second complete microphone
+visit budget remains unchanged; this is not automatic microphone renewal.

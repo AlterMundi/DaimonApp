@@ -135,6 +135,16 @@ context delivery or task completion alone does not qualify it. Preserve native
 handoff ownership and investigate the supported native speech/attention path,
 without user-input replay or another manual delegation loop.
 
+A sustained actual native case now covers540seconds, eight spoken questions,
+two factual corrections, one canonical compaction and three explicit microphone
+visits, with all original receipts/closure barriers and two independently
+transcribed output clips. Identity and final corrected facts were preserved.
+This is bounded digital continuity, not phone/noise/arbitrary-task acceptance.
+A deterministic client clock regression additionally catches SDP time shifting
+planned closure beyond the recorder deadline; the planned flush now starts from
+capture's clock with a2second margin inside the unchanged600second visit bound.
+No automatic microphone budget reset or provider default change is introduced.
+
 The source-linked predecessor-offer follow-up now carries exact pending native
 task references across visits, reads only a completed task's own final item and
 waits for connected WebRTC before presenting it. Its retained intent prevents

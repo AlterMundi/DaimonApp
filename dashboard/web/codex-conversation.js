@@ -142,13 +142,15 @@ window.CodexConversation=(()=>{
           if(bytes>=30*32000)flush();
           if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.');
         });
+        // The visit budget starts with capture, not after SDP negotiation. Leave
+        // the existing finish-ACK window time before the recorder hard limit.
+        timer=setTimeout(()=>void hold('Voice visit reached its time limit.'),Math.max(0,seconds*1000-2000));
         capture.start();for(const track of ownedMedia.getAudioTracks())ownedPeer.addTrack(track,ownedMedia);
         const offer=await ownedPeer.createOffer();if(!current())throw Error('Voice offer retired');
         await ownedPeer.setLocalDescription(offer);if(!current())throw Error('Voice offer retired');
         transport.send(JSON.stringify({type:'offer',sdp:ownedPeer.localDescription.sdp}));
         const sdp=await wait(answer,45000);if(!current())throw Error('Voice answer retired');
         await ownedPeer.setRemoteDescription({type:'answer',sdp});if(!current())throw Error('Voice connection retired');
-        timer=setTimeout(()=>void hold('Voice visit reached its time limit.'),seconds*1000);
         return true;
       }catch(error){if(owned===epoch&&(active||starting))await hold(error.message||'Voice unavailable.');closeRetired();return false;}
       finally{openingCount--;}
