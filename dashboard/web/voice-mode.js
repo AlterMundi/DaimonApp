@@ -47,6 +47,9 @@ window.ConversationVoiceMode=(()=>{
       portrait.setAttribute('aria-label',opened?'Conversation avatar':'Open direct voice conversation');
       portrait.title=available&&!opened?'Direct voice conversation':'';
     }
+    // Continuous engines enforce their own (at most ten-minute) capture budget.
+    // The old alternating view keeps its shorter five-minute opt-in.
+    function armClose(){clearTimeout(timer);timer=setTimeout(close,(continuous?10:5)*60*1000);}
     function close(){
       if(!opened)return;opened=false;clearTimeout(timer);clearTimeout(rearm);
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
@@ -59,7 +62,7 @@ window.ConversationVoiceMode=(()=>{
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();
-      timer=setTimeout(close,5*60*1000);status.textContent='Opening microphone…';caption.textContent='';speak.hidden=true;onSpeak();
+      armClose();status.textContent='Opening microphone…';caption.textContent='';speak.hidden=true;onSpeak();
     }
     function maybeRearm(){
       clearTimeout(rearm);
@@ -114,7 +117,7 @@ window.ConversationVoiceMode=(()=>{
     portrait.addEventListener('click',open);
     portrait.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
     back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
-    speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){clearTimeout(timer);timer=setTimeout(close,5*60*1000);onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
+    speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){armClose();onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
     document.addEventListener('visibilitychange',()=>{
       if(!document.hidden || !opened)return;
       if(continuous && onSuspend)onSuspend();

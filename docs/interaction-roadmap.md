@@ -135,6 +135,14 @@ context delivery or task completion alone does not qualify it. Preserve native
 handoff ownership and investigate the supported native speech/attention path,
 without user-input replay or another manual delegation loop.
 
+The complete fullscreen controller had a separate inherited five-minute guard
+that closed continuous Avatar before its configured600second capture budget.
+Its continuous view guard now uses ten minutes; the old alternating view retains
+five. The engine's existing limit and ordered leave/flush remain authoritative.
+A deterministic view regression covers survival at five minutes and one bounded
+close at ten, not phone/hearing acceptance. The sustained engine-only case below
+did not mount this view and must not be read as full-view endurance evidence.
+
 A sustained actual native case now covers540seconds, eight spoken questions,
 two factual corrections, one canonical compaction and three explicit microphone
 visits, with all original receipts/closure barriers and two independently
