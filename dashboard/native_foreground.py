@@ -265,6 +265,16 @@ class ForegroundBridge:
                     'sessions':[],'truncated':snapshot.get('truncated') is True}
                 rows=snapshot.get('sources',[])
                 if not isinstance(rows,list):raise ForegroundUnavailable('Session observation is unavailable')
+                selector=event.get('selector')
+                if selector is not None:
+                    # Filter only this already audience-checked fresh snapshot.
+                    # Labels never become routing/control authority or a lookup
+                    # into another session's private/native history.
+                    selected=selector.casefold()
+                    rows=[row for row in rows if any(isinstance(row.get(key),str)
+                        and row[key].casefold()==selected for key in ('label','id'))]
+                    result.update(selector=selector,selection='matched' if len(rows)==1
+                        else 'ambiguous' if rows else 'not_found')
                 for row in rows[:64]:
                     fresh=result['connected'] and row.get('fresh') is True
                     item={'label':str(row.get('label','Session'))[:128],

@@ -70,6 +70,16 @@ private phone evidence showed inherited text growing2695/5256/6985/8826bytes
 across four reconnects; the fixture now checks twenty empty reconnects against
 one identical seed, separately from semantic checkpoint quality.
 
+The read-only `session_status` tool also accepts an optional `selector`: an
+exact case-insensitive label or an already offered observer ID. A targeted read
+filters the same current audience-checked observer snapshot; it does not read
+native/private session history or grant routing/control. Missing and ambiguous
+matches are explicit, freshness redaction is unchanged, and omitted selector
+retains the bounded all-session view. For one known session prefer this argument
+instead of repeatedly sending the complete workspace. The64-session fixture
+keeps the targeted response below one fifth of the full response without starting
+work; this is a serialized-byte comparison, not measured model token usage.
+
 Further token-efficiency review must measure repeated tool snapshots, identical
 updates and seed size across nonempty renewals, as well as request/return context
 in the integrator. Use deltas, source references and bounded pages where the

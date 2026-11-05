@@ -51,6 +51,17 @@ class Dialogue(unittest.TestCase):
             self.stream.tool_result('settle',{'kind':'sources','text':'protected exact source'})
         self.assertEqual(len(self.socket.sent),before)
 
+    def test_session_status_selector_is_optional_bounded_and_read_only(self):
+        self.ready()
+        event=self.proposal('status',name='session_status',args={'selector':'H.B. Guitar'})
+        result=self.event(event)
+        self.assertEqual(result,[{'type':'session_status_query','call_id':'status','selector':'H.B. Guitar'}])
+        self.stream.tool_result('status',{'kind':'session_status'})
+        for n,value in enumerate((None,True,'',' x','x'*129,'x\0y')):
+            e=self.proposal('bad'+str(n),name='session_status',args={'selector':value})
+            self.assertEqual(self.event(e)[0]['type'],'tool_rejected')
+            self.stream.tool_result('bad'+str(n),{'kind':'invalid_arguments'})
+
     def test_close_frame_billing_is_not_misreported_as_invalid_json(self):
         self.socket.recv_data=lambda **kwargs:(8,b'\x03\xf3billing credit unavailable; synthetic private account detail')
         with self.assertRaises(DialogueUnavailable):self.stream.receive()
@@ -328,7 +339,7 @@ class Dialogue(unittest.TestCase):
         self.assertIn('Do not falsely deny this access',setup['systemInstruction']['parts'][0]['text'])
         self.ready()
         self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'status','name':'session_status','args':{}}]}}),[{'type':'session_status_query','call_id':'status'}])
-        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'selector':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
+        self.assertEqual(self.event({'toolCall':{'functionCalls':[{'id':'bad-status','name':'session_status','args':{'native_thread':'private'}}]}}),[{'type':'tool_rejected','call_id':'bad-status'}])
         self.assertEqual(self.event(self.audio())[0]['type'],'audio')
 
     def test_provider_accounting_does_not_enable_ungated_discard(self):
