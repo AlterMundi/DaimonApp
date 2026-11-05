@@ -157,3 +157,9 @@ focus without changing the frozen message reference. Mute and Solo keep the
 menu open. When any audio filter is active, Reset appears in the menu header
 aligned above the controls; clearing filters hides it again. The collapsed
 destination toolbar contains only navigation and the current input destination.
+
+Initial selected-history failures stay visible with an explicit Retry reading
+action. Ordinary metadata refresh does not restart a failed initial read or
+replace its error with another Reading indicator. The existing20second API
+deadline bounds that read. Retry preserves the composer/target and reads only
+history; an obsolete file revision clears its old display before a fresh read.
