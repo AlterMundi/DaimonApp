@@ -121,6 +121,10 @@ pub struct ConversationInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationVoice {
+    /// Server-selected archive protection; a transcript alone cannot retire it.
+    /// Omission preserves ordinary ephemeral media behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_original: Option<bool>,
     pub audio_sha256: String,
     pub mime: String,
     /// Device-reported stop, not proof that the human intended to continue.
@@ -1009,7 +1013,10 @@ impl Store {
                 || match (&input.voice, &voice) {
                     (None, None) => input.text != text,
                     (Some(a), Some(b)) => {
-                        a.audio_sha256 != b.audio_sha256
+                        // A running ASR worker already holds the original policy.
+                        // Never pretend that an exact retry can upgrade it.
+                        (b.preserve_original == Some(true) && a.preserve_original != Some(true))
+                            || a.audio_sha256 != b.audio_sha256
                             || a.mime != b.mime
                             || a.capture_stop != b.capture_stop
                     }
@@ -2171,6 +2178,7 @@ mod tests {
         let id = Uuid::now_v7().to_string();
         let dialogue = Uuid::now_v7().to_string();
         let voice = ConversationVoice {
+            preserve_original: None,
             audio_sha256: "a".repeat(64),
             mime: "audio/wav".into(),
             capture_stop: None,
@@ -2519,6 +2527,7 @@ mod tests {
 
     fn clip() -> ConversationVoice {
         ConversationVoice {
+            preserve_original: None,
             audio_sha256: "a".repeat(64),
             mime: "audio/wav".into(),
             capture_stop: None,
@@ -2538,6 +2547,29 @@ mod tests {
             preparation_millis: 1,
             transcription_millis: 1,
             interpretation: "machine, not exact written speech".into(),
+        }
+    }
+    #[test]
+    fn original_hold_cannot_be_promoted_by_retry_or_downgraded() {
+        let (_file, store, key, binding) = setup();
+        for held in [false, true] {
+            let id = Uuid::now_v7().to_string();
+            let mut voice = clip();
+            voice.preserve_original = held.then_some(true);
+            store
+                .conversation_voice_capture(100, key, &binding, &id, voice.clone(), true)
+                .unwrap();
+            voice.preserve_original = Some(true);
+            let promoted = store.conversation_voice_capture(100, key, &binding, &id, voice, true);
+            assert_eq!(promoted.is_ok(), held);
+            let (retried, new) = store
+                .conversation_voice_capture(100, key, &binding, &id, clip(), true)
+                .unwrap();
+            assert!(!new);
+            assert_eq!(
+                retried.voice.unwrap().preserve_original,
+                held.then_some(true)
+            );
         }
     }
     #[test]

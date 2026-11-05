@@ -516,17 +516,24 @@ class Provider:
                 if (current.st_dev,current.st_ino) != (info.st_dev,info.st_ino):
                     return False
                 retention = getattr(self, 'media_retention', None)
+                receipt = None
                 if retention:
                     source.seek(0)
                     selected = value if entry_binding is None else {**value, 'entry_binding':entry_binding}
-                    retention.retain(selected, 'human', voice.get('mime', 'application/octet-stream'), source.read(20*1024*1024+1))
+                    receipt = retention.retain(selected, 'human', voice.get('mime', 'application/octet-stream'), source.read(20*1024*1024+1))
+                if voice.get('preserve_original') is True and receipt is None:
+                    # Removing/changing the capture selection cannot retire a
+                    # hold already committed for this exact original.
+                    value['media_retention'] = {'state':'pending', 'original_retained':True,
+                        'message':'Original audio saved; archive handoff is pending. The protected receiver store remains bounded.'}
+                    return False
                 path.unlink()
                 sync_directory(directory)
             return True
         except FileNotFoundError:
             return False
         except RetentionUnavailable:
-            value['media_retention'] = {'state':'blocked', 'message':'Original audio protection unavailable; source clip preserved. Resolve retention before new audio.'}
+            value['media_retention'] = {'state':'pending', 'original_retained':True, 'message':'Original audio saved; archive handoff is pending. The protected receiver store remains bounded.'}
             return False
         except (OSError, ValueError, KeyError, TypeError):
             # Cleanup cannot turn an already committed input into a failed or
@@ -897,17 +904,44 @@ class Provider:
         # Persist the newly created directory name before retaining any clip/capture.
         sync_directory(directory.parent)
         retention = getattr(self, 'media_retention', None)
+        selected = None
         if retention:
             current = self.presentation('input list 0 before')
             if current['binding'] != metadata['binding']:
                 raise ProviderUnavailable('Original conversation binding changed')
-            retention.retain({'id':metadata['id'], 'entry_binding':current['entry_binding']},
-                             'human', metadata['mime'], data)
+            selected = {'id':metadata['id'], 'entry_binding':current['entry_binding']}
+        # The existing receiver store is bounded independently of the archive.
+        # Complete and sync the exact original before any canonical admission.
         self.retain_voice_capture(directory, metadata['id'], data, metadata['audio_sha256'])
+        archive_pending = False
+        if retention:
+            # Older native writers delete after ASR. Do not defer a selected
+            # archive handoff unless the actual writer can persist its hold.
+            protected = retention.selected(selected)
+            if protected:
+                capabilities = self.presentation('input voice capabilities')
+                if capabilities.get('binding') != metadata['binding']:
+                    raise ProviderUnavailable('Original conversation binding changed')
+                held = capabilities.get('voice_original_hold') == 'v1'
+                # An earlier capture may already have an ASR worker holding
+                # its old cleanup policy. Capability is not proof of a hold.
+                with closing(readonly(self.receiver['db_path'])) as db:
+                    previous = db.execute('SELECT doc FROM conversation_inputs WHERE id=?', (metadata['id'],)).fetchone()
+                if previous is not None:
+                    held = held and json.loads(previous[0]).get('voice', {}).get('preserve_original') is True
+                if held:metadata = {**metadata, 'preserve_original':True}
+            else:held = False
+            try:retention.retain(selected, 'human', metadata['mime'], data)
+            except RetentionUnavailable:
+                if not held:raise
+                archive_pending = True
         # The controller reserves original order/authority before asynchronous ASR.
         # A retry names the same clip and only inspects existing capture state.
         value = self.decorate_input(self.presentation('input voice submit '+json.dumps(metadata)))
         self.retire_voice_capture(value)
+        if archive_pending:
+            value['media_retention'] = {'state':'pending', 'original_retained':True,
+                'message':'Original audio saved; archive handoff is pending. The protected receiver store remains bounded.'}
         return value
 
     @staticmethod
