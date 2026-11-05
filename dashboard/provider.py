@@ -237,7 +237,7 @@ class Provider:
         """All owned session metadata, without opening native/model processes."""
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
-        destinations={};destinations_state='unavailable'
+        destinations={};latest_replies={};results_available={};entry_latest=None;destinations_state='unavailable'
         try:
             selected=self.presentation('input workspace')
         except ProviderUnavailable:
@@ -249,7 +249,19 @@ class Provider:
                 if not isinstance(item,dict) or not isinstance(item.get('audio_key'),str):raise ProviderUnavailable('Invalid session destination')
                 self.check_reply(item.get('destination'))
                 if not item.get('destination',{}).get('source','').startswith('session:'):raise ProviderUnavailable('Missing session destination reference')
+                latest=item.get('latest_reply')
+                if latest is not None:
+                    self.check_reply(latest)
+                    if not latest['source'].startswith(item['destination']['source']+'/'):
+                        raise ProviderUnavailable('Latest reply does not belong to the selected session')
+                    latest_replies[item['audio_key']]=latest
+                if type(item.get('result_available')) is bool:results_available[item['audio_key']]=item['result_available']
                 destinations[item['audio_key']]=item['destination']
+            entry_latest=selected.get('entry_latest_reply')
+            if entry_latest is not None:
+                self.check_reply(entry_latest)
+                if not entry_latest['source'].startswith('native:') or entry_latest.get('context_only') is not True:
+                    raise ProviderUnavailable('Latest conversation reply is not contextual evidence')
             destinations_state='available'
         directory=self.config.get('activity_state_dir')
         with closing(readonly(self.receiver['db_path'])) as db:
@@ -266,7 +278,9 @@ class Provider:
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
                     'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
-                    'results_review':'unknown','destination':destinations.get(row['key'])})
+                    'results_review':'unknown','result_available':results_available.get(row['key']),'destination':destinations.get(row['key']),
+                    'latest_reply':entry_latest if chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id'] else latest_replies.get(row['key']),
+                    'is_entry':chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id']})
         items.sort(key=lambda v:(-(v['last_activity_at'] or 0),v['id']))
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience changed')
@@ -274,6 +288,36 @@ class Provider:
             'connected':inventory['connected'],'truncated':False,'destinations_state':destinations_state,
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
+
+    def session_view(self,ident,**window):
+        """One explicitly selected owned root; never discover or open a model."""
+        if not isinstance(ident,str) or not re.fullmatch('[a-f0-9]{24}',ident):
+            raise ValueError('Select one owned session')
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
+        selected=next((r for r in self.bindings() if self.identity(r)==ident),None)
+        if selected is None or not selected.get('codex_thread_id'):
+            raise ProviderUnavailable('Selected session binding is unavailable')
+        with closing(readonly(self.native_home/'state_5.sqlite')) as db:
+            row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (selected['codex_thread_id'],)).fetchone()
+        if row is None:raise ProviderUnavailable('Selected native history is unavailable')
+        path=Path(row['rollout_path']).resolve()
+        if not path.is_relative_to((self.native_home/'sessions').resolve()):
+            raise ProviderUnavailable('Selected history is outside the native root')
+        from .session_view import read
+        meta=path.stat()
+        value=read(path,selected['codex_thread_id'],expected_file=(meta.st_dev,meta.st_ino),**window)
+        self.assert_binding()
+        current=next((r for r in self.bindings() if self.identity(r)==ident),None)
+        if current is None or self.identity(current)!=self.identity(selected) or not self.authorized(self.human):
+            raise ProviderUnavailable('Selected session audience or binding changed')
+        with closing(readonly(self.native_home/'state_5.sqlite')) as db:
+            current_path=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (selected['codex_thread_id'],)).fetchone()
+        if current_path is None or Path(current_path['rollout_path']).resolve()!=path:
+            raise ProviderUnavailable('Selected native history binding changed')
+        return {**value,'session':ident,'title':current.get('session_title') or 'Untitled session'}
 
     def sonic_activity(self):
         """Finite read of the existing database-bound observer, never native work.
@@ -716,7 +760,8 @@ class Provider:
             raise ValueError('Matrix/task references are selected contextual evidence')
         ident=value['source'].split(':', 1)[1]
         if value['source'].startswith(('native:','session:')):
-            if not re.fullmatch('[1-9][0-9]{0,18}',ident) or int(ident)>2**63-1:
+            parts=ident.split('/') if value['source'].startswith('session:') else [ident]
+            if len(parts)>2 or any(not re.fullmatch('[1-9][0-9]{0,18}',part) or int(part)>2**63-1 for part in parts):
                 raise ValueError('Select one retained native message')
         elif value['source'].startswith(('request:','task:')):
             if not re.fullmatch('[a-f0-9]{32}',ident):

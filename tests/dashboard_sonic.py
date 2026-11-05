@@ -62,7 +62,7 @@ topic_id=8
         # Registry selection is owned by the receiving control service. These
         # cache/HTTP cases isolate that read; conversation_cold_entry_http_io
         # covers the actual registry rather than duplicating its SQL here.
-        self.destinations=[]
+        self.destinations=[];self.entry_latest=None
         self.choices=[{'selector':'t7','label':'Alpha'},{'selector':'t8','label':'Selected but not owned'}]
         self.registry=patch.object(self.provider,'presentation',side_effect=self.presentation)
         self.registry.start()
@@ -72,7 +72,7 @@ topic_id=8
     def save(self):atomic_json(self.state/'topics.json',self.observation)
     def presentation(self,command):
         if command=='presentation list 0 0':return {'binding':'a'*64,'items':[]}
-        if command=='input workspace':return {'schema':'daimon.session-destinations/v1','items':self.destinations}
+        if command=='input workspace':return {'schema':'daimon.session-destinations/v1','items':self.destinations,'entry_latest_reply':self.entry_latest}
         self.assertEqual(command,f'input list {2**63-1} after')
         return {'routing_choices':self.choices}
     def tearDown(self):self.client.close();self.provider.close();self.registry.stop();self.temp.cleanup()
@@ -80,6 +80,41 @@ topic_id=8
         response=self.client.get('/api/interaction/sonic',headers=self.owner)
         self.assertEqual(response.status_code,200,response.text)
         return {s['id']:s for s in response.json()['sources']}
+    def test_selected_history_is_owned_and_requires_the_workspace_grant(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('ALTER TABLE sessions ADD COLUMN busy INTEGER DEFAULT 0')
+            db.execute('ALTER TABLE sessions ADD COLUMN updated_at TEXT');db.commit()
+        native=self.root/'native';sessions=native/'sessions';sessions.mkdir(parents=True)
+        self.provider.native_home=native
+        history=sessions/'worker.jsonl'
+        history.write_text(json.dumps({'type':'session_meta','payload':{'id':'worker'}})+'\n'+
+            json.dumps({'type':'response_item','payload':{'type':'message','role':'assistant',
+                'content':[{'type':'output_text','text':'Retained worker result'}]}})+'\n')
+        with closing(sqlite3.connect(native/'state_5.sqlite')) as db:
+            db.execute('CREATE TABLE threads(id TEXT,rollout_path TEXT,archived INTEGER)')
+            db.execute('INSERT INTO threads VALUES(?,?,0)',('worker',str(history)));db.commit()
+        workspace=self.client.get('/api/interaction/sessions',headers=self.owner).json()
+        worker=next(row for row in workspace['sessions'] if row['title']=='Worker')
+        url='/api/interaction/sessions/'+worker['id']
+        response=self.client.get(url,headers=self.owner)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['items'][0]['text'],'Retained worker result')
+        self.assertIsNone(self.provider.native,'Reading a selected history must not open native processes')
+        self.assertEqual(self.client.get('/api/interaction/sessions/'+'f'*24,headers=self.owner).status_code,409)
+        grants=Grants(self.config,self.provider);output=self.root/'history-device.json'
+        enrolled=grants.enroll('History device',output,3600)
+        device=json.loads(output.read_text());headers={'authorization':device['authorization']}
+        self.assertEqual(self.client.get(url,headers=headers).status_code,403)
+        grants.workspace(enrolled['grant_id'],True)
+        self.assertEqual(self.client.get(url,headers=headers).status_code,200)
+        grants.workspace(enrolled['grant_id'],False)
+        self.assertEqual(self.client.get(url,headers=headers).status_code,403)
+        history.write_text(json.dumps({'type':'session_meta','payload':{'id':'foreign'}})+'\n')
+        self.assertEqual(self.client.get(url,headers=self.owner).status_code,409)
+        history.unlink();history.symlink_to(self.root/'outside.jsonl')
+        history.resolve().write_text(json.dumps({'type':'session_meta','payload':{'id':'worker'}})+'\n')
+        self.assertEqual(self.client.get(url,headers=self.owner).status_code,409)
+
     def test_workspace_grant_is_explicit_and_revocation_blocks_new_pin_text_and_voice(self):
         import uuid
         grants=Grants(self.config,self.provider);output=self.root/'workspace-device.json'
@@ -122,6 +157,15 @@ topic_id=8
         self.assertEqual(items['100:7']['destination'],self.destinations[0]['destination'])
         self.assertNotIn('100:8',items)
         self.destinations[0]['destination']['source']='native:1'
+        self.assertEqual(self.client.get('/api/interaction/sessions',headers=self.owner).status_code,503)
+
+    def test_entry_latest_reply_is_contextual_and_does_not_select_a_worker(self):
+        self.entry_latest={'source':'native:42','revision':'a'*64,'context_only':True}
+        value=self.client.get('/api/interaction/sessions',headers=self.owner)
+        self.assertEqual(value.status_code,200,value.text)
+        entry=next(row for row in value.json()['sessions'] if row['is_entry'])
+        self.assertEqual(entry['latest_reply'],self.entry_latest);self.assertIsNone(entry['destination'])
+        self.entry_latest={'source':'session:2','revision':'a'*64}
         self.assertEqual(self.client.get('/api/interaction/sessions',headers=self.owner).status_code,503)
 
     def test_workspace_lists_owned_unrouted_sessions_by_activity_not_observer_refresh(self):
