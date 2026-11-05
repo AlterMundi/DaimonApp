@@ -39,7 +39,7 @@
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
     rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,toolbar);
     timeline.before(shell);content.append(timeline,view);
-    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false;
+    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
     let activeHistory,historyBusy=false,historyEpoch=0,observedAt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
@@ -47,9 +47,28 @@
     function renderSelection(){
       const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';
       back.hidden=!expanded;
-      unpin.hidden=!current;
+      unpin.hidden=!current;unpin.setAttribute('aria-pressed',String(!!pin&&pin.id===current?.id));
+      unpin.title=pin?`Unpin ${pin.title}: send to the conversation`:'Send to the conversation';
       for(const [id,row] of rows){row.pin.setAttribute('aria-pressed',String(pin?.id===id));row.name.setAttribute('aria-current',String(expanded?.id===id));}
     }
+    function sourceRow(source){
+      if(!allowed||!complete||!source)return;
+      const entry=['integrator_answer','integrator_progress','integrator_live'].includes(source.kind)||source.kind==='native_question'&&source.audio_track==='conversation';
+      const target=source.target;
+      if(!entry&&(!['worker_progress','worker_result','native_question'].includes(source.kind)||!Number.isSafeInteger(target?.chat_id)||!Number.isSafeInteger(target?.thread_id)))return;
+      const matches=[...inventory.values()].filter(row=>entry?row.is_entry===true:row.audio_key===`${target.chat_id}:${target.thread_id}`);
+      if(matches.length!==1)return;
+      const row=matches[0];if(row.is_entry||row.destination?.source&&row.destination?.revision)return row;
+    }
+    function pinState(source){const row=sourceRow(source);return {available:!!row,pinned:!!row&&pin?.id===row.id};}
+    function setPin(row){
+      if(!allowed||!row||!row.is_entry&&!row.destination)return false;
+      if(row.is_entry)pin=undefined;
+      else pin=pin?.id===row.id?undefined:{id:row.id,title:row.title,destination:copy(row.destination)};
+      if(expanded&&expanded.id!==row.id){expanded=undefined;leave();}
+      changed();showRail(false);toggle.focus?.();return true;
+    }
+    function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
     function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';}
     function open(row){
@@ -99,12 +118,7 @@
           row.name=button('',data.title,()=>open(row.data));row.name.className='session-name';
           row.state=el('p','','session-row-state');
           row.reply=button('▱','Reply to the latest message',()=>{const ref=row.data.latest_reply;if(ref){showRail(false);onReply(copy(ref),row.data.title);}});
-          row.pin=button('⌖','Pin as the input destination',()=>{
-            if(row.data.is_entry){pin=undefined;}
-            else if(row.data.destination){pin=pin?.id===row.data.id?undefined:{id:row.data.id,title:row.data.title,destination:copy(row.data.destination)};}
-            if(expanded && expanded.id!==row.data.id){expanded=undefined;leave();}
-            changed();showRail(false);toggle.focus?.();
-          });
+          row.pin=button('⌖','Pin as the input destination',()=>setPin(row.data));
           row.pin.innerHTML=pinIcon;row.reply.innerHTML=replyIcon;
           row.mute=button('','Mute this session',()=>onAudio('mute',row.data));
           row.solo=button('S','Solo this session',()=>onAudio('solo',row.data));
@@ -120,7 +134,7 @@
     }
     function resetBinding(next){
       epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;inventory.clear();rows.clear();list.replaceChildren();leave();
-      allowed=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';onReady(false);onTarget();
+      allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';onReady(false);onTarget();
     }
     async function refresh(nextBinding){
       if(binding!==nextBinding)resetBinding(nextBinding);
@@ -130,7 +144,7 @@
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
         observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
-        inventory=new Map(value.sessions.map(row=>[row.id,row]));allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';
+        inventory=new Map(value.sessions.map(row=>[row.id,row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
@@ -147,7 +161,7 @@
       }finally{if(owned===epoch)loading=false;}
     }
     function revoke(){
-      allowed=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
+      allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
       shell.hidden=false;rail.hidden=true;toolbar.hidden=!selected();
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
       onReady(false);
@@ -211,7 +225,7 @@
       }catch(error){if(owned===historyEpoch){if(error.status===401||error.status===403)revoke();else historyStatus.textContent=error.status===409?'This conversation changed. Select it again to refresh.':'Conversation unavailable. Your draft is kept.';}}
       finally{if(owned===historyEpoch)historyBusy=false;}
     }
-    return {refresh,capture,syncAudio,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    return {refresh,capture,syncAudio,pinState,pinSource,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return allowed&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision;}};
   }
   window.SessionWorkspace={mount};

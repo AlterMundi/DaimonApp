@@ -12,6 +12,7 @@ for(const row of sessions)row.last_activity_at=Date.now()/1000;
 sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
+sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 const base=()=>({binding,csrf:'fixture-csrf',items:[],cursor:0,newest:0,more:false});
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fixture.invalid');
@@ -92,6 +93,38 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   }
  }
  await compactControls();
+ const workerCard=page.locator('#conversation-timeline article[data-source-id="native:30"]');
+ const titlePin=workerCard.locator('.session-title-pin'),titleMute=workerCard.locator('.session-audio-mute'),titleSolo=workerCard.locator('.session-audio-solo');
+ const menuMaterial=page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})});
+ assert(await titlePin.isVisible()&&await titleMute.isVisible()&&await titleSolo.isVisible(),'Update title retains compact pin, Mute and Solo');
+ await page.getByRole('button',{name:'Hide sessions',exact:true}).click();
+ await page.locator('#conversation-message').fill('Title controls preserve my draft.');
+ await titlePin.click();assert.equal(await titlePin.getAttribute('aria-pressed'),'true');
+ assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
+ assert.equal(await page.getByRole('button',{name:'Send to the conversation',exact:true}).getAttribute('aria-pressed'),'true');
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+ assert.equal(await menuMaterial.getByRole('button',{name:'Pin as the input destination',exact:true}).getAttribute('aria-pressed'),'true','Title pin updates the menu');
+ await menuMaterial.getByRole('button',{name:'Pin as the input destination',exact:true}).click();
+ assert.equal(await titlePin.getAttribute('aria-pressed'),'false','Menu unpin updates the title');
+ await titleMute.click();await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+ assert.equal(await menuMaterial.getByRole('button',{name:`Unmute ${sessions[0].title}`,exact:true}).getAttribute('aria-pressed'),'true','Title Mute updates the menu');
+ await menuMaterial.getByRole('button',{name:`Unmute ${sessions[0].title}`,exact:true}).click();
+ assert.equal(await titleMute.getAttribute('aria-pressed'),'false','Menu Mute updates the title');
+ await page.getByRole('button',{name:'Hide sessions',exact:true}).click();await titleSolo.click();
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+ assert.equal(await menuMaterial.getByRole('button',{name:`Remove solo from ${sessions[0].title}`,exact:true}).getAttribute('aria-pressed'),'true','Title Solo updates the menu');
+ await menuMaterial.getByRole('button',{name:`Remove solo from ${sessions[0].title}`,exact:true}).click();
+ assert.equal(await titleSolo.getAttribute('aria-pressed'),'false','Menu Solo updates the title');
+ await menuMaterial.getByRole('button',{name:'Pin as the input destination',exact:true}).click();
+ assert.equal(await titlePin.getAttribute('aria-pressed'),'true','Menu pin updates the title');
+ await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();
+ assert.equal(await titlePin.getAttribute('aria-pressed'),'false','Destination unpin updates title and menu');
+ assert.equal(await page.locator('#conversation-message').inputValue(),'Title controls preserve my draft.');
+ await page.screenshot({path:path.join(output,'desktop-title-controls.png')});
+ await page.setViewportSize({width:390,height:844});await workerCard.scrollIntoViewIfNeeded();
+ await page.screenshot({path:path.join(output,'mobile-title-controls.png')});
+ await page.setViewportSize({width:1280,height:800});
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
  assert.deepEqual(await page.locator('.session-name').allTextContents(),[sessions[1].title,sessions[2].title,sessions[0].title]);
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
@@ -191,7 +224,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  workspaceAllowed=false;await page.locator('#conversation-refresh').evaluate(button=>button.click());
  await page.getByText('Session workspace access is unavailable. Return the input to the conversation, or restore access.',{exact:true}).waitFor();
- assert(await page.locator('#conversation-timeline').isVisible());assert(await page.locator('#conversation-account').isVisible(),'Workspace denial is not a global sign-out');
+ assert(await page.locator('#conversation-timeline').isVisible());assert(await titlePin.isDisabled(),'Grant loss disables update-title pin');assert(await page.locator('#conversation-account').isVisible(),'Workspace denial is not a global sign-out');
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();assert.equal(errors.length,0,errors.join('\n'));
  report.state='qualified-synthetic-browser';report.posts=posts.map(v=>({text:v.text,reply:v.reply}));report.viewports=['1280x800','390x844','320x740'];report.errors=errors;

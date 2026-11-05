@@ -17,12 +17,12 @@ function boot(){
   const document={createElement:tag=>new Element(tag)},window={},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:Date.now()/1000});
-  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held;
+  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false;
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
     if(deny)throw Object.assign(Error('No workspace'),{status:403});
-    if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions};
+    if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated};
     const url=new URL(route,'https://fixture.invalid');
     if(held){const hold=held;held=undefined;return hold;}
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,has_earlier:false,more:false};
@@ -36,7 +36,7 @@ function boot(){
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
   return {root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
-    setSessions:value=>{sessions=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
+    setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
@@ -53,8 +53,10 @@ function boot(){
   assert.equal(f.control.capture().reference.source,'session:7');
   f.byText('Earlier work').click();await tick();
   assert.equal(f.timeline.hidden,true);assert.equal(f.control.capture().reference.source,'session:8');
+  assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'false','Temporary view does not claim the earlier pin is its destination');
   f.byLabel('Back to the conversation').click();
   assert.equal(f.timeline.hidden,false);assert.equal(f.control.capture().reference.source,'session:7','Back restores the explicit prior pin');
+  assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'true');
   f.byText('Conversation').click();
   assert.equal(f.control.capture().reference,undefined,'Selecting Conversation temporarily overrides a worker pin');
   f.byLabel('Back to the conversation').click();assert.equal(f.control.capture().reference.source,'session:7');
@@ -106,5 +108,24 @@ function boot(){
   const icon=aging.rows()[0].children[2].children[2];assert(icon.innerHTML.includes('M11 5 6 9H3'));
   icon.click();assert(icon.innerHTML.includes('m16 9 5 6m0-6-5 6'));
 
+  const titles=boot(),worker={kind:'worker_result',target:{chat_id:100,thread_id:7},label:'Unrelated display label'};
+  await titles.control.refresh('binding');
+  assert.equal(titles.control.pinState(worker).available,true);
+  assert.equal(titles.control.pinSource(worker),true);assert.equal(titles.control.capture().reference.source,'session:7');
+  assert.equal(titles.control.pinState(worker).pinned,true);
+  assert.equal(titles.rows()[1].children[2].children[1].attrs['aria-pressed'],'true','Title pin updates the menu');
+  assert.equal(titles.byLabel('Send to the conversation').attrs['aria-pressed'],'true','Destination unpin indicates the explicit pin');
+  titles.rows()[1].children[2].children[1].click();assert.equal(titles.control.pinState(worker).pinned,false,'Menu unpin updates the title');
+  assert.equal(titles.control.pinState({...worker,target:{chat_id:200,thread_id:7}}).available,false,'A matching label cannot select another target');
+  titles.getSessions()[0].last_activity_at=now-172800;await titles.control.refresh('binding');
+  assert.equal(titles.byText('Busy work'),undefined);assert.equal(titles.control.pinSource(worker),true,'Hidden old rows still resolve through the complete exact inventory');
+  assert.equal(titles.control.pinSource({kind:'integrator_answer'}),true);assert.equal(titles.control.capture(),undefined,'Conversation title clears the worker pin');
+  titles.setSessions([...titles.getSessions(),{...titles.getSessions()[0],id:'duplicate-target'}]);await titles.control.refresh('binding');
+  assert.equal(titles.control.pinState(worker).available,false);assert.equal(titles.control.pinSource(worker),false,'Ambiguous exact targets are refused');
+  titles.setSessions(titles.getSessions().slice(0,3));titles.setTruncated(true);await titles.control.refresh('binding');
+  assert.equal(titles.control.pinSource(worker),false,'Incomplete inventory cannot grant a title pin');
+  titles.setTruncated(false);titles.getSessions()[0].destination=null;await titles.control.refresh('binding');
+  assert.equal(titles.control.pinState(worker).available,false,'Missing native-issued destination remains unavailable');
+  titles.deny();await titles.control.refresh('binding');assert.equal(titles.control.pinSource(worker),false,'Grant loss prevents title pinning');
   console.log('Session workspace: exact reply, pin/expand/Back, stale generation, late history, technical view, audio and grant loss passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

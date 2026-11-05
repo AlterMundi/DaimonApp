@@ -403,8 +403,17 @@ window.Conversation = (() => {
       card.solo.setAttribute("aria-label",`${solo?"Remove solo from":"Solo"} automatic audio updates from ${label}`);
       card.solo.title=card.solo.getAttribute?.("aria-label");
       card.solo.disabled=!solo&&soloSessions.size>=256;
-      card.reset.hidden=mutedSessions.size===0&&soloSessions.size===0;
+      card.reset.hidden=workspace?.active===true||mutedSessions.size===0&&soloSessions.size===0;
     }
+    function pinButtonState(card){
+      if(!card.pin)return;
+      const state=workspace?.pinState(card.muteSource),label=card.muteSource.label||'Conversation';
+      card.pin.hidden=!workspace;card.pin.disabled=!state?.available;
+      card.pin.setAttribute('aria-pressed',String(!!state?.pinned));
+      card.pin.title=state?.pinned?`Unpin ${label} as the input destination`:`Pin ${label} as the input destination`;
+      card.pin.setAttribute('aria-label',card.pin.title);
+    }
+    function syncTitleControls(){for(const card of [...cards.values(),...progressCards.values()]){pinButtonState(card);muteButtonState(card);}}
     function sessionTitle(card,source,label){
       card.muteSource=source;
       const key=sessionKey(source);
@@ -414,6 +423,9 @@ window.Conversation = (() => {
       card.titleLabel.textContent=label;
       if(!card.mute){
         card.audioControls=node("span",undefined,"session-audio-controls");
+        card.pin=node('button',undefined,'session-title-pin');card.pin.type='button';
+        card.pin.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 6-4 1-3 5-5-5 5-3Z"/><path d="m9 15-6 6"/></svg>';
+        card.pin.addEventListener('click',()=>workspace?.pinSource(card.muteSource));
         card.mute=node("button",undefined,"session-audio-mute");card.mute.type="button";
         card.mute.addEventListener("click",()=>{
           const selected=sessionKey(card.muteSource);if(!selected)return;
@@ -434,8 +446,8 @@ window.Conversation = (() => {
         card.reset.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6"/></svg>';
         card.reset.addEventListener("click",()=>{mutedSessions.clear();soloSessions.clear();audioFilterChanged();});
       }
-      muteButtonState(card);card.audioControls.hidden=workspace?.active===true;
-      if(!card.muteAttached){card.audioControls.replaceChildren(card.mute,card.solo,card.reset);card.title.append(card.audioControls);card.muteAttached=true;}
+      muteButtonState(card);pinButtonState(card);card.audioControls.hidden=false;
+      if(!card.muteAttached){card.audioControls.replaceChildren(card.pin,card.mute,card.solo,card.reset);card.title.append(card.audioControls);card.muteAttached=true;}
     }
     function clearProgress(){for(const card of progressCards.values())card.box.remove();progressCards.clear();settledProgress.clear();}
     async function copyParts(read,valid=()=>true){
@@ -671,7 +683,7 @@ window.Conversation = (() => {
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
     const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,
-      onTarget:()=>clearFocus(),onReply:selectFocus,
+      onTarget:()=>{clearFocus();syncTitleControls();},onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
       onAudio:(action,row)=>{
         const key=row&&workspaceAudioKey(row);
@@ -679,7 +691,7 @@ window.Conversation = (() => {
         else if(key&&action==="mute"){if(mutedSessions.has(key))mutedSessions.delete(key);else if(mutedSessions.size<256)mutedSessions.add(key);}
         else if(key&&action==="solo"){if(soloSessions.has(key))soloSessions.delete(key);else if(soloSessions.size<256)soloSessions.add(key);mutedSessions.clear();}
         audioFilterChanged();
-      },onReady:visible=>{for(const card of [...cards.values(),...progressCards.values()])if(card.audioControls)card.audioControls.hidden=visible;}
+      },onReady:()=>syncTitleControls()
     }):undefined;
     function inputReference(){
       if(replyFocus)return replyFocus.reference;
