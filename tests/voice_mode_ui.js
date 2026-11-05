@@ -106,3 +106,13 @@ paused.mode.update({continuousState:{active:false,pending:true,audioPaused:true}
 console.log('Fullscreen voice: avatar identity, explicit opt-in, response/rearm fences, review, explicit in-avatar audio recovery, Escape, hidden and bounded exit passed.');
 
 let reconnected=0;const recoveryMode=boot({reconnect:()=>reconnected++});recoveryMode.mode.configure(true,true);recoveryMode.portrait.events.click();recoveryMode.canStart(false);recoveryMode.mode.update({continuousState:{active:false,starting:false,pending:true,working:false,message:'Recordings retained.'}});const reconnectButton=recoveryMode.nodes.find(v=>v.textContent==='Reconnect voice');assert(reconnectButton&&!reconnectButton.hidden&&!reconnectButton.disabled);reconnectButton.events.click();assert.equal(reconnected,1);assert(recoveryMode.mode.active,'Reconnect stays inside Avatar and keeps the review action available');
+
+// A continuous engine owns a ten-minute microphone visit, whereas the legacy
+// alternating view retains its independent five-minute opt-in.
+const continuousBudget=boot();continuousBudget.mode.configure(true,true);continuousBudget.portrait.events.click();
+for(const t of continuousBudget.timers.filter(t=>!t.cancelled&&t.ms<=300000))t.fn();
+assert.equal(continuousBudget.mode.active,true,'The legacy five-minute timer must not terminate a continuous voice visit');
+assert.equal(continuousBudget.counts().leaves,0);
+const endContinuous=continuousBudget.timers.find(t=>!t.cancelled&&t.ms===600000);assert(endContinuous,'Continuous view still has a finite ten-minute stop path');
+endContinuous.fn();assert.equal(continuousBudget.mode.active,false);assert.equal(continuousBudget.counts().leaves,1,'Budget expiry closes through the ordinary owner once');
+console.log('Avatar view budget: continuous voice survives the legacy five-minute deadline and closes at ten minutes.');

@@ -464,3 +464,33 @@ The regression checks confirmed flush and original retention without a manufactu
 unconfirmed tail. This repairs the native client deadline; it does not establish
 the cause of historical Qwen phone failures. The600second complete microphone
 visit budget remains unchanged; this is not automatic microphone renewal.
+
+
+## Fullscreen view and native-question boundary
+
+A5November regression exposed an independent fullscreen-view deadline: the
+legacy alternating-view five-minute timer also closed continuous Avatar at five
+minutes, even when its engine had a600second visit. The sustained540second
+qualification above mounted the native engine, not that fullscreen controller;
+it could not prove that the complete view stayed open. Retain that distinction.
+
+The continuous fullscreen guard now permits at most ten minutes; the legacy
+alternating mode retains its five-minute opt-in. The selected engine still owns
+its configured capture limit, including any shorter limit. Expiry closes through
+the existing onLeave/hold/flush path exactly once; it does not cancel accepted
+backend work or reopen a microphone. Only explicit reconnect rearms the view
+guard. No provider, context, storage or complete-microphone-visit budget changes.
+This qualifies the deterministic view boundary, not an actual ten-minute phone
+visit or the cause of a particular historical recording-review error.
+
+Before qualifying native human questions, inspect the selected mode and effective
+tool availability. The inspected Core request_user_input handler is root-only
+and checks its allowed collaboration modes. Its repository feature
+default_mode_request_user_input is under development and default-disabled;
+the local owner configuration does not explicitly enable it. A handler/schema
+alone therefore does not prove that ordinary native voice handoffs can invoke
+it. Do not enable a global feature, switch an ordinary thread to Plan, answer
+approvals, or synthesize a human answer merely to make a fixture pass. The
+existing request/task ledgers and For you remain the presentation/decision owners;
+actual question creation, visible attention during Avatar, reconnect and exact
+human-answer incorporation still need qualification.
