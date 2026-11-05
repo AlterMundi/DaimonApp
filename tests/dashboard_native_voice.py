@@ -754,9 +754,15 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
                 (self.root/'caption-release').touch()
                 deadline=time.monotonic()+2
                 while time.monotonic()<deadline:
-                    if any(item.get('derived_caption') for item in self.app.state.native_history.page(100)['items']):break
+                    # Saving the caption precedes the owner-context receipt.
+                    # Wait for both before tearing down the original socket;
+                    # otherwise cleanup races the very late return under test.
+                    if (any(item.get('derived_caption') for item in self.app.state.native_history.page(100)['items'])
+                            and len(self.owner.contexts[self.ident]['sources'])==2):break
                     time.sleep(.005)
                 self.assertTrue(any(item.get('derived_caption') for item in self.app.state.native_history.page(100)['items']))
+                self.assertEqual(len(self.owner.contexts[self.ident]['sources']),2,
+                    'Observe the late owner-context receipt before fixture shutdown')
                 with self.open() as third:
                     third.send_json({**self.meta(),'id':str(uuid.uuid4())})
                     self.assertEqual(third.receive_json()['type'],'review','Old cleanup cannot clear successor ownership')

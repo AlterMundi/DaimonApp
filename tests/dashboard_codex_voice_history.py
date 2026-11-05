@@ -57,6 +57,35 @@ class History(unittest.TestCase):
         self.assertEqual(len(list((self.history.root/'memory').glob('*.json'))),1)
         self.assertEqual(len(self.history.list(100,'a'*64)),1)
 
+    def test_previous_visit_reference_advances_only_for_completed_owned_speech(self):
+        def speech(visit,generation,text):
+            self.history.item(visit,100,'a'*64,{'id':str(uuid.uuid4()),'type':'transcriptSegment',
+                'role':'user','text':text,'realtimeSessionId':generation})
+        speech(self.visit,self.session,'First source')
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        first=self.history.memory_context(100,self.frozen)
+        self.assertIn('latest completed voice source is visit '+self.visit,first)
+        empty=str(uuid.uuid4())
+        self.history.open(empty,100,self.frozen,str(uuid.uuid4()))
+        self.history.complete_transcript(empty,100,'a'*64)
+        self.assertEqual(self.history.memory_context(100,self.frozen),first,
+            'An empty reconnect must not move the historical speech reference')
+        successor=str(uuid.uuid4());generation=str(uuid.uuid4())
+        self.history.open(successor,100,self.frozen,generation)
+        speech(successor,generation,'Second source')
+        self.assertEqual(self.history.memory_context(100,self.frozen),first,
+            'Unconfirmed speech must not advance the completed-source reference')
+        self.history.complete_transcript(successor,100,'a'*64)
+        second=self.history.memory_context(100,self.frozen)
+        self.assertNotEqual(second,first)
+        self.assertIn('latest completed voice source is visit '+successor,second)
+        catalog=json.loads(next((self.history.root/'memory').glob('*.json')).read_text())
+        self.assertEqual(catalog['latest_completed_visit'],successor)
+        self.assertEqual([v['id']for v in catalog['visits']],[self.visit,successor])
+        self.assertLess(len(second.encode()),2048)
+        self.assertEqual(self.history.memory_context(100,self.frozen),second,
+            'An unchanged source reference must still deduplicate across reconnects')
+
     def test_memory_catalog_contains_all512_sources_and_refuses_unsafe_destination(self):
         # Assemble the already bounded store directly; avoid512 fsyncs for a
         # catalog check. Real source admission/restart is covered separately.
@@ -119,6 +148,17 @@ class History(unittest.TestCase):
         self.assertEqual(self.history.remember(100,self.frozen,context,successor,provider),'confirmed')
         self.assertEqual(self.history.remember(100,self.frozen,context,successor,provider),'confirmed')
         self.assertEqual(successor.remember.call_count,1)
+        latest=str(uuid.uuid4());generation=str(uuid.uuid4())
+        self.history.open(latest,100,self.frozen,generation)
+        self.history.item(latest,100,'a'*64,{'id':'later','type':'transcriptSegment',
+            'role':'user','text':'Later completed speech','realtimeSessionId':generation})
+        self.history.complete_transcript(latest,100,'a'*64)
+        changed=self.history.memory_context(100,self.frozen)
+        self.assertNotEqual(changed,context)
+        self.assertEqual(self.history.remember(100,self.frozen,changed,successor,provider),'confirmed')
+        self.assertEqual(successor.remember.call_count,2,'A changed latest source needs one new contextual reference')
+        self.assertEqual(self.history.remember(100,self.frozen,changed,successor,provider),'confirmed')
+        self.assertEqual(successor.remember.call_count,2,'Empty reconnects must not repeat that update')
 
     def test_queued_or_missing_memory_write_is_not_repeated_on_new_connection(self):
         self.history.item(self.visit,100,'a'*64,{'id':'source','type':'transcriptSegment',

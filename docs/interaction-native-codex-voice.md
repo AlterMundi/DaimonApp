@@ -195,7 +195,7 @@ The retained context journal deduplicates across connections using canonical
 native readback, not an RPC acknowledgement. Queued or lost-ACK writes stay
 pending and are not repeated by reconnecting. Successful observations advance
 their checkpoint even while pending. A confirmed fragment is refreshed only
-after observed compaction removal, a changed owner revision, or an unobserved
+after observed compaction removal, a changed source reference or owner revision, or an unobserved
 native-history interval exceeding4MiB. A large interval does not repeat an
 uncertain write or block voice merely because it exceeds the read window.
 Inode replacement, truncation, wrong identity and incomplete records remain
@@ -208,6 +208,22 @@ share the existing total initial-context allowance. Proof reads inspect at most
 4MiB and2MiB per record. No model/voice defaults, native retention flags or original
 retention policy changes. Missing/legacy sequence values retain the established
 fallback. No cleanup removes retained speech or native work.
+
+The catalog and context hint name the latest completed source-bearing visit.
+At a new voice start, "previous voice visit" refers to that record, not the
+penultimate catalog entry. Only completed owned speech advances this reference;
+empty reconnects, incomplete visits and other owners do not. A changed reference
+updates the existing context journal; an unchanged reference still deduplicates.
+This resolves a demonstrated temporal ambiguity: native backing selected an
+older record even though the latest completed visit was in the catalog.
+
+A subsequent actual native lookup read the newly named latest source. Its spoken
+question was misrecognized ("bytes" became "items"), so it does not qualify the
+intended byte-size answer. Premature foreground claims also remained. Disabling
+native acknowledgement filler alone did not fix factual waiting. A separate BEM
+channel experiment did not produce the required backend channel headers and
+selected the older source; it does not qualify BEM routing. These experiments
+remain test-only; provider routing, prompts and defaults are unchanged.
 
 Actual synthetic qualification omitted the recent application transcript window.
 Native backing commands read the index and oldest source, and returned both its

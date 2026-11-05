@@ -106,6 +106,13 @@ interaction defect under [303](https://github.com/AlterMundi/DaimonApp/issues/30
 including after explicit wait instructions. Neither source retrieval nor a
 compaction/context acknowledgement completes sustainable or children-ready voice.
 
+Follow-up: explicitly ground "previous voice visit" in the latest completed
+source-bearing record. Empty reconnects leave that reference unchanged. Actual
+native source selection followed the new reference, but ASR changed the requested
+quantity and foreground waiting still failed. Acknowledgement-filler and BEM
+experiments are not selected fixes. Keep #303 open for verified final-result
+delivery, natural waiting and useful spoken answers.
+
 ## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound

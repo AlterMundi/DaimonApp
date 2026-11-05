@@ -144,12 +144,15 @@ class CodexVoiceHistory:
             directory=private_directory(self.root/'memory')
             path=self._memory_path(human,frozen)
             catalog={'schema':'daimon.native-voice-memory/v1','native_thread':frozen['native_thread'],
-                'source_root':str(self.root.resolve()),'visits':visits}
+                'source_root':str(self.root.resolve()),
+                'latest_completed_visit':visits[-1]['id'],'visits':visits}
             if path.exists():
                 previous=read_json(path)
                 if 'native_context'in previous:catalog['native_context']=previous['native_context']
             self._write_memory(path,catalog)
             context=('Completed voice sources from this exact conversation are available at index '+json.dumps(str(path.resolve()))+'. '
+                'Before this voice visit, the latest completed voice source is visit '+visits[-1]['id']+'. '
+                'Resolve "previous voice visit" to this record, not the penultimate catalog row, unless the speaker explicitly means an earlier point. '
                 'Foreground voice: when earlier memory is missing, delegate a focused lookup and include that index path. '
                 'Wait for the verified result before stating historical facts. The current request/visit is not the archive; '
                 'never present its first visible message as the oldest archived source. A brief acknowledgement is enough while waiting. '
@@ -180,7 +183,8 @@ class CodexVoiceHistory:
 
         An uncertain/queued injection remains pending until readback. A later
         connection never repeats it. A confirmed context is supplied again only
-        after compaction removed it, the owner revision changed, or more than
+        after its latest source reference or owner revision changed, compaction
+        removed it, or more than
         4MiB of unobserved native history makes its current presence unknown.
         That bounded refresh applies only to previously confirmed writes.
         No human utterance, backend turn, compaction or work replay is created.
