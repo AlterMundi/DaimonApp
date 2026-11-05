@@ -470,6 +470,19 @@ class Render(unittest.TestCase):
         if terminal:frames.append({'output':{'finish_reason':'stop'}})
         return b''.join(b'data: '+json.dumps(v).encode()+b'\n\n' for v in frames)
 
+    def test_sse_microchunks_keep_first_audio_and_batch_later_integrity_checks(self):
+        parts=[bytes([n%256])*256 for n in range(500)]
+        events=[{'output':{'audio':{'data':base64.b64encode(part).decode()}}} for part in parts]
+        events.append({'output':{'finish_reason':'stop'}})
+        wire=b''.join(b'data: '+json.dumps(event).encode()+b'\n\n' for event in events)
+        response=io.BytesIO(wire);chunks=speech.sse_audio(response)
+        first=next(chunks)
+        self.assertEqual(first,parts[0]);self.assertLess(response.tell(),len(wire),'First audio stays progressive')
+        rest=list(chunks);self.assertEqual(b''.join([first]+rest),b''.join(parts))
+        self.assertLess(len(rest),8,'Hundreds of tiny provider frames cannot require hundreds of HTTP authority checks')
+        self.assertTrue(all(len(chunk)==32768 for chunk in rest[:-1]))
+        self.assertLessEqual(len(rest[-1]),32768)
+
     def test_stream_intent_cache_integrity_and_retention(self):
         self.qwen_route();self.content_type='text/event-stream';self.data=self.stream_data();frames=[]
         speech.stream_render(self.binding,self.request,frames.append)

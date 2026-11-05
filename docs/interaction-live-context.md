@@ -70,6 +70,16 @@ private phone evidence showed inherited text growing2695/5256/6985/8826bytes
 across four reconnects; the fixture now checks twenty empty reconnects against
 one identical seed, separately from semantic checkpoint quality.
 
+The read-only `session_status` tool also accepts an optional `selector`: an
+exact case-insensitive label or an already offered observer ID. A targeted read
+filters the same current audience-checked observer snapshot; it does not read
+native/private session history or grant routing/control. Missing and ambiguous
+matches are explicit, freshness redaction is unchanged, and omitted selector
+retains the bounded all-session view. For one known session prefer this argument
+instead of repeatedly sending the complete workspace. The64-session fixture
+keeps the targeted response below one fifth of the full response without starting
+work; this is a serialized-byte comparison, not measured model token usage.
+
 Further token-efficiency review must measure repeated tool snapshots, identical
 updates and seed size across nonempty renewals, as well as request/return context
 in the integrator. Use deltas, source references and bounded pages where the
@@ -720,9 +730,12 @@ unavailable to the model's integrating controller. They never dispatch a native
 turn or call a provider.
 
 Preparation is read-only and requires an open dialogue, no unfinished frozen
-reader, all retained language incorporated and represented by Sol's current
-checkpoint, and no pending/submitting guidance. The returned seed contains that
-checkpoint and settled guidance as attributed non-executable continuity. Its
+reader, all retained language incorporated, an existing semantic checkpoint,
+and no pending/submitting guidance. The returned seed contains that checkpoint,
+the complete exact event tail after its `through` position, and settled guidance
+as attributed non-executable continuity. The tail must be incorporated but need
+not be summarized again solely to replace a provider connection. Replacement
+never retires that tail or treats an interrupted assistant caption as heard. Its
 serialized24KiB ceiling reserves space within provider setup; it is not a token
 count or a guarantee that every selected identity/setup combination fits. An
 oversized seed is rejected intact, never clipped. The caller must still check
@@ -1653,3 +1666,69 @@ ordinary publication occurred. This proves this semantic handling only. Native
 history remains retained; the successful disposable fixture was removed. Both
 the new caption-aware fixture and the actual old selected563Python app passed
 the joined owner/controller/SQLite handover tests on the exact new release.
+
+
+### Qwen renewal arbitration —5November2026
+
+A negative sustained-phone trial reached the unchanged local input bound after a
+semantic checkpoint had committed. New incorporated language followed that
+checkpoint. The old exact-prefix-only rollover gate rejected that otherwise
+bounded continuity; preparation now includes its exact incorporated tail.
+Aggregate `active_floor` diagnostics did not identify the precise transport or
+acoustic predicate that blocked the real trial. New fixed scalar floor fields
+distinguish those predicates without recording dialogue or frame logs.
+
+The Qwen owner yields at an actual response/input boundary. After early pressure,
+new local acoustic spans stay in the existing bounded PCM queue; a transmitted
+span must finish its exact commit and transcript. Required deferred function
+outputs are written once and their required answers finish on the old socket.
+A raw tool lookup is not automatically transferred as an answer in a checkpoint.
+Explicit spoken guidance also gets its response and blocks handover until its
+normal completion/playback boundary; it is not downgraded to a context receipt.
+Unsolicited return nudges wait behind renewal. A source query depending on a
+wholly unsent local original returns `not_ready` rather than waiting for that
+held original or selecting older words.
+
+Only spans with no provider start and no transmitted bytes may cross the final
+generation commit. Their IDs, original retention, question scope, PCM/preroll and
+logical clocks stay unchanged; pumping resumes on the installed successor.
+Known candidate setup failure releases the same old socket without replaying
+function outputs or originals. Existing admission uncertainty, source digests,
+playback gates, 64k/48k/600s diagnostic bounds and capture limits are unchanged.
+
+This uses Qwen's documented manual `input_audio_buffer.commit` / commit ACK /
+`response.create` lifecycle: [official interaction guide](https://help.aliyun.com/en/model-studio/realtime).
+`response.done` completes one response; it must not implicitly force another
+control response before the owner can choose renewal. This implementation and
+synthetic protocol/owner journeys are not sustained phone or hearing acceptance.
+
+
+### Client reconnect status after the negative phone trial
+
+Partial playback notifications no longer replace absent connection/review fields.
+A stopped or cancelled PCM node cannot publish a late completion over the held
+voice state. Ordinary reply playback while the microphone is disconnected is
+labeled separately from an active Avatar connection; it does not prove a
+successful reconnect. Source tests exercise delayed audio completion, review
+preservation and reconnect preparation across partial callbacks. Actual phone
+connection timing and audible chunk clicks remain separate open checks.
+
+The foreground instruction now defaults to silent tool use and at most one
+natural acknowledgment per human request when explaining a delay. It asks for
+plain-language observer status and avoids retained-original, consolidation and
+internal-role narration unless the human asks about the architecture. This is a
+source prompt change, not evidence of a new provider's spoken behavior.
+
+### Closing Qwen iteration: composed owner/wire regression
+
+The real QwenDialogue adapter is now exercised inside the mounted native voice
+owner, with synthetic provider transport/native control. It commits one original,
+admits one pending integrating request, completes its required function answer on
+the old socket, then renews. Successor setup retains that exact original/intent; a
+later canonical return traverses a new Qwen tool call and produces text/PCM. One
+input commit and one work admission remain across the transition. The fixture
+initially used an internal `formulation` field instead of the public tool's
+`request`, then lacked the native checkpoint-needed receipt; those were fixture
+defects, not product failures. Both were corrected before qualification. This is
+composed protocol evidence, not a real provider or physical-hearing trial. Nicolas
+now selects proceeding to OpenAI; remaining Qwen acceptance stays on the roadmap.

@@ -35,14 +35,22 @@ Explicit unpin is also retained. Authentication loss/reset removes the preferenc
 another receiving binding cannot restore it. Temporary expanded views remain
 in-memory intent. Back does not
 clear the composer draft or an already frozen recording. Audio filters retain
-only their existing binding-scoped preferences. Per-update audio controls remain
-as a fallback when the complete workspace is unavailable; they are hidden only
-when the grouped rail controls are active.
+only their existing binding-scoped preferences. Per-update compact Mute/Solo controls remain beside update titles and share
+the same audio preferences as the menu. Their pin control resolves only through
+the current authorized complete inventory, matching an exact target key or the
+integrating entry; unknown or ambiguous destinations remain unavailable. No
+label matching or second pin store is used. Reset remains in the menu when the
+workspace is available, with per-update fallback Reset otherwise. The destination
+line highlights its unpin control while an explicit pin is active.
 
 ## Status and permissions
 
-The rail lists all owned sessions within the existing 128-session bound, sorted
-by actual conversation activity rather than observer refresh time. Existing
+The authorized inventory retains all owned sessions within the existing128-session
+bound. The rail shows sessions active within24hours, with fresh running/tool/active-
+goal sessions first, then recent conversation activity. A fresh currently working
+session counts as active now even if its last conversational message is older.
+An old hidden row does not clear an explicit pin, recording or draft. Observer
+refresh time alone never qualifies an idle session as recent. Existing
 fresh observer facts show work, tools, active/blocked goals and human action.
 Stale/unknown facts are explicit and color is accompanied by text/icons.
 `result_available` means a retained final assistant message exists in that current
@@ -137,3 +145,46 @@ composition must preserve its current heartbeat/continuity features, and the
 browser must have its actual selected workspace grant before this becomes a
 usable feature. Real device/voice, repeated continuity, useful latency and the
 broader roadmap remain required acceptance; tests do not close those obligations.
+
+
+Receiving checkpoint —5November2026: workspace613 is selected with the separately
+qualified phone614/615 fixes, native590-compatible sourceb5d300a9 and
+UIb7092302eace. The explicit shared-Home owner workspace grant is enabled; this
+does not alter Companion/monitor grants or enroll another user. Combined native
+all-feature568 tests (one ignored), clippy, exact staged text/recorded-ASR voice,
+archive-hold/restart and desktop/mobile Chromium journeys passed. Actual owner
+metadata and public assets were observed after adoption, preserving live
+collectors, Core, goals and all other settings. Human browser/device acceptance
+remains pending. Retain the compatible native workspace/hold reader on web
+rollback; old strict readers are not a rollback for held originals. Exact
+selection, rollback and remaining acceptance live in the Shared Resources
+Interaction receiving guide and the receiving owner's local operations record.
+
+The compact session toolbar sits below the reading area, immediately above the
+input dock. Its menu opens upward within that area on desktop and mobile, without
+shifting the conversation or input. The destination remains beside the menu
+control. Compact-header mode also hides the pending/status lane; reverse scrolling
+restores it without changing its content or pending tasks.
+
+Routing maps and saved-input routing-path disclosures remain in Under the hood,
+without per-message map shortcuts or routing details in the conversation.
+
+Session rows use one compact line for the title and four borderless reply, pin,
+mute and solo controls, followed by the readable status. Each control has a
+28px target and an 18px icon, matching the small audio-control vocabulary. Long
+titles truncate visually while retaining their full accessible name and tooltip.
+Pressed controls and keyboard focus remain visible; the menu stays anchored
+above the composer without changing its draft or selected input target.
+
+Choosing a pin or an exact-message reply collapses the menu. Pin selection
+returns keyboard focus to the menu toggle; reply uses the existing composer
+focus without changing the frozen message reference. Mute and Solo keep the
+menu open. When any audio filter is active, Reset appears in the menu header
+aligned above the controls; clearing filters hides it again. The collapsed
+destination toolbar contains only navigation and the current input destination.
+
+Initial selected-history failures stay visible with an explicit Retry reading
+action. Ordinary metadata refresh does not restart a failed initial read or
+replace its error with another Reading indicator. The existing20second API
+deadline bounds that read. Retry preserves the composer/target and reads only
+history; an obsolete file revision clears its old display before a fresh read.

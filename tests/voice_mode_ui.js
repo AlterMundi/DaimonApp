@@ -51,6 +51,9 @@ direct.mode.update({continuousState:{active:true,remaining:Infinity}});assert.eq
 direct.mode.update({continuousState:{active:false,starting:false,pending:true,working:false,message:'Voice analysis stopped. Your recordings are kept.'}});direct.mode.update({pending:false,uploading:true,capture:'idle'});
 assert.equal(direct.nodes.find(n=>n.className==='voice-mode-state').textContent,'Recording needs review','An old ordinary upload cannot clear continuous recovery state');
 assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textContent,/Voice analysis stopped/,'The actual hold reason survives unrelated ordinary playback updates');
+direct.mode.update({continuousState:{playback:'idle',audioPaused:false,audioEnabled:true}});
+assert.equal(direct.nodes.find(n=>n.className==='voice-mode-state').textContent,'Recording needs review','Partial audio state cannot clear retained review');
+assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textContent,/Voice analysis stopped/);
 const badge=direct.nodes.find(n=>n.className==='voice-mode-detection');
 direct.mode.update({handoff:{id:'first',gate:'waiting_speech',captured_ms:37000,analyzed_ms:6200,words:true}});
 assert.match(badge.textContent,/Waiting for voice detection/);assert.match(badge.textContent,/Voice analysis delayed/);assert.equal(badge.hidden,false);
@@ -71,7 +74,7 @@ background.document.hidden=true;background.listeners.visibilitychange();
 assert(background.mode.active,'Hiding a continuous view pauses capture without leaving its Conversation-only audio mix');
 assert.equal(background.suspends(),1);assert.equal(background.counts().leaves,0);
 background.mode.update({continuousState:{active:false,starting:false,pending:false,working:false}});
-assert.equal(background.nodes.find(n=>n.className==='voice-mode-state').textContent,'Speaking · microphone paused');
+assert.equal(background.nodes.find(n=>n.className==='voice-mode-state').textContent,'Reply playback · microphone off');
 background.document.hidden=false;background.listeners.visibilitychange();assert.equal(background.counts().starts,1,'Showing the view never reopens the microphone');
 background.listeners.pagehide();assert(!background.mode.active,'Leaving the page still closes the bounded view');assert.equal(background.counts().leaves,1);
 const unavailable=boot();unavailable.mode.configure(true,true);unavailable.portrait.events.click();
@@ -79,6 +82,12 @@ unavailable.mode.update({continuousState:{active:false,starting:false,pending:fa
 assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','A stopped native session without an original must still explain why it stopped');
 unavailable.mode.update({capture:'idle',pending:false});
 assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','Ordinary composer updates cannot hide a native stop reason');
+unavailable.mode.update({continuousState:{playback:'playing'},playback:'playing'});
+assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-state').textContent,'Reply playback · microphone off');
+assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','Playback does not assert a new voice connection');
+unavailable.mode.update({continuousState:{starting:true,message:'Preparing voice'}});
+unavailable.mode.update({continuousState:{playback:'idle'},playback:'idle'});
+assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-state').textContent,'Preparing voice','Partial output state cannot erase reconnect preparation');
 unavailable.mode.update({continuousState:{active:true,starting:false,pending:false,working:false,message:'Listening'}});
 assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'','Restart clears the previous stop reason');unavailable.mode.close();
 

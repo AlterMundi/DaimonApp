@@ -35,24 +35,89 @@ than one frontend importing or depending on the other frontend's lifecycle.
 This remaining refactor is explicitly **not the current priority or a new gate**
 for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
-## Current Qwen continuation work —5November2026
+## Current provider priority —5November2026
+
+Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
+voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
+#301/#304/#609; it is not a gate for starting the comparison and is not silently
+marked achieved. Keep Qwen available while the next provider is qualified.
+Gemini remains deferred without balance. The existing ordinary integrating
+provider/model, active work, original journals and diagnostic bounds stay intact.
+
+First reuse the supported Codex/ChatGPT WebRTC route, before asking for an API
+key. The18October #118 comparison actually decoded/transcribed corrected Spanish
+voice through native login; today's loaded native metadata confirms ChatGPT/Pro
+but is not a fresh voice entitlement test. The public GPT-Live WebRTC endpoint
+requires project access; the existing Realtime adapter is a distinct protocol.
+`clientManagedHandoffs` alone does not define native work ownership. Nicolas
+1eb74b0e selects evaluating OpenAI/Codex native handoffs and managed Responses
+first, without assuming our current custom architecture is better. Native backend
+work may be the intended integration; measure its actual ownership/history/cost. Use the
+[official-practice comparison](interaction-gpt-live-practices.md), preserve full
+identity/memory/results/questions and existing integrating responsibility, and
+redesign provider-specific transport when appropriate.
+
+## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound
 semantic checkpoint before voice opens. Actual Luna/Qwen correction-memory/PCM
 qualification recovered after its first20second preflight was pending. This is
 bounded recovery, not full useful phone latency or uninterrupted start acceptance.
 
-Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) prepares small
-continuation seeds during active canonical conversation. Its candidate supports
-repeatable nonce-bound full-read/checkpoint cycles without physical replacement,
-prefix commits with exact later tails, one outstanding operation and persisted
-finite rearming/request bounds. See [the context contract](interaction-live-context.md#active-continuation-preparation-5november2026).
-It remains unselected until exact native/mounted/actual-provider qualification and
-compatible receiving adoption. No diagnostic limit increase or provider switch.
-Full useful Qwen audio after replacements, manual reconnect, physical hearing and
-all prior milestone obligations remain open. OpenAI follows Qwen closure; Gemini
-is deferred without balance.606/607 UI foundation/grants are merged but unselected;
-the complete session workspace below remains part of this goal.
+Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) separates small
+semantic continuation preparation from physical replacement. PR610/612 are now
+receiving-selected, including nonce-bound full-read/checkpoint cycles, exact
+later tails, one outstanding operation and finite rearming/request bounds.
+Actual Luna low qualification produced two semantic checkpoints while Qwen stayed
+open, followed by two separately committed Qwen replacements and a manual
+reconnect, each with corrected-key text and decoded PCM. That digital fixture
+predated the subsequent negative phone trial; it did not prove sustained device
+use, natural-pressure renewal or physical hearing.
+
+The phone trial then exposed separate original-audio archive exhaustion, late
+input reservation while tools were pending, and recursively escaped inherited
+reconnect language. PR614/615 are receiving-selected with workspace613 over the
+compatible native590 composition. Reconnect preserves inherited language bytes;
+requested tool results can settle within the reserved input margin; selected
+original holds preserve pending audio through ASR/restart until matching archive
+handoff. Existing64k/48k/600s diagnostic and storage bounds remain unchanged.
+A new bounded digital regression against the selected composition completed in
+92.149seconds: two real Luna low semantic checkpoints, two committed Qwen
+replacements and one manual reconnect, with three complete corrected-key text/
+decoded-PCM responses and a1375byte reconnect seed. The selected native's separate
+20empty-visit regression passed with byte-identical inherited language. These
+checks cover different scopes; the paid provider fixture did not execute20visits
+and neither proves natural-pressure acoustic handover or sustained phone use.
+
+A subsequent sustained-phone trial again hit the local input bound: its semantic
+checkpoint covered nine events while all sixteen events had been incorporated.
+The first close preceded the UI deployment; a later reconnect ended with an
+observed client disconnection whose cause remains unproven. PR624 removes the
+checkpoint-tail barrier without changing bounds. Receiving-selected625/626
+coordinates deferred controls and wholly unsent audio at the owner boundary,
+while preserving all required tool-result answers. Actual Qwen wire-induced
+pressure crossed two native replacements and returned three corrected-key text/
+PCM answers; sustained natural phone acceptance remains outstanding.627/628 are
+also receiving-selected for ordinary Conversation speech reserve and explicit
+failed-history recovery; these are separate from Avatar continuity.
+
+A later browser regression reproduces immediate first-response failure when a
+reconnected AudioContext inherits the prior visit's75second playback deadline.
+The browser repair resets that clock, keeps continuous PCM fragments adjacent
+with80ms arrival reserve, and separates distinct assistant interventions by180ms.
+Source qualification and physical receiving/hearing acceptance remain distinct.
+
+The pending hold is not permanent archive closure. Archive transfer/retirement,
+long/noisy real speech, useful latency and actual phone continuity remain open.
+See [the context contract](interaction-live-context.md#active-continuation-preparation-5november2026)
+and the concise Shared Resources current receiving guide for exact selection.
+
+The session workspace foundations606/607 and UI613 are also receiving-selected,
+with the619–622 compact-layout and shared title-control follow-ups. Source tests, actual receiving delivery
+and human acceptance remain distinct. OpenAI comparison is now current; Gemini is
+explicitly deferred without balance and must not be called for qualification.
+Full useful Qwen audio after repeated replacements, manual reconnect, physical
+hearing and every prior milestone obligation remain part of this goal.
 
 ## Session workspace and adaptive header —4November2026
 
@@ -60,8 +125,11 @@ Nicolas selected #602 as a complete interface/routing change, with #603 direct
 input, #604 session rail and #605 technical event view. Preserve the Avatar
 continuity work while implementing this base-experience refinement in milestone8.
 
-All owned sessions appear in a collapsible side column, ordered by conversation
-activity rather than observer refresh time. Existing Telecodex markers and fresh
+The authorized inventory covers all owned sessions. Following the5November
+phone feedback, the collapsible column shows sessions active within24hours, with
+fresh running/tool/active-goal sessions first, then conversation activity. Observer
+refresh alone does not qualify an idle session. Hidden old rows do not change
+existing pins, frozen captures or drafts. Existing Telecodex markers and fresh
 observer facts represent work, active/blocked goals, human requests and results
 to review. Unknown/stale observations stay explicit; color is not the only cue.
 The latest-message bubble uses an exact current source/revision reply. A separate
@@ -73,21 +141,26 @@ Text and ordinary Conversation speech sent to a pinned worker bypass an integrat
 model turn; observer visibility does not imply another model call per message.
 Avatar delegation remains independent. Reuse existing native admission/history.
 
-Move Mute/Solo beside the session title and Reset audio filters to the rail before
-removing per-update controls. Expanded sessions expose a terminal-symbol view of
+Keep compact Mute/Solo and pin controls beside session titles in both the menu
+and individual updates, synchronized through the existing audio mix and one
+workspace pin store. Reset audio filters sits above the menu controls. Pin/reply
+selection closes the menu; audio controls keep it open. The destination line
+above input shows the selected pin and provides unpin. Expanded sessions expose
+a terminal-symbol view of
 the harness events actually available (tools, commands/output, exposed reasoning
 summaries), replacing session-specific Under the hood content while retaining
 useful app diagnostics. Do not invent hidden events or create a transcript store.
 
 The header compacts to one line on deliberate forward scrolling and reappears on
-reverse scrolling or header focus. Programmatic speech-follow scrolling must not
+reverse scrolling or header focus, including the pending/status lane. The compact
+session menu opens upward from above input. Programmatic speech-follow scrolling must not
 hide it. Preserve readable identity, header actions, keyboard/touch access and
 reduced motion. Qualify desktop/mobile combined pin/back/reply/text/voice/audio
 and live-tool journeys without Telegram or model/provider expertise.
 
 Implementation checkpoint: #606/#607 provide the merged metadata, exact
-session-destination and explicit workspace-grant foundations. The next complete
-source candidate adds the rail, temporary expansion, exact latest-message reply,
+session-destination and explicit workspace-grant foundations. Merged #613 adds
+the rail, temporary expansion, exact latest-message reply,
 grouped audio and selected native technical history, preserving the existing
 composer and Avatar scope. Its bounded reader exposes available tool/output and
 reasoning-summary events without widening the global feed or adding a transcript
@@ -99,10 +172,18 @@ the latter remains unknown rather than being inferred from work completion or
 viewing. The adaptive header and combined workspace have synthetic actual-shell
 Chromium coverage at1280px/390px, including deliberate scroll/focus and draft
 preservation. Native/HTTP text and recorded-ASR voice qualification uses synthetic
-peers with zero models. These are source qualification, not deployed grants,
-phone/hearing acceptance or closure of the complete base-experience roadmap.
-Current receiving still selects its separately qualified Qwen continuity
-composition until a compatible native/web workspace successor is adopted.
+peers with zero models. On5November2026 the combined workspace613/phone614-615
+composition was receiving-adopted: native590-compatible sourceb5d300a9,
+web613-615 composition, UIb7092302eace. The existing shared-Home owner has its
+explicit workspace grant; other device scopes remain unchanged. Actual owner
+metadata, capabilities and served assets were verified while preserving native
+work, Core, journals and original protection. Combined exact-staged HTTP/ASR/
+restart and desktop/mobile Chromium journeys passed. This is receiving delivery,
+not phone/hearing acceptance or closure of the complete base-experience roadmap.
+The preceding Avatar phone trial was negative; sustained Qwen acceptance remains
+open. Keep the compatible native reader on rollback; never restore journals or
+replay originals. The current operator selection and qualification remain in
+Shared Resources' maintained Interaction receiving record.
 
 ## Shared attention backend —4November2026
 

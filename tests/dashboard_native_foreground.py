@@ -66,6 +66,17 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         await capture.reservation;self.owner.text=text
         await self.bridge.transcript(ident,text)
         return ident,pcm,capture
+    async def test_source_query_rejects_wholly_unsent_original_without_waiting_or_admitting_work(self):
+        ident=str(uuid.uuid4());capture=self.bridge.capture(ident,b'\1\0'*160,{})
+        await capture.reservation
+        self.bridge.unsent_originals=lambda:{ident}
+        result=await asyncio.wait_for(self.bridge.tool({'type':'source_query','call_id':'unsent','before':None}),1)
+        self.assertEqual(result['kind'],'not_ready')
+        self.assertIn('retained locally',result['reason'])
+        self.assertIsNone(capture.completion)
+        self.assertEqual(self.owner.delegations,[])
+        self.assertEqual(self.stream.results,[('unsent',result)])
+
     async def test_invalid_proposal_returns_feedback_without_owner_operation(self):
         result=await self.bridge.tool({'type':'tool_rejected','call_id':'invalid'})
         self.assertEqual(result['kind'],'invalid_arguments')
@@ -179,6 +190,28 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['sessions'][1]['execution'],'unknown');self.assertEqual(result['sessions'][1]['goal_state'],'unknown');self.assertIsNone(result['sessions'][1]['pending'])
         self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
         self.assertEqual(result['integrator_connection'],'available_through_foreground_tools')
+    async def test_targeted_status_filters_owned_snapshot_without_work_or_stale_claims(self):
+        rows=[{'id':f'session:{n}','label':f'Work {n}','fresh':True,'execution':'running'} for n in range(64)]
+        rows[42]['fresh']=False
+        calls=[]
+        def observe():calls.append(True);return {'connected':True,'sources':rows}
+        self.owner.sonic_activity=observe
+        broad=await self.bridge.tool({'type':'session_status_query','call_id':'all'})
+        narrow=await self.bridge.tool({'type':'session_status_query','call_id':'one','selector':'work 42'})
+        self.assertEqual(narrow['selection'],'matched')
+        self.assertEqual([r['id'] for r in narrow['sessions']],['session:42'])
+        self.assertEqual(narrow['sessions'][0]['execution'],'unknown')
+        self.assertLess(len(json.dumps(narrow)),len(json.dumps(broad))//5)
+        missing=await self.bridge.tool({'type':'session_status_query','call_id':'missing','selector':'not offered'})
+        self.assertEqual(missing['selection'],'not_found');self.assertEqual(missing['sessions'],[])
+        rows.append({**rows[42],'id':'session:other'})
+        ambiguous=await self.bridge.tool({'type':'session_status_query','call_id':'ambiguous','selector':'Work 42'})
+        self.assertEqual(ambiguous['selection'],'ambiguous');self.assertEqual(len(ambiguous['sessions']),2)
+        by_id=await self.bridge.tool({'type':'session_status_query','call_id':'id','selector':'session:42'})
+        self.assertEqual(by_id['selection'],'matched')
+        self.assertEqual(len(calls),5,'Each query rechecks its current authorized snapshot')
+        self.assertEqual(self.owner.delegations,[]);self.assertEqual(self.owner.inputs,{})
+
     async def test_disconnected_observer_and_large_status_have_explicit_limits(self):
         self.owner.sonic_activity=lambda:{'connected':False,'sources':[{'label':'Beta','fresh':True,'execution':'running','goal_state':'complete'}]*65}
         result=await self.bridge.tool({'type':'session_status_query','call_id':'disconnected'})

@@ -62,6 +62,7 @@ class ForegroundBridge:
         self._recovery_captures=0
         self.latest=None
         self.pending_acoustic=None
+        self.unsent_originals=lambda:set()
         self._reservation_tail=None
         self.closed=False
         self._owners=asyncio.Semaphore(2)
@@ -229,6 +230,8 @@ class ForegroundBridge:
             elif event['type']=='source_query':
                 # Recognition/storage may finish while the native voice speaks.
                 capture=self.captures.get(self.latest)
+                if capture and capture.ident in self.unsent_originals():
+                    raise ForegroundUnavailable('The newer original is retained locally; its provider interpretation has not started')
                 if capture:
                     try:
                         await asyncio.wait_for(capture.interpretation_ready.wait(),10)
@@ -265,6 +268,16 @@ class ForegroundBridge:
                     'sessions':[],'truncated':snapshot.get('truncated') is True}
                 rows=snapshot.get('sources',[])
                 if not isinstance(rows,list):raise ForegroundUnavailable('Session observation is unavailable')
+                selector=event.get('selector')
+                if selector is not None:
+                    # Filter only this already audience-checked fresh snapshot.
+                    # Labels never become routing/control authority or a lookup
+                    # into another session's private/native history.
+                    selected=selector.casefold()
+                    rows=[row for row in rows if any(isinstance(row.get(key),str)
+                        and row[key].casefold()==selected for key in ('label','id'))]
+                    result.update(selector=selector,selection='matched' if len(rows)==1
+                        else 'ambiguous' if rows else 'not_found')
                 for row in rows[:64]:
                     fresh=result['connected'] and row.get('fresh') is True
                     item={'label':str(row.get('label','Session'))[:128],

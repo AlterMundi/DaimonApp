@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from dashboard.qwen_dialogue import QwenDialogue
 from dashboard.native_dialogue import DialogueUnavailable
@@ -81,6 +82,55 @@ class Qwen(unittest.TestCase):
         self.stream.tool_result('call1',{'status':'ready'},will_continue=False)
         packet=json.loads(self.socket.sent[-2]['item']['content'][0]['text'])
         self.assertEqual(packet['kind'],'internal_integrator_tool_update');self.assertFalse(packet['human_speech'])
+    def test_renewal_finishes_deferred_function_answer_before_yielding(self):
+        self.ready();self.event({'type':'response.created','response':{'id':'r1'}})
+        self.event({'type':'response.function_call_arguments.done','call_id':'owned','name':'session_status','arguments':'{}'})
+        self.stream.tool_result('owned',{'status':'ready'})
+        self.stream.hold_for_renewal()
+        count=len([f for f in self.socket.sent if f['type']=='response.create'])
+        events=self.event({'type':'response.done','response':{'status':'completed'}})
+        self.assertIn('turn_complete',[e['type'] for e in events])
+        outputs=[f for f in self.socket.sent if f.get('item',{}).get('type')=='function_call_output']
+        self.assertEqual(len(outputs),1)
+        self.assertEqual(len([f for f in self.socket.sent if f['type']=='response.create']),count+1)
+        self.assertFalse(self.stream.handover_ready(),'The human still needs its actual tool-based answer')
+        self.event({'type':'response.done','response':{'status':'completed'}})
+        self.assertTrue(self.stream.handover_ready())
+        self.stream.hold_for_renewal(False)
+        self.assertEqual(len([f for f in self.socket.sent if f['type']=='response.create']),count+1)
+        self.assertTrue(self.stream.handover_ready())
+        self.assertEqual(len([f for f in self.socket.sent if f.get('item',{}).get('type')=='function_call_output']),1)
+
+    def test_renewal_can_hold_control_nudge_and_release_without_rewriting_it(self):
+        self.ready();self.stream.hold_for_renewal()
+        self.assertTrue(self.stream.notify_integrator_update())
+        self.assertEqual(self.socket.sent[-1]['type'],'conversation.item.create')
+        count=len(self.socket.sent)
+        self.assertTrue(self.stream.handover_ready())
+        self.stream.hold_for_renewal(False)
+        self.assertEqual(len(self.socket.sent),count+1)
+        self.assertEqual(self.socket.sent[-1]['type'],'response.create')
+        self.assertFalse(self.stream.handover_ready())
+
+    def test_renewal_hold_does_not_silently_downgrade_spoken_guidance(self):
+        self.ready();self.stream.hold_for_renewal()
+        self.assertTrue(self.stream.guide({**{k:str(uuid.uuid4()) for k in ('id','dialogue','generation')},
+            'basis':0,'mode':'spoken_offer','text':'An actual spoken offer.'}))
+        self.assertEqual(self.socket.sent[-1]['type'],'response.create')
+        self.assertFalse(self.stream.handover_ready())
+        self.event({'type':'response.done','response':{'status':'completed'}})
+        self.assertTrue(self.stream.handover_ready())
+
+    def test_renewal_hold_finishes_already_committed_input_before_yielding(self):
+        self.ready();self.phrase();self.stream.hold_for_renewal()
+        self.assertFalse(self.stream.handover_ready())
+        self.event({'type':'input_audio_buffer.committed','item_id':'spoken'})
+        self.assertEqual(self.socket.sent[-1]['type'],'response.create')
+        self.assertFalse(self.stream.handover_ready())
+        self.event({'type':'conversation.item.input_audio_transcription.completed','item_id':'spoken','transcript':'Exact current phrase.'})
+        self.event({'type':'response.done','response':{'status':'completed'}})
+        self.assertTrue(self.stream.handover_ready())
+
     def test_interruption_cancels_generation_without_cancelling_owned_tools(self):
         self.ready();self.event({'type':'response.created','response':{'id':'r1'}})
         self.event({'type':'response.function_call_arguments.done','call_id':'call1','name':'session_status','arguments':'{}'})

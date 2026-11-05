@@ -3,6 +3,9 @@
 (() => {
   const pinIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 6-4 1-3 5-5-5 5-3Z"/><path d="m9 15-6 6"/></svg>';
   const replyIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H9l-5 5Z"/><path d="M8 8h8M8 12h5"/></svg>';
+  const muteIcon=muted=>'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4Z"/>'+
+    (muted?'<path d="m16 9 5 6m0-6-5 6"/>':'<path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>')+'</svg>';
+  const active=row=>row.fresh===true&&(row.execution==='working'||row.execution==='running'||row.tools_running===true||row.goal_state==='active');
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
@@ -15,7 +18,8 @@
     const toggle=button('☰','Show sessions',()=>showRail(rail.hidden));
     function showRail(open){rail.hidden=!open;toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Hide sessions':'Show sessions';toggle.setAttribute('aria-label',toggle.title);}
     toggle.setAttribute('aria-controls',rail.id);toggle.setAttribute('aria-expanded','false');
-    const reset=button('↺','Hear all sessions: clear mute and solo',()=>onAudio('reset'));
+    const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
+    reset.className='session-workspace-reset';
     const unpin=button('⌖','Send to the conversation',()=>{remember(null);pin=undefined;expanded=undefined;leave();changed();});
     unpin.innerHTML=pinIcon;
     const status=el('p','','session-workspace-status');status.setAttribute('role','status');
@@ -27,14 +31,16 @@
     technicalButton.setAttribute('aria-pressed','false');
     const earlier=button('Earlier','Read earlier messages',()=>history('before'));
     const newer=button('Newer','Read newer messages',()=>history('after'));
+    const retryHistory=button('Retry reading','Retry reading this conversation',()=>history(retryDirection));retryHistory.hidden=true;
     const entries=el('div',undefined,'session-messages');entries.setAttribute('role','log');entries.setAttribute('aria-label','Selected session messages');
     const historyStatus=el('p','','session-history-status');historyStatus.setAttribute('role','status');
-    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,earlier,entries,newer);
+    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
-    rail.append(el('h3','Sessions'),list);toolbar.append(toggle,back,target,unpin,reset);body.append(rail,content);shell.append(toolbar,status,body);
+    const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
+    rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,toolbar);
     timeline.before(shell);content.append(timeline,view);
-    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,restoreChecked=false;
+    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
     const followKey='interaction.followed-session.v1';
     function saved(){
       try{
@@ -48,18 +54,37 @@
       try{window.localStorage?.setItem(followKey,JSON.stringify({version:1,binding,id}));}catch{}
     }
     function forget(){try{window.localStorage?.removeItem(followKey);}catch{}}
-    let activeHistory,historyBusy=false,historyEpoch=0;
+    let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){renderSelection();onTarget();}
     function renderSelection(){
       const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';
       back.hidden=!expanded;
-      unpin.hidden=!current;
+      unpin.hidden=!current;unpin.setAttribute('aria-pressed',String(!!pin&&pin.id===current?.id));
+      unpin.title=pin?`Unpin ${pin.title}: send to the conversation`:'Send to the conversation';
       for(const [id,row] of rows){row.pin.setAttribute('aria-pressed',String(pin?.id===id));row.name.setAttribute('aria-current',String(expanded?.id===id));}
     }
+    function sourceRow(source){
+      if(!allowed||!complete||!source)return;
+      const entry=['integrator_answer','integrator_progress','integrator_live'].includes(source.kind)||source.kind==='native_question'&&source.audio_track==='conversation';
+      const target=source.target;
+      if(!entry&&(!['worker_progress','worker_result','native_question'].includes(source.kind)||!Number.isSafeInteger(target?.chat_id)||!Number.isSafeInteger(target?.thread_id)))return;
+      const matches=[...inventory.values()].filter(row=>entry?row.is_entry===true:row.audio_key===`${target.chat_id}:${target.thread_id}`);
+      if(matches.length!==1)return;
+      const row=matches[0];if(row.is_entry||row.destination?.source&&row.destination?.revision)return row;
+    }
+    function pinState(source){const row=sourceRow(source);return {available:!!row,pinned:!!row&&pin?.id===row.id};}
+    function setPin(row){
+      if(!allowed||!row||!row.is_entry&&!row.destination)return false;
+      if(row.is_entry)pin=undefined;
+      else pin=pin?.id===row.id?undefined:{id:row.id,title:row.title,destination:copy(row.destination)};
+      if(expanded&&expanded.id!==row.id){expanded=undefined;leave();}
+      remember(pin?.id||null);changed();showRail(false);toggle.focus?.();return true;
+    }
+    function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
-    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();onFiles([],view);earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';}
+    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();onFiles([],view);earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row){
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();toggle.focus?.();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
@@ -83,34 +108,33 @@
       return states.join(' · ');
     }
     function syncAudio(){
-      let filtered=false;
+      let filtered=!!audio({}).filtered;
       for(const [id,row] of rows){
         const value=audio(row.data);filtered ||= !!value.filtered;
         row.mute.setAttribute('aria-pressed',String(!!value.muted));row.solo.setAttribute('aria-pressed',String(!!value.solo));
         row.mute.title=`${value.muted?'Unmute':'Mute'} ${row.data.title}`;row.mute.setAttribute('aria-label',row.mute.title);
         row.solo.title=`${value.solo?'Remove solo from':'Solo'} ${row.data.title}`;row.solo.setAttribute('aria-label',row.solo.title);
-        row.mute.textContent=value.muted?'◖×':'◖♪';
+        row.mute.innerHTML=muteIcon(!!value.muted);
       }
       reset.hidden=!filtered;
     }
     function render(){
-      for(const [id,row] of rows)if(!inventory.has(id)){row.box.remove();rows.delete(id);}
-      for(const data of inventory.values()){
+      // Visibility is separate from intent: an expired row must not silently
+      // erase a selected pin or change the target of an existing recording.
+      const recent=[...inventory.values()].filter(row=>active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
+        .sort((a,b)=>Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
+      const visible=new Set(recent.map(row=>row.id));
+      for(const [id,row] of rows)if(!visible.has(id)){row.box.remove();rows.delete(id);}
+      for(const data of recent){
         let row=rows.get(data.id);
         if(!row){
           row={data,box:el('article',undefined,'session-row')};
           row.name=button('',data.title,()=>open(row.data));row.name.className='session-name';
           row.state=el('p','','session-row-state');
-          row.reply=button('▱','Reply to the latest message',()=>{const ref=row.data.latest_reply;if(ref)onReply(copy(ref),row.data.title);});
-          row.pin=button('⌖','Pin as the input destination',()=>{
-            if(row.data.is_entry){pin=undefined;}
-            else if(row.data.destination){pin=pin?.id===row.data.id?undefined:{id:row.data.id,title:row.data.title,destination:copy(row.data.destination)};}
-            remember(pin?.id||null);
-            if(expanded && expanded.id!==row.data.id){expanded=undefined;leave();}
-            changed();
-          });
+          row.reply=button('▱','Reply to the latest message',()=>{const ref=row.data.latest_reply;if(ref){showRail(false);onReply(copy(ref),row.data.title);}});
+          row.pin=button('⌖','Pin as the input destination',()=>setPin(row.data));
           row.pin.innerHTML=pinIcon;row.reply.innerHTML=replyIcon;
-          row.mute=button('◖♪','Mute this session',()=>onAudio('mute',row.data));
+          row.mute=button('','Mute this session',()=>onAudio('mute',row.data));
           row.solo=button('S','Solo this session',()=>onAudio('solo',row.data));
           const actions=el('div',undefined,'session-row-actions');actions.append(row.reply,row.pin,row.mute,row.solo);
           row.box.append(row.name,row.state,actions);rows.set(data.id,row);
@@ -124,7 +148,7 @@
     }
     function resetBinding(next){
       epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;restoreChecked=false;inventory.clear();rows.clear();list.replaceChildren();leave();
-      allowed=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';onReady(false);onTarget();
+      allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';onReady(false);onTarget();
     }
     async function refresh(nextBinding){
       if(binding!==nextBinding)resetBinding(nextBinding);
@@ -133,7 +157,8 @@
       try{
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
-        inventory=new Map(value.sessions.map(row=>[row.id,row]));allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';
+        observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
+        inventory=new Map(value.sessions.map(row=>[row.id,row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
@@ -148,7 +173,8 @@
             pin={id:row.id,title:row.title,destination:copy(row.destination)};remember(row.id);open(row);
           }else if(id){pin={id,title:'Unavailable followed session'};renderSelection();status.textContent='Your followed session is unavailable. Select it again before sending.';}
         }
-        if(expanded&&!expanded.is_entry)void history('after');
+
+        if(expanded&&!expanded.is_entry&&activeHistory)void history('after');
       }catch(error){
         if(owned!==epoch)return;
         if(error.status===403||error.status===401){
@@ -158,7 +184,7 @@
     }
     function revoke(){
       forget();
-      allowed=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
+      allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
       shell.hidden=false;rail.hidden=true;toolbar.hidden=!selected();
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
       onReady(false);
@@ -199,7 +225,7 @@
     }
     async function history(direction){
       if(!allowed||!expanded||expanded.is_entry||historyBusy)return;
-      historyBusy=true;const owned=historyEpoch,selection=expanded;
+      historyBusy=true;retryHistory.hidden=true;const owned=historyEpoch,selection=expanded;
       const query=new URLSearchParams({technical:String(technical)});
       if(activeHistory){query.set('revision',activeHistory.revision);query.set(direction==='before'?'before':'after',activeHistory[direction==='before'?'before':'after']);}
       if(!activeHistory)historyStatus.textContent='Reading…';
@@ -220,10 +246,20 @@
         if(direction==='before')entries.scrollTop=previousTop+entries.scrollHeight-previousHeight;
         else if(!direction || direction==='after'&&nearEnd)entries.scrollTop=entries.scrollHeight;
         onReady(true);
-      }catch(error){if(owned===historyEpoch){if(error.status===401||error.status===403)revoke();else historyStatus.textContent=error.status===409?'This conversation changed. Select it again to refresh.':'Conversation unavailable. Your draft is kept.';}}
+      }catch(error){
+        if(owned===historyEpoch){
+          if(error.status===401||error.status===403)revoke();
+          else {
+            if(error.status===409)clearHistory();
+            retryDirection=error.status===409?undefined:direction;
+            historyStatus.textContent=error.status===409?'This conversation changed. Retry reading to refresh.':'Conversation unavailable. Your draft is kept.';
+            retryHistory.hidden=false;
+          }
+        }
+      }
       finally{if(owned===historyEpoch)historyBusy=false;}
     }
-    return {refresh,capture,syncAudio,reset:()=>{forget();resetBinding(undefined);},get active(){return allowed;},
+    return {refresh,capture,syncAudio,pinState,pinSource,reset:()=>{forget();resetBinding(undefined);},get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};

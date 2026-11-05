@@ -215,7 +215,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},resumeAudio(){hooks.onResumeAudio?.();},close(){if(!this.active)return;this.active=false;hooks.onLeave();}};}};
   }
   if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
-    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};streamedTransports.push(value);return value;
+    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
   }};
   if(options.liveSpeech)vm.runInContext(fs.readFileSync("dashboard/web/live-speech.js", "utf8"), context);
   if(options.timingEvents)context.window.ConversationTiming={mount:()=>Object.fromEntries(["bind","mark","input","source","pauseApplied"].map(name=>[name,(...args)=>options.timingEvents.push([name,...args])]))};
@@ -1169,7 +1169,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   const listenButton=card=>card.children.flatMap(child=>child.children||[]).find(child=>['Listen','Resume audio','Skip'].includes(child.textContent));
   for(const cancel of [false,true]){
     let resolveStream;const streamDone=new Promise(resolve=>{resolveStream=resolve;});
-    const fallback=boot(false,true,{incremental:true,progressive:true,streamDone});fallback.audio();await fallback.ui.refresh();
+    const fallback=boot(false,true,{incremental:true,progressive:true,streamDone,streamReady:()=>{assert(!fallback.streamedTransports[0].cancelled,'Verified Blob playback must not wait on its cancelled progressive stream');return Promise.resolve();}});fallback.audio();await fallback.ui.refresh();
     const card=fallback.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
     await listenButton(card).handlers.click();const player=fallback.nodes.get('#conversation-audio');player.currentTime=3;
     const calls=fallback.audioCalls.length;player.paused=true;player.handlers.error();
@@ -1180,6 +1180,24 @@ function boot(readOnly=false,standalone=false,options={}) {
     if(cancel)assert.equal(player.paused,true,'Stop owns a late verified fallback');
     else {await until(()=>!player.paused&&!player.muted);assert.equal(player.currentTime,3,'Decoder fallback preserves the media cursor');assert.equal(fallback.streamedTransports[0].cancelled,true);}
     fallback.ui.stop();
+  }
+  for(const outcome of ['ready','stop','changed']){
+    let releaseReady,enteredReady;
+    const entered=new Promise(resolve=>{enteredReady=resolve;});
+    const reserve=new Promise(resolve=>{releaseReady=resolve;});
+    const reserved=boot(false,true,{incremental:true,progressive:true,streamReady:()=>{enteredReady();return reserve;}});
+    reserved.audio();reserved.replyTexts.set('native:8','The selected sentence.');await reserved.ui.refresh();
+    const card=reserved.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+    const listening=listenButton(card).handlers.click();await entered;
+    const player=reserved.nodes.get('#conversation-audio');
+    assert.equal(player.muted,true,'Progressive speech stays muted while building its reserve');
+    if(outcome==='stop')reserved.ui.stop();
+    if(outcome==='changed')reserved.replyTexts.set('native:8','Changed source text.');
+    releaseReady();await listening;await new Promise(setImmediate);
+    assert.equal(reserved.audioCalls.length,1,'Readiness never requests another synthesis');
+    if(outcome==='ready')assert.equal(player.muted,false,'A current source becomes audible after readiness');
+    else assert(player.muted||player.paused,'Stop and changed sources cannot become audible after readiness');
+    reserved.ui.stop();
   }
   const buffering=boot(false,true,{incremental:true,progressive:true});buffering.audio();await buffering.ui.refresh();
   const heldBuffer=buffering.holdReplyText('native:8');
@@ -1984,8 +2002,8 @@ function boot(readOnly=false,standalone=false,options={}) {
     class Events{constructor(){this.events=new Map();}addEventListener(name,fn){this.events.set(name,fn);}fire(name){this.events.get(name)?.();}}
     class Media extends Events{
       static isTypeSupported(value){return value==='audio/mpeg';}
-      constructor(){super();this.readyState='closed';this.appended=[];latest=this;}
-      addSourceBuffer(){const buffer=new Events();buffer.updating=false;buffer.appendBuffer=raw=>{buffer.updating=true;this.appended.push(raw);queueMicrotask(()=>{buffer.updating=false;buffer.fire('updateend');});};buffer.abort=()=>{};return buffer;}
+      constructor(){super();this.readyState='closed';this.appended=[];this.ahead=0;latest=this;}
+      addSourceBuffer(){const buffer=new Events();this.sourceBuffer=buffer;buffer.buffered={length:1,start:()=>0,end:()=>this.ahead};buffer.updating=false;buffer.appendBuffer=raw=>{buffer.updating=true;this.appended.push(raw);queueMicrotask(()=>{buffer.updating=false;buffer.fire('updateend');});};buffer.abort=()=>{};return buffer;}
       endOfStream(){this.readyState='ended';}
       open(){this.readyState='open';this.fire('sourceopen');}
     }
@@ -2003,6 +2021,15 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(first.media.readyState,'open','First audio appended before terminal result');
   first.send({...end,alignment:{offset:240,words:[[240,244,0,200],[245,246,400,600]]}});first.close();assert.equal((await first.stream.done).complete,true);await until(()=>first.media.readyState==='ended');
   assert.equal(first.stream.position(.3),244);assert.equal(first.stream.position(.7),246);assert.equal(first.stream.position(.1),240,'Backward seek follows actual current media time');
+  const reserve=await setup();reserve.send(audio);await until(()=>reserve.media.appended.length===1);
+  let audible=false;const ready=reserve.stream.ready(0).then(()=>{audible=true;});
+  await new Promise(r=>setImmediate(r));assert.equal(audible,false,'Tiny first fragment cannot make progressive speech audible');
+  reserve.media.ahead=1.3;reserve.media.sourceBuffer.fire('updateend');await ready;
+  assert.equal(audible,true);assert.equal(reserve.media.readyState,'open','Buffered playback can start before synthesis completes');
+  reserve.send(end);reserve.close();await reserve.stream.done;
+  const cancelledReady=await setup();cancelledReady.send(audio);await until(()=>cancelledReady.media.appended.length===1);
+  const cancelledWait=cancelledReady.stream.ready();cancelledReady.abort.abort();
+  await assert.rejects(cancelledWait,/closed/);await cancelledReady.stream.done;
   const decoder=await setup();let decoderErrors=0;decoder.stream.onDecoderError(()=>decoderErrors++);
   decoder.media.readyState='open';decoder.media.addSourceBuffer=()=>{throw Error('Synthetic decoder unavailable');};decoder.media.fire('sourceopen');
   decoder.send(audio);decoder.send(end);decoder.close();const retained=await decoder.stream.done;

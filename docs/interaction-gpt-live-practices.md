@@ -7,15 +7,55 @@ check or production adoption. The current diagnostic limits remain unchanged.
 The [roadmap](interaction-roadmap.md#current-refinement-toward-an-approachable-avatar--4-november-2026)
 owns implementation and family-pilot acceptance; this note records the rationale.
 
-## Starting architecture
+## Selected next step —5November2026
 
-Use GPT-Live client delegation with our persistent integrating agent as the
-backend. Keep identity and conversation style in a short voice prompt; keep
-tools, detailed workflows, durable memory, permissions and task execution in
-the backend. Client delegation is selected for ownership of our existing
-agent/state, not because it is universally better than Responses delegation.
-The official design supports both. The backend model remains independently
-selectable; GPT-Live does not require the integrator to become an OpenAI model.
+Nicolas2a453b61 explicitly moves the provider comparison forward now, closing the
+Qwen iteration without claiming its sustained phone/hearing acceptance. Preserve
+those pending checks in the roadmap/issues; do not prolong Qwen as a prerequisite.
+
+Reuse the existing Codex/ChatGPT WebRTC investigation before requesting separate
+credentials. The retained [18October actual comparison](https://github.com/AlterMundi/DaimonApp/issues/118#issuecomment-6243154764)
+connected through native login and independently transcribed a spoken correction.
+Today's loaded App Server read reports ChatGPT/Pro; no current voice session was
+opened by that metadata check. CLI feature selection and the experimental native
+protocol are not current account entitlement. No token was exported or treated as
+an API key, and no active native conversation was changed.
+
+Current [official WebRTC guidance](https://developers.openai.com/api/docs/guides/voice-webrtc)
+continues to require project access for public GPT-Live applications. The native
+Codex route is separate. Source inspection and the retained comparison agree that
+`clientManagedHandoffs` controls response forwarding, not admission of backing
+work. Evaluate native handoff ownership directly: it can use the intended persistent
+Codex backend. That flag alone does not prove how work is admitted, persisted or
+charged; this is a measurement requirement, not a reason to reject native handoffs.
+The [App Server interface](https://developers.openai.com/codex/app-server)
+is the supported rich-client boundary, with explicit experimental opt-in where
+needed. Current receiving access/bridge qualification is the next concrete step.
+
+## Architecture comparison reopened —Nicolas1eb74b0e,5November2026
+
+Our present foreground/integrator separation is not a superiority claim or a
+requirement to recreate that implementation. All current reasoning uses Codex;
+first evaluate OpenAI's native voice/handoff architecture on a persistent Codex
+thread. A native backend handoff may be exactly the desired operation, rather
+than an unwanted second agent. Preserve real task ownership, original history,
+identity, correction semantics and visible results; their implementation can move
+to native mechanisms when those provide the better experience.
+
+Compare three concrete candidates before selecting the bridge:
+
+| Candidate | Starting point | What must be demonstrated |
+| --- | --- | --- |
+| Native Codex WebRTC voice | Existing native login, persistent Codex thread, provider-owned voice handoffs and streamed backend returns | Same CompAII/integrating ownership; explicit behavior with active work; recoverable history/originals, questions, tools/artifacts, interruption and reconnect; observed native turns/cost rather than treating all backend work as a defect |
+| Public GPT-Live with Responses delegation | The official recommended starting point when managed requests and supported backend tools fit | Actual project access; identity/history and existing work continuity; available local/native capabilities, result presentation and total cost |
+| Public GPT-Live with client delegation | Our application supplies context and backend execution | Use only for demonstrated requirements the other routes do not cover; do not choose it merely to preserve our existing custom machinery |
+
+Current [official delegation guidance](https://developers.openai.com/api/docs/guides/live-delegation)
+recommends starting with Responses delegation for managed requests, and choosing
+client delegation for custom workflows or result review. Both retain application
+responsibility for permissions and business/task records. The earlier unconditional
+client-delegation selection above was superseded by this human correction.
+Backend model selection remains independent of the spoken voice model.
 [Official overview](https://developers.openai.com/api/docs/guides/live).
 
 Prefer the documented WebRTC media/data-channel architecture for the browser,
@@ -26,6 +66,60 @@ Retain durable input/result ownership and recoverability as product requirements
 while redesigning their transport-specific implementation where necessary.
 
 ## Decisions from inspected sources
+
+### Receiving native WebRTC qualification —5November2026
+
+The existing loaded Codex0.163 owner accepted two WebRTC connections using its
+existing ChatGPT authentication. No API key was supplied or extracted. Both used
+one persistent, test-owned native thread, synthetic Spanish audio, muted Chromium
+and the native default automatic handoff/return path. No production thread,
+provider selection, service or diagnostic limit changed. This establishes current
+native access for this receiver; public GPT-Live API entitlement remains separate.
+
+The initial spoken request asked Codex to read two values in a fixture file and
+write their sum, unit and control word to a result file. Voice emitted one native
+delegation and the same thread started a real backend turn. A fixture bug placed
+Playwright's timeout options in the argument position, leaving its default30second
+timeout; the browser closed early. The accepted backend survived voice closure and
+completed. Its final answer claimed the result was saved, but its only command
+read the input and no result file existed. Keep this negative task outcome; a
+native final answer is not proof of the claimed effect.
+
+After correcting the browser wait, the second connection resumed that same
+native thread with its own startup history. A new synthetic spoken correction
+reported the missing file and asked for a real write and verification. It did not
+replay the original request. One further native handoff wrote and read the file;
+direct inspection confirmed `43 semillas cedro`. Voice then returned that exact
+result. The retained remote Opus recording is290,405bytes, decoded successfully,
+and browser WebAudio observed nonzero signal. The browser exited normally and
+native voice closure was observed. Physical hearing and independent audio
+transcription were not performed; this is not phone acceptance.
+
+Both native turns are terminal-completed in the same persisted history. Four
+backend model responses consumed cumulative135,821reported tokens, including
+135,589input/112,384cached-input and232output tokens. The last response included
+34,157input tokens,33,792cached. These are native backend counters, not unique
+context size or a complete voice bill. Voice usage updates remained partial and
+did not account for that backend work; do not infer free execution or a total
+price from them. The sizeable ordinary Codex context is a concrete efficiency
+question even when much of it is cached; no relative cost advantage is established.
+
+This supports implementing the native Codex rich-client route first, not wrapping
+GPT-Live inside the Qwen manual-turn adapter. Use the existing shared App Server
+and the selected integrating thread; do not spawn another owner. Browser WebRTC
+owns media, while the application retains authorized thread selection, native
+event subscription and the presentation of pending work, questions and artifacts.
+The first application integration must demonstrate original/correction retention,
+existing-work admission, role-appropriate context size and same-thread reconnect.
+Native transcript history alone does not establish retention of original media,
+and a model assertion alone must not mark a task's effect verified. Preserve the
+existing journal requirements without mandating their present transport plumbing.
+
+One bounded fixture and its retained failed fixture observation occupy
+approximately2.3MB locally. Keep it through native integration qualification; then
+retain reports, code and the tiny verified artifact, retiring disposable synthetic
+media. Do not retire production originals or native history. No public transcript
+or institutional archive of this synthetic media is needed.
 
 | Evidence | What changes in our design | What still needs qualification |
 | --- | --- | --- |
@@ -63,9 +157,10 @@ Inspected implementations and research:
 
 ## Reuse, replace and measure
 
-Reuse shared login, exact human-source/correction history, persistent tasks,
-permission checks, canonical results/questions, viewers and the integrating
-role. Replace provider-specific assumptions: manual audio commits, response-end
+Preserve shared identity/access, exact human-source/correction history, ongoing
+work, permissions and useful results/questions. Reuse existing native mechanisms
+where qualified; our present journal/bridge/viewer implementation is not mandatory.
+Replace provider-specific assumptions: manual audio commits, response-end
 events, synchronous tools, a prompt containing every backend tool procedure,
 and reconnection that starts with unrelated recent excerpts.
 

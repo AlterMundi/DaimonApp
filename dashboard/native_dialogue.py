@@ -117,7 +117,7 @@ class NativeDialogue:
                     'Your primary role is conversation and constructing faithful request language together. '
                     'The Sol integrator owns deliberate planning, memory research, routing and coordination of persistent work sessions. '
                     'Speak briefly, efficiently and with a light poetic touch when it fits. Default to one short sentence, at most two unless the human asks for more. Lead with the useful answer; omit repeated acknowledgments, recaps and filler. Poetry should sharpen meaning, not add length. '
-                    'When actually consulting memory or Sol, describe it naturally in the first person, such as trying to recall or checking a detail; do not narrate internal session routing unless it helps the human or they ask. Natural phrasing must never fabricate a recollection or conceal an unconfirmed consultation. '
+                    'Use tools silently by default. If a delay needs explaining, give at most one short first-person acknowledgment for the human request, then the useful result. Do not announce each lookup or repeat a status/consolidation script. Do not narrate retained originals, tool names, delegation or internal roles unless the human asks how it works. Explain the actual architecture honestly when asked. Translate observer labels into plain meaning; unknown status is missing information, not proof of inactivity or failure. Natural phrasing must never fabricate a recollection or claim an unconfirmed consultation succeeded. '
                     'A conversational style adjustment is temporary context, not a durable saved note. Never say a preference or lesson was saved or will persist unless the actual memory write is confirmed. Ask Sol to preserve a requested lasting lesson through the existing original-bound delegation. '
                     'A question about the most meaningful projects in our shared history is different from current priorities or active task status; preserve that distinction when consulting Sol. '
                     'Handle self-contained conversation, explanations and prompt refinement here without starting work. '
@@ -202,8 +202,8 @@ class NativeDialogue:
                      'description':'Read one bounded page of retained original references and recent assistant playback observations for this current foreground dialogue. Never starts work; playback does not prove hearing.',
                      'parameters':{'type':'OBJECT','properties':{'before':{'type':'INTEGER'}},'required':[]}},
                     {'name':'session_status','behavior':'NON_BLOCKING',
-                     'description':'Read one bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. Only coarse activity: not why a session is blocked, its work contents, or the decision it needs. Resolve those questions through Sol using recent_originals and delegate_to_integrator. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
-                     'parameters':{'type':'OBJECT','properties':{}}},
+                     'description':'Read a bounded current observer snapshot of this human\'s authorized sessions, including the integrating Conversation. When asking about one known session, pass its exact label or offered ID as selector to avoid returning unrelated sessions. Only coarse activity: not why a session is blocked, its work contents, or the decision it needs. Resolve those questions through Sol using recent_originals and delegate_to_integrator. Read-only; no work, routing, control or subscription. Stale or missing observations are unknown, not completed work.',
+                     'parameters':{'type':'OBJECT','properties':{'selector':{'type':'STRING'}},'required':[]}},
                     {'name':'recent_results','behavior':'NON_BLOCKING',
                      'description':'Read one page of result references and available file names already visible in the integrating Conversation. This is not all worker history. Only current source revisions are offered; previews are incomplete. Use read_integrating_source with an offered ID/revision and offset0 for full text. Read-only; never starts work. Follow before_delivery/before_native cursors for older pages.',
                      'parameters':{'type':'OBJECT','properties':{'before_delivery':{'type':'INTEGER'},'before_native':{'type':'INTEGER'}},'required':[]}},
@@ -778,8 +778,14 @@ class NativeDialogue:
             if set(args)-{'after'} or type(after) is not int or not 0<=after<=2**63-1:
                 raise ValueError('Invalid pending cursor')
             proposal={'type':'session_pending_query','call_id':ident,'after':after}
-        elif name=='session_status' and not args:
-            proposal={'type':'session_status_query','call_id':ident}
+        elif name=='session_status':
+            selector=args.get('selector')
+            if (set(args)-{'selector'} or 'selector' in args and
+                    (not isinstance(selector,str) or not 1<=len(selector)<=128
+                     or selector!=selector.strip() or '\0' in selector)):
+                raise ValueError('Select one exact session label or offered ID')
+            proposal={'type':'session_status_query','call_id':ident,
+                **({'selector':selector} if selector is not None else {})}
         elif name=='read_integrating_source':
             if (set(args)!={'source','revision','offset'}
                     or not isinstance(args['source'],str) or not 1<=len(args['source'])<=256
