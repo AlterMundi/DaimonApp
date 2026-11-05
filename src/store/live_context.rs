@@ -528,6 +528,29 @@ fn continuation_content(p: &Projection) -> Value {
     );
     content
 }
+/// Copy language once rather than serializing a previous serialized envelope
+/// inside the next checkpoint. This is lossless formatting, not a semantic
+/// checkpoint or acknowledgment. Native source/revision fencing stays unchanged.
+fn inherited_language(content: &Value) -> Result<String> {
+    let inherited = content["checkpoint"]["text"].as_str().unwrap_or_default();
+    let has_delta = ["events", "guidance"].iter().any(|key| {
+        content[*key]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    });
+    if !has_delta && !inherited.is_empty() {
+        return Ok(inherited.to_owned());
+    }
+    let mut delta = content.clone();
+    delta["checkpoint"].as_object_mut().unwrap().remove("text");
+    let encoded = serde_json::to_string(&delta)?;
+    Ok(if inherited.is_empty() {
+        encoded
+    } else {
+        format!("{inherited}\n\n{encoded}")
+    })
+}
+
 fn continuation_activity(p: &Projection) -> String {
     // Source receipts survive compaction. Guidance identity/text survives its
     // disposition and retirement. ACKs, transport/playback and summary rewrites
@@ -874,7 +897,7 @@ impl Store {
                 if hash(&content)? != source.revision {
                     bail!("Reconnect source changed before opening");
                 }
-                Some(serde_json::to_string(&content)?)
+                Some(inherited_language(&content)?)
             } else {
                 None
             };
@@ -2133,13 +2156,10 @@ mod tests {
         let second = f
             .call(json!({"action":"resume_read","dialogue":next,"generation":generation}))
             .unwrap();
-        let inherited: Value = serde_json::from_str(
-            second["resume"]["content"]["checkpoint"]["text"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(inherited["events"][0]["text"], "Remember the violet bridge");
+        let inherited = second["resume"]["content"]["checkpoint"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(inherited.contains("Remember the violet bridge"));
         assert_eq!(
             second["resume"]["content"]["events"][0]["text"],
             "Keep the copper bell too"
@@ -2148,6 +2168,41 @@ mod tests {
             second["incorporated"], 0,
             "Copying does not acknowledge either visit"
         );
+    }
+
+    #[test]
+    fn repeated_empty_reconnects_do_not_reescape_inherited_language() {
+        let f = Fixture::new();
+        let exact = "Keep \"violet\" and \\ copper\nwith its exact newline";
+        f.append(&Uuid::now_v7().to_string(), exact).unwrap();
+        let mut dialogue = f.dialogue.clone();
+        let mut generation = f.generation.clone();
+        let mut inherited = None;
+        for _ in 0..20 {
+            f.call(json!({"action":"close","dialogue":dialogue,"generation":generation}))
+                .unwrap();
+            let basis = f
+                .call(json!({"action":"resume_read","dialogue":dialogue,"generation":generation}))
+                .unwrap();
+            assert!(basis["resume"]["bytes"].as_u64().unwrap() < 4096);
+            let next = Uuid::now_v7().to_string();
+            let successor = Uuid::now_v7().to_string();
+            f.call(json!({"action":"open","dialogue":next,"generation":successor,"binding":f.binding,
+                "resume":{"dialogue":dialogue,"generation":generation,"revision":basis["resume"]["revision"]}})).unwrap();
+            let conn = f.store.conn.lock().unwrap();
+            let p = load(&conn, &next, 100, f.entry).unwrap();
+            if let Some(previous) = &inherited {
+                assert_eq!(&p.checkpoint.text, previous);
+            } else {
+                let first: Value = serde_json::from_str(&p.checkpoint.text).unwrap();
+                assert_eq!(first["events"][0]["text"], exact);
+                inherited = Some(p.checkpoint.text.clone());
+            }
+            assert_eq!(p.incorporated, 0);
+            drop(conn);
+            dialogue = next;
+            generation = successor;
+        }
     }
 
     #[test]

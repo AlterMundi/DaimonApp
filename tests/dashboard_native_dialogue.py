@@ -26,6 +26,31 @@ class Socket:
 
 
 class Dialogue(unittest.TestCase):
+    def test_requested_tool_can_settle_in_reserved_context_margin(self):
+        self.ready()
+        self.stream.max_context_tokens=64000
+        self.stream.context_estimate=55940
+        self.stream.tools['settle']={'name':'recent_originals','state':'pending'}
+        self.stream.tool_result('settle',{'kind':'sources','text':'retained exact source'})
+        self.assertEqual(self.stream.phase,'ready')
+        self.assertFalse(self.socket.closed)
+        self.assertEqual(self.stream.tools['settle']['state'],'response_sent')
+        self.assertLess(self.stream.context_estimate,64000-512)
+        # Settling a requested operation does not reopen the input margin.
+        before=len(self.socket.sent)
+        with self.assertRaises(DialogueCapacity):self.stream.append(b'\1\0'*320)
+        self.assertEqual(len(self.socket.sent),before)
+
+    def test_tool_settlement_cannot_exceed_hard_context_limit(self):
+        self.ready()
+        self.stream.max_context_tokens=64000
+        self.stream.context_estimate=63400
+        self.stream.tools['settle']={'name':'recent_originals','state':'pending'}
+        before=len(self.socket.sent)
+        with self.assertRaises(DialogueCapacity):
+            self.stream.tool_result('settle',{'kind':'sources','text':'protected exact source'})
+        self.assertEqual(len(self.socket.sent),before)
+
     def test_close_frame_billing_is_not_misreported_as_invalid_json(self):
         self.socket.recv_data=lambda **kwargs:(8,b'\x03\xf3billing credit unavailable; synthetic private account detail')
         with self.assertRaises(DialogueUnavailable):self.stream.receive()
