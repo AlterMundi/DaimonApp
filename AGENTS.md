@@ -69,6 +69,13 @@ F1 = 40.4 Hz; Fn = n × 40.4 Hz. Use only sine waves with gently pulsing
 amplitude, no additional harmonic stacks or 18 Hz texture (human confirmation,
 2026-10-22). Pending stays F7 and blockage/error stays F11.
 
+Native delivery:async structured questions use the existing durable human-task
+ledger/cards, with exact native source metadata. Their replies are ordinary human
+input, never native RPC answers or approvals. Read human_task before interpreting
+feedback; explicit dismissal/scoped withdrawal does not complete work. Duplicate
+source events and recovery must not reopen closed cards. Regular RPC questions
+keep their existing live broker and capture-version checks.
+
 Durable human tasks and native questions have distinct read paths. The independent
 client's For you section reuses the ledger and exact entry/routed-local-turn task
 scope. A task:ID reply is untrusted context for ordinary text/voice, never a native

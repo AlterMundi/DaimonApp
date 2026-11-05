@@ -584,3 +584,34 @@ question version, ordinary input admission and later dismissal/retirement as
 separate observations. A spoken answer is not permission to clear unrelated cards.
 Presentation plus exact written/spoken resolution remains unfinished under#303.
 The selected647 runtime and owner briefv3 are unchanged by these experiments.
+
+## Structured asynchronous question presentation
+
+The listener now preserves `delivery:async` question metadata from completed native
+agent messages and projects each question into the existing durable human-task
+ledger. The native thread, physical turn, item and question index form its stable
+identity; the original question and revision remain source data. No RPC responder,
+approval, separate task store, new model turn or polling loop is created. Regular
+native RPC questions continue through their existing request broker unchanged.
+
+Admission requires the existing authorized human/session/native execution and an
+observed exact native message. Existing recovery imports the same metadata, using
+the same identity. Duplicate events cannot reopen answered, dismissed or withdrawn
+cards; a changed source refuses rather than overwriting the earlier question.
+Presentation failure preserves native output and cannot interrupt native work.
+Each physical native turn admits at most10async question cards, including closed
+ones; each metadata item stays within64KiB, each question within the existing
+8000character task body and at most32choices. Open questions accept absent/null
+options. Over-limit originals remain in native history; no source is clipped into
+a different question. Card lists carry source identifiers/revision, not full
+question bodies; explicit source reads retain the complete bounded question.
+
+For you renders these as questions with Answer in conversation. Reading selects
+no answer. Reply preparation preserves the exact task revision, existing drafts
+and Avatar's ordered closure barrier; explicit Send admits ordinary human input
+with source context. The current controller's human_task read exposes the exact
+native source for reassessment. There is no question RPC to answer. Dismissal or
+agent withdrawal uses the existing audited task controls and means neither human
+completion nor cancellation of native work. Spoken acknowledgement alone never
+retires a card; interpreted feedback and retirement remain separate observations.
+Automatic matching of arbitrary spoken answers to pending cards is not qualified.

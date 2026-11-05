@@ -72,7 +72,16 @@ fn owner_task_view(
         "kind":"task","state":item.state,"target":key,"title":item.title,
         "preview":item.action.chars().take(240).collect::<String>(),
         "body":if full {json!(item.action)}else{Value::Null},"links":item.source["links"],
-        "withdrawal":item.source["agentWithdrawal"],"dismissal":item.source["humanDismissal"],"can_dismiss":item.state=="pending","can_withdraw":false,"read_only":true})
+        "withdrawal":item.source["agentWithdrawal"],"dismissal":item.source["humanDismissal"],
+        "native_question":async_question_source(item,full),
+        "can_dismiss":item.state=="pending","can_withdraw":false,"read_only":true})
+}
+fn async_question_source(item: &HumanInteraction, full: bool) -> Value {
+    let mut source = item.source["nativeAsyncQuestion"].clone();
+    if !full && let Some(object) = source.as_object_mut() {
+        object.remove("question");
+    }
+    source
 }
 fn actor_identity(actor: &LiveTaskActor<'_>, selected_revision: &str) -> Value {
     json!({"session":actor.key,"native_thread":actor.native,"task_revision":selected_revision,"physical_turn":actor.physical})
@@ -81,6 +90,7 @@ fn view(actor: &LiveTaskActor<'_>, key: SessionKey, item: &HumanInteraction, ful
     json!({"id":item.id,"revision":revision(actor,item,key),"kind":"task","state":item.state,
        "target":key,"title":item.title,"preview":item.action.chars().take(240).collect::<String>(),
        "action":if full {json!(item.action)} else {Value::Null},"withdrawal":item.source["agentWithdrawal"],
+       "native_question":async_question_source(item,full),
        "can_withdraw":item.state=="pending","meaning":"Agent-issued human action. Retirement is not human completion or acceptance."})
 }
 fn selected_on(

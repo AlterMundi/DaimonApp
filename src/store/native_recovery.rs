@@ -248,6 +248,22 @@ impl Store {
                             item["phase"].as_str(),
                             text,
                         )?;
+                        if item["delivery"] == "async"
+                            && let Some(questions) = item.get("questions")
+                            && super::interactions::native_async_questions_on(
+                                &tx,
+                                selected.local,
+                                &selected.native,
+                                id,
+                                item["id"].as_str().context("Native async item missing")?,
+                                questions,
+                            )
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                "Recovered async question presentation unavailable; native source preserved"
+                            );
+                        }
                     }
                 }
             }
@@ -539,6 +555,27 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+    #[test]
+    fn recovered_async_question_enters_existing_pending_ledger_once() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (_local, key) = start(&s);
+        let selected = s.native_collection_next().unwrap().unwrap();
+        let mut turn = snapshot("first", "completed", "Choose Luna or Estrella");
+        turn["items"][0]["delivery"] = json!("async");
+        turn["items"][0]["questions"] = json!([{"title":"Choose","options":["Luna","Estrella"]}]);
+        s.native_collection_observed(&selected, &[turn.clone()], true)
+            .unwrap();
+        let pending = s.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(pending.pending_total, 1);
+        let id = pending.items[0].id.clone();
+        s.native_collection_observed(&selected, &[turn], true)
+            .unwrap();
+        let pending = s.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(pending.pending_total, 1);
+        assert_eq!(pending.items[0].id, id);
+    }
+
     #[test]
     fn active_history_is_not_published_as_a_completed_item_and_goal_gap_stays_observed() {
         let file = tempfile::NamedTempFile::new().unwrap();
