@@ -123,7 +123,7 @@ class NativeContext:
         return await self._call(record,'open',binding=record['binding'],**extra)
 
     async def request_checkpoint(self,pressure):
-        """One owner-local request per physical generation, including quiet speech.
+        """Coalesce physical pressure with the native semantic preparation.
 
         The native projection freezes the exact range/control packet for Sol.
         A request receipt is not a semantic checkpoint or handover approval.
@@ -137,7 +137,8 @@ class NativeContext:
             request=value.get('checkpoint_request')
             if not isinstance(request,dict) or request.get('generation')!=self.record['generation']:
                 raise ValueError('Live checkpoint pressure receipt changed generation')
-            self.checkpoint_requested_generation=self.record['generation']
+            if request.get('reason')!='continuation':
+                self.checkpoint_requested_generation=self.record['generation']
             return True
 
     async def prepare_rollover(self):
@@ -245,7 +246,8 @@ class NativeContext:
             sources=await asyncio.to_thread(self.history.context_pending,record)
             if not sources and sent:return
             payload=[{k:s[k] for k in ('source','text','interrupted','audio_without_transcript','derived_caption') if k in s} for s in sources]
-            result=await self._call(record,'sync',assistant=payload)
+            result=await self._call(record,'sync',assistant=payload,
+                prepare_continuation=record is self.record and not self.stopping)
             receipts=result.get('assistant_receipts')
             if not isinstance(receipts,list) or len(receipts)!=len(sources):
                 raise ValueError('Incomplete Live context retention receipt')
@@ -255,6 +257,9 @@ class NativeContext:
                            or not isinstance(r.get('revision'),str) or not re.fullmatch('[a-f0-9]{64}',r['revision']) for r in receipts)):
                 raise ValueError('Live context receipt does not match canonical sources')
             await asyncio.to_thread(self.history.context_retained,record,sources,receipts)
+            # Preparation is selected atomically with canonical retention,
+            # before its context dispatch freezes a reader. No second control
+            # call can race a fast integrator's incorporation of this batch.
             sent=True
             if not sources:return
         raise ValueError('Live context catch-up exceeds its retained bound')

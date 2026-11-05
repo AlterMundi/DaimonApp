@@ -423,7 +423,7 @@ class ReconnectCheckpointContext(Returning):
         return CanonicalRouting.handle_extra_rpc(self,message,send)
 
 
-def qualify_reconnect_compaction(binary):
+def qualify_reconnect_compaction(binary,active=False):
     j=ReconnectCheckpointContext(binary)
     try:
         j.start();j.admit('Seed synthetic closed reconnect continuity.',topic=1)
@@ -437,24 +437,37 @@ def qualify_reconnect_compaction(binary):
             finally:db.close()
         history=NativeHistory(database,'reconnect-scope')
         binding=provider.presentation_list(0,0)['binding'];dialogue=str(uuid.uuid4())
-        async def owner(function,*args):return await asyncio.to_thread(function,*args)
+        async def owner(function,*args):
+            if not active and args and args[0].get('action')=='sync':
+                # Simulate an older producer that does not select active preparation.
+                args=({**args[0],'prepare_continuation':False},*args[1:])
+            return await asyncio.to_thread(function,*args)
         async def scenario():
             old=NativeContext(history,provider,100,dialogue,binding,owner);await old.open()
             originals=['The key is orange. '+('Original attributed context. '*500),
                 'Correction: the key is violet. Unresolved: where is the bell? '+('Retain original uncertainty. '*500)]
-            for text in originals:
-                history.retain(100,dialogue,binding,str(uuid.uuid4()),text,'d'*64,0,closed=True)
-            await old._sync(old.record)
-            await asyncio.to_thread(j.wait,lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(2,)])
-            await asyncio.to_thread(j.idle)
+            for cycle in range(2 if active else 1):
+                for text in originals:
+                    history.retain(100,dialogue,binding,str(uuid.uuid4()),text,'d'*64,0,closed=True)
+                await old._sync(old.record)
+                field='checkpoint.through' if active else 'incorporated'
+                await asyncio.to_thread(j.wait,lambda:j.row(
+                    "SELECT json_extract(doc,?) FROM live_context WHERE dialogue=?",
+                    ('$.'+field,dialogue))==[(2*(cycle+1),)])
+                await asyncio.to_thread(j.idle)
+            if active:
+                doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(dialogue,))[0][0])
+                assert doc['generation']==old.record['generation'] and doc['rollover'] is None
+                assert doc['continuation']['requests']==2 and doc['checkpoint_request']['committed']
             await old.close()
             needed=await old._call(old.record,'resume_read')
-            assert needed['resume_requirement']['bytes']>24576
+            if active:assert needed['resume']['bytes']<=24576
+            else:assert needed['resume_requirement']['bytes']>24576
             fresh=NativeContext(history,provider,100,str(uuid.uuid4()),binding,owner)
             preparing=[]
             async def progress():preparing.append(True)
             seed=await fresh.resume_context(dialogue,on_preparing=progress)
-            assert preparing==[True] and seed['bytes']<=24576
+            assert preparing==([] if active else [True]) and seed['bytes']<=24576
             assert 'violet' in seed['content']['checkpoint']['text']
             assert fresh.record is None,'Preparation must not open a new producer'
             assert j.pages>=4 and all(text in j.read_texts for text in originals)
@@ -468,7 +481,7 @@ def qualify_reconnect_compaction(binary):
         assert j.row('SELECT count(*) FROM interaction_instructions')==[(0,)]
         assert j.row('SELECT count(*) FROM conversation_inputs')==[(0,)]
         assert not j.messages
-        print('PASS closed oversized reconnect through exact paginated native incorporation, full semantic checkpoint and source-bound successor opening; original correction retained, no human/work replay; synthetic reasoning, zero providers or models')
+        print('PASS '+('two active semantic checkpoints without provider renewal, ready reconnect' if active else 'closed oversized reconnect')+' through exact paginated native incorporation, full semantic checkpoint and source-bound successor opening; original correction retained, no human/work replay; synthetic reasoning, zero providers or models')
     finally:
         if sys.exc_info()[0]:print('Reconnect fixture errors:',j.fixture_errors,file=sys.stderr)
         j.close()
@@ -567,6 +580,7 @@ def qualify_rollover(binary):
 
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
-    if '--reconnect-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary)
+    if '--active-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary,active=True)
+    elif '--reconnect-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary)
     elif '--detached-semantic' in sys.argv[2:]:qualify(binary,detached_semantic=True)
-    else:qualify(binary);qualify(binary,detached_semantic=True);qualify_rollover(binary);qualify_reconnect_compaction(binary)
+    else:qualify(binary);qualify(binary,detached_semantic=True);qualify_rollover(binary);qualify_reconnect_compaction(binary);qualify_reconnect_compaction(binary,active=True)

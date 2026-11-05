@@ -28,6 +28,45 @@ and current journals; a caption-aware web reader is required while typed unknown
 observations remain pending. Exact current receiving/health/operator guidance:
 [receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md).
 
+## Active continuation preparation —5November2026
+
+Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) separates semantic
+preparation from physical provider renewal. The candidate measures the exact full
+reconnect envelope (checkpoint, ordered tail, unretired guidance, JSON/metadata)
+while a visit is active, without closing it or acquiring/acknowledging a reader.
+Canonical source reconciliation may atomically request a semantic checkpoint at16KiB,
+before dispatch freezes the supplied range. The owner selects Sync.prepare_continuation;
+older producers default false and finishing/recovery never opt in. Native capability
+foreground_continuation:v1 identifies the compatible writer. Its
+suggested target is8KiB; the24KiB hard seed bound and64k/48k/600s diagnostic
+limits remain unchanged. A checkpoint never replaces a provider, claims an
+acoustic floor, injects guidance, replays audio/work or resets usage accounting.
+
+The native projection persists at most32continuation requests per logical visit,
+including across physical replacements. One nonce-bound operation remains
+outstanding through requested, observed ACK and committed semantic checkpoint.
+Physical pressure coalesces with pending semantic work, then may request complete
+handover after that prefix commits. A full reader's exact request revision and
+checkpoint CAS are mandatory; incremental or old full ACKs cannot authorize a
+new request's writer. The writer covers its frozen prefix even if later sources
+arrive. Later events and changed/unread guidance stay exact retained context;
+physical handover still requires its existing complete settled basis.
+
+A fresh canonical source/guidance identity and at least4KiB growth from the last
+committed envelope are required to rearm, above16KiB. Summary rewrites, transport,
+playback, repeated watcher reads, ACKs and guidance disposition alone cannot
+launch another request. Nonshrinking summaries therefore do not spin. The native
+request cap survives restart; exhaustion retains the existing finite pressure /
+closed-reconnect recovery rather than starting another model loop. A prefix
+pressure checkpoint must fit its own irreducible envelope before retiring source
+text; a growing later tail cannot reject an otherwise useful prefix summary.
+
+This candidate extends608, which is receiving-selected with44bindings and three
+actual collectors preserved. The earlier actual Luna/Qwen qualification retained
+corrected-key context and generated PCM, but the first20second preparation was
+pending. Active preparation addresses that wait; it is not yet receiving-selected
+or physically accepted. Keep phone hearing/noise/latency and full roadmap open.
+
 ## Selected continuation after actual provider qualification
 
 The existing manual-activity route now has an actual mounted continuous-input
