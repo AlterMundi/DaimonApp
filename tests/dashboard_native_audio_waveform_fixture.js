@@ -29,7 +29,8 @@
   if(!gap)socket.push({type:'audio',id,sample_rate:24000,pcm:pcm(.4),end:38400});
   await new Promise(resolve=>setTimeout(resolve,0));
   let marker;
-  device.audio.suspend(.15).then(async()=>{
+  // The player reserves 80 ms: an 80 ms gap-case buffer ends at 160 ms.
+  device.audio.suspend(.2).then(async()=>{
    marker=device.currentTime;if(gap&&engine.hasAudio)throw Error('Expected a real gap before interruption');captureListener({activityBytes:640,pcm:new Uint8Array(640).buffer});
    socket.push({type:'capture_started',id:'44444444-4444-4444-8444-444444444444',start:0});
    // Confirmed speech retires the old utterance, including chunks in flight.

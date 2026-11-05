@@ -13,17 +13,19 @@ class Element{
   focus(){this.focused=true;}
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function boot(){
+function boot(options={}){
   const document={createElement:tag=>new Element(tag)},window={},root=new Element('main'),timeline=new Element('div');root.append(timeline);
+  if(options.storage)window.localStorage={getItem:key=>options.storage.get(key)||null,setItem:(key,value)=>options.storage.set(key,value),removeItem:key=>options.storage.delete(key)};
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
   let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false;
+  if(options.ids)sessions.forEach((row,n)=>row.id=options.ids[n]);
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
     if(deny)throw Object.assign(Error('No workspace'),{status:403});
-    if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated};
+    if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated,preferred_session:options.preferred};
     const url=new URL(route,'https://fixture.invalid');
     if(held){const hold=held;held=undefined;return hold;}
     if(failHistory)throw Error('Synthetic history connection lost');
@@ -142,5 +144,32 @@ function boot(){
   titles.setTruncated(false);titles.getSessions()[0].destination=null;await titles.control.refresh('binding');
   assert.equal(titles.control.pinState(worker).available,false,'Missing native-issued destination remains unavailable');
   titles.deny();await titles.control.refresh('binding');assert.equal(titles.control.pinSource(worker),false,'Grant loss prevents title pinning');
+  // Persist only explicit opaque intent, and restore from fresh authorized metadata.
+  const storage=new Map(),ids=['b'.repeat(24),'a'.repeat(24),'e'.repeat(24)],owner='1'.repeat(64);
+  const first=boot({storage,ids,preferred:ids[0]});await first.control.refresh(owner);await tick();
+  assert.equal(first.timeline.hidden,true,'Receiving follow selection opens its history');
+  assert.equal(first.control.capture().reference.source,'session:7');
+  const saved=JSON.parse([...storage.values()][0]);assert.deepEqual(Object.keys(saved).sort(),['binding','id','version']);
+  const reloaded=boot({storage,ids});reloaded.getSessions()[0].destination=reloaded.reference(7,'c');
+  await reloaded.control.refresh(owner);await tick();
+  assert.equal(reloaded.timeline.hidden,true);assert.equal(reloaded.control.capture().reference.revision,'c'.repeat(64),'Reload resolves a fresh destination, never a persisted authority');
+  assert(reloaded.reads.filter(r=>r!=='interaction/sessions').every(r=>r.includes(ids[0])),'Only the followed history is opened');
+  const foreign=boot({storage,ids});await foreign.control.refresh('2'.repeat(64));await tick();
+  assert.equal(foreign.control.capture(),undefined);assert.deepEqual(foreign.reads,['interaction/sessions'],'Another actor/binding does not restore the old history');
+  reloaded.deny();await reloaded.control.refresh(owner);assert.equal(storage.size,0,'Grant loss removes saved intent');
+  storage.set('interaction.followed-session.v1',JSON.stringify({version:1,binding:owner,id:'c'.repeat(24)}));
+  const absent=boot({storage,ids});await absent.control.refresh(owner);assert.equal(absent.control.canSend(),false,'Unavailable persisted selection never silently falls back to integration');
+  absent.getSessions().push({...absent.getSessions()[0],id:'c'.repeat(24),title:'Recovered followed session'});
+  await absent.control.refresh(owner);
+  assert(absent.rows().some(row=>row.children[0].textContent==='Recovered followed session'),'A returned row remains available for deliberate reselection');
+  assert.equal(absent.control.canSend(),false);absent.byText('Recovered followed session').click();await tick();assert.equal(absent.control.canSend(),true);
+  absent.byLabel('Send to the conversation').click();assert.equal(absent.control.canSend(),true);
+  storage.set('interaction.followed-session.v1',JSON.stringify({version:1,binding:owner,id:ids[0]}));
+  const metadataOnly=boot({storage,ids});metadataOnly.getSessions()[0].destination=null;await metadataOnly.control.refresh(owner);
+  metadataOnly.getSessions()[0].destination=metadataOnly.reference(7);await metadataOnly.control.refresh(owner);
+  assert.equal(metadataOnly.rows().length,3,'Destination recovery must not fail before rendering the metadata-only row');
+  assert.equal(metadataOnly.control.canSend(),false);metadataOnly.byText('Busy work').click();await tick();assert.equal(metadataOnly.control.canSend(),true);
+  metadataOnly.byLabel('Send to the conversation').click();
+  const unpinned=boot({storage,ids,preferred:ids[0]});await unpinned.control.refresh(owner);assert.equal(unpinned.control.capture(),undefined,'Explicit unpin survives reload even with a receiving default');
   console.log('Session workspace: exact reply, pin/expand/Back, stale generation, late history, technical view, audio and grant loss passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
