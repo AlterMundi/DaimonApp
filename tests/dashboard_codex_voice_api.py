@@ -37,6 +37,9 @@ class Owner:
         if binding!=self.binding or self.held:raise ValueError('Synthetic held/changed owner')
         return {'binding':binding,'entry_binding':[100,{'chat_id':100,'thread_id':7},1,'native'],
                 'native_thread':'native'}
+    def codex_voice_transcripts(self,owner,sessions):
+        from dashboard.codex_voice_history import IncompleteTranscript
+        raise IncompleteTranscript('Synthetic canonical closure unavailable')
     def codex_voice_collect(self,owner,turn):
         self.collected.append(turn);return {'state':'collecting'}
     def codex_voice_current(self,owner):return self.current
@@ -152,6 +155,19 @@ class Mounted(unittest.TestCase):
             self.assertEqual(socket.receive_json()['type'],'review')
         self.assertEqual(history.read(self.visit,100,'a'*64),prior)
         self.assertEqual(Native.opened,[])
+
+    def test_reconnect_reconciles_canonical_correction_without_new_work(self):
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        generation=str(uuid.uuid4());owner=self.owner.codex_voice_binding('a'*64)
+        prior=history.open(str(uuid.uuid4()),100,owner,generation)
+        source={'items':[{'id':'correction','role':'user','text':'Use the corrected value'}],
+            'source_sha256':'c'*64}
+        with patch.object(self.owner,'codex_voice_transcripts',return_value={generation:source})as read:
+            with self.socket()as socket:self.start(socket);self.close(socket)
+        read.assert_called_once_with(owner,[generation])
+        self.assertEqual(Native.opened[0].continuation['items'],[{'role':'user','text':'Use the corrected value'}])
+        self.assertTrue(history.read(prior['id'],100,'a'*64)['transcript_complete'])
+        self.assertEqual(self.owner.collected,[])
 
     def test_default_configuration_has_no_native_openai_endpoint(self):
         other=FastAPI()

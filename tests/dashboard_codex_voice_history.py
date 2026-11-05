@@ -1,5 +1,11 @@
 """Native voice original retention/restart; no ASR, native input or inference."""
 import hashlib
+import os
+import subprocess
+import threading
+import time
+import json
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -8,10 +14,10 @@ import uuid
 from unittest.mock import Mock
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from dashboard.codex_voice_history import CodexVoiceHistory
+from dashboard.codex_voice_history import CodexVoiceHistory, native_transcripts
 from dashboard.live_transcription import wav_bytes
 from dashboard.media_retention import RetentionUnavailable
-from dashboard.provider import Provider
+from dashboard.provider import Provider, ProviderUnavailable
 
 
 class History(unittest.TestCase):
@@ -29,6 +35,21 @@ class History(unittest.TestCase):
         self.audio=wav_bytes(b'\x01\x00'*8000)
     def retain(self,ordinal=0,audio=None):
         return self.history.recording(self.visit,100,'a'*64,ordinal,audio or self.audio,self.provider)
+    def test_recording_waits_for_concurrent_close_and_both_commits_survive(self):
+        from scripts.speech_render import lock
+        entered=threading.Event();finished=threading.Event();results=[]
+        def retain():
+            entered.set()
+            try:results.append(self.retain())
+            finally:finished.set()
+        with lock(self.history.root/'.lock'):
+            worker=threading.Thread(target=retain);worker.start();self.assertTrue(entered.wait(1))
+            self.assertFalse(finished.wait(.05))
+        worker.join(timeout=2);self.assertFalse(worker.is_alive());self.assertEqual(len(results),1)
+        self.history.complete_transcript(self.visit,100,'a'*64)
+        retained=self.history.read(self.visit,100,'a'*64)
+        self.assertTrue(retained['transcript_complete']);self.assertEqual(len(retained['recordings']),1)
+
     def test_original_survives_restart_and_exact_retry_verifies_bytes(self):
         receipt=self.retain()
         self.history=CodexVoiceHistory(self.root/'visits')
@@ -130,6 +151,57 @@ class History(unittest.TestCase):
         self.history.state(self.visit,100,'a'*64,'closed')
         with self.assertRaisesRegex(ValueError,'needs reconciliation'):
             CodexVoiceHistory(self.root/'visits').continuation(100,self.frozen)
+
+    def native_fixture(self,closed=True):
+        directory=self.root/'native'/'sessions';directory.mkdir(parents=True)
+        path=directory/'selected.jsonl'
+        rows=[{'type':'session_meta','payload':{'id':'native'}},
+            {'type':'realtime_item','payload':{'id':'start','realtime_session_id':self.session,'type':'realtime_session_started'}},
+            {'type':'realtime_item','payload':{'id':'correction','realtime_session_id':self.session,
+                'type':'transcript_segment','role':'user','text':'Use hojasol'}}]
+        if closed:rows.append({'type':'realtime_item','payload':{'id':'end','realtime_session_id':self.session,
+            'type':'realtime_session_closed','outcome':'ended'}})
+        path.write_text(''.join(json.dumps(row)+'\n'for row in rows))
+        return path
+
+    def test_canonical_recovery_requires_exact_thread_start_and_closure(self):
+        path=self.native_fixture();info=path.stat()
+        sources=native_transcripts(path,'native',[self.session],expected_file=(info.st_dev,info.st_ino))
+        self.history.reconcile(100,self.frozen,sources)
+        self.assertEqual(self.history.continuation(100,self.frozen)['items'],[{'role':'user','text':'Use hojasol'}])
+        with self.assertRaises(ValueError):native_transcripts(path,'another',[self.session],expected_file=(info.st_dev,info.st_ino))
+        with self.assertRaises(ValueError):native_transcripts(path,'native',[str(uuid.uuid4())],expected_file=(info.st_dev,info.st_ino))
+        with self.assertRaises(ValueError):native_transcripts(path,'native',[self.session],expected_file=(0,0))
+        rows=path.read_text().splitlines();path.write_text('\n'.join(rows[:-1])+'\n')
+        with self.assertRaises(ValueError):native_transcripts(path,'native',[self.session],expected_file=(info.st_dev,info.st_ino))
+
+    def test_native_recovery_refuses_fifo_without_waiting_for_writer(self):
+        path=self.root/'fifo';os.mkfifo(path);info=path.stat()
+        script=('from dashboard.codex_voice_history import native_transcripts; '
+            +f'native_transcripts({str(path)!r},"native",[{self.session!r}],expected_file=({info.st_dev},{info.st_ino}))')
+        result=subprocess.run([sys.executable,'-c',script],capture_output=True,timeout=2)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn(b'Native history changed before recovery',result.stderr)
+
+    def test_native_source_recovery_cannot_rewrite_existing_words(self):
+        self.history.item(self.visit,100,'a'*64,{'id':'correction','type':'transcriptSegment','role':'user',
+            'text':'Different retained words','realtimeSessionId':self.session})
+        path=self.native_fixture();info=path.stat()
+        sources=native_transcripts(path,'native',[self.session],expected_file=(info.st_dev,info.st_ino))
+        with self.assertRaisesRegex(ValueError,'differs from canonical'):
+            self.history.reconcile(100,self.frozen,sources)
+        self.assertFalse(self.history.read(self.visit,100,'a'*64)['transcript_complete'])
+
+    def test_provider_recovery_rechecks_owner_and_confines_native_root(self):
+        path=self.native_fixture();db=sqlite3.connect(self.root/'native'/'state_5.sqlite')
+        db.execute('CREATE TABLE threads(id TEXT,rollout_path TEXT,archived INTEGER)')
+        db.execute('INSERT INTO threads VALUES(?,?,0)',('native',str(path)));db.commit();db.close()
+        provider=object.__new__(Provider);provider.native_home=self.root/'native'
+        provider.codex_voice_binding=Mock(return_value=self.frozen)
+        source=provider.codex_voice_transcripts(self.frozen,[self.session])
+        self.assertEqual(source[self.session]['items'][0]['text'],'Use hojasol')
+        provider.codex_voice_binding.side_effect=[self.frozen,{**self.frozen,'native_thread':'changed'}]
+        with self.assertRaises(ProviderUnavailable):provider.codex_voice_transcripts(self.frozen,[self.session])
 
     def test_restore_does_not_cross_binding_human_or_native_owner(self):
         self.history.item(self.visit,100,'a'*64,{'id':'source','type':'transcriptSegment','role':'user',

@@ -74,12 +74,26 @@ A separate durable transcript-completeness marker is committed only after
 observed native closure and successful event drain, before releasing voice
 ownership to a successor. Backend collector status remains separate. Failed
 source writes, uncertain closure or interrupted cleanup block automatic restore
-with an explicit reconciliation message. Older visits without the marker require
-reconciliation too; never infer completeness from their display state. Cancelling
+with an explicit reconciliation message. Before refusing a new visit, the app
+can reconcile from the exact enrolled native rollout: current owner checks before
+and after, nofollow/nonblocking regular-file open, inode/header identity, and an
+unchanged indexed path. A bounded4MiB tail must contain that generation's complete
+start and closure plus every source. Existing source words cannot be rewritten;
+missing items are inserted in canonical order. A source digest records recovery.
+Absent, changed or out-of-window closure remains an explicit review requirement.
+Older visits without the marker use this same path; their display state is not
+proof of completeness. Short history/original commits serialize with a two-second
+lock-acquisition bound; contention never repeats a protected body/provider call. Cancelling
 before `voice.start` is attempted records an empty, confirmed-not-started outcome
 and permits another visit. Original bytes and accepted backend work are preserved.
-The actual correction/recall check must be repeated on the final qualified pair;
-unit and synthetic-browser success do not establish semantic acceptance.
+Actual canonical recovery found six prior closed generations/13transcripts.
+One new same-thread spoken question returned the corrected word with nonzero
+remote audio; its original upload exposed a concurrent metadata-lock rejection.
+The bounded lock fix was followed by another actual visit: both original chunks
+were retained, but there was no useful output before the finite observation ended,
+and the user transcript completed during close. Keep both results; repeated useful
+audio/return acceptance remains open. The terminal fixtures must not be replayed.
+Unit and synthetic-browser success do not establish sustained semantic acceptance.
 
 ## Original recovery and bounds
 

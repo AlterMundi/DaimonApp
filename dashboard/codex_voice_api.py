@@ -118,7 +118,12 @@ def install(app,config,provider,authorize,origins):
                 from .native_voice import being_identity
                 identity=being_identity({'native_identity_file':selected['identity_file']})
                 context=identity['text']
-                startup=await asyncio.to_thread(history.continuation,human,owner)
+                try:startup=await asyncio.to_thread(history.continuation,human,owner)
+                except IncompleteTranscript:
+                    pending=await asyncio.to_thread(history.incomplete,human,owner)
+                    sources=await asyncio.to_thread(provider.codex_voice_transcripts,owner,pending)
+                    await asyncio.to_thread(history.reconcile,human,owner,sources)
+                    startup=await asyncio.to_thread(history.continuation,human,owner)
                 opening=asyncio.create_task(asyncio.to_thread(CodexVoice,provider.native_home,
                     owner['native_thread'],lease=lease))
                 voice=await asyncio.shield(opening)

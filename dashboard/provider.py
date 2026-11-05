@@ -632,6 +632,29 @@ class Provider:
             raise ProviderUnavailable('Native Codex voice owner is unavailable or changed')
         return {'binding':binding,'entry_binding':entry,'native_thread':entry[3]}
 
+    def codex_voice_transcripts(self,frozen,sessions):
+        """Reconcile retained voice only from the exact enrolled native root."""
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if row is None:raise ProviderUnavailable('Native voice history is unavailable')
+        path=Path(row['rollout_path']).resolve()
+        if not path.is_relative_to((self.native_home/'sessions').resolve()):
+            raise ProviderUnavailable('Native voice history is outside its root')
+        meta=path.stat()
+        from .codex_voice_history import native_transcripts
+        result=native_transcripts(path,frozen['native_thread'],sessions,expected_file=(meta.st_dev,meta.st_ino))
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed during recovery')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            current=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if current is None or Path(current['rollout_path']).resolve()!=path:
+            raise ProviderUnavailable('Native voice history binding changed')
+        return result
+
     def codex_voice_collect(self, frozen, native_turn):
         """Collect an already admitted native voice turn; never submit its input."""
         if (not isinstance(frozen,dict) or set(frozen)!={'binding','entry_binding','native_thread'}

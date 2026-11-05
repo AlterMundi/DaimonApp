@@ -5,6 +5,7 @@ transcripts to app-captured original audio; they are not a model memory/context
 store. A bounded flat startup window restores actual voice sources through
 V3 initialItems; previous startup envelopes are never included recursively.
 """
+from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 import os
@@ -14,7 +15,24 @@ import time
 import uuid
 
 from .private_state import private_directory, read_json, write_json
-from scripts.speech_render import lock
+from scripts.speech_render import lock, RenderError
+
+
+@contextmanager
+def history_lock(path):
+    """Serialize short metadata/media commits with a finite acquisition bound."""
+    deadline=time.monotonic()+2
+    with ExitStack()as stack:
+        while True:
+            try:
+                stack.enter_context(lock(path));break
+            except RenderError as error:
+                if str(error)!='render-in-progress':
+                    raise ValueError('Native voice history lock is unavailable')from None
+                if time.monotonic()>=deadline:
+                    raise ValueError('Native voice history writer is still busy')from None
+                time.sleep(.01)
+        yield
 
 
 class IncompleteTranscript(ValueError):
@@ -51,7 +69,7 @@ class CodexVoiceHistory:
             raise ValueError('Select a bounded native voice duration')
         if identity_sha256 is not None and (not isinstance(identity_sha256,str)or not re.fullmatch('[a-f0-9]{64}',identity_sha256)):
             raise ValueError('Select one owner identity revision')
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             if (self.root/(ident+'.json')).exists():
                 raise ValueError('Native voice visit already exists; inspect it instead of starting again')
             sequence=max((read_json(path).get('sequence',0)for path in self.root.glob('*.json')),default=0)+1
@@ -69,7 +87,7 @@ class CodexVoiceHistory:
 
     def continuation(self,human,frozen):
         """Flat immutable source window, never another visit's startup envelope."""
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             visits=[read_json(path)for path in self.root.glob('*.json')]
             visits=[value for value in visits if value.get('human')==human
                 and value.get('binding')==frozen['binding']
@@ -95,9 +113,35 @@ class CodexVoiceHistory:
             digest=hashlib.sha256(json.dumps(selected,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
             return {'items':items,'sources':sources,'digest':digest,'more':len(selected)<len(rows)}
 
+    def incomplete(self,human,frozen):
+        with history_lock(self.root/'.lock'):
+            return [value['native_session']for path in self.root.glob('*.json')
+                if (value:=read_json(path)).get('human')==human
+                and value.get('binding')==frozen['binding']and value.get('entry_binding')==frozen['entry_binding']
+                and value.get('native_thread')==frozen['native_thread']and value.get('transcript_complete')is not True]
+
+    def reconcile(self,human,frozen,sources):
+        """Recover missing items from exact closed native generations, never replace."""
+        with history_lock(self.root/'.lock'):
+            for path in self.root.glob('*.json'):
+                value=read_json(path)
+                if(value.get('human')!=human or value.get('binding')!=frozen['binding']
+                        or value.get('entry_binding')!=frozen['entry_binding']
+                        or value.get('native_thread')!=frozen['native_thread']or value.get('transcript_complete')is True):continue
+                source=sources[value['native_session']]
+                old={item['id']:item for item in value['items']}
+                native={item['id']:item for item in source['items']}
+                if any(ident not in native or {key:item[key]for key in ('id','role','text')}!=native[ident]
+                        for ident,item in old.items()):
+                    raise ValueError('Retained transcript differs from canonical native source')
+                value['items']=[old[item['id']]if item['id']in old else {**item,'observed_at':time.time()}
+                    for item in source['items']]
+                value.update(transcript_complete=True,reconciliation_sha256=source['source_sha256'])
+                self._write(value)
+
     def abandon_unstarted(self,ident,human,binding):
         """Caller confirms voice.start was never invoked; no native media existed."""
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
             if value['state']!='opening' or value['items']:
                 raise ValueError('Only an empty unstarted visit can be abandoned')
@@ -110,7 +154,7 @@ class CodexVoiceHistory:
         Independent of backend collector completion. Failed item writes or a
         process crash leave this false and prevent silent incomplete restore.
         """
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
             value['transcript_complete']=True
             self._write(value);return value
@@ -123,7 +167,7 @@ class CodexVoiceHistory:
 
     def state(self,ident,human,binding,state):
         if state not in ('active','closed','review'):raise ValueError('Unknown native voice state')
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
             if value['state']=='closed' and state!='closed':return value
             value['state']=state
@@ -135,7 +179,7 @@ class CodexVoiceHistory:
                 or not isinstance(item.get('id'),str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',item['id'])
                 or not isinstance(item.get('text'),str) or len(item['text'].encode())>16384 or '\0' in item['text']):
             raise ValueError('Select a completed native transcript source')
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
             if item.get('realtimeSessionId')!=value['native_session']:
                 raise ValueError('Native transcript belongs to another voice generation')
@@ -157,7 +201,7 @@ class CodexVoiceHistory:
             raise ValueError('Select canonical bounded original PCM audio')
         digest=hashlib.sha256(data).hexdigest()
         original=str(uuid.uuid5(uuid.UUID(self.ident(ident)),'human-recording:'+str(ordinal)))
-        with lock(self.root/'.lock'):
+        with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
             old=next((r for r in value['recordings']if r['ordinal']==ordinal),None)
             if old is not None:
@@ -206,3 +250,59 @@ class CodexVoiceHistory:
             if value.get('human')==human and value.get('binding')==binding:
                 values.append({k:value[k]for k in ('id','created_at','state')})
         return sorted(values,key=lambda v:v['created_at'],reverse=True)[:16]
+
+
+def native_transcripts(path,native,sessions,*,expected_file):
+    """Bounded canonical closed-generation recovery; no RPC/input or inference."""
+    from pathlib import Path
+    sessions=set(sessions)
+    if not sessions or len(sessions)>512:raise ValueError('Select bounded native voice generations')
+    for ident in sessions:CodexVoiceHistory.ident(ident)
+    fd=os.open(Path(path),os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb')as stream:
+        info=os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode)or(info.st_dev,info.st_ino)!=expected_file:
+            raise ValueError('Native history changed before recovery')
+        header=stream.readline(2*1024*1024+1)
+        if len(header)>2*1024*1024 or not header.endswith(b'\n'):
+            raise ValueError('Native history identity exceeds bound')
+        first=json.loads(header)
+        if first.get('type')!='session_meta'or first.get('payload',{}).get('id')!=native:
+            raise ValueError('Native history belongs to another thread')
+        begin=stream.tell();end=info.st_size
+        start=max(begin,end-4*1024*1024)
+        stream.seek(start)
+        if start>begin:stream.readline(2*1024*1024+1)  # Discard crossing record.
+        values={key:{'items':[],'started':False,'closed':False,'source_sha256':hashlib.sha256(header)}for key in sessions}
+        while stream.tell()<end:
+            raw=stream.readline(min(2*1024*1024+1,end-stream.tell()))
+            if len(raw)>2*1024*1024 or not raw.endswith(b'\n'):
+                raise ValueError('Native history has an incomplete or oversized record')
+            row=json.loads(raw)
+            if row.get('type')!='realtime_item':continue
+            item=row.get('payload',{});value=values.get(item.get('realtime_session_id'))
+            if value is None:continue
+            value['source_sha256'].update(raw)
+            if value['closed']:raise ValueError('Native voice has sources after closure')
+            kind=item.get('type')
+            if kind=='realtime_session_started':
+                if value['started']:raise ValueError('Native voice generation repeated')
+                value['started']=True
+            elif not value['started']:raise ValueError('Native voice start is outside recovery window')
+            elif kind=='transcript_segment':
+                source={'id':item.get('id'),'role':item.get('role'),'text':item.get('text')}
+                if (not isinstance(source['id'],str)or not re.fullmatch('[A-Za-z0-9_-]{1,128}',source['id'])
+                        or source['role']not in ('user','assistant')or not isinstance(source['text'],str)
+                        or not source['text']or'\0'in source['text']or len(source['text'].encode())>16384
+                        or len(value['items'])>=256 or any(v['id']==source['id']for v in value['items'])):
+                    raise ValueError('Native voice transcript exceeds source bounds')
+                value['items'].append(source)
+            elif kind=='realtime_session_closed':
+                if item.get('outcome')not in ('ended','failed'):raise ValueError('Unknown native voice closure')
+                value['closed']=True
+        fresh=os.fstat(stream.fileno())
+        if(fresh.st_dev,fresh.st_ino,fresh.st_size)!=(info.st_dev,info.st_ino,info.st_size):
+            raise ValueError('Native history changed during recovery')
+    if any(not value['started']or not value['closed']for value in values.values()):
+        raise IncompleteTranscript('Native closure sources are not yet available in the recovery window')
+    return {key:{'items':value['items'],'source_sha256':value['source_sha256'].hexdigest()}for key,value in values.items()}

@@ -67,7 +67,9 @@ Actual native application tests confirmed identity uptake, nonzero remote audio,
 original receipts and a surviving backend capability result. They also exposed
 lost inline corrections after reconnect. The candidate now restores a flat bounded
 window via native `initialItems`, with source hashes and a separate durable
-completeness barrier; incomplete histories require reconciliation. Actual final
+completeness barrier; incomplete histories reconcile from exact closed native
+sources or stay in review. Actual single corrected-word recall passed, but the
+following visit retained its originals without useful output. Repeated final
 correction/recall, useful spoken return, receiving deployment and phone acceptance
 remain open.
 See the [native mode contract](interaction-native-codex-voice.md); production629
