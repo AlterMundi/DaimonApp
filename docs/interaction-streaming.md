@@ -296,6 +296,16 @@ stream never silently triggers another provider call. Follow holds at the
 segment start while duration is unknown, then uses actual finite media duration;
 no total duration or word timestamps are guessed.
 
+Ordinary Conversation speech keeps the first provider audio immediate, then
+coalesces provider micro-chunks into at most32KiB release units before those
+fresh authorization/source checks. The browser waits for1.2seconds of actual
+buffered media (or confirmed completion) before unmuting, and revalidates the
+canonical audible prefix after the wait. Readiness expires after12seconds;
+Stop/cancellation still owns late completion. Native progressive players retain
+their own buffering. Decoder recovery uses only the verified completed bytes
+from the same attempt and does not wait on its cancelled progressive transport.
+Existing byte/deadline/cache bounds and no-automatic-provider-retry rules remain.
+
 Qualification includes actual loopback HTTP delivery of the first frame while
 the provider's terminal response is deliberately held, cache/revocation/source
 replacement tests, client corruption/cancellation/EOF tests and real Chromium

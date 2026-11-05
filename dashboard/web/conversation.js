@@ -1878,16 +1878,28 @@ window.Conversation = (() => {
         const check = part(selected.source, selected.offset);
         let [,verified]=await Promise.all([started, check]);
         if (active !== selected || generation !== owned) return;
-        if(selected.end!==undefined){
-          const chars=Array.from(verified.text),count=selected.end-selected.offset;
+        async function validatePrefix(value){
+          if(selected.end===undefined)return value;
+          const chars=Array.from(value.text),count=selected.end-selected.offset;
           if(count>chars.length)throw Error("Audio exceeds its canonical text part");
           const text=chars.slice(0,count).join("");
           const hash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(text)))].map(byte=>byte.toString(16).padStart(2,"0")).join("");
           if(hash!==selected.textHash)throw Error("Audio text prefix changed");
-          if(active!==selected || generation!==owned)return;
-          verified={...verified,text,next_offset:selected.next};
+          return {...value,text,next_offset:selected.next};
         }
+        verified=await validatePrefix(verified);
+        if(active!==selected || generation!==owned)return;
         audio.pause(); audio.currentTime = position;delete selected.resumePosition;
+        // Unlock on the gesture above, then build a small media-time reserve
+        // before making progressive speech audible. No new synthesis/retry.
+        if(selected.streaming?.ready && !selected.usingBlob){
+          await selected.streaming.ready(position);
+          if(active!==selected || generation!==owned)return;
+          // Buffering can outlive a source revision or access grant. Revalidate
+          // the exact audible prefix after that wait, before releasing sound.
+          verified=await validatePrefix(await part(selected.source,selected.offset));
+          if(active!==selected || generation!==owned)return;
+        }
         selected.verifying = false;
         selected.segmentEnded = false;
         selected.verified=verified;

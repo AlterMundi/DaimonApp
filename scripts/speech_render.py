@@ -531,6 +531,7 @@ def word_alignment(spoken, sentences):
 def sse_audio(response, sentence_end=None):
     """Bounded ordered provider SSE; URL fields and provider errors never escape."""
     event = []; event_size = total = audio_size = 0; finished = False
+    pending = bytearray(); first = True
     for raw in iter(lambda: response.readline(1024 * 1024 + 1), b''):
         total += len(raw)
         if len(raw) > 1024 * 1024 or total > 16 * 1024 * 1024:
@@ -550,13 +551,23 @@ def sse_audio(response, sentence_end=None):
                 data = base64.b64decode(encoded, validate=True); audio_size += len(data)
                 if audio_size > MAX_AUDIO:
                     raise RenderError('streamed-speech-audio-bound')
-                # Keep downstream frames small, with no dependence on provider framing.
-                for offset in range(0, len(data), 32768):
-                    yield data[offset:offset+32768]
+                # Keep the first audio progressive. Then coalesce provider
+                # micro-chunks before the HTTP layer's fresh authorization and
+                # canonical-source checks. The existing child pipe supplies
+                # bounded prefetch; never cache an authorization verdict.
+                pending.extend(data)
+                if first:
+                    first = False
+                    size = min(len(pending), 32768)
+                    yield bytes(pending[:size]); del pending[:size]
+                while len(pending) >= 32768:
+                    yield bytes(pending[:32768]); del pending[:32768]
             if output.get('finish_reason') == 'stop':
                 finished = True; break
     if not finished or not audio_size:
         raise RenderError('streamed-speech-incomplete')
+    if pending:
+        yield bytes(pending)
 
 
 def stream_render(binding, request, emit):
