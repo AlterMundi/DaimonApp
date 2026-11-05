@@ -730,9 +730,12 @@ unavailable to the model's integrating controller. They never dispatch a native
 turn or call a provider.
 
 Preparation is read-only and requires an open dialogue, no unfinished frozen
-reader, all retained language incorporated and represented by Sol's current
-checkpoint, and no pending/submitting guidance. The returned seed contains that
-checkpoint and settled guidance as attributed non-executable continuity. Its
+reader, all retained language incorporated, an existing semantic checkpoint,
+and no pending/submitting guidance. The returned seed contains that checkpoint,
+the complete exact event tail after its `through` position, and settled guidance
+as attributed non-executable continuity. The tail must be incorporated but need
+not be summarized again solely to replace a provider connection. Replacement
+never retires that tail or treats an interrupted assistant caption as heard. Its
 serialized24KiB ceiling reserves space within provider setup; it is not a token
 count or a guarantee that every selected identity/setup combination fits. An
 oversized seed is rejected intact, never clipped. The caller must still check
