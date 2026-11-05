@@ -140,6 +140,15 @@ Phone hearing, sustained use and complete long-term recall remain unqualified.
 
 ## Native tail persistence and compaction observation —5 November2026
 
+PR637 is receiving-selected over native632 in the same UI0976269baac7; only the
+Python native-start field and owner voice briefv2 changed. Existing native/Core,
+configuration, providers/defaults, work and storage/diagnostic bounds remain.
+One deployment helper failed before selecting code or identity; it restored the
+previous web. A separately guarded continuation verified that unchanged frontier
+and completed selection. Its terminal receipt is retained; neither helper is a
+retry surface for human input.
+
+
 The installed Core's own generated experimental schema advertises
 `flushTranscriptTailOnSessionEnd`. Native start now enables this supported path.
 An actual synthetic voice visit introduced a new fact, repeated it in audio,
@@ -160,7 +169,13 @@ qualified as the long-term voice memory bridge. Inspected source excludes
 contextual user fragments from its recent-turn section, advertises that memory
 summaries are excluded, and bounds the rendered terminal transcript tail to4KiB.
 These source constraints identify gaps to address; they do not by themselves
-prove which stage lost the new fact in the actual test. No existing diagnostic,
+prove which stage lost the new fact in the actual test. A distinct subsequent
+question explicitly asking to review the conversation used a completed native
+handoff and returned the new value in audio, with no app history initialItems and
+no repeated tools. Its original was retained. The voice brief now describes its
+partial memory and asks it to consult the backing conversation rather than guess
+when reviewing earlier conversation. This qualifies that retrieval case, not
+complete long-term coverage of all inline speech. No existing diagnostic,
 visit or storage bound was increased. Do not remove the flat application restore
 window or claim complete long-term continuity based on a compaction ACK.
 

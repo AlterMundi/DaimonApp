@@ -80,6 +80,17 @@ native d35949a5 preserved44bindings/four active collectors/Core/goals; no voice
 provider or capture was started during adoption. Existing provider defaults and
 diagnostic/storage limits are unchanged.
 
+Native follow-up637 now persists terminal voice tails in the backing history
+without an extra backend inference in the actual test. Native compaction completed
+and its replacement history retained the new fact, but startup-only voice recall
+failed when app history was omitted. A distinct native-memory handoff returned
+the fact correctly in audio without repeated tools. Keep recent app restore,
+source-linked backing-memory retrieval and retained negative observations. The
+4KiB native tail bound and durable coverage for longer inline-only visits remain
+open under [301](https://github.com/AlterMundi/DaimonApp/issues/301#issuecomment-6656496340).
+Owner briefv2 requests natural native-memory lookup instead of guessing. Current
+UI/defaults/bounds remain unchanged; phone acceptance is still pending.
+
 ## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound
