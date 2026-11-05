@@ -53,14 +53,15 @@ def install(app,config,provider,authorize,origins):
         except (OSError,ValueError):raise HTTPException(404,'Voice visit unavailable')from None
 
     @app.get('/api/interaction/voice/codex/visits')
-    async def recent_visits(request:Request):
+    async def recent_visits(request:Request,before:str|None=None):
         binding=request.headers.get('x-voice-binding','')
         session=await http_owner(request,binding)
         def read():
-            values=history.list(session['human'],binding)
+            values=history.list(session['human'],binding,before=before,limit=9)
             return {'visits':[history.read(v['id'],session['human'],binding)for v in values[:8]],
-                    'more':len(values)>8}
-        return await asyncio.to_thread(read)
+                    'more':len(values)>8,'before':values[7]['id']if len(values)>8 else None}
+        try:return await asyncio.to_thread(read)
+        except ValueError:raise HTTPException(404,'Voice history page unavailable')from None
 
     @app.post('/api/interaction/voice/codex/visits/{visit}/recordings/{ordinal}')
     async def original(visit:str,ordinal:int,request:Request):

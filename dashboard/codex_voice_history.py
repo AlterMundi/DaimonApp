@@ -243,13 +243,22 @@ class CodexVoiceHistory:
             self._write(value)
             return receipt
 
-    def list(self,human,binding):
+    def list(self,human,binding,*,before=None,limit=16):
+        if type(limit)is not int or not 1<=limit<=16:
+            raise ValueError('Select a bounded voice history page')
+        if before is not None:self.ident(before)
         values=[]
         for path in self.root.glob('*.json'):
             value=read_json(path)
             if value.get('human')==human and value.get('binding')==binding:
-                values.append({k:value[k]for k in ('id','created_at','state')})
-        return sorted(values,key=lambda v:v['created_at'],reverse=True)[:16]
+                values.append({**{k:value[k]for k in ('id','created_at','state')},
+                    'sequence':value.get('sequence',0)})
+        values.sort(key=lambda v:(v['sequence'],v['created_at'],v['id']),reverse=True)
+        if before is not None:
+            index=next((i for i,v in enumerate(values)if v['id']==before),None)
+            if index is None:raise ValueError('Voice history cursor belongs to another conversation')
+            values=values[index+1:]
+        return values[:limit]
 
 
 def native_transcripts(path,native,sessions,*,expected_file):

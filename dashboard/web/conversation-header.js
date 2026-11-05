@@ -41,7 +41,7 @@
       if(next<0 && travel>=24)show(false);
     });
     on(header,'focusin',()=>show(false));
-    const control={expand:()=>show(false),destroy(){listeners.forEach(close=>close());show(false);mounted.delete(timeline);}};
+    const control={expand:()=>show(false),syncScroll:()=>{previous=timeline.scrollTop;travel=0;direction=0;intentUntil=0;},destroy(){listeners.forEach(close=>close());show(false);mounted.delete(timeline);}};
     mounted.set(timeline,control);return control;
   }
   window.ConversationHeader={mount};

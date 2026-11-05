@@ -3,11 +3,11 @@
 // its recovery actions never submit ASR, ordinary Send or a backend turn.
 window.CodexConversation=(()=>{
   const supported=()=>!!(window.RTCPeerConnection&&window.StreamingVoice?.supported()&&window.VoiceInput?.recoveryStore&&window.indexedDB);
-  function create({headers,getBinding,onState=()=>{},onCaption=()=>{},onItem=()=>{},onRecovery=()=>{}}){
+  function create({headers,getBinding,onState=()=>{},onCaption=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
     const recovery=window.VoiceInput?.recoveryStore('codex_voice');
     let socket,peer,channel,media,capture,unsubscribe,audio,visit,binding,active=false,starting=false,closing=false;
     let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),timer;
-    let audible=true,paused=false,connected=false,restored,restoring,openingCount=0;
+    let audible=true,paused=false,connected=false,restored,restoring,historyBefore,historyGeneration=0,openingCount=0;
     const originals=new Map();
     const state=message=>onState({active,starting,floor:false,pending:originals.size>0,working:closing,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',message});
@@ -150,20 +150,29 @@ window.CodexConversation=(()=>{
       }catch(error){if(owned===epoch&&(active||starting))await hold(error.message||'Voice unavailable.');closeRetired();return false;}
       finally{openingCount--;}
     }
-    async function restoreHistory(){
-      if(restored===getBinding())return;
+    async function restoreHistory(older=false){
+      const selected=getBinding(),generation=historyGeneration;
+      if(!older&&restored===selected)return;
       if(restoring)return restoring;
-      const selected=getBinding();
+      if(older&&(!historyBefore||restored!==selected))return;
+      const cursor=older?historyBefore:undefined;
+      onHistory({loading:true,more:!!historyBefore});
       restoring=(async()=>{
         if((active||starting)&&binding!==selected)await hold('Conversation changed.');
-        binding=selected;await review();if(getBinding()!==selected)throw Error('Voice history binding changed');
-        const value=await request('visits');if(getBinding()!==selected)throw Error('Voice history binding changed');
+        binding=selected;await review();if(getBinding()!==selected||historyGeneration!==generation)throw Error('Voice history binding changed');
+        const value=await request('visits'+(cursor?'?before='+encodeURIComponent(cursor):''));
+        if(getBinding()!==selected||historyGeneration!==generation)throw Error('Voice history binding changed');
+        if(value.more&&(!/^[a-f0-9-]{36}$/.test(value.before||'')||value.before===cursor))throw Error('Voice history cursor changed');
         for(const entry of value.visits||[])for(const item of entry.items||[])onItem({visit:entry.id,item,observed_at:entry.created_at});
-        restored=selected;
+        historyBefore=value.more?value.before:undefined;restored=selected;
+        onHistory({loading:false,more:!!historyBefore});
       })();
-      try{return await restoring;}finally{restoring=undefined;}
+      try{return await restoring;}
+      catch(error){if(getBinding()===selected&&historyGeneration===generation)onHistory({loading:false,more:!!historyBefore,error:true,older});throw error;}
+      finally{restoring=undefined;}
     }
     return {start,reconnect:start,hold,restoreHistory,
+      resetHistory:()=>{historyGeneration++;restored=historyBefore=undefined;onHistory({loading:false,more:false});},
       retry:async original=>{if(original.binding!==getBinding())throw Error('Recording belongs to a different conversation');binding=original.binding;await upload(original);state();},
       discard:async original=>{await recovery.remove(original);originals.delete(original.id);onRecovery([...originals.values()]);state();},
       setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},

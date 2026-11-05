@@ -78,4 +78,35 @@ async function fixture(){
  assert.equal(engine.active,true);assert.equal(retainedPeer.connectionState,'connected');await engine.hold();
  console.log('Native WebRTC capture: separate durable recovery, exact original retry without ASR/work replay, explicit closure and retired callback fences passed.');
 }
-fixture().catch(error=>{console.error(error);process.exitCode=1;});
+async function historyFixture(){
+ let binding='a'.repeat(64),failOlder=true,delayed,delay=false;const calls=[],items=[],states=[];
+ const cursor='12345678-1234-4234-8234-123456789012';
+ const window={location:{href:'https://example.test/interaction/'},VoiceInput:{recoveryStore:()=>({list:async()=>[]})}};
+ async function fetch(url){
+  const parsed=new URL(url);calls.push(parsed);assert(parsed.pathname.endsWith('/voice/codex/visits'));
+  if(delay)await new Promise(resolve=>{delayed=resolve;});
+  if(parsed.searchParams.has('before')){
+   assert.equal(parsed.searchParams.get('before'),cursor);
+   if(failOlder){failOlder=false;return {ok:false};}
+   return {ok:true,json:async()=>({visits:[{id:'old',items:[{id:'old-item',text:'Earlier correction'}]}],more:false,before:null})};
+  }
+  return {ok:true,json:async()=>({visits:[{id:'recent',items:[{id:'recent-item',text:'Recent conversation'}]}],more:true,before:cursor})};
+ }
+ const unexpected=()=>{throw Error('Reading history must not open voice or capture');};
+ const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch',source+';return window.CodexConversation;')(
+  window,{mediaDevices:{getUserMedia:unexpected}},{hidden:false},crypto,unexpected,unexpected,unexpected,fetch);
+ const engine=api.create({headers:()=>({}),getBinding:()=>binding,onItem:v=>items.push(v),onHistory:v=>states.push(v)});
+ await engine.restoreHistory();assert.deepEqual(items.map(v=>v.item.text),['Recent conversation']);
+ await assert.rejects(engine.restoreHistory(true));assert.equal(states.at(-1).error,true);assert.equal(states.at(-1).older,true);
+ await engine.restoreHistory(true);assert.deepEqual(items.map(v=>v.item.text),['Recent conversation','Earlier correction']);
+ assert.equal(states.at(-1).more,false);await engine.restoreHistory(true);assert.equal(calls.length,3);
+ const next=api.create({headers:()=>({}),getBinding:()=>binding,onItem:v=>items.push(v)});
+ delay=true;const pending=next.restoreHistory();while(!delayed)await sleep(1);binding='b'.repeat(64);delayed();
+ await assert.rejects(pending);assert.equal(items.length,2,'Late old-binding history must not enter the new conversation');
+ delayed=undefined;const sameBinding=next.restoreHistory();while(!delayed)await sleep(1);next.resetHistory();delayed();
+ await assert.rejects(sameBinding);assert.equal(items.length,2,'Invalidated same-binding history must not repopulate a reset view');
+ delay=false;await next.restoreHistory();assert.equal(items.length,3,'Reset cache permits the current history to load again');
+ assert(!calls.some(v=>/transcrib|inputs/.test(v.pathname)));
+ console.log('Voice history paging: retry preserves cursor, exhausted pages stop, stale bindings cannot publish, zero capture/work.');
+}
+(async()=>{await fixture();await historyFixture();})().catch(error=>{console.error(error);process.exitCode=1;});

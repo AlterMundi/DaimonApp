@@ -21,7 +21,13 @@ const server=http.createServer(async(req,res)=>{
  try{
  if(url.pathname.startsWith('/api/')){
   const route=url.pathname.slice(5);
-  if(route==='interaction/voice/codex/visits')return json({visits:[],more:false});
+  if(route==='interaction/voice/codex/visits'){
+   if(!codexCase)return json({visits:[],more:false,before:null});
+   const older=url.searchParams.has('before'),cursor='12345678-1234-4234-8234-123456789012';
+   if(older)assert.equal(url.searchParams.get('before'),cursor);
+   return json({visits:Array.from({length:older?2:8},(_,i)=>({id:`retained-${older?'older':'recent'}-${i}`,created_at:1704067100-i*10,items:[
+    {id:`retained-source-${i}`,role:i%2?'assistant':'user',text:`${older?'Earlier retained':'Recent retained'} voice source ${i}`,observed_at:1704067100-i*10}]})),more:!older,before:older?null:cursor});
+  }
   if(route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST'){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks);
    const parts=route.split('/'),visit=parts[4],ordinal=Number(parts[6]);
@@ -102,6 +108,15 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-voice-choice').waitFor({state:'visible'});
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','OpenAI never replaces the default');
   assert.equal(await page.evaluate(()=>codexFixture.opens),0);
+  await page.locator('#conversation-message').fill('My draft survives voice history reading.');
+  await page.screenshot({path:path.join(output,'codex-history-desktop.png')});
+  await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).click();
+  await page.getByText('Earlier retained voice source 1',{exact:true}).waitFor({state:'visible'});
+  assert.equal(await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).isVisible(),false);
+  assert.equal(await page.evaluate(()=>codexFixture.opens),0,'History reading opens no voice connection');
+  assert.equal(posts.length,0,'History reading admits no new input');
+  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft survives voice history reading.');
+  await page.locator('#conversation-message').fill('');
   await page.locator('#conversation-voice-engine').selectOption('codex');
   await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});

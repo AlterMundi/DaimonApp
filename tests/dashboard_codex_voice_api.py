@@ -104,6 +104,34 @@ class Mounted(unittest.TestCase):
         socket.send_json({'type':'close'})
         self.assertEqual(socket.receive_json()['type'],'closed')
         with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+    def test_history_pages_survive_new_visits_and_refuse_foreign_cursors_without_work(self):
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        owner=self.owner.codex_voice_binding('a'*64);ids=[]
+        with patch('dashboard.codex_voice_history.time.time',return_value=10):
+            for _ in range(23):
+                ident=str(uuid.uuid4());ids.append(ident)
+                history.open(ident,100,owner,str(uuid.uuid4()))
+            foreign=str(uuid.uuid4())
+            history.open(foreign,200,owner,str(uuid.uuid4()))
+        route='/api/interaction/voice/codex/visits'
+        first=self.client.get(route,headers=self.headers);self.assertEqual(first.status_code,200)
+        value=first.json();seen=[v['id']for v in value['visits']]
+        self.assertEqual(seen,list(reversed(ids[-8:])))
+        self.assertTrue(value['more'])
+        history.open(str(uuid.uuid4()),100,owner,str(uuid.uuid4()))
+        while value['more']:
+            response=self.client.get(route,params={'before':value['before']},headers=self.headers)
+            self.assertEqual(response.status_code,200);value=response.json()
+            self.assertLessEqual(len(value['visits']),8)
+            seen.extend(v['id']for v in value['visits'])
+        self.assertEqual(seen,list(reversed(ids)))
+        self.assertIsNone(value['before'])
+        for cursor in (foreign,str(uuid.uuid4()),'not-a-visit'):
+            self.assertEqual(self.client.get(route,params={'before':cursor},headers=self.headers).status_code,404)
+        self.allowed=False
+        self.assertEqual(self.client.get(route,headers=self.headers).status_code,401)
+        self.assertEqual(Native.opened,[]);self.assertEqual(self.owner.collected,[])
+
     def test_failed_final_correction_write_blocks_successor_before_start(self):
         original_stop=Native.stop
         original_item=CodexVoiceHistory.item
