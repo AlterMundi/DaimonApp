@@ -428,6 +428,7 @@ jobs:
       - run: python -B tests/dashboard_live.py
       - run: python -B tests/dashboard_transcription.py
       - run: python -B tests/dashboard_native_dialogue.py
+      - run: python -B tests/dashboard_codex_voice.py
       - run: python -B tests/dashboard_qwen_dialogue.py
       - run: python -B tests/dashboard_openai_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py

@@ -34,6 +34,15 @@ needed. Current receiving access/bridge qualification is the next concrete step.
 
 ## Architecture comparison reopened —Nicolas1eb74b0e,5November2026
 
+Nicolas6ea37cd3 subsequently requires an additive implementation: keep the
+existing Qwen/Gemini route operational and make native OpenAI a separate mode
+that the person can select. Comparison does not authorize replacing defaults or
+removing the current provider machinery. Freeze the chosen engine and source
+binding for a voice visit. Switching ends only that visit's media/control path,
+preserves originals and accepted backend work, and requires an explicit new
+activation. A failure must not silently switch providers. Back-port a better
+OpenAI workflow to the others only after the comparison supports doing so.
+
 Our present foreground/integrator separation is not a superiority claim or a
 requirement to recreate that implementation. All current reasoning uses Codex;
 first evaluate OpenAI's native voice/handoff architecture on a persistent Codex
@@ -120,6 +129,47 @@ approximately2.3MB locally. Keep it through native integration qualification; th
 retain reports, code and the tiny verified artifact, retiring disposable synthetic
 media. Do not retire production originals or native history. No public transcript
 or institutional archive of this synthetic media is needed.
+
+### Separate native-client implementation checkpoint
+
+`dashboard/codex_voice.py` prepares native owner control independently of
+`native_dialogue.py`, `qwen_dialogue.py` and their manual PCM/renewal loop. It
+connects only to the existing private App Server control socket, resumes an
+already authorized thread, selects native WebRTC with native startup context
+and automatic handoffs, and observes only that thread's bounded completed
+transcript/control events. It creates no thread and supplies no credentials,
+custom backend prompt, model override, text turn or PCM to the native owner.
+
+An application lease shares the current provider route's active-session capacity,
+binds one native client, and fences repeated/stale activation. Native Core itself
+replaces existing voice on start and its stop API selects a thread without an
+atomic generation condition. The application lease does not exclude independent
+CLI clients; activation must account for that native ownership limitation.
+Queue overflow retires event delivery while keeping explicit stop control usable.
+A start acknowledgement is not provider readiness, and a stop acknowledgement
+is not closure: pending-open cleanup waits for its generation; closing waits for
+the native close event or reports uncertainty without repeating a write. Neither
+voice stop nor connection cleanup interrupts an accepted backend turn.
+
+The candidate's actual receiving test made one further synthetic connection on
+the retained fixture thread. With native default startup context/prompt, it
+correctly recalled the previously verified file/result, with one new completed
+backend turn and no tool execution or result-file modification. Remote Opus
+159,001bytes decoded with nonzero WebAudio signal. Its fixture closed the control
+reader after the stop ACK before recording the close notification; a subsequent
+read of the retained native realtime item proved that exact voice generation
+ended. Do not repeat the work to repair this observation. Final client-only
+claim and close-wait corrections are covered by synthetic regressions rather
+than another provider call.
+
+Fourteen transport/ownership/cleanup tests pass on Python3.13 and locked3.11;
+the unchanged mounted provider route's68tests and browser native/fullscreen
+state suites also pass. Independent review found and verified the duplicate
+claim and overflow-stop corrections. These checks do not activate the feature:
+the application selector, shared-auth binding rechecks, original-media retention,
+native collector/tool ownership and combined device journey still need wiring.
+No capability or selectable OpenAI button is advertised yet. Preserve the
+current route and defaults while completing those pieces in the same feature.
 
 | Evidence | What changes in our design | What still needs qualification |
 | --- | --- | --- |
