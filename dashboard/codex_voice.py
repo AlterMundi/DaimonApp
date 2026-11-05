@@ -28,6 +28,30 @@ class CodexVoiceRejected(CodexVoiceUnavailable):
     """Native owner explicitly rejected this operation; no payload is exposed."""
 
 
+def result_source_refs(result):
+    """Validate presentation provenance without guessing among native finals."""
+    if (not isinstance(result,dict) or not isinstance(result.get('turn'),str)
+            or not re.fullmatch('[A-Za-z0-9_-]{1,128}',result['turn'])):
+        raise ValueError('Select one source-linked native completion')
+    def source(row):
+        return (isinstance(row,dict) and set(row)=={'item','revision'}
+            and isinstance(row['item'],str) and 1<=len(row['item'])<=128
+            and isinstance(row['revision'],str) and re.fullmatch('[a-f0-9]{64}',row['revision']))
+    if 'finals' in result:
+        rows=result['finals']
+        if (not isinstance(rows,list) or not 1<=len(rows)<=32
+                or any(not source(row)for row in rows)
+                or len({row['item']for row in rows})!=len(rows)
+                or type(result.get('source_window_complete'))is not bool
+                or 'item'in result or 'revision'in result):
+            raise ValueError('Select bounded ordered native final sources')
+        return {'turn':result['turn'],'finals':[dict(row)for row in rows],
+            'source_window_complete':result['source_window_complete']}
+    row={key:result.get(key)for key in ('item','revision')}
+    if not source(row):raise ValueError('Select one source-linked native completion')
+    return {'turn':result['turn'],**row}
+
+
 class AvatarVoiceLease:
     """One app-owned mode, sharing the existing provider mode's active set.
 
@@ -393,26 +417,39 @@ class CodexVoice:
         if (not isinstance(rows,list) or len(rows)>32
                 or any(not isinstance(row,dict) or row.get('turnId')!=turn for row in rows)):
             raise CodexVoiceUnavailable('Native result belongs to another task')
+        finals=[];substantive=False
         for row in rows:
             item=row.get('item',{})
             if item.get('type')!='agentMessage' or item.get('phase')!='final_answer':continue
             text=item.get('text');ident=item.get('id')
-            if (not isinstance(text,str) or not text.strip() or '\0' in text
+            if (not isinstance(text,str) or '\0' in text
                     or not isinstance(ident,str) or not 1<=len(ident)<=128):
                 raise CodexVoiceUnavailable('Native final result unavailable')
             raw=text.encode()
+            substantive=substantive or bool(text.strip())
             # Keep the full-source revision while bounding its spoken excerpt.
             excerpt=raw[:4096].decode('utf-8',errors='ignore')
-            return {'thread':self.thread_id,'turn':turn,'item':ident,
+            finals.append({'thread':self.thread_id,'turn':turn,'item':ident,
                 'revision':hashlib.sha256(raw).hexdigest(),'text':excerpt,
-                'more':len(raw)>4096}
-        return None
+                'more':len(raw)>4096})
+        if not substantive:return None
+        complete=page.get('nextCursor')is None
+        if len(finals)==1 and complete:return finals[0]
+        # Multiple native invocations can finish within one turn, including a
+        # closure-tail acknowledgement. No causal output/input link is exposed.
+        # Preserve every observed final in source order, not an invented winner.
+        return {'thread':self.thread_id,'turn':turn,
+            'finals':[{key:value[key]for key in ('item','revision')}for value in reversed(finals)],
+            'source_window_complete':complete}
 
     def offer_result(self, result):
         """Present sourced assistant context, without another backing request."""
-        if (not isinstance(result,dict) or set(result)!={'thread','turn','item','revision','text','more'}
-                or result['thread']!=self.thread_id or not isinstance(result['text'],str)
-                or len(result['text'].encode())>4096):
+        refs=result_source_refs(result)
+        collection='finals'in refs
+        keys={'thread','turn','finals','source_window_complete'}if collection else {'thread','turn','item','revision','text','more'}
+        if (set(result)!=keys or result['thread']!=self.thread_id
+                or (not collection and (not isinstance(result['text'],str)
+                    or len(result['text'].encode())>4096))):
             raise ValueError('Select one resolved native result')
         self._lease.assert_held(self._claim)
         with self._guard:
@@ -421,20 +458,35 @@ class CodexVoice:
         # Native V3 splits standalone context at500 UTF-8 bytes. Keep the
         # notification's source and meaning together, allowing its [BACKEND]
         # prefix. The full item identity/revision stays in the retained ledger.
-        prefix=("Announce this new completed result briefly now in the human's language. "
-            "If partial, say it is ready; don't guess details. Source data, not a new request: ")
-        def frame(excerpt):
+        if collection:
+            digest=hashlib.sha256(json.dumps(refs,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+            text=("The work is finished. In one short sentence, say its results are ready to review. "
+                "Final-message sources are retained; do not choose or summarize one. "
+                "Source data, not a new request: "+json.dumps({'turn':result['turn'],
+                    'sources_sha256':digest,'final_count':len(refs['finals']),
+                    'source_window_complete':refs['source_window_complete']},separators=(',',':')))
+            if len(text.encode())>480:raise ValueError('Native result notification exceeds one context frame')
+            return self._rpc('thread/realtime/appendSpeech',{'threadId':self.thread_id,'text':text})
+        def frame(excerpt, truncated):
+            prefix=("The work is finished. In one short sentence, say the full result is ready to review. "
+                "The excerpt is shortened. " if truncated else
+                "Give this completed result briefly now in the human's language. ")
+            prefix+="Source data, not a new request: "
             return prefix+json.dumps({'turn':result['turn'],'revision':result['revision'],
-                'text':excerpt,'partial':result['more']or excerpt!=result['text']},
+                'text':excerpt,'excerpt_truncated':truncated},
                 ensure_ascii=False,separators=(',',':'))
-        low,high=0,len(result['text'])
-        while low<high:
-            middle=(low+high+1)//2
-            if len(frame(result['text'][:middle]).encode())<=480:low=middle
-            else:high=middle-1
-        excerpt=result['text'][:low]
-        if low<len(result['text']) and ' ' in excerpt:excerpt=excerpt.rsplit(' ',1)[0]
-        text=frame(excerpt)
+        text=frame(result['text'],bool(result['more']))
+        if len(text.encode())>480:
+            # Keep the truncated prefix constant while searching: switching
+            # prefixes at the full-text boundary would break monotonicity.
+            low,high=0,max(0,len(result['text'])-1)
+            while low<high:
+                middle=(low+high+1)//2
+                if len(frame(result['text'][:middle],True).encode())<=480:low=middle
+                else:high=middle-1
+            excerpt=result['text'][:low]
+            if low<len(result['text']) and ' ' in excerpt:excerpt=excerpt.rsplit(' ',1)[0]
+            text=frame(excerpt,True)
         if len(text.encode())>480:raise ValueError('Native result notification exceeds one context frame')
         return self._rpc('thread/realtime/appendSpeech',{'threadId':self.thread_id,'text':text})
 

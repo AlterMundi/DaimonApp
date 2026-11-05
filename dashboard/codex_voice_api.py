@@ -94,7 +94,7 @@ def install(app,config,provider,authorize,origins):
         await socket.accept()
         lease=voice=opening=remembering=starting=incoming=events=noticing=None
         visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
-        pending=[];anchors={};unfinished=set();failed_notices=set();playback_ready=False
+        pending=[];anchors={};unpresented=set();failed_notices=set();playback_ready=False
         async def send(value):
             await recheck()
             await asyncio.wait_for(socket.send_json(value),3)
@@ -124,6 +124,9 @@ def install(app,config,provider,authorize,origins):
         async def offer_pending():
             nonlocal noticing
             if not playback_ready or not pending:return
+            async def notice(status):
+                try:await asyncio.to_thread(history.notice_status,visit,human,binding,status)
+                except (OSError,ValueError):pass  # The same store may be full.
             async def present():
                 for turn in list(pending):
                     if turn in failed_notices:continue
@@ -132,13 +135,17 @@ def install(app,config,provider,authorize,origins):
                     try:result=await asyncio.to_thread(voice.completed_result,turn,anchor=anchors.get(turn))
                     except (CodexVoiceUnavailable,OSError,ValueError):
                         failed_notices.add(turn)
-                        await asyncio.to_thread(history.notice_status,visit,human,binding,'source_unavailable')
+                        await notice('source_unavailable')
                         return  # Optional presentation must not end useful voice.
                     if result is None:continue
                     if result.get('status')in ('failed','interrupted'):
                         await asyncio.to_thread(history.finish_work,visit,human,binding,turn,result['status'])
                         pending.remove(turn);continue
-                    claimed=await asyncio.to_thread(history.claim_result,visit,human,owner,result)
+                    try:claimed=await asyncio.to_thread(history.claim_result,visit,human,owner,result)
+                    except (OSError,ValueError):
+                        failed_notices.add(turn)
+                        await notice('source_unavailable')
+                        return  # Optional provenance capacity must not end voice.
                     pending.remove(turn)
                     if not claimed:continue
                     # This retained source is assistant presentation, not a new
@@ -146,7 +153,7 @@ def install(app,config,provider,authorize,origins):
                     await recheck()
                     try:await asyncio.to_thread(voice.offer_result,result)
                     except (CodexVoiceUnavailable,OSError,ValueError):
-                        await asyncio.to_thread(history.notice_status,visit,human,binding,'submission_unconfirmed')
+                        await notice('submission_unconfirmed')
                         return  # Retained intent prevents an uncertain replay.
                     await asyncio.to_thread(history.confirm_result,visit,human,binding,turn)
                     break  # Let the native utterance finish before another offer.
@@ -249,12 +256,14 @@ def install(app,config,provider,authorize,origins):
                                 turn=p.get('turn',{}).get('id')
                                 if turn not in turns:
                                     if len(turns)>=32 or len(collectors)>=2:raise ValueError('Native collector bound reached')
-                                    turns.add(turn);unfinished.add(turn)
+                                    turns.add(turn);unpresented.add(turn)
                                     await asyncio.to_thread(history.retain_work,visit,human,binding,
-                                        list(dict.fromkeys([*pending,*sorted(unfinished)])))
+                                        list(dict.fromkeys([*pending,*sorted(unpresented)])))
                                     collectors.add(asyncio.create_task(collect(turn)))
                             elif method=='turn/completed':
-                                turn=p.get('turn',{}).get('id');unfinished.discard(turn)
+                                turn=p.get('turn',{}).get('id')
+                                # Completion is not a presentation receipt. Keep
+                                # newly observed work eligible after closure.
                                 if turn in pending:await offer_pending()
                             elif method=='thread/realtime/closed':closed=True;break
                             elif method=='thread/realtime/error':raise ValueError('Native voice failed')
@@ -302,15 +311,13 @@ def install(app,config,provider,authorize,origins):
                             for event in tail:
                                 if event.get('method')=='turn/started':
                                     turn=event.get('params',{}).get('turn',{}).get('id')
-                                    if isinstance(turn,str):unfinished.add(turn)
-                                elif event.get('method')=='turn/completed':
-                                    unfinished.discard(event.get('params',{}).get('turn',{}).get('id'))
+                                    if isinstance(turn,str):unpresented.add(turn)
                                 if event.get('method')=='thread/realtime/item/completed':
                                     item=event.get('params',{}).get('item',{})
                                     if item.get('type')=='transcriptSegment':
                                         try:await asyncio.to_thread(history.item,visit,human,binding,item)
                                         except (OSError,ValueError):collection_failed=True;transcript_failed=True
-                            carried=list(dict.fromkeys([*pending,*sorted(unfinished)]))
+                            carried=list(dict.fromkeys([*pending,*sorted(unpresented)]))
                             if retained_visit:await asyncio.to_thread(history.retain_work,visit,human,binding,carried)
                             # Persist the previous visit's last completed sources
                             # before admitting a successor startup snapshot.

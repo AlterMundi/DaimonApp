@@ -89,7 +89,59 @@ class Voice(unittest.TestCase):
         self.assertEqual(call['method'],'thread/realtime/appendSpeech')
         self.assertIn('Current verified result',call['params']['text'])
         self.assertIn('not a new request',call['params']['text'])
+        data=json.loads(call['params']['text'].split('new request: ',1)[1])
+        self.assertFalse(data['excerpt_truncated'])
         self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_multiple_finals_preserve_report_ack_and_correction_without_choosing(self):
+        import hashlib
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        sources=[('report','Full report'),('ack','Entendido.'),('correction','Corrected report')]
+        rows=[{'turnId':'target','item':{'type':'agentMessage','phase':'final_answer',
+            'id':ident,'text':text}}for ident,text in reversed(sources)]
+        self.socket.results['thread/items/list']={'data':rows,'nextCursor':None}
+        result=self.voice.completed_result('target')
+        self.assertEqual(result['finals'],[{'item':ident,'revision':hashlib.sha256(text.encode()).hexdigest()}
+            for ident,text in sources])
+        self.assertTrue(result['source_window_complete'])
+        self.assertNotIn('text',result)
+        self.voice.start('v=0\r\noffer');self.voice.offer_result(result)
+        notice=self.socket.sent[-1]['params']['text']
+        self.assertIn('ready to review',notice)
+        self.assertNotIn('Full report',notice)
+        self.assertNotIn('Entendido',notice)
+        data=json.loads(notice.split('new request: ',1)[1]);self.assertEqual(data['final_count'],3)
+        self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_partial_item_window_cannot_claim_a_unique_final(self):
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        self.socket.results['thread/items/list']={'data':[{'turnId':'target','item':{
+            'type':'agentMessage','phase':'final_answer','id':'latest','text':'Only visible final'}}],
+            'nextCursor':'older-items'}
+        result=self.voice.completed_result('target')
+        self.assertFalse(result['source_window_complete'])
+        self.assertEqual([v['item']for v in result['finals']],['latest'])
+        self.assertEqual(len([v for v in self.socket.sent if v['method']=='thread/items/list']),1)
+    def test_empty_native_final_does_not_hide_the_retained_substantive_result(self):
+        import hashlib
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        empty={'turnId':'target','item':{'type':'agentMessage','phase':'final_answer','id':'empty','text':''}}
+        report={'turnId':'target','item':{'type':'agentMessage','phase':'final_answer','id':'report','text':'Written report'}}
+        self.socket.results['thread/items/list']={'data':[empty,report],'nextCursor':None}
+        result=self.voice.completed_result('target')
+        self.assertEqual([v['item']for v in result['finals']],['report','empty'])
+        self.assertEqual(result['finals'][1]['revision'],hashlib.sha256(b'').hexdigest())
+        self.socket.results['thread/items/list']['data']=[empty]
+        self.assertIsNone(self.voice.completed_result('target'),'An empty-only final is not a ready result')
+        report['item']['text']=' '*4096+'Substantive content outside the excerpt'
+        self.socket.results['thread/items/list']['data']=[empty,report]
+        self.assertIsNotNone(self.voice.completed_result('target'),'Blank excerpt is not a blank source')
+    def test_collection_notice_fits_native_frame_at_maximum_source_bounds(self):
+        self.voice.start('v=0\r\noffer')
+        result={'thread':'owned','turn':'t'*128,'finals':[
+            {'item':str(n)+'x'*125,'revision':'a'*64}for n in range(32)],'source_window_complete':False}
+        self.voice.offer_result(result)
+        text=self.socket.sent[-1]['params']['text']
+        self.assertLessEqual(len(('[BACKEND] '+text).encode()),500)
+        data=json.loads(text.split('new request: ',1)[1]);self.assertFalse(data['source_window_complete'])
     def test_native_work_anchor_finds_exact_result_after_recent_window_moves_on(self):
         self.socket.results['thread/turns/list']={'data':[{'id':'old-task','status':'inProgress'}],
             'backwardsCursor':'opaque-native-anchor','nextCursor':None}
@@ -145,7 +197,18 @@ class Voice(unittest.TestCase):
         self.assertLessEqual(len(('[BACKEND] '+text).encode()),500)
         data=json.loads(text.split('new request: ',1)[1])
         self.assertEqual((data['turn'],data['revision']),('task','a'*64))
-        self.assertTrue(data['partial'])
+        self.assertTrue(data['excerpt_truncated'])
+        self.assertIn('The work is finished.',text)
+        self.assertIn('one short sentence',text)
+    def test_source_excerpt_does_not_mark_completed_work_as_partial(self):
+        self.voice.start('v=0\r\noffer')
+        self.voice.offer_result({'thread':'owned','turn':'task','item':'final','revision':'a'*64,
+            'text':'A completed report excerpt','more':True})
+        text=self.socket.sent[-1]['params']['text']
+        data=json.loads(text.split('new request: ',1)[1])
+        self.assertTrue(data['excerpt_truncated'])
+        self.assertNotIn('partial',data)
+        self.assertIn('full result is ready to review',text)
     def test_foreign_thread_and_noisy_deltas_are_not_retained(self):
         self.socket.event('thread/realtime/sdp',threadId='foreign',sdp='private unrelated answer')
         self.socket.event('thread/realtime/transcript/delta',delta='partial')

@@ -6,6 +6,109 @@ are not production or physical-hearing acceptance.
 
 ## Recall existing native results without repeating their work
 
+### Completed work and shortened speech excerpts
+
+A retained selected658 live case completed a2111character report after manual
+voice replacement. The480byte notification marked its shortened excerpt as
+`partial`; spoken output called the completed report preliminary. The browser
+also incorrectly consumed its semantic waiting window during backing execution
+and closed while speech was still arriving. Retained exact PCM and independent
+ASR establish speech in progress, not silence or successful concise availability.
+Both visits closed with complete transcripts; four originals2475528bytes were
+byte/hash verified. The accepted lookup and its ACKed offer must not be replayed.
+
+The candidate presentation context uses `excerpt_truncated` to distinguish excerpt
+size from work status. A shortened excerpt requests one short availability notice
+for the finished work; a complete short result retains its useful content. Both
+paths preserve the480UTF8byte bound and source revision. The sizing search keeps
+one constant truncated prefix. Thirty transport tests and focused independent
+review passed; this alone does not qualify spoken behavior or select deployment.
+
+A distinct corrective editorial continuation reused the original receiving
+configuration, binding, database and native history, without another tool/source
+lookup. Its completed native turn retained a1173character corrected report and
+then a separate final-answer acknowledgement from the native closure transcript
+tail. The descending reader selected the acknowledgement. The browser rejected
+that non-truncated source before availability/recall qualification. Two new visits
+closed with complete transcripts; three originals1310854bytes and two output
+masters were hash verified. Preserve this negative and both native final items.
+Do not rerun the accepted editorial request or reset its ACKed offer. Choosing the
+first, longest or a text-filtered answer would not establish which answer belongs
+to the completed request.
+
+The candidate now preserves an ordered collection of exact item IDs and full-text
+revisions when the bounded native item window contains several finals, or cannot
+prove uniqueness because another page exists. It does not concatenate text under
+one item's identity. Collection notices announce finished-work availability only;
+the existing complete single-final path remains useful. The retained source
+collection and its digest distinguish an incomplete32item window from a complete
+one; no archive scan or inference is added. Existing per-turn persisted intent
+still prevents replay after lost ACK or replacement. Optional reference/diagnostic
+capacity failure preserves connected voice and unclaimed work. Older selected
+readers consume the same turn/state fields and ignore the optional source set;
+rollback preserves that set rather than restoring an old database.
+
+Two actual native metadata reads of the already accepted corrective turn recovered
+the exact report and acknowledgement IDs/revisions in source order, with no model,
+tool, capture or offer replay. Focused tests cover legitimate corrections as well
+as acknowledgements, incomplete windows, maximum UTF8 framing, retained collections
+and lost ACKs, mounted API no-repeat behavior and a full diagnostic store. Focused
+independent review found two issues (multiplicity wording and diagnostic storage
+failure); both were corrected and rechecked.
+
+A distinct new appendix used the same retained receiver and no source/tool calls.
+It completed before the first voice closure; no pending reference reached the
+successor, so no result offer occurred. The browser correctly failed its expected
+availability observation. That does not test the new collection speech context.
+Retain the appendix and its originals; do not repeat accepted work to repair this
+fixture. The candidate now carries newly observed admitted work through closure
+even when it completes first: completion is not a source-presentation receipt.
+The next connected visit can claim its existing result once; failed/interrupted
+outcomes and already persisted presentation intents remain excluded. Active
+native handoffs still own foreground responses. A later availability notice may
+follow earlier native speech; it is neither another execution nor a hearing
+receipt. Existing32reference bounds stay unchanged, and historical lost queues
+are not rewritten from anchors. A mounted start/completion/close/replacement test
+and focused independent review cover this correction.
+Its next actual continuation preserved the pending task across closure, but source
+reading found a573character plan followed by an empty native final and refused
+the whole result. No presentation intent or offer was made. The candidate retains
+that empty item's exact ID/digest alongside the substantive final; only an
+entirely blank source window remains without a ready-result offer. Substantive
+content is checked on the full source, before excerpt truncation. Targeted tests
+cover empty companions, empty-only results and content beyond a whitespace-only
+excerpt. Four originals2526044bytes and two output masters from the negative case
+were hash verified; accepted plan generation is not repeated.
+The missing delivery then reused that same receiver and unclaimed native plan,
+without new backing work or source/tool calls. One anchored read retained the
+substantive/empty source pair; its ledger digest matched the359byte speech offer.
+The completed caption said the written result was ready for review after5.93s;
+independent ASR of the exact retained PCM agreed. Two originals1059588bytes and
+one output master were hash verified and the visit closed/transcript_complete.
+The raw browser failure remains: its matcher compared server timestamp seconds
+with milliseconds. Normalizing the retained observation proves the short notice
+within the original25second window; neither a longer timeout nor another offer
+was needed. The plan's acknowledged presentation intent remains intact. Only
+missing corrected recall/replacements may continue; never reset that intent.
+The missing recall continuation then used the same receiver/configuration/binding
+and existing native result. Three visits and two explicit UI reconnects returned
+the corrected report label and existing code in completed captions and retained
+audio. One native backing recall, zero source/tool calls; the original plan offer
+was not repeated. All three visits closed/transcript_complete; four originals
+2876936bytes and three output masters were hash verified, with final Back UI
+closure observed. Independent ASR recognized label/code in all three outputs:
+the middle combined speech window returned empty, while its exact8–13second
+answer window recognized both. Preserve that empty draft and the targeted draft.
+Earlier negative cases remain negative; these continuations complete their
+missing effects without rerunning accepted work or resetting offer intents.
+
+The complete delta has92focused transport/history/API tests and focused independent
+review. The final full-source whitespace correction has targeted tests/review;
+the retained live notice used the same substantive573character source, so no
+provider rerun was needed. Receiving selection is owned by the current deployment
+record. This qualifies the bounded source/notice/replacement path, not arbitrary
+concurrent results, legacy lost queues, general memory or physical phone/hearing.
+
 Owner briefv5 distinguishes missing foreground context from a result already
 held by the native conversation. A request not to search again still permits
 the provided native handoff to recall that result, carrying the no-repeat

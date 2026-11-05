@@ -354,6 +354,45 @@ class Mounted(unittest.TestCase):
                 while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
                 self.assertEqual(Native.opened[-1].offers,[result]);self.close(socket)
         self.assertEqual(observed,[('old-task','native-anchor-old-task')])
+    def test_multiple_final_sources_are_claimed_once_as_a_collection(self):
+        self.owner.current='pending-task'
+        result={'thread':'native','turn':'pending-task','finals':[
+            {'item':'report','revision':'a'*64},{'item':'ack','revision':'b'*64}],
+            'source_window_complete':True}
+        Native.results['pending-task']=result
+        with self.socket()as socket:
+            self.start(socket);socket.send_json({'type':'ready'})
+            deadline=time.monotonic()+2
+            while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
+            self.assertEqual(Native.opened[-1].offers,[result]);self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        offer=history.read(self.visit,100,'a'*64)['result_offers'][0]
+        self.assertEqual(offer['finals'],result['finals']);self.assertEqual(offer['state'],'acknowledged')
+        self.visit=str(uuid.uuid4());self.meta={**self.meta,'id':self.visit}
+        with self.socket()as socket:
+            self.start(socket);socket.send_json({'type':'ready'});self.close(socket)
+        self.assertEqual(Native.opened[-1].offers,[])
+    def test_completion_before_close_is_carried_until_source_presentation_is_claimed(self):
+        Native.emit_turn=True
+        result={'thread':'native','turn':'native-work','item':'report','revision':'a'*64,
+            'text':'Completed before closure','more':False}
+        with self.socket()as socket:
+            self.start(socket)
+            native=Native.opened[-1]
+            native.events.put([{'method':'turn/completed','params':{
+                'turn':{'id':'native-work','status':'completed'}}}])
+            self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        frozen=self.owner.codex_voice_binding('a'*64)
+        self.assertEqual(history.pending_work(100,frozen),['native-work'])
+        Native.emit_turn=False;Native.results['native-work']=result
+        self.visit=str(uuid.uuid4());self.meta={**self.meta,'id':self.visit}
+        with self.socket()as socket:
+            self.start(socket);socket.send_json({'type':'ready'})
+            deadline=time.monotonic()+2
+            while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
+            self.assertEqual(Native.opened[-1].offers,[result]);self.close(socket)
+        self.assertEqual(history.pending_work(100,frozen),[])
     def test_lost_native_offer_ack_keeps_intent_without_retry_after_reconnect(self):
         self.owner.current='pending-task'
         Native.results['pending-task']={'thread':'native','turn':'pending-task','item':'final',
@@ -374,6 +413,35 @@ class Mounted(unittest.TestCase):
         with self.socket()as socket:
             self.start(socket);socket.send_json({'type':'ready'});self.close(socket)
         self.assertEqual(Native.opened[-1].offers,[])
+    def test_source_reference_capacity_failure_preserves_connected_voice(self):
+        self.owner.current='pending-task'
+        Native.results['pending-task']={'thread':'native','turn':'pending-task','finals':[
+            {'item':'report','revision':'a'*64},{'item':'ack','revision':'b'*64}],
+            'source_window_complete':True}
+        with patch.object(CodexVoiceHistory,'claim_result',side_effect=ValueError('Synthetic record capacity')):
+            with self.socket()as socket:
+                self.start(socket);socket.send_json({'type':'ready'})
+                history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+                deadline=time.monotonic()+2
+                while time.monotonic()<deadline:
+                    if history.read(self.visit,100,'a'*64).get('result_notice_status')=='source_unavailable':break
+                    time.sleep(.005)
+                self.assertEqual(history.read(self.visit,100,'a'*64)['result_notice_status'],'source_unavailable')
+                self.assertEqual(Native.opened[-1].offers,[])
+                self.close(socket)
+    def test_source_and_notice_capacity_failure_do_not_end_voice(self):
+        self.owner.current='pending-task'
+        Native.results['pending-task']={'thread':'native','turn':'pending-task','item':'final',
+            'revision':'a'*64,'text':'Verified result','more':False}
+        attempted=threading.Event()
+        def full(*args):attempted.set();raise ValueError('Synthetic full store')
+        with patch.object(CodexVoiceHistory,'claim_result',side_effect=full),patch.object(
+                CodexVoiceHistory,'notice_status',side_effect=ValueError('Synthetic full store')):
+            with self.socket()as socket:
+                self.start(socket);socket.send_json({'type':'ready'})
+                self.assertTrue(attempted.wait(2))
+                self.assertEqual(Native.opened[-1].offers,[])
+                self.close(socket)
     def test_optional_source_read_failure_keeps_voice_and_is_not_polled_again(self):
         self.owner.current='pending-task'
         with patch.object(Native,'completed_result',side_effect=ValueError('Synthetic unavailable source'))as read:
