@@ -56,6 +56,7 @@ class MatrixHostScope(unittest.TestCase):
         self.assertEqual(selected([
             "dashboard/web/codex-conversation.js",
             "tests/codex_conversation_ui.js",
+            "tests/session_workspace_browser.js",
             "tests/ci_matrix_host_scope.py",
             ".github/workflows/ci.yml",
             "docs/interaction-native-codex-voice.md",

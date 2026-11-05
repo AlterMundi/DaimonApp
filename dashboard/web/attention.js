@@ -1,7 +1,7 @@
 "use strict";
 // Navigation over the existing ledgers. Opening a card never sends a decision.
 window.AttentionCarousel = (() => {
-  function mount({line,panel,getItems,localOnly=false}) {
+  function mount({line,panel,getItems,localOnly=false,onChange=()=>{}}) {
     if(!line || !panel)return;
     const el=(tag,text)=>{const n=document.createElement(tag);if(text)n.textContent=text;return n;};
     const strip=el("div"),previous=el("button","‹"),current=el("button"),next=el("button","›"),all=el("button");
@@ -19,7 +19,7 @@ window.AttentionCarousel = (() => {
     dialog.className="pending-panel";dialog.setAttribute("aria-label",localOnly?"For you":"Pending requests");
     closeButton.type="button";scope.className="note";
     dialog.append(heading,closeButton,scope,panel);document.body.append(dialog);
-    let items=[],selected,position=0,timer,hover=false,focused=false,drag,dragged=false;
+    let items=[],selected,position=0,timer,returnFocus,hover=false,focused=false,drag,dragged=false;
     const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)");
     function schedule(){
       clearTimeout(timer);
@@ -43,15 +43,16 @@ window.AttentionCarousel = (() => {
     function step(delta){if(!items.length)return;position=(position+delta+items.length)%items.length;render();}
     function refresh(){
       const values=getItems(),index=values.findIndex(v=>v.id===selected);
-      items=values;position=index>=0?index:Math.min(position,Math.max(0,items.length-1));render();
+      items=values;position=index>=0?index:Math.min(position,Math.max(0,items.length-1));render();onChange(items.length);
     }
     function close(restore=true){
       if(dialog.open){if(dialog.close)dialog.close();else dialog.removeAttribute("open");}
-      if(restore)(localOnly?all:items.length?current:line).focus?.();schedule();
+      const focus=returnFocus;returnFocus=undefined;
+      if(restore&&(!focus||focus()===false))(localOnly?all:items.length?current:line).focus?.();schedule();
     }
-    async function open(item){
+    async function open(item,restoreFocus){
       clearTimeout(timer);
-      if(!dialog.open){if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
+      if(!dialog.open){returnFocus=restoreFocus;if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
       closeButton.focus();
       if(item){
         // Re-select from current metadata so an obsolete carousel row cannot
@@ -84,7 +85,7 @@ window.AttentionCarousel = (() => {
     // Existing card readers remain the writers. Observe their metadata changes,
     // without another network poller or a second pending store.
     new MutationObserver(refresh).observe(panel,{childList:true,subtree:true,characterData:true});
-    refresh();return {refresh,close};
+    refresh();return {refresh,close,open:restore=>open(undefined,typeof restore==='function'?restore:undefined),get count(){return getItems().length;}};
   }
   return {mount};
 })();
