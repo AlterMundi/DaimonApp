@@ -16,7 +16,8 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function boot(){
   const document={createElement:tag=>new Element(tag)},window={},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
-  const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:Date.now()/1000});
+  const observedAt=Date.now()/1000;
+  const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
   let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false;
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
