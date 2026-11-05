@@ -26,8 +26,14 @@ start a native/model process, enroll a router target or acknowledge work.
   admission/start/steer path, including busy workers, without an integrating
   model turn. Avatar remains independent of this default target.
 
-Pins and expanded views are bounded, in-memory client intent. They are cleared
-on binding/authentication changes, not saved as transcript data. Back does not
+An explicit pin retains only its opaque session ID and receiving binding in one
+bounded local preference. After reload, the client restores its selected view
+only from fresh authorized metadata and native-issued destination references;
+it never persists a reply reference, transcript or credential. An unavailable
+saved session blocks sending rather than redirecting input to integration.
+Explicit unpin is also retained. Authentication loss/reset removes the preference;
+another receiving binding cannot restore it. Temporary expanded views remain
+in-memory intent. Back does not
 clear the composer draft or an already frozen recording. Audio filters retain
 only their existing binding-scoped preferences. Per-update audio controls remain
 as a fallback when the complete workspace is unavailable; they are hidden only
@@ -51,6 +57,25 @@ are revalidated on capture and dispatch. A grant loss removes selected history
 and blocks new direct input, while keeping the ordinary integrating Conversation
 and draft available. It does not sign out the entire app or replay originals.
 An older compatible listener can expose metadata without pin references.
+
+Shared-Home receiving configuration can instead select `workspace_topics = [7]`
+and `workspace_follow_topic = 7`. These are existing topic IDs in the configured
+Interaction chat, owned by its paired human; they never create or enroll a topic.
+At most32 distinct positive IDs are accepted. A nonempty topic scope narrows even
+an existing workspace grant. Metadata and selected-history reads are limited to
+that scope, and out-of-scope direct text/recorded-voice references are refused
+before native or ASR admission. No other session history is opened automatically.
+The optional followed topic must belong to that list. Its fresh opaque identity
+opens the selected conversation on first use/reload unless the human has explicitly
+unpinned it. Existing cookie/account/actor, other device grants and voice provider
+selection are unchanged. Opening and refreshing remain read-only and model-free.
+
+Selected views can show only file descriptors already admitted by the canonical
+Conversation artifact audience, intersected with the selected native session.
+They reuse its existing verified download, expiry, size/hash and access checks.
+This creates no file audience, file registration, filesystem browser or new
+retention. A native file without an existing authorized descriptor is not made
+downloadable merely by opening its history.
 
 ## Selected native history
 

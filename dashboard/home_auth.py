@@ -58,6 +58,16 @@ class HomeAuth:
         if type(self.workspace) is not bool:
             raise ValueError('Explicit shared session workspace permission required')
         self.coordination = self.coordination or self.coordination_control
+        self.workspace_topics = self.selected.get('workspace_topics', [])
+        if (not isinstance(self.workspace_topics, list) or len(self.workspace_topics) > 32
+                or any(type(n) is not int or not 0 < n < 2**63 for n in self.workspace_topics)
+                or len(set(self.workspace_topics)) != len(self.workspace_topics)):
+            raise ValueError('Select at most 32 distinct receiving workspace topics')
+        self.workspace_follow_topic = self.selected.get('workspace_follow_topic')
+        if (self.workspace_follow_topic is not None and
+                (type(self.workspace_follow_topic) is not int or
+                 self.workspace_follow_topic not in self.workspace_topics)):
+            raise ValueError('The followed topic must belong to the explicit workspace scope')
         self.binding = config['origin'] + config.get('prefix', '/sessions')
 
     def authenticate(self, request):
@@ -79,10 +89,13 @@ class HomeAuth:
                 or not self.provider.authorized(human)):
             raise PermissionError('This account has no receiving conversation grant')
         if request.url.path != '/api/interaction/access' and not permitted(
-                request.method, request.url.path, 'interaction_only', self.artifacts, self.alerts, self.coordination, self.coordination_control, self.workspace):
+                request.method, request.url.path, 'interaction_only', self.artifacts, self.alerts, self.coordination, self.coordination_control, self.workspace,
+                workspace_topics=self.workspace_topics):
             raise PermissionError('Shared browser access is limited to the conversation')
         return {'human': human, 'scope': 'interaction_only', 'artifact_access': self.artifacts,
-                'alerts_access': self.alerts, 'workspace_access': self.workspace, 'coordination_access': self.coordination,
+                'alerts_access': self.alerts, 'workspace_access': self.workspace,
+                'workspace_topics': self.workspace_topics, 'workspace_follow_topic': self.workspace_follow_topic,
+                'coordination_access': self.coordination,
                 'coordination_control_access': self.coordination_control, 'expires': expires,
                 'csrf': hashlib.sha256(('shared-conversation:' + self.binding + ':' + token).encode()).hexdigest(),
                 'label': actor.get('name', 'Your conversation'), 'presentation_profile': 'simple'}

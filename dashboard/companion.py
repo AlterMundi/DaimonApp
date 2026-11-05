@@ -19,9 +19,9 @@ def authority(config, provider):
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False, workspace_topics=()):
     if path == '/api/interaction/sessions' or path.startswith('/api/interaction/sessions/'):
-        return method == 'GET' and scope == 'interaction_only' and workspace_access is True and re.fullmatch(r'/api/interaction/sessions(?:/[a-f0-9]{24})?',path) is not None
+        return method == 'GET' and scope == 'interaction_only' and (workspace_access is True or bool(workspace_topics)) and re.fullmatch(r'/api/interaction/sessions(?:/[a-f0-9]{24})?',path) is not None
     if path == '/api/interaction/coordination/control':
         return method == 'POST' and scope == 'interaction_only' and coordination_control_access is True
     if path == '/api/interaction/coordination':

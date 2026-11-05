@@ -9,11 +9,14 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 from dashboard.app import create_app
 from dashboard.provider import Provider
 from dashboard.companion import Grants,permitted
+from dashboard.home_auth import HomeAuth
+from dashboard.session_view import read
 from dashboard.sonic import descriptor,DEFAULT
 from scripts.activity_indicator import atomic_json,inventory_source,readonly
 
@@ -274,6 +277,88 @@ topic_id=8
         with closing(sqlite3.connect(self.db)) as db:
             db.execute("UPDATE human_interactions SET state='completed'");db.commit()
         self.assertFalse(self.sources()['100:7']['pending'])
+
+
+    def test_home_scope_restores_only_selected_session_and_rejects_other_input(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('ALTER TABLE sessions ADD COLUMN busy INTEGER DEFAULT 0')
+            db.execute('ALTER TABLE sessions ADD COLUMN updated_at TEXT')
+            db.execute("INSERT INTO sessions VALUES(4,100,9,100,'private',0,'Other owned private',0,NULL)")
+            db.commit()
+        native=self.root/'native';sessions=native/'sessions';sessions.mkdir(parents=True)
+        self.provider.native_home=native
+        history=sessions/'worker.jsonl'
+        history.write_text(json.dumps({'type':'session_meta','payload':{'id':'worker'}})+'\n'+
+            json.dumps({'type':'response_item','payload':{'type':'message','role':'assistant','content':[{'type':'output_text','text':'Selected current progress'}]}})+'\n')
+        with closing(sqlite3.connect(native/'state_5.sqlite')) as db:
+            db.execute('CREATE TABLE threads(id TEXT,rollout_path TEXT,archived INTEGER)')
+            db.execute('INSERT INTO threads VALUES(?,?,0)',('worker',str(history)));db.commit()
+        self.config['shared_auth']={'enabled':True,'home_origin':self.config['origin'],
+            'workspace_topics':[7],'workspace_follow_topic':7}
+        app=create_app(self.config,self.provider,lambda raw,bot:int(raw))
+        client=TestClient(app,base_url=self.config['origin'])
+        client.cookies.set('__Host-home','h'*43,path='/')
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],'expires':int(time.time())+3600,
+            'actor':{'kind':'human','ref':'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity),patch('dashboard.session_view.read',wraps=read) as reads:
+            listing=client.get('/api/interaction/sessions')
+            self.assertEqual(listing.status_code,200,listing.text)
+            rows=listing.json()['sessions'];self.assertEqual([r['title'] for r in rows],['Worker'])
+            ident=rows[0]['id'];self.assertEqual(listing.json()['preferred_session'],ident)
+            selected=client.get('/api/interaction/sessions/'+ident)
+            self.assertEqual(selected.status_code,200,selected.text)
+            self.assertEqual(selected.json()['items'][0]['text'],'Selected current progress')
+            other=self.provider.identity({'id':4,'chat_id':100,'thread_id':9,'codex_thread_id':'private'})
+            self.assertEqual(client.get('/api/interaction/sessions/'+other).status_code,409)
+            self.assertEqual(reads.call_count,1,'Other owned history must be refused before any file read')
+            csrf=client.get('/api/interaction/access').json()['csrf']
+            headers={'origin':self.config['origin'],'x-dashboard-csrf':csrf}
+            reply={'source':'session:4','revision':'b'*64}
+            with patch.object(self.provider,'conversation_input_submit') as text,patch.object(self.provider,'conversation_voice_submit') as voice:
+                value={'id':str(uuid.uuid4()),'binding':'a'*64,'text':'Original','reply':reply}
+                self.assertEqual(client.post('/api/interaction/inputs',json=value,headers=headers).status_code,403)
+                headers.update({'x-reply-source':reply['source'],'x-reply-revision':reply['revision']})
+                self.assertEqual(client.post('/api/interaction/voice',content=b'not submitted',headers=headers).status_code,403)
+                text.assert_not_called();voice.assert_not_called()
+            identity['actor']['ref']='human:telegram:101'
+            self.assertEqual(client.get('/api/interaction/sessions/'+ident).status_code,403)
+            self.assertEqual(reads.call_count,1,'Foreign actor must not open the selected history')
+        self.assertIsNone(self.provider.native)
+        client.close()
+
+    def test_follow_requires_explicit_valid_scope(self):
+        for values in [{'workspace_topics':[True]},{'workspace_topics':[7,7]},
+                {'workspace_topics':[7],'workspace_follow_topic':9},
+                {'workspace_topics':'7'},{'workspace_topics':[0]}]:
+            with self.subTest(values=values),self.assertRaises(ValueError):
+                HomeAuth({**self.config,'shared_auth':{'enabled':True,'home_origin':self.config['origin'],**values}},self.provider)
+
+    def test_files_intersect_existing_canonical_audience_and_selected_session(self):
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('ALTER TABLE sessions ADD COLUMN busy INTEGER DEFAULT 0')
+            db.execute('ALTER TABLE sessions ADD COLUMN updated_at TEXT')
+            db.execute('CREATE TABLE interaction_artifacts(id TEXT,source_session INTEGER,human_id INTEGER,native_thread TEXT)')
+            db.executemany('INSERT INTO interaction_artifacts VALUES(?,?,?,?)',[
+                ('selected',2,100,'worker'),('no-existing-audience',2,100,'worker'),('other',1,100,'entry')]);db.commit()
+        ident=self.provider.identity({'id':2,'chat_id':100,'thread_id':7,'codex_thread_id':'worker'})
+        with patch.object(self.provider,'artifacts',return_value={'items':[{'id':'selected','available':True},{'id':'other','available':True}]}) as canonical:
+            self.assertEqual(self.provider.session_artifacts(ident,(7,)),[{'id':'selected','available':True}])
+            self.assertEqual(canonical.call_count,1)
+
+
+
+    def test_selected_history_omits_files_if_artifact_grant_is_revoked_during_read(self):
+        grants=Grants(self.config,self.provider);output=self.root/'file-device.json'
+        enrolled=grants.enroll('Selected files',output,3600,workspace_access=True,artifact_access=True)
+        device=json.loads(output.read_text());headers={'authorization':device['authorization']}
+        def files(*args,**kwargs):
+            grants.artifacts(enrolled['grant_id'],False)
+            return [{'id':'private-descriptor','name':'Must not leave the server','sha256':'a'*64}]
+        with patch.object(self.provider,'session_view',return_value={'items':[]}),patch.object(self.provider,'session_artifacts',side_effect=files):
+            response=self.client.get('/api/interaction/sessions/'+'a'*24,headers=headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertNotIn('artifacts',response.json())
+            self.assertNotIn('private-descriptor',response.text)
 
 
 class SonicVocabulary(unittest.TestCase):
