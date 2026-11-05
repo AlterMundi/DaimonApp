@@ -163,3 +163,14 @@ action. Ordinary metadata refresh does not restart a failed initial read or
 replace its error with another Reading indicator. The existing20second API
 deadline bounds that read. Retry preserves the composer/target and reads only
 history; an obsolete file revision clears its old display before a fresh read.
+
+## Metadata refresh recovery
+
+A failed workspace metadata refresh preserves the exact input destination and
+draft. `Retry status` reads metadata again, and opening the session menu uses the
+same refresh path. A successful refresh removes its warning/retry control; grant
+loss retains the existing access-recovery behavior. These actions never submit
+input, unpin a conversation or open a native model. The5November device warning
+was not reproduced by the owner read (44sessions, destinations available); its
+original network/server cause remains unknown. Do not equate this warning with
+voice failure or claim a transient HTTP cause without a captured response.

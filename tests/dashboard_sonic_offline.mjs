@@ -10,7 +10,7 @@ assert(binary,'Chromium is required for the waveform regression');
 assert.equal(typeof WebSocket,'function','Node22 or newer is required');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'telecodex-offline-audio-'));
 const log=fs.openSync(path.join(root,'browser.log'),'w');
-const browser=spawn(binary,['--headless=new','--no-sandbox','--disable-gpu','--mute-audio','--remote-debugging-port=0','--user-data-dir='+root,'about:blank'],{detached:true,stdio:['ignore','ignore',log]});
+const browser=spawn(binary,['--headless=new','--no-sandbox','--disable-gpu','--mute-audio','--autoplay-policy=no-user-gesture-required','--remote-debugging-port=0','--user-data-dir='+root,'about:blank'],{detached:true,stdio:['ignore','ignore',log]});
 let socket;
 try{
  let port;
