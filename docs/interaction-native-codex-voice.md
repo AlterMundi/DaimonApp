@@ -4,6 +4,46 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Selective being-memory through the native owner
+
+Actual selected655 qualifies one current identity memory through the existing
+owner-bound DMK MCP reader, followed by recall in a new manually started voice
+visit. Scoped native MCP discovery reported the configured reader connected;
+native calls performed one rejected wrong-pool search, one unscoped search and
+one complete current-record read. The canonical backing final and spoken answer
+used the source after the read completed. No separate memory store, client-side
+executor, synthetic durable-memory canary or memory write was introduced.
+Discovery uses the documented thread-scoped `mcpServerStatus/list` with one
+`serverName`, and actual native `mcpToolCall` items prove reads; see the
+[Codex App Server contract](https://learn.chatgpt.com/docs/app-server).
+
+The first verifier wrongly counted all three MCP operations as selected-record
+reads and stopped before replacement. Its raw failure remains; the accepted
+lookup was not repeated. A fresh fixture with a different receiving binding and
+no local voice history failed recall and confused the name with archive evidence.
+Keep that cold/different-scope negative separate from ordinary reconnect claims.
+The missing continuation then reused the original receiver/database/authority
+and dashboard history. Its exact binding stayed unchanged; one backing turn
+recovered the answer with **zero additional MCP calls**. No source or original
+was rewritten to simulate continuity. A pre-input projection-key mistake was
+corrected under its retained intent before any voice/model/MCP input.
+
+Both retained visits closed/transcript_complete; four original segments2594310bytes
+and both output masters were hash-verified. Configured independent output Whisper
+recognized the first answer. Whole replacement-output ASR returned empty despite
+speech energy; an exact12–28second PCM window recognized the useful recall.
+Retain the source, derivative, empty draft and targeted draft, without replaying
+voice work. Speech added an unrequested possible-work follow-up; that is not task
+status evidence. One selected record does not prove all memory, pagination,
+durable curation, cold-scope continuity, general speech quality or phone hearing.
+
+Search without a pool unless narrowing to a returned configured name. Use returned
+pool/record UID for reads; shelf/tag names are not pool selectors. Read complete
+sources and preserve revision guards for continued pages. Count navigation,
+rejections and actual reads separately. These are existing reader paths, not a
+new app memory bridge. This qualification changes no runtime code/configuration,
+provider/default, owner brief, native/Core, source/capture/storage bounds or grants.
+
 ## Identity clarification and ordinary speech
 
 A distinct actual selected654 full-view case used the byte-identical deployed

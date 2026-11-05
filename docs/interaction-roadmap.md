@@ -55,6 +55,13 @@ One integrated candidate follow-up speaks naturally; the generic first policy
 failed despite confirmed context. Full identity/memory, general speech compliance,
 phone/hearing and all prior roadmap requirements remain open; see the native guide.
 
+Selected655 now has one actual native DMK identity-record read and useful spoken
+recall after a manually started replacement using the original retained receiver,
+binding and app history. No repeated memory call or second executor. Retain the
+wrong-pool refusal, verifier operation-count mistake and different-binding/no-local-
+history negative. The complete native voice guide distinguishes this selective
+evidence from full being-memory, pagination/curation, cold-scope and device quality.
+
 Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
 voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
 #301/#304/#609; it is not a gate for starting the comparison and is not silently
