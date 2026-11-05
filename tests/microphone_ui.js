@@ -37,6 +37,7 @@ function boot(live=false,recovery,status404=false){
   }
   const id=options.headers['X-Input-Id'];
   if(mode==='before'){mode=undefined;throw Error('Offline before capture');}
+  if(mode==='retention-full'){mode=undefined;return {ok:false,status:507,json:async()=>({})};}
   if(mode==='visual-refusal'){mode=undefined;return {ok:false,status:400,json:async()=>({code:'visual_reselection',submission_attempted:false})};}
   if(mode==='denied'){mode=undefined;return {ok:false,status:403,json:async()=>({})};}
   const result={id,phase:capturePhase,retired:captureRetired,visual:options.headers['X-Visual-Reference']?JSON.parse(options.headers['X-Visual-Reference']):undefined,voice:{audio_sha256:options.headers['X-Audio-Sha256'],...(options.headers['X-Recording-Stop']?{capture_stop:options.headers['X-Recording-Stop']}:{})}};if(mode==='visual-extra'){mode=undefined;result.visual.push({source_id:'unexpected-third-image'});}
@@ -249,6 +250,14 @@ function boot(live=false,recovery,status404=false){
  discarded.confirmation(false);discarded.cancel();assert.equal(discarded.nodes.get('#conversation-voice-check').hidden,false);
  discarded.confirmation(true);discarded.cancel();assert.equal(discarded.ui.ownsSend(),false);assert.equal(discarded.button()['aria-label'],'Record a voice message');
  assert.equal(discarded.uploads.length,1,'Discard of an uncertain local copy cannot resend or cancel server work');
+ const blockedStore=memoryRecovery(),blocked=boot(false,blockedStore,true);await until(()=>!blocked.button().disabled);
+ blocked.mode('retention-full');await blocked.click();blocked.click();await until(()=>blocked.state().startsWith('Audio storage is full'));
+ assert.equal(blocked.originals.size,0);assert.equal(blockedStore.values.get('pending').retentionBlocked,true);
+ const blockedId=blocked.uploads[0].headers['X-Input-Id'];
+ await blocked.nodes.get('#conversation-voice-check').handlers.click();
+ assert(blocked.state().includes('storage is still blocked'));assert.equal(blocked.uploads.length,1,'Check cannot retry a storage refusal');
+ await blocked.click();await until(()=>blocked.received.length===1);
+ assert.equal(blocked.uploads[1].headers['X-Input-Id'],blockedId,'Explicit retry after repair keeps exact identity');
  const offline=boot();offline.mode('before');await offline.click();offline.click();await until(()=>offline.state().startsWith('Recording unconfirmed'));
  assert.equal(offline.originals.size,0);await offline.click();await until(()=>offline.received.length===1);
  assert.equal(offline.uploads.length,2);assert.deepEqual(offline.uploads[0].headers,offline.uploads[1].headers);assert.equal(offline.uploads[0].body,offline.uploads[1].body,'Explicit retry preserves the exact original bytes');

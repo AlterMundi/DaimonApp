@@ -409,16 +409,19 @@ class NativeDialogue:
         # one UTF-8 byte per text/protocol token, 64 tokens/s for PCM (the
         # documented audio rate is ~25/s), plus each generation's 512-token
         # output allowance. Lower provider observations never release reserve.
-        encoded=json.dumps(value,ensure_ascii=False)
+        encoded=json.dumps(value,ensure_ascii=False,separators=(',',':'))
         audio=value.get('realtimeInput',{}).get('audio')
         cost=(math.ceil(len(base64.b64decode(audio['data']))*64/32000)
             if audio is not None else len(encoded.encode()))
         generates=('toolResponse' in value or value.get('clientContent',{}).get('turnComplete') is True
             or 'activityEnd' in value.get('realtimeInput',{}))
         cost+=512 if generates else 0
-        # Phrase-end/stop controls may consume the already reserved margin.
+        # Phrase-end and already requested tool results must be allowed to settle
+        # within the reserved margin so the idle handover floor can be reached.
+        # They still cannot exceed the unchanged hard window/output reserve.
         ending=('activityEnd' in value.get('realtimeInput',{})
-            or value.get('realtimeInput',{}).get('audioStreamEnd') is True)
+            or value.get('realtimeInput',{}).get('audioStreamEnd') is True
+            or 'toolResponse' in value)
         limit=self.max_context_tokens-(512 if ending else self.context_input_reserve)
         if replacement:
             # Provider observations can include the OLD preamble. Never subtract

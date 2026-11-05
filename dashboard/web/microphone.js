@@ -98,7 +98,7 @@ window.VoiceInput = (() => {
     let checking=false,statusTimer;const statusAttempts=new Map();
     function clearStatusTimer(){clearTimeout(statusTimer);statusTimer=undefined;}
     function scheduleStatus(immediate=false){
-      if(!available||!pending?.uncertainSubmission||pending.binding!==getBinding()||document.hidden||window.navigator.onLine===false)return;
+      if(!available||pending?.retentionBlocked||!pending?.uncertainSubmission||pending.binding!==getBinding()||document.hidden||window.navigator.onLine===false)return;
       const used=statusAttempts.get(pending.id)||0;if(used>=4)return;
       if(statusTimer!==undefined&&!immediate)return;
       clearStatusTimer();statusTimer=setTimeout(()=>{statusTimer=undefined;void checkStatus(true);},immediate?0:[1000,3000,10000,30000][used]);
@@ -242,7 +242,11 @@ window.VoiceInput = (() => {
         await confirmed(value,frozen);
       } catch(e) {
         if(pending!==frozen)return;
-        if(e.retentionFull){notice('Original audio retention is full or unavailable. Existing originals and this local recording are preserved. Save a copy and resolve the retention limit before sending.',true);return;}
+        if(e.retentionFull){
+          pending={...frozen,retentionBlocked:true};
+          try{await recovery?.put(pending,continuousOwned);}catch{}
+          notice('Audio storage is full or unavailable. This recording is kept. Check delivery only checks an earlier submission; it cannot repair storage. Retry after storage is restored, or save a copy.',true);return;
+        }
         if(e.visualReselection){
           if(frozen.uncertainSubmission){pending={...frozen,needsVisualSelection:false};notice('An earlier submission is still unconfirmed. Keep this recording identity and check its status before starting another attempt.',true);return;}
           pending={...frozen,needsVisualSelection:true};notice('This attempt did not submit the recording. Point again or remove the image, then retry this recording.',true);return;
@@ -414,11 +418,11 @@ window.VoiceInput = (() => {
       checking=true;notice('Your recording is kept. Checking whether the message arrived…');controls();
       try {await confirmed(await api(`interaction/inputs/${frozen.id}`),frozen);}
       catch(e){if(pending===frozen){
-        if(automatic && e.status===404 && frozen.submissionRequested===true && (frozen.automaticRetries||0)<2
+        if(automatic && !frozen.retentionBlocked && e.status===404 && frozen.submissionRequested===true && (frozen.automaticRetries||0)<2
           && available && !document.hidden && window.navigator.onLine!==false && owned===generation){
           checking=false;notice('Message not received yet. Retrying the same recording…');await upload(true);
         }else{
-          notice([404,409].includes(e.status)?'No saved capture was confirmed. The local recording is kept: retry the same recording, save a copy, or discard the local copy.':'Could not confirm the saved recording. The local audio is kept; check again or retry the same recording. Nothing was resent.',true);
+          notice(frozen.retentionBlocked?'No saved message was confirmed. Audio storage is still blocked; this recording is kept. Check delivery does not send it or repair storage. Retry after storage is restored, or save a copy.':[404,409].includes(e.status)?'No saved capture was confirmed. The local recording is kept: retry the same recording, save a copy, or discard the local copy.':'Could not confirm the saved recording. The local audio is kept; check again or retry the same recording. Nothing was resent.',true);
           if(e.status===401 || e.status===403)unauthorized(e);
         }
       }}

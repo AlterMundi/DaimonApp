@@ -28,6 +28,47 @@ and current journals; a caption-aware web reader is required while typed unknown
 observations remain pending. Exact current receiving/health/operator guidance:
 [receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md).
 
+## Reconnect and settlement correction —5November2026
+
+A subsequent phone trial failed despite the earlier provider fixture. Separate
+closure evidence identified local input-context refusal while a tool was pending,
+and later original-audio handoff capacity failures. A retention failure is not
+provider exhaustion or evidence of noise-triggered speech. The private receiving
+record owns the selected originals and archive configuration; do not clear them
+or increase limits as a workaround.
+
+Reconnect now carries inherited checkpoint language verbatim and appends only
+new attributed metadata/events/guidance. It does not serialize an already
+serialized checkpoint envelope again. Empty visits reuse identical inherited
+language. This is lossless structural formatting, not semantic compression,
+incorporation, clipping, replay or a new memory write. Existing source-revision
+and owner fences and the24KiB reconnect bound remain. Legacy checkpoints remain
+readable without rewriting canonical history. Twenty empty reconnects must retain
+stable language bytes, including quotes, backslashes and newlines.
+
+Requested tool results may settle using the same reserved input margin as
+phrase-end controls, allowing the response to finish and the idle renewal floor
+to become available. They still cannot exceed the hard context window minus the
+output allowance. New audio cannot spend that margin. The64k window,48k pressure
+and600s diagnostic limit remain unchanged. A result too large for the hard window
+still refuses; this correction does not assert unbounded continuation or physical
+phone acceptance. Compact JSON serialization removes transport whitespace without
+changing source text or semantic content.
+
+A507 voice upload retains its storage-blocked reason through Check delivery and
+disables automatic retries/status loops for that blocked local recording. Check
+only inspects a retained submission; it cannot repair capacity. An explicit retry
+after storage repair keeps the same original ID and bytes. Neither action becomes
+permission to submit an uncertain original again under another identity.
+
+Further token-efficiency review must measure repeated tool snapshots, identical
+updates and seed size across nonempty renewals, as well as request/return context
+in the integrator. Use deltas, source references and bounded pages where the
+consumer supports them. Keep full originals available and preserve corrections,
+pending effects and uncertainty. Do not replace actual token/provider usage with
+byte estimates or cut identity/source authority to claim savings. Source fixtures,
+receiving selection and human hearing remain separate evidence.
+
 ## Active continuation preparation —5November2026
 
 Issue [#609](https://github.com/AlterMundi/DaimonApp/issues/609) separates semantic

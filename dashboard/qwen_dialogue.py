@@ -73,7 +73,7 @@ class QwenDialogue(NativeDialogue):
         return {k:(v.lower() if k=='type' and isinstance(v,str) else QwenDialogue._schema(v))
                 for k,v in value.items()}
 
-    def _raw(self,value):self._qsocket.send(json.dumps(value,ensure_ascii=False))
+    def _raw(self,value):self._qsocket.send(json.dumps(value,ensure_ascii=False,separators=(',',':')))
 
     def _create_response(self):
         if self._qgenerating or self.input_active:return

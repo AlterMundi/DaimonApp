@@ -49,6 +49,26 @@ class Qwen(unittest.TestCase):
     def test_uncorrelated_commit_and_transcript_refuse(self):
         self.ready()
         with self.assertRaises(DialogueUnavailable):self.event({'type':'input_audio_buffer.committed','item_id':'unknown'})
+    def test_pressure_tool_settles_and_reaches_handover_without_replay(self):
+        self.ready();self.event({'type':'response.created','response':{'id':'pressure'}})
+        self.event({'type':'response.function_call_arguments.done','call_id':'sources','name':'recent_originals','arguments':'{}'})
+        self.stream.context_estimate=55940
+        self.assertTrue(self.stream.rollover_due)
+        result={'kind':'sources','text':'Exact retained human correction'}
+        self.stream.tool_result('sources',result)
+        # The provider is still producing its function-call response: defer the
+        # one result, then let both responses finish before physical renewal.
+        self.assertFalse(self.stream.handover_ready())
+        self.event({'type':'response.done','response':{'status':'completed'}})
+        frames=[f for f in self.socket.sent if f.get('item',{}).get('type')=='function_call_output']
+        self.assertEqual(len(frames),1)
+        self.assertEqual(json.loads(frames[0]['item']['output'])['result'],result)
+        self.event({'type':'response.created','response':{'id':'settled'}})
+        self.event({'type':'response.done','response':{'status':'completed'}})
+        self.assertTrue(self.stream.handover_ready())
+        self.assertFalse(self.socket.closed)
+        self.assertLess(self.stream.context_estimate,64000-512)
+
     def test_tool_return_waits_for_output_and_streamed_updates_are_context(self):
         self.ready();self.event({'type':'response.created','response':{'id':'r1'}})
         proposal=self.event({'type':'response.function_call_arguments.done','call_id':'call1','name':'await_integrator_update','arguments':'{}'})
