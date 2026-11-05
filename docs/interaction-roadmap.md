@@ -85,25 +85,24 @@ hide it. Preserve readable identity, header actions, keyboard/touch access and
 reduced motion. Qualify desktop/mobile combined pin/back/reply/text/voice/audio
 and live-tool journeys without Telegram or model/provider expertise.
 
-Implementation checkpoint: the initial candidate adds a bounded model-free
-all-owned-session metadata read. The next candidate adds an explicit optional
-`workspace_access` permission through existing shared Home/Companion grants;
-restricted devices default to false, monitors remain denied and no Sessions
-administrative permission is implied. This permission is not yet selected on the
-receiver. Unreviewed-result status is currently unknown, not inferred from
-work completion. The adaptive header candidate has static actual-shell Chromium
-coverage at1280px/390px and interaction/focus tests; it is not deployed or phone
-acceptance. The next native candidate adds exact generation-bound session destination references
-through the existing retained reply field. A pin can select an owned native
-session without enrolling it as a router target; literal selector-like words do
-not override that explicit destination. Text and recorded voice retain their
-original words and destination through preparation. Shared queued submission and
-final steer admission revalidate the pin; a replaced native binding refuses
-submission rather than redirecting it. Existing routing journals, return
-registration and known-unsent recovery remain in use. The workspace API joins
-only native-owned descriptors; an older listener exposes metadata without pins.
-This contract is not selected on the receiver. Sidebar rendering, device grants,
-technical events and the complete combined experience remain unfinished.
+Implementation checkpoint: #606/#607 provide the merged metadata, exact
+session-destination and explicit workspace-grant foundations. The next complete
+source candidate adds the rail, temporary expansion, exact latest-message reply,
+grouped audio and selected native technical history, preserving the existing
+composer and Avatar scope. Its bounded reader exposes available tool/output and
+reasoning-summary events without widening the global feed or adding a transcript
+store. See [the maintained workspace contract](interaction-session-workspace.md)
+for input precedence, limits, permission loss and qualification.
+
+Retained final-result availability is distinct from unreviewed-result status:
+the latter remains unknown rather than being inferred from work completion or
+viewing. The adaptive header and combined workspace have synthetic actual-shell
+Chromium coverage at1280px/390px, including deliberate scroll/focus and draft
+preservation. Native/HTTP text and recorded-ASR voice qualification uses synthetic
+peers with zero models. These are source qualification, not deployed grants,
+phone/hearing acceptance or closure of the complete base-experience roadmap.
+Current receiving still selects its separately qualified Qwen continuity
+composition until a compatible native/web workspace successor is adopted.
 
 ## Shared attention backend —4November2026
 

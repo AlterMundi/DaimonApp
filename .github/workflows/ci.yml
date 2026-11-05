@@ -439,6 +439,8 @@ jobs:
       - run: python -B tests/dashboard_live_transcription.py
       - run: node tests/dashboard_live_ui.js
       - run: python -B tests/dashboard_sonic.py
+      - run: python -B tests/dashboard_session_view.py
+      - run: node tests/session_workspace_ui.js
       - run: python -B tests/presentation_io.py
       - run: node --check dashboard/web/app.js
       - run: node --check dashboard/web/requests.js

@@ -248,6 +248,8 @@ function boot(readOnly=false,standalone=false,options={}) {
     context.window.NativeConversation={supported:()=>true,create(hooks){const state=hooks.onState;hooks.onState=v=>{(driver.states||=[]).push(v);state(v);};return driver.engine=create(hooks);}};
     driver.pcm=n=>vm.runInContext(`new Uint8Array(${n}).buffer`,context);
   }
+  if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
+  if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
   if(options.autoText)context.window.IntersectionObserver=class{
     constructor(callback){intersection=callback;}observe(){}unobserve(){}disconnect(){}
@@ -273,6 +275,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     hide(){document.hidden=true;for(const fn of documentEvents.get('visibilitychange')||[])fn();},
     show(){document.hidden=false;for(const fn of documentEvents.get('visibilitychange')||[])fn();},
     playbackContext(){return capture.getPlayback();},
+    microphoneSelection(){return capture.getReply();},
     capture(){capture.pauseAudio();capture.onActivity(true);},
     finishCapture(){capture.onActivity(false);},
     capturedInput(value){capture.onInput(value);},
@@ -2013,4 +2016,26 @@ function boot(readOnly=false,standalone=false,options={}) {
   const broken=await setup();broken.send(audio);broken.close();assert.equal((await broken.stream.done).complete,false,'EOF without terminal result stays incomplete');
   first.stream.cancel();assert.equal(first.revoked(),1);
   console.log('Progressive speech transport: first append, exact framing/integrity, terminal completion, cancellation and incomplete EOF passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Input preparation uses the target selected before any asynchronous attachment
+// work, and ordinary voice reads the same selection seam before permission.
+(async()=>{
+  const workspace={selected:{source:'session:7',revision:'a'.repeat(64)},active:true,valid:true,
+    capture(){return {reference:JSON.parse(JSON.stringify(this.selected))};},canSend(){return this.valid;},
+    refresh(){},syncAudio(){},reset(){}};
+  let release,entered;const preparing=new Promise(resolve=>{entered=resolve;});
+  const fixture=boot(false,true,{capture:true,workspace,visualCapture:()=>{entered();return new Promise(resolve=>{release=resolve;});}});
+  await fixture.ui.refresh();
+  const voice=fixture.microphoneSelection();assert.equal(voice.reference.source,'session:7');
+  const draft=fixture.nodes.get('#conversation-message'),form=fixture.nodes.get('#conversation-compose');draft.value='An input frozen before attachment work';
+  const sending=form.requestSubmit();await preparing;
+  workspace.selected={source:'session:8',revision:'b'.repeat(64)};workspace.hooks.onTarget();
+  assert.equal(voice.reference.source,'session:7','A later pin cannot mutate a captured voice target');
+  release(undefined);await sending;
+  assert.equal([...fixture.originals.values()].at(-1).reply.source,'session:7');
+  assert.equal(fixture.microphoneSelection().reference.source,'session:8','Current pin survives the earlier send');
+  workspace.valid=false;draft.value='Must not fall back to integration';const count=fixture.originals.size;
+  await form.requestSubmit();assert.equal(fixture.originals.size,count);assert.match(fixture.nodes.get('#conversation-send-state').textContent,/Select your session again/);
+  fixture.ui.stop();console.log('Workspace Conversation input: frozen text/voice targets across attachment preparation and stale-pin refusal passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
