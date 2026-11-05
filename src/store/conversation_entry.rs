@@ -156,6 +156,7 @@ mod tests {
                 &binding,
                 &clip,
                 ConversationVoice {
+                    preserve_original: None,
                     audio_sha256: "a".repeat(64),
                     mime: "audio/wav".into(),
                     capture_stop: None,

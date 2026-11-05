@@ -255,6 +255,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .store
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
+        result["voice_original_hold"] = json!("v1");
         result["foreground_retention"] = json!("v1");
         result["foreground_context"] = json!("v1");
         result["foreground_audio_observations"] = json!("v1");
@@ -797,6 +798,8 @@ fn enqueue(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VoiceSubmit {
+    #[serde(default)]
+    preserve_original: bool,
     binding: String,
     #[serde(default)]
     foreground_dialogue: Option<String>,
@@ -850,6 +853,7 @@ async fn voice_submit(
         bail!("Invalid voice capture identity");
     }
     let voice = ConversationVoice {
+        preserve_original: request.preserve_original.then_some(true),
         audio_sha256: request.audio_sha256,
         mime: request.mime,
         capture_stop: request.capture_stop,
@@ -973,7 +977,15 @@ async fn voice_submit(
                     &text,
                     proof,
                 )?;
-                if crate::voice::retire_transcribed_clip(&path, expected).is_err() {
+                // The persisted capture, not a later retry's policy argument,
+                // owns this hold. Python may retire it only after exact archive
+                // handoff. Process restart/ASR completion cannot drop that fence.
+                if captured
+                    .voice
+                    .as_ref()
+                    .is_none_or(|v| v.preserve_original != Some(true))
+                    && crate::voice::retire_transcribed_clip(&path, expected).is_err()
+                {
                     // Durable text is already committed. A later client read
                     // can finish exact cleanup without repeating ASR or work.
                     tracing::warn!("Committed conversation voice cleanup deferred");

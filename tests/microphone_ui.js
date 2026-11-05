@@ -250,6 +250,13 @@ function boot(live=false,recovery,status404=false){
  discarded.confirmation(false);discarded.cancel();assert.equal(discarded.nodes.get('#conversation-voice-check').hidden,false);
  discarded.confirmation(true);discarded.cancel();assert.equal(discarded.ui.ownsSend(),false);assert.equal(discarded.button()['aria-label'],'Record a voice message');
  assert.equal(discarded.uploads.length,1,'Discard of an uncertain local copy cannot resend or cancel server work');
+ assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,false);
+ assert.equal(discarded.nodes.get('#conversation-voice-discard')['aria-label'],'Dismiss recording notice');
+ const priorConfirmations=discarded.confirmations.length;discarded.cancel();
+ assert.equal(discarded.state(),'');assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,true);
+ assert.equal(discarded.confirmations.length,priorConfirmations,'Dismissing feedback is not another discard');
+ assert.equal(discarded.uploads.length,1,'Dismissing feedback never changes server work');
+
  const blockedStore=memoryRecovery(),blocked=boot(false,blockedStore,true);await until(()=>!blocked.button().disabled);
  blocked.mode('retention-full');await blocked.click();blocked.click();await until(()=>blocked.state().startsWith('Audio storage is full'));
  assert.equal(blocked.originals.size,0);assert.equal(blockedStore.values.get('pending').retentionBlocked,true);

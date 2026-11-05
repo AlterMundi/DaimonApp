@@ -246,6 +246,114 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         print('PASS native foreground WAV/proof and immediate-close deferred retention through actual owner/SQLite: actor/binding rechecked, exact unconfirmed WAV retained, no ASR/work/replay on close; one sourced native admission; zero models.')
     finally:j.close()
 
+def archive_hold(binary, legacy=False):
+    """Actual native ASR must retain a selected original across archive failure."""
+    from dashboard.media_retention import MediaRetention
+    j=Requests(str(Path(binary).resolve()));client=None
+    try:
+        j.start();j.admit('Seed protected archive entry',topic=1)
+        j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.stop()
+        # The archive contract uses a real-form native UUID; this synthetic
+        # peer normally seeds presentation-only names such as native-topic-7.
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.execute('UPDATE sessions SET codex_thread_id=? WHERE chat_id=100 AND thread_id=1',(str(uuid.uuid4()),))
+        helper=j.root/'archive-asr.py'
+        helper.write_text("""import hashlib,json,pathlib,sys,time
+p=pathlib.Path(sys.argv[1]);digest=hashlib.sha256(pathlib.Path(sys.argv[-1]).read_bytes()).hexdigest()
+p.open('a').write('asr\\n')
+while (p.parent/('hold-'+digest)).exists():time.sleep(.02)
+print(json.dumps({'text':'Keep this exact protected requirement.','final':True}))
+""")
+        j.config.write_text(j.config.read_text()+j.target_config+'\n[voice]\ntranscriber_label="synthetic/no-inference"\ntimeout_seconds=20\ntranscription_command='+json.dumps([sys.executable,str(helper),str(j.root/'archive-asr-calls')])+'\n')
+        j.start();j.wait_control_socket(j.socket);j.routing=True
+        page=j.read('input','list','0','before')['result'];binding=page['binding'];entry=page['entry_binding'];j.messages.clear()  # Exclude the earlier seed's Telegram reply.
+        retention={'directory':str(j.root/'archive'),'human_id':100,'chat_id':entry[1]['chat_id'],
+            'topic_id':entry[1]['thread_id'],'native_thread':entry[3],
+            'since':'2026-01-01T00:00:00+00:00','max_bytes':1048576}
+        original=audio(220);older=MediaRetention(retention).retain({'id':str(uuid.uuid4()),'entry_binding':entry},'human','audio/wav',original)
+        config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123,
+            'media_retention':{**retention,'max_bytes':1}}
+        provider=Provider(config);client=TestClient(create_app(config,provider,lambda raw,bot:int(raw)),base_url=config['origin'])
+        headers={'origin':config['origin']}
+        token=client.post('/api/session',json={'init_data':'100'},headers=headers).json()['session_token'];headers['authorization']='Bearer '+token
+        page=client.get('/api/interaction',headers=headers).json();headers['x-dashboard-csrf']=page['csrf']
+        if not legacy:
+            # Select archive protection while an earlier unheld ASR is running.
+            # Capability must not be mistaken for that original's saved policy.
+            prior_data=audio(770);prior_id=str(uuid.uuid4());prior_digest=hashlib.sha256(prior_data).hexdigest()
+            gate=j.root/('hold-'+prior_digest);gate.touch()
+            prior_meta={'binding':binding,'id':prior_id,'audio_sha256':prior_digest,'mime':'audio/wav'}
+            selection=provider.media_retention;provider.media_retention=None
+            admitted=provider.conversation_voice_submit(prior_meta,prior_data)
+            provider.media_retention=selection
+            j.wait(lambda:(j.root/'archive-asr-calls').exists())
+            assert admitted['voice'].get('preserve_original') is not True
+            # Also cover the transaction race beyond the adapter's preflight.
+            refused=j.read('input','voice','submit',json.dumps({**prior_meta,'preserve_original':True}),ok=False)
+            assert not refused.get('ok',False),refused
+            from dashboard.media_retention import RetentionUnavailable
+            try:provider.conversation_voice_submit(prior_meta,prior_data)
+            except RetentionUnavailable:pass
+            else:raise AssertionError('An existing unheld ASR was falsely upgraded')
+            prior_path=Path(str(provider.receiver['db_path'])+'.voice')/prior_id
+            assert prior_path.read_bytes()==prior_data
+            assert len(j.row('SELECT id FROM conversation_inputs WHERE id=?',(prior_id,)))==1
+            gate.unlink()
+            j.wait(lambda:provider.presentation('input status '+prior_id)['phase']=='accepted')
+            j.wait(lambda:not prior_path.exists())  # Original unselected cleanup contract.
+            # This synthetic UUID peer intentionally leaves its turn unresolved.
+            # Retain that uncertainty across restart; do not fabricate a reply.
+            j.stop();j.start();j.wait_control_socket(j.socket)
+            j.packets.clear();(j.root/'archive-asr-calls').unlink()
+        data=audio(550);ident=str(uuid.uuid4());digest=hashlib.sha256(data).hexdigest()
+        voice_headers={**headers,'content-type':'audio/wav','x-input-binding':binding,'x-input-id':ident,'x-audio-sha256':digest}
+        def upload():return client.post('/api/interaction/voice',content=data,headers=voice_headers)
+        def status():
+            r=client.get('/api/interaction/inputs/'+ident,headers=headers);assert r.status_code==200,r.text;return r.json()
+        response=upload();path=Path(str(provider.receiver['db_path'])+'.voice')/ident
+        assert path.read_bytes()==data
+        if legacy:
+            assert response.status_code==507,response.text
+            assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(ident,))==[(0,)]
+            assert not (j.root/'archive-asr-calls').exists()
+            print('PASS older writer refuses archive deferral before native input/ASR; exact original remains protected')
+            return
+        assert response.status_code==200,response.text
+        assert response.json()['voice']['preserve_original'] is True
+        assert response.json()['media_retention']['original_retained'] is True
+        j.wait(lambda:status()['phase']=='accepted')
+        assert status()['media_retention']['state']=='pending' and path.read_bytes()==data
+        assert upload().json()['new_input'] is False
+        fillers=[]
+        for n in range(128):
+            filler=path.parent/('synthetic-held-'+str(n));filler.write_bytes(b'held');filler.chmod(0o600);fillers.append(filler)
+        refused=str(uuid.uuid4())
+        full=client.post('/api/interaction/voice',content=data,
+            headers={**voice_headers,'x-input-id':refused})
+        assert full.status_code==503,full.text
+        assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(refused,))==[(0,)]
+        assert not (path.parent/refused).exists() and path.read_bytes()==data
+        for filler in fillers:filler.unlink()  # Only these test-owned placeholders.
+        j.stop();j.start();j.wait_control_socket(j.socket)
+        assert status()['voice']['preserve_original'] is True and path.read_bytes()==data
+        # Even a closed/changed archive selection cannot downgrade a saved hold.
+        selected=provider.media_retention;provider.media_retention=None
+        assert status()['media_retention']['original_retained'] is True and path.read_bytes()==data
+        provider.media_retention=selected;selected.config['max_bytes']=retention['max_bytes']
+        assert status()['phase']=='accepted' and not path.exists()
+        assert (selected.root/digest).read_bytes()==data
+        assert (selected.root/older['audio_sha256']).read_bytes()==original
+        assert (j.root/'archive-asr-calls').read_text().splitlines()==['asr']
+        assert len(j.packets)==1 and not j.messages,(len(j.packets),j.messages)
+        print('PASS archive-full HTTP/native ASR, matching transcript and restart keep original until exact handoff; same-ID retry, unchanged old original, one ASR/native admission; zero models')
+    finally:
+        if client:client.close()
+        j.close()
+
 if __name__=='__main__':
-    foreground_capture(sys.argv[1])
-    for reason in ('duration_limit','audio_flush_unconfirmed'):qualify(sys.argv[1],reason)
+    if '--archive-hold' in sys.argv[2:]:archive_hold(sys.argv[1])
+    elif '--archive-legacy' in sys.argv[2:]:archive_hold(sys.argv[1],legacy=True)
+    else:
+        foreground_capture(sys.argv[1])
+        for reason in ('duration_limit','audio_flush_unconfirmed'):qualify(sys.argv[1],reason)
+        archive_hold(sys.argv[1])
