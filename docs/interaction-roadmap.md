@@ -161,8 +161,16 @@ procedure in the existing bounded backend context: an ordinary spoken correction
 then used current native tools to retire exactly its obsolete question and gave
 the correct source-derived answer. One canonical audit and a read-only zero-pending
 UI observation agree; foreground instructions alone had left the card pending.
-The candidate remains unselected. Immediate live count transition and sustained
-full-view/phone acceptance remain open. Do not
+The backing-policy candidate is now selected as652 with unchanged native/Core/
+provider/visit limits. A later actual selected652 full-view case stayed connected
+for540seconds, preserved corrected Faro/nine after five minutes and two explicit
+UI reconnects, and announced one native tool result held across replacement with
+no repeated tool. All three closures/23original segments were verified; independent
+output ASR recognized the corrected facts and result after both replacements.
+The raw final verifier failed after input ASR changed the self-name question and
+the caption split Faro; identity in that last case remains unproven. Immediate live
+count transition and sustained physical-device/background/noise/full-memory
+acceptance remain open. Do not
 invent an RPC responder or enable experimental regular questions globally.
 See the native voice guide for failed-control evidence, exact limits and verified
 originals. This is synthetic-engine evidence, not phone/hearing acceptance;
