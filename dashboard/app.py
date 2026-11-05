@@ -184,12 +184,16 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 bound = 2*1024*1024 if request.url.path.endswith('/visual') else 20*1024*1024
             else:
                 bound = 262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384
-            data = bytearray()
-            async for chunk in request.stream():
-                data.extend(chunk)
-                if len(data) > bound:
-                    return JSONResponse({'detail': 'Request too large'}, status_code=413)
-            request._body = bytes(data)
+            # Native capture-only uploads own their fresh-auth/CSRF checks,
+            # two upload slots,30s deadline and bounded streaming body. Do not
+            # buffer them before that admission in the general JSON middleware.
+            if not re.fullmatch(r'/api/interaction/voice/codex/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',request.url.path):
+                data = bytearray()
+                async for chunk in request.stream():
+                    data.extend(chunk)
+                    if len(data) > bound:
+                        return JSONResponse({'detail': 'Request too large'}, status_code=413)
+                request._body = bytes(data)
         response = await call_next(request)
         response.headers.setdefault('Cache-Control', 'no-store')
         response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -266,6 +270,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     app.state.native_history=NativeHistory(database,binding)
     from .live_transcription import install as install_live_transcription
     can_stream_transcribe = install_live_transcription(app,config,provider,authorize_async,[origin,*additional_origins])
+    from .codex_voice_api import install as install_codex_voice
+    can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
 
     public = Path(__file__).parent / 'web'
 
@@ -293,7 +299,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         client_build = hashlib.sha256((public / 'index.html').read_bytes())
-        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             client_build.update(name.encode() + b'\0' + asset)
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -388,7 +394,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]
@@ -580,6 +586,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_download_files':can_files,'artifacts':files,
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
+                'can_converse_codex':bool(can_codex_voice and dict(session).get('scope')!='monitor_readonly'),
                 'can_session_workspace':workspace_granted(session),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True

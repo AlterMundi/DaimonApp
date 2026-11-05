@@ -57,6 +57,16 @@ work may be the intended integration; measure its actual ownership/history/cost.
 identity/memory/results/questions and existing integrating responsibility, and
 redesign provider-specific transport when appropriate.
 
+Draft [#632](https://github.com/AlterMundi/DaimonApp/pull/632) now contains the
+separate, default-off native Codex WebRTC application route and explicit engine
+choice. Nicolas6ea37cd3 requires preserving Qwen/Gemini, frozen visit selection,
+and no silent fallback or default replacement. Capture-only original recovery,
+completed-source transcripts and existing native collector attachment are wired;
+mounted API and synthetic Chromium journeys qualify those application boundaries.
+Combined actual native tools/identity/provider and phone acceptance remain open.
+See the [native mode contract](interaction-native-codex-voice.md); production629
+and current diagnostic/storage limits remain unchanged.
+
 ## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound

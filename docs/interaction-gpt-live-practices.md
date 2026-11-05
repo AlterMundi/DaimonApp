@@ -162,13 +162,13 @@ ended. Do not repeat the work to repair this observation. Final client-only
 claim and close-wait corrections are covered by synthetic regressions rather
 than another provider call.
 
-Sixteen transport/ownership/cleanup/context tests pass on Python3.13 and locked3.11;
+Seventeen transport/ownership/cleanup/context tests pass on Python3.13 and locked3.11;
 the unchanged mounted provider route's68tests and browser native/fullscreen
 state suites also pass. Independent review found and verified the duplicate
 claim and overflow-stop corrections. These checks do not activate the feature.
 Preserve the current route and defaults while completing application integration.
 
-The next prepared boundary reuses shared voice authentication and active-mode
+The application boundary reuses shared voice authentication and active-mode
 capacity. An owner-local capability read freezes the enrolled integrating thread;
 an attachment command validates the same owner/binding and exact current physical
 turn, then reuses the existing collector. Both refuse retained Stop/maintenance
@@ -198,10 +198,28 @@ native work qualify restart, exact-byte recovery, concurrent collector attachmen
 and unchanged native input/goal counts. Independent review found the interrupted
 metadata-accounting gap, now covered by a regression. Existing provider68tests
 and streaming40tests pass after extracting shared authentication. No new real
-provider call was needed. The selector, WebRTC application endpoints, capture-only
-browser recovery, identity/startup-context fit and combined native/device journey
-remain to be connected. No public app capability or selectable OpenAI button is
-advertised, and production remains unchanged.
+provider call was needed. The selector, authenticated WebRTC application endpoints,
+capture-only browser recovery and transcript timeline are now wired, disabled by
+default. The [operator contract](interaction-native-codex-voice.md) records the
+configuration, bounds and rollback. Production629 remains unchanged.
+
+Twelve mounted API tests cover fresh auth/CSRF, frozen binding, owner holds,
+closure uncertainty, late admitted work and cancellation during open/start.
+After observed native closure, one bounded current-turn read reconciles accepted
+work with the existing durable collector; browser closure does not cancel it.
+Owner-selected identity digests and source observation times are retained.
+Browser tests cover stale sockets and delayed permission/storage completions.
+Actual Chromium checks the shipped shell at390x844 and1280x800 with synthetic
+RTC/owner responses, real WebAudio/IndexedDB, and failed upload followed by
+same-original saving. The ordinary session-menu journey also passes. Screenshots
+were inspected; browser errors were empty. These are zero-model qualifications,
+not actual provider integration or phone/hearing acceptance.
+
+Native and ordinary browser originals share the existing20MiB/128record budget,
+transactionally enforced across separate recovery keys. Completed transcript visits
+are never recursively serialized into reconnect context. Prior source02d9dd64
+CI41990799341 passed; the application delta needs its own final CI and combined
+native tool/voice/identity qualification before receiving activation.
 
 The inspected native startup-context builder explicitly excludes AGENTS, repo
 memory instructions and memory summaries. Do not claim that the foreground voice
@@ -211,8 +229,9 @@ supports a bounded owner-selected identity/capability item using native V3
 context and handoffs; it is not fabricated human speech or a new backend turn.
 The item is optional and capped at8192UTF-8 bytes. Synthetic wire tests and
 independent review qualify construction/refusal, not actual provider uptake.
-The future application caller must load it from the owner's selected context,
-never a browser prompt override, and include it in the combined qualification.
+The application caller loads it from the owner's private selected context, never
+a browser prompt override. Actual provider uptake remains part of the combined
+qualification.
 
 | Evidence | What changes in our design | What still needs qualification |
 | --- | --- | --- |

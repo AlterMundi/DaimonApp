@@ -209,17 +209,18 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         result["binding"] = current["binding"].clone();
         result["entry_binding"] = current["entry_binding"].clone();
         Ok(result)
-    } else if args == "voice native capabilities" {
+    } else if matches!(args, "voice native capabilities" | "voice native current") {
         let mut result = app
             .shared
             .store
             .conversation_request_binding(human, cfg.entry())?;
         let native = result["entry_binding"][3]
             .as_str()
-            .context("Native voice requires an enrolled thread")?;
+            .context("Native voice requires an enrolled thread")?
+            .to_owned();
         app.shared
             .store
-            .validate_owned_binding(cfg.entry(), human, native)?;
+            .validate_owned_binding(cfg.entry(), human, &native)?;
         if app.shared.store.stop_fenced(cfg.entry())?
             || app.shared.store.maintenance_writer_held(cfg.entry())?
         {
@@ -230,6 +231,12 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         } else {
             None
         });
+        if args == "voice native current" {
+            if !app.shared.config.codex.shared_app_server {
+                bail!("Native voice requires the shared owner");
+            }
+            result["native_turn"] = json!(app.shared.codex.live_native_turn(&native).await?);
+        }
         Ok(result)
     } else {
         command_input(app, human, args).await

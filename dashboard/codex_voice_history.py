@@ -40,16 +40,19 @@ class CodexVoiceHistory:
             raise ValueError('Native voice history reached its retention bound')
         write_json(path,value)
 
-    def open(self,ident,human,frozen,native_session,session_seconds=600):
+    def open(self,ident,human,frozen,native_session,session_seconds=600,*,identity_sha256=None):
         self.ident(ident);self.ident(native_session)
         if type(session_seconds)is not int or not 1<=session_seconds<=600:
             raise ValueError('Select a bounded native voice duration')
+        if identity_sha256 is not None and (not isinstance(identity_sha256,str)or not re.fullmatch('[a-f0-9]{64}',identity_sha256)):
+            raise ValueError('Select one owner identity revision')
         with lock(self.root/'.lock'):
             if (self.root/(ident+'.json')).exists():
                 raise ValueError('Native voice visit already exists; inspect it instead of starting again')
             value={'schema':'daimon.codex-voice-visit/v1','id':ident,'human':human,
                 'binding':frozen['binding'],'entry_binding':frozen['entry_binding'],
                 'native_thread':frozen['native_thread'],'native_session':native_session,
+                'identity_sha256':identity_sha256,
                 'created_at':time.time(),'state':'opening','items':[],'recordings':[],
                 'max_input_pcm_bytes':session_seconds*32000}
             self._write(value)
@@ -82,9 +85,10 @@ class CodexVoiceHistory:
             selected={k:item[k]for k in ('id','role','text')}
             old=next((v for v in value['items']if v['id']==item['id']),None)
             if old is not None:
-                if old!=selected:raise ValueError('Completed native transcript changed')
+                if {k:old[k]for k in selected}!=selected:raise ValueError('Completed native transcript changed')
                 return value
             if len(value['items'])>=256:raise ValueError('Native transcript source capacity reached')
+            selected['observed_at']=time.time()
             value['items'].append(selected);self._write(value);return value
 
     def recording(self,ident,human,binding,ordinal,data,provider):

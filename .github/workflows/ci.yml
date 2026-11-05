@@ -431,6 +431,8 @@ jobs:
       - run: python -B tests/dashboard_native_dialogue.py
       - run: python -B tests/dashboard_codex_voice.py
       - run: python -B tests/dashboard_codex_voice_history.py
+      - run: python -B tests/dashboard_codex_voice_api.py
+      - run: node tests/codex_conversation_ui.js
       - run: python -B tests/dashboard_qwen_dialogue.py
       - run: python -B tests/dashboard_openai_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py

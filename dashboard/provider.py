@@ -647,6 +647,18 @@ class Provider:
             raise ProviderUnavailable('Native voice collection is unconfirmed')
         return value
 
+    def codex_voice_current(self, frozen):
+        """Observe admitted work at a voice boundary without starting anything."""
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        value=self.presentation('input voice native current')
+        turn=value.get('native_turn')
+        if (value.get('binding')!=frozen['binding'] or value.get('entry_binding')!=frozen['entry_binding']
+                or value.get('native_codex_voice')!='v1'
+                or turn is not None and (not isinstance(turn,str)or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn))):
+            raise ProviderUnavailable('Native writer observation unavailable')
+        return turn
+
     def conversation_foreground_delegate(self, body):
         """One immutable source-bound formulation to the existing integrator."""
         if (not isinstance(body,dict) or set(body)!={'binding','id','intent_id','formulation','source_ids'}

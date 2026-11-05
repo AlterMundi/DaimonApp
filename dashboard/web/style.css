@@ -466,6 +466,11 @@ main > #conversation { display:flex;flex:1;flex-direction:column;min-height:0; }
 #conversation > .note { font-size:14px;margin-bottom:0; }
 
 #conversation-compose { margin: 12px 0; }
+#conversation-voice-choice { gap:8px;align-items:center; }
+#conversation-voice-choice label { margin:0;font-size:14px; }
+#conversation-voice-engine { min-height:40px;max-width:100%;font:inherit;font-size:16px;padding:4px 8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--dm-radius,8px); }
+#conversation-codex-recovery { max-height:35vh;overflow:auto;font-size:14px; }
+#conversation-codex-recovery > summary { min-height:32px;cursor:pointer;color:var(--warn); }
 #conversation-compose label { display: block; margin-bottom: 6px; font-weight: 600; }
 #conversation-message {
   display: block; width: 100%; min-height: 88px; resize: vertical;

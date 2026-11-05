@@ -99,6 +99,14 @@ class Voice(unittest.TestCase):
         with self.assertRaises(CodexVoiceUnavailable):self.voice.start('v=0 offer')
         self.assertEqual(sum(v['method']=='thread/realtime/start' for v in self.socket.sent),1)
         self.assertNotIn('thread/realtime/stop',[v['method'] for v in self.socket.sent])
+    def test_unowned_close_is_not_proof_our_generation_closed(self):
+        self.socket.event('thread/realtime/closed',reason='older voice')
+        time.sleep(.02)
+        self.assertFalse(self.voice.closure_observed)
+        self.voice.start('v=0 offer')
+        self.assertFalse(self.voice.closure_observed)
+        self.voice.stop()
+        self.assertTrue(self.voice.closure_observed)
     def test_generation_change_retires_ownership(self):
         self.voice.start('v=0 offer')
         self.socket.event('thread/realtime/started',realtimeSessionId='another-client')

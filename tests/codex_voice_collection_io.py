@@ -23,6 +23,7 @@ def qualify(binary):
         frozen=provider.codex_voice_binding(binding)
         assert frozen['native_thread']=='native-topic-7'
         physical=j.holding[frozen['native_thread']]
+        assert provider.codex_voice_current(frozen)==physical
         j.wait(lambda:provider.codex_voice_collect(frozen,physical)['state']=='collecting')
         j.holding[frozen['native_thread']]='new-writer-not-yet-collected'
         assert provider.codex_voice_collect(frozen,'new-writer-not-yet-collected')['state']=='pending'
@@ -57,7 +58,7 @@ def qualify(binary):
                 else:
                     db.execute("INSERT INTO stop_operations VALUES('synthetic-fence',100,'synthetic-fence','stopped','{}')")
             before=len(j.rpc)
-            for command in ('input voice native capabilities','input voice native attach '+json.dumps({
+            for command in ('input voice native capabilities','input voice native current','input voice native attach '+json.dumps({
                     'binding':binding,'native_thread':frozen['native_thread'],'native_turn':physical})):
                 try:provider.presentation(command)
                 except ProviderUnavailable:pass
@@ -70,6 +71,7 @@ def qualify(binary):
         j.finish(frozen['native_thread'],physical)
         j.wait(lambda:j.has('Initial goal turn delivered.',7))
         assert provider.codex_voice_collect(frozen,physical)['state']=='not_current'
+        assert provider.codex_voice_current(frozen)is None
         assert j.row('SELECT count(*) FROM stop_operations')==[(0,)]
         print('PASS native voice owner binding and exact collector restart without input replay, duplicate worker, goal mutation or Stop')
     finally:j.close()

@@ -168,7 +168,10 @@ class CodexVoice:
                             self._owned = False
                             raise CodexVoiceUnavailable('Native voice generation changed')
                         self._owned = True
+                        self._voice_closed = False
                     elif method == 'thread/realtime/closed':
+                        if not self._owned:
+                            continue
                         self._owned = False
                         self._voice_closed = True
                     # Completed transcript items are durable; do not queue every
@@ -315,3 +318,8 @@ class CodexVoice:
             self._socket.close()
         if self._reader is not None and self._reader is not threading.current_thread():
             self._reader.join(timeout=1)
+
+    @property
+    def closure_observed(self):
+        with self._guard:
+            return self._voice_closed

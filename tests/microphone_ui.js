@@ -366,5 +366,15 @@ function boot(live=false,recovery,status404=false){
  assert.equal(reconnectStore.values.get('pending').items.length,2);assert.equal(reconnectMic.uploads.length,0,'Reconnect preparation never sends pending audio');
  await reconnectMic.ui.releaseContinuous(freshOriginal,freshOriginal.audio_sha256);
  assert.equal(reconnectStore.values.get('pending').id,pendingOriginal.id,'Confirmation of a new capture preserves the older review');
- console.log('Microphone UI: finalized one-button capture, playback pause, source hashing, explicit identical retry, receipt-only recovery, hidden/cancel/late permission cleanup, duration-limit review and binding reset passed; zero models.');
+ const sharedRecovery=memoryRecovery(),storageWindow={indexedDB:sharedRecovery};
+ vm.runInNewContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),{window:storageWindow,Blob,setTimeout,clearTimeout});
+ const ordinaryStorage=storageWindow.VoiceInput.recoveryStore(),nativeStorage=storageWindow.VoiceInput.recoveryStore('codex_voice');
+ const sharedOriginal={id:crypto.randomUUID(),binding:'same',audio_sha256:'a'.repeat(64),blob:new Blob([new Uint8Array(12*1024*1024)])};
+ await ordinaryStorage.put(sharedOriginal);
+ await assert.rejects(()=>nativeStorage.put({...sharedOriginal,id:crypto.randomUUID(),blob:new Blob([new Uint8Array(10*1024*1024)])}),/limit reached/);
+ assert.equal(sharedRecovery.values.size,1,'Separate native key cannot double the shared20MiB budget');
+ const smallNative={...sharedOriginal,id:crypto.randomUUID(),blob:new Blob(['same native original'])};
+ await nativeStorage.put(smallNative);assert.equal(sharedRecovery.values.size,2);
+ await ordinaryStorage.remove(sharedOriginal);assert.equal((await nativeStorage.list())[0].id,smallNative.id);
+ console.log('Microphone UI: finalized one-button capture, playback pause, source hashing, explicit identical retry, receipt-only recovery, hidden/cancel/late permission cleanup, duration-limit review, binding reset and combined native/ordinary storage bound passed; zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

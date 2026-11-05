@@ -213,7 +213,7 @@ def save_prepared(root, ident, binding, pcm, result):
     return value
 
 
-async def bind_voice_actor(provider, authorize, socket, meta):
+async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=True):
     headers = list(socket.scope['headers'])
     if 'authorization' in meta:
         if (not isinstance(meta['authorization'], str) or len(meta['authorization']) > 128
@@ -225,7 +225,7 @@ async def bind_voice_actor(provider, authorize, socket, meta):
     session = await authorize(request)
     if not secrets.compare_digest(meta['csrf'], session['csrf']):
         raise HTTPException(403, 'Action token missing')
-    if not getattr(provider, 'receiver', {}).get('voice'):
+    if require_voice and not getattr(provider, 'receiver', {}).get('voice'):
         raise ValueError('Voice input unavailable')
     actor=VoiceActor(authorize,request,session['human'])
     async def recheck():
