@@ -261,6 +261,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             return await run_in_threadpool(authorize, request)
         return authorize(request)
 
+    app.state.voice_active=set()
     from .native_history import NativeHistory
     app.state.native_history=NativeHistory(database,binding)
     from .live_transcription import install as install_live_transcription

@@ -619,6 +619,34 @@ class Provider:
         self.check_capture_questions(body.get('capture_questions'))
         return self.decorate_input(self.presentation('input foreground retain '+json.dumps(body,ensure_ascii=False)))
 
+    def codex_voice_binding(self, binding):
+        """Resolve the current integrating thread from the enrolled owner only."""
+        if not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding):
+            raise ValueError('Select a frozen native voice binding')
+        value=self.presentation('input voice native capabilities')
+        entry=value.get('entry_binding')
+        if (value.get('binding')!=binding or value.get('native_codex_voice')!='v1'
+                or not isinstance(entry,list) or len(entry)!=4
+                or entry[0]!=self.human or not isinstance(entry[3],str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}',entry[3])):
+            raise ProviderUnavailable('Native Codex voice owner is unavailable or changed')
+        return {'binding':binding,'entry_binding':entry,'native_thread':entry[3]}
+
+    def codex_voice_collect(self, frozen, native_turn):
+        """Collect an already admitted native voice turn; never submit its input."""
+        if (not isinstance(frozen,dict) or set(frozen)!={'binding','entry_binding','native_thread'}
+                or not isinstance(native_turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',native_turn)):
+            raise ValueError('Select an observed native voice writer')
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        value=self.presentation('input voice native attach '+json.dumps({
+            'binding':frozen['binding'],'native_thread':frozen['native_thread'],'native_turn':native_turn}))
+        if (value.get('binding')!=frozen['binding'] or value.get('entry_binding')!=frozen['entry_binding']
+                or value.get('native_turn')!=native_turn
+                or value.get('state') not in ('collecting','pending','not_current','attachment_queued')):
+            raise ProviderUnavailable('Native voice collection is unconfirmed')
+        return value
+
     def conversation_foreground_delegate(self, body):
         """One immutable source-bound formulation to the existing integrator."""
         if (not isinstance(body,dict) or set(body)!={'binding','id','intent_id','formulation','source_ids'}

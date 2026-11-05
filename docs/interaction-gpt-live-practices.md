@@ -2,8 +2,8 @@
 
 Human-selected direction: adapt DaimonApp to the best evidenced conversational
 workflow, rather than forcing GPT-Live through the existing Qwen/Gemini adapter.
-This is a bounded design investigation, not a provider audition, entitlement
-check or production adoption. The current diagnostic limits remain unchanged.
+This records the design, bounded native qualification and prepared application
+integration; it does not declare production adoption. Diagnostic limits remain unchanged.
 The [roadmap](interaction-roadmap.md#current-refinement-toward-an-approachable-avatar--4-november-2026)
 owns implementation and family-pilot acceptance; this note records the rationale.
 
@@ -165,11 +165,43 @@ than another provider call.
 Fourteen transport/ownership/cleanup tests pass on Python3.13 and locked3.11;
 the unchanged mounted provider route's68tests and browser native/fullscreen
 state suites also pass. Independent review found and verified the duplicate
-claim and overflow-stop corrections. These checks do not activate the feature:
-the application selector, shared-auth binding rechecks, original-media retention,
-native collector/tool ownership and combined device journey still need wiring.
-No capability or selectable OpenAI button is advertised yet. Preserve the
-current route and defaults while completing those pieces in the same feature.
+claim and overflow-stop corrections. These checks do not activate the feature.
+Preserve the current route and defaults while completing application integration.
+
+The next prepared boundary reuses shared voice authentication and active-mode
+capacity. An owner-local capability read freezes the enrolled integrating thread;
+an attachment command validates the same owner/binding and exact current physical
+turn, then reuses the existing collector. Both refuse retained Stop/maintenance
+holds. Capability is a point-in-time read; activation must recheck it immediately
+before starting voice. Existing collectors are observed,
+concurrent attachment is fenced by the maintained collector admission, and stale
+or completed writers cause no kickoff. This supplies native dynamic tools and
+questions through the existing collector rather than a second tool dispatcher.
+The official [App Server contract](https://developers.openai.com/codex/app-server)
+documents persisted dynamic tools and server requests. Source inspection confirms
+outstanding requests are replayed to the attaching subscriber; actual combined
+tool/voice reception still requires qualification.
+
+`codex_voice_history.py` prepares a bounded projection of completed native
+transcript sources and microphone-original receipts. Core history remains
+canonical; this projection is never another copy of model context. Generation
+IDs fence transcripts, exact recording retries verify protected bytes, and
+archive-pending recovery never invokes ASR or submits native input. Bounds are
+512visits/32MiB metadata,64KiB per visit,256 transcript items,32 original chunks
+and at most600seconds of16kHz mono PCM per visit; the existing shared256MiB/128
+original store remains unchanged. Byte accounting includes deterministic raw
+originals left by a failed metadata commit. No automatic retirement is added.
+Capacity refusal preserves existing originals and requires explicit recovery.
+
+Seven persistence tests and an actual owner-IPC/SQLite journey with synthetic
+native work qualify restart, exact-byte recovery, concurrent collector attachment
+and unchanged native input/goal counts. Independent review found the interrupted
+metadata-accounting gap, now covered by a regression. Existing provider68tests
+and streaming40tests pass after extracting shared authentication. No new real
+provider call was needed. The selector, WebRTC application endpoints, capture-only
+browser recovery, identity/startup-context fit and combined native/device journey
+remain to be connected. No public app capability or selectable OpenAI button is
+advertised, and production remains unchanged.
 
 | Evidence | What changes in our design | What still needs qualification |
 | --- | --- | --- |
