@@ -148,8 +148,9 @@ and accepts one exact typed reply; spoken acknowledgement alone does not resolve
 its RPC. Under ordinary Default settings, an async structured question survives
 two visits and its spoken answer triggers actual native source work and the
 correct spoken result. Its metadata is absent from both application pending
-ledgers: connecting native async questions to existing For you cards and their
-source-linked ordinary input/dismissal remains the next concrete gap. Do not
+ledgers: the source now projects native async questions into existing For you task cards
+with source-linked ordinary input and explicit dismissal/retirement. Receiving
+delivery and automatic spoken-answer matching remain unqualified. Do not
 invent an RPC responder or enable experimental regular questions globally.
 See the native voice guide for failed-control evidence, exact limits and verified
 originals. This is synthetic-engine evidence, not phone/hearing acceptance;

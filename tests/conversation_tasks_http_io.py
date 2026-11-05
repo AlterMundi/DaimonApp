@@ -14,6 +14,12 @@ from live_tasks_io import NotifiedWarm
 
 
 class TaskJourney(NotifiedWarm):
+    async_question=False
+    def broadcast(self,thread,method,params):
+        if self.async_question and thread=='native-topic-7' and method=='item/completed' and params.get('item',{}).get('id')=='answer':
+            params=json.loads(json.dumps(params))
+            params['item'].update(delivery='async',questions=[{'title':'Which symbol?','options':['Luna','Estrella']}])
+        return super().broadcast(thread,method,params)
     def handle_extra_rpc(self,message,send):
         p=message.get('params',{});method=message.get('method')
         if self.routed and method in ('turn/start','turn/steer') and p.get('threadId')=='native-topic-9' and not p.get('clientUserMessageId','').startswith('telegram:'):
@@ -27,15 +33,16 @@ class TaskJourney(NotifiedWarm):
         return super().handle_extra_rpc(message,send)
 
 
-def qualify(binary):
+def qualify(binary,async_question=False):
     j=TaskJourney(str(Path(binary).resolve()));client=None
+    j.async_question=async_question
     try:
         j.prepare(seed_entry=True);j.allow_native_launch=True
         j.admit('Coordinate selected work.',topic=1)
         j.wait(lambda:'native-topic-9' in j.runs)
         access=j.access(1)
         original=j.cli(access,'inputs')['inputs'][-1]['input_ref']
-        j.declare_task=True
+        j.declare_task=not async_question
         j.cli(access,'dispatch',{'input_ref':original,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
         j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
         j.answer(7,'The selected work needs the retained human observation.')
@@ -58,7 +65,12 @@ def qualify(binary):
         assert page['read_only'] and page['items'][0]['kind']=='task'
         detail=client.get('/api/interaction/tasks/'+task['id'],headers=headers)
         assert detail.status_code==200,detail.text
-        view=detail.json();assert view['body']=='Synthetic required observation; no real human is contacted.'
+        view=detail.json();assert view['body']==('Which symbol?\n- Luna\n- Estrella' if async_question else 'Synthetic required observation; no real human is contacted.')
+        if async_question:
+            assert page['items'][0]['native_question']['item']=='answer'
+            assert 'question' not in page['items'][0]['native_question'],'Lists retain only bounded source metadata'
+            assert view['native_question']['question']['options']==['Luna','Estrella']
+            assert j.row("SELECT count(*) FROM human_interactions WHERE kind='native'")==[(0,)],'Async question must not invent an RPC responder'
         assert view['read_only'] and not view['can_withdraw'] and view['label']=='#Alpha'
         assert client.post('/api/interaction/tasks/'+task['id'],headers=headers,json={'state':'completed'}).status_code in (403,405)
         assert j.row('SELECT state FROM human_interactions WHERE id=?',(task['id'],))==[('pending',)]
@@ -134,10 +146,12 @@ def qualify(binary):
             db.execute('UPDATE sessions SET force_fresh_thread=1 WHERE id=?',(base['session_id'],));db.commit()
         assert client.get('/api/interaction/tasks',headers=headers).json()['items']==[]
         assert client.get('/api/interaction/tasks/'+task['id'],headers=headers).status_code==409
-        print('Durable task HTTP visibility and ownership: passed; zero models or physical devices.')
+        print(('Native async question' if async_question else 'Durable task')+' HTTP visibility, exact feedback and ownership: passed; zero models or physical devices.')
     finally:
         if client:client.close();provider.close()
         j.close()
 
 
-if __name__=='__main__':qualify(sys.argv[1])
+if __name__=='__main__':
+    qualify(sys.argv[1])
+    qualify(sys.argv[1],async_question=True)

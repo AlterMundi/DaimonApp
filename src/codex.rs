@@ -211,6 +211,8 @@ pub enum CodexEvent {
         item_id: String,
         phase: Option<String>,
         text: String,
+        /// Native async questions are ordinary conversational input, never RPC responders.
+        async_questions: Option<Value>,
     },
     ThreadStarted(String),
     NativeModelConfigured {
@@ -2447,6 +2449,9 @@ where
                                 item_id: id.to_owned(),
                                 phase: item.get("phase").and_then(Value::as_str).map(str::to_owned),
                                 text: text.clone(),
+                                async_questions: (item["delivery"] == "async")
+                                    .then(|| item.get("questions").cloned())
+                                    .flatten(),
                             })
                             .await?;
                         }
@@ -4863,10 +4868,50 @@ model = "ignored-tui-field"
             matches!(&events[0], CodexEvent::NativeMessageCompleted { thread_id, turn_id, item_id, text, .. } if thread_id == "thread" && turn_id == "turn" && item_id == "A" && text == "Answer A")
         );
         assert!(matches!(&events[1], CodexEvent::FinalAnswerCompleted(text) if text == "Answer A"));
+        assert!(matches!(
+            &events[0],
+            CodexEvent::NativeMessageCompleted {
+                async_questions: None,
+                ..
+            }
+        ));
         assert!(
             matches!(&events[2], CodexEvent::NativeMessageCompleted { item_id, .. } if item_id == "B")
         );
         assert!(matches!(&events[3], CodexEvent::FinalAnswerCompleted(text) if text == "Answer B"));
+        assert!(!terminal);
+    }
+
+    #[tokio::test]
+    async fn async_question_metadata_stays_native_without_a_response_channel() {
+        let mut summary = RunSummary {
+            codex_thread_id: Some("thread".into()),
+            assistant_text: String::new(),
+            stderr_text: String::new(),
+            draft_item: None,
+        };
+        let mut active = Some("turn".into());
+        let mut error = None;
+        let mut terminal = false;
+        let mut completed = false;
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = observed.clone();
+        let mut callback = move |event| {
+            capture.lock().unwrap().push(event);
+            async { Ok(CodexEventOutcome::None) }
+        };
+        let questions = json!([{"title":"Choose","options":["Luna","Estrella"]}]);
+        handle_notification("item/completed",&json!({"threadId":"thread","turnId":"turn","item":{"id":"question","type":"agentMessage","delivery":"async","phase":"final_answer","text":"Choose","questions":questions}}),&mut summary,&mut active,&mut error,&mut terminal,&mut completed,&mut callback).await.unwrap();
+        let events = observed.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0],CodexEvent::NativeMessageCompleted{async_questions:Some(value),..} if value==&questions)
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CodexEvent::UserInputRequest { .. }))
+        );
         assert!(!terminal);
     }
 

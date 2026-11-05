@@ -458,6 +458,11 @@ window.HumanTaskControls = (() => {
       card.unavailable=false;card.view=v;card.title.textContent=`${v.label} · ${v.title}`;
       card.preview.textContent=v.preview||'';card.status.textContent=({pending:'An action for you.',answering:'Feedback receipt is unconfirmed.',unknown:'Earlier feedback is unconfirmed.',answered:'Feedback recorded.',completed:'Marked done by you.',withdrawn:'No longer needed.',cancelled:'Cancelled.',expired:'This action is closed.'})[v.state]||'Current action unavailable.';
       if(feedbackText(card))card.status.textContent=feedbackText(card);
+      if(v.native_question){
+        card.reply.textContent='Answer in conversation';
+        if(!card.complete)card.read.textContent='Read question';
+        if(v.state==='pending'&&!feedbackText(card))card.status.textContent='A question for you.';
+      }
       controls(card);
     }
     async function detail(card,continueReading=false){

@@ -224,6 +224,15 @@ function boot(count=1, mayDecide=true,maxCards=200) {
     task={...task,id:'b'.repeat(32),state:'pending',revision:'r3'};await ui.refresh();card=f.nodes.get('#conversation-task-cards').children.at(-1);
     hold=deferred();const h=hold,pending=f.button(card,'Read action').handlers.click();await h.entered;ui.reset();h.release();await pending;
     assert.equal(f.nodes.get('#conversation-task-cards').children.length,0,'A late task read must not revive a reset scope');
+    task={...task,id:'c'.repeat(32),revision:'native-question-r1',title:'Choose',body:'Choose\n- Luna\n- Estrella',native_question:{item:'native-question',index:0,revision:'source-r1'}};
+    await ui.refresh();card=f.nodes.get('#conversation-task-cards').children[0];
+    assert(f.all(card,n=>n.textContent==='A question for you.').length);
+    assert(f.button(card,'Answer in conversation').disabled);
+    await f.button(card,'Read question').handlers.click();
+    f.button(card,'Answer in conversation').handlers.click();
+    assert.equal(replies.at(-1).id,task.id);assert.equal(replies.at(-1).revision,task.revision);
+    assert.equal(replies.at(-1).native_question.item,'native-question');
+    assert.equal(task.state,'pending','Selecting an async question reply is ordinary draft context, not native approval or resolution');
   }
   {
     const f=boot(),posts=[];let task={id:'c'.repeat(32),binding:'bound',revision:'r1',state:'pending',can_dismiss:true,label:'#Worker',title:'Observe result',preview:'Observation',body:'Read this action',next_offset:null};
