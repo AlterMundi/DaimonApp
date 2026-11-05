@@ -5,8 +5,15 @@ GPT-Live adaptation follows docs/interaction-gpt-live-practices.md. Keep the
 diagnostic context/visit limits unchanged. Qwen as integrator was a rejected,
 completed experiment, never pending migration work. Keep deliberate integrator
 provider/model selection supported and independent of the Qwen voice foreground.
-The integrating role is not permanently tied to Sol. GPT-Live needs its own
-continuous-audio/delegation lifecycle, not the existing manual-turn adapter.
+The integrating role is not permanently tied to Sol. Nicolas5November closes
+the Qwen iteration and selects OpenAI now; outstanding Qwen device checks remain
+pending in issues, not a gate. Evaluate native Codex WebRTC on the persistent
+integrating thread and managed Responses before choosing custom delegation.
+Native handoffs can be the intended integrating workflow; do not reject them to
+preserve our architecture. GPT-Live needs its own continuous-audio/delegation
+lifecycle, not the existing manual-turn adapter. Gemini remains deferred without
+balance; do not call it. Receiving native WebRTC handoff/reconnect evidence and
+its task-quality/context-cost limitations are recorded in the practices note.
 
 Interaction is an independent application: web now, native/badge clients later.
 Human priority, 2026-11-01: implement native speech above the existing Sol
