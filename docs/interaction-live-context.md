@@ -61,6 +61,15 @@ only inspects a retained submission; it cannot repair capacity. An explicit retr
 after storage repair keeps the same original ID and bytes. Neither action becomes
 permission to submit an uncertain original again under another identity.
 
+Token-efficiency acceptance compares equal conversational content, not merely
+smaller serialized objects: empty reconnects must keep inherited language bytes
+identical; nonempty visits add their new attributed sources once; repeated
+read/status operations must not count as fresh conversation or rearm semantic
+work. Full-reader and source/request revision fences remain authoritative. The
+private phone evidence showed inherited text growing2695/5256/6985/8826bytes
+across four reconnects; the fixture now checks twenty empty reconnects against
+one identical seed, separately from semantic checkpoint quality.
+
 Further token-efficiency review must measure repeated tool snapshots, identical
 updates and seed size across nonempty renewals, as well as request/return context
 in the integrator. Use deltas, source references and bounded pages where the
