@@ -31,6 +31,143 @@ pub struct TaskWithdrawal {
     pub links: serde_json::Value,
 }
 
+/// Project structured native async questions into the existing durable task ledger.
+/// The native item is the immutable source; this creates no response channel.
+pub(super) fn native_async_questions_on(
+    conn: &Connection,
+    local: i64,
+    native: &str,
+    physical: &str,
+    item: &str,
+    questions: &serde_json::Value,
+) -> Result<usize> {
+    use anyhow::bail;
+    let rows = questions
+        .as_array()
+        .context("Invalid native async questions")?;
+    if rows.is_empty() || rows.len() > 10 || serde_json::to_vec(questions)?.len() > 65_536 {
+        bail!("Native async question bounds exceeded");
+    }
+    let (session, user): (i64, i64) = conn
+        .query_row(
+            "SELECT s.id,t.from_user_id FROM turns t JOIN sessions s ON s.id=t.session_id
+         JOIN users u ON u.tg_user_id=t.from_user_id
+         JOIN interaction_native_messages m ON m.local_turn=t.id AND m.native_thread=?2
+           AND m.native_turn=?3 AND m.item_id=?4
+         WHERE t.id=?1 AND t.native_thread_id=?2 AND s.codex_thread_id=?2
+           AND s.creator_user_id=t.from_user_id AND s.force_fresh_thread=0 AND u.allowed=1",
+            params![local, native, physical, item],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .context("Native async question has no current owned source")?;
+    let mut prepared = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let title = row["title"]
+            .as_str()
+            .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
+            .context("Native async question title missing")?;
+        let mut action = title.to_owned();
+        if let Some(options) = row.get("options").filter(|value| !value.is_null()) {
+            let options = options.as_array().context("Invalid native async choices")?;
+            if options.len() > 32 {
+                bail!("Native async choice bounds exceeded");
+            }
+            for option in options {
+                let text = option
+                    .as_str()
+                    .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
+                    .context("Invalid native async choice")?;
+                action.push_str("\n- ");
+                action.push_str(text);
+            }
+        }
+        if action.chars().count() > 8000 {
+            bail!("Native async question text exceeds task bounds");
+        }
+        let identity = serde_json::json!([
+            "native-async-question/v1",
+            user,
+            native,
+            physical,
+            item,
+            index
+        ]);
+        let id = format!(
+            "{:x}",
+            sha2::Sha256::digest(identity.to_string().as_bytes())
+        )[..32]
+            .to_owned();
+        let source = serde_json::json!({"links":[],"nativeAsyncQuestion":{
+            "thread":native,"turn":physical,"item":item,"index":index,"question":row,
+            "revision":format!("{:x}",sha2::Sha256::digest(serde_json::to_vec(row)?)),
+            "meaning":"Ordinary conversational question; not a native RPC answer or approval."}});
+        let entry = HumanInteraction {
+            id: id.clone(),
+            kind: "task".into(),
+            state: "pending".into(),
+            requester: user,
+            native_thread: native.into(),
+            local_turn: local,
+            title: title.chars().take(120).collect(),
+            action,
+            blocking: false,
+            source,
+        };
+        prepared.push((id, entry));
+    }
+    let mut fresh = Vec::new();
+    for (id, entry) in prepared {
+        let prior: Option<String> = conn
+            .query_row(
+                "SELECT payload_json FROM human_interactions WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(raw) = prior {
+            let previous: HumanInteraction = serde_json::from_str(&raw)?;
+            if previous.source != entry.source
+                || previous.requester != user
+                || previous.native_thread != native
+            {
+                bail!("Native async question source changed");
+            }
+            continue; // A repeated event must not reopen an answered/dismissed question.
+        }
+        fresh.push((id, entry));
+    }
+    let existing: usize = conn.query_row(
+        "SELECT count(*) FROM human_interactions
+        WHERE requester=?1 AND native_thread=?2 AND kind='task'
+        AND json_extract(payload_json,'$.source.nativeAsyncQuestion.turn')=?3",
+        params![user, native, physical],
+        |r| r.get(0),
+    )?;
+    if existing + fresh.len() > 10 {
+        bail!("Native async turn question bounds exceeded");
+    }
+    let mut inserted = 0;
+    for (id, entry) in fresh {
+        conn.execute(
+            "INSERT INTO human_interactions(id,session_id,requester,native_thread,local_turn,
+            kind,state,instance_id,client_id,payload_json,created_at,updated_at)
+            VALUES(?1,?2,?3,?4,?5,'task','pending',?6,?1,?7,?8,?8)",
+            params![
+                id,
+                session,
+                user,
+                native,
+                local,
+                "native-async-question/v1",
+                serde_json::to_string(&entry)?,
+                now_string()
+            ],
+        )?;
+        inserted += 1;
+    }
+    Ok(inserted)
+}
+
 fn projected(
     mut item: HumanInteraction,
     state: String,
@@ -161,6 +298,20 @@ pub(super) fn withdraw_task_on(
 }
 
 impl Store {
+    pub fn record_native_async_questions(
+        &self,
+        local: i64,
+        native: &str,
+        physical: &str,
+        item: &str,
+        questions: &serde_json::Value,
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let count = native_async_questions_on(&tx, local, native, physical, item, questions)?;
+        tx.commit()?;
+        Ok(count)
+    }
     pub(super) fn init_interactions(&self) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS human_interactions(
@@ -565,6 +716,194 @@ mod lifecycle_tests {
                 .into(),
             links: json!([{ "label":"Evidence","url":"https://example.org/receipt" }]),
         }
+    }
+    #[test]
+    fn native_async_questions_reuse_tasks_without_responder_or_reopening() {
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "question",
+                Some("final_answer"),
+                "Choose",
+            )
+            .unwrap();
+        let questions = json!([{"title":"Choose a symbol","options":["Luna","Estrella"]}]);
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &questions)
+                .unwrap(),
+            1
+        );
+        let page = store.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(page.pending_total, 1);
+        let question = &page.items[0];
+        assert_eq!(question.kind, "task");
+        assert!(!question.blocking);
+        assert_eq!(question.action, "Choose a symbol\n- Luna\n- Estrella");
+        assert!(question.source["requestId"].is_null());
+        assert_eq!(question.source["nativeAsyncQuestion"]["item"], "question");
+        let view = store
+            .conversation_human_task(100, key, &question.id)
+            .unwrap();
+        assert_eq!(view["native_question"]["question"], questions[0]);
+        assert!(
+            store
+                .conversation_human_task(101, key, &question.id)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &questions)
+                .unwrap(),
+            0
+        );
+        store
+            .transition_interaction(key, 100, &question.id, "pending", "answered")
+            .unwrap();
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &questions)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, false)
+                .unwrap()
+                .pending_total,
+            0
+        );
+        assert!(
+            store
+                .record_native_async_questions(
+                    turn,
+                    "source",
+                    "physical",
+                    "question",
+                    &json!([{"title":"Changed"}])
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "other", "physical", "question", &questions)
+                .is_err()
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "unobserved", "question", &questions)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_async_question_bounds_are_atomic() {
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "question",
+                Some("final_answer"),
+                "Choose",
+            )
+            .unwrap();
+        let invalid = json!([{"title":"Valid"},{"title":"Invalid","options":[123]}]);
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &invalid)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, false)
+                .unwrap()
+                .pending_total,
+            0
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &json!([]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_async_freeform_questions_and_turn_bound_preserve_closed_cards() {
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "open",
+                Some("final_answer"),
+                "Questions",
+            )
+            .unwrap();
+        let questions =
+            json!([{"title":"Tell me more"},{"title":"Any preference?","options":null}]);
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "open", &questions)
+                .unwrap(),
+            2
+        );
+        let page = store.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(page.pending_total, 2);
+        for row in page.items {
+            assert!(!row.action.contains("\n-"));
+            store
+                .transition_interaction(key, 100, &row.id, "pending", "cancelled")
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "open", &questions)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, false)
+                .unwrap()
+                .pending_total,
+            0
+        );
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "excess",
+                Some("final_answer"),
+                "More",
+            )
+            .unwrap();
+        let excess = serde_json::Value::Array(
+            (0..9)
+                .map(|i| json!({"title":format!("Question {i}")}))
+                .collect(),
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "excess", &excess)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, true)
+                .unwrap()
+                .history_total,
+            2
+        );
     }
     #[test]
     fn internal_pending_keeps_entry_separate_and_rechecks_source_ownership() {

@@ -990,13 +990,19 @@ pub(super) async fn process_turn(
                                 }
                                 Ok(CodexEventOutcome::None)
                             }
-                            CodexEvent::NativeMessageCompleted { thread_id, turn_id: native_turn, item_id, phase, text } => {
+                            CodexEvent::NativeMessageCompleted { thread_id, turn_id: native_turn, item_id, phase, text, async_questions } => {
                                 let inputs=shared.store.interaction_turn_inputs(turn_id,requester_user_id)?;
                                 let root=result_root.as_deref().or_else(||inputs.iter().find(|i|super::routing::relayed(i)).map(|i|i.id.as_str()));
                                 if phase.as_deref()==Some("final_answer") && let Some(id)=root {
                                     super::routing::result(routing_app.clone(),id,requester_user_id,turn_id,&thread_id,&native_turn,&item_id,&text,result_root.is_some())?;
                                 } else {
                                     shared.store.record_native_message(turn_id, &thread_id, &native_turn, &item_id, phase.as_deref(), &text)?;
+                                }
+                                if let Some(questions)=async_questions {
+                                    // Optional presentation must not interrupt accepted native work.
+                                    if shared.store.record_native_async_questions(turn_id,&thread_id,&native_turn,&item_id,&questions).is_err() {
+                                        tracing::warn!("Native async question presentation unavailable; native source preserved");
+                                    }
                                 }
                                 let _=shared.store.clear_response_draft(turn_id,&native_turn,Some(&item_id));
                                 if phase.as_deref().is_none_or(|p|p=="final_answer") && super::artifact_outputs::retain(shared.clone(),turn_id,requester_user_id,&artifact_workspace,Some(serde_json::json!({"native":thread_id,"turn":native_turn,"item":item_id}))).is_err() {
@@ -2353,7 +2359,7 @@ pub(super) fn prepare_runtime_request(
     );
 
     instruction_sections.push(format!(
-        "If a human action must remain recoverable after this turn (for example a phone test), explicitly declare it in {}. This optional regular JSON file is outside out and is not uploaded. Schema: {{\"schema\":\"telecodex.human-requests/v1\",\"requests\":[{{\"id\":\"phone-test\",\"title\":\"Test playback\",\"action\":\"Open the app and report playback.\",\"links\":[]}}]}}. Use at most 10 requests, unique IDs (64 ASCII letters/digits/dash/underscore), titles <=120 characters, actions <=8000 characters and at most 5 public http(s) links {{\"label\":\"App\",\"url\":\"https://example.org\"}}. Never put secrets or private endpoints into previews or links. Telecodex admits the declaration only after successful native completion and scopes it to this turn's human, topic and native thread. /pending (also /questions) reopens it. Do not declare a request already answered; ordinary prose creates no durable request. To retire a task issued in this same human/topic/native thread when its action is no longer needed, add optional withdrawals: [{{\"id\":\"retained-request-id\",\"reason\":\"Explicit reason and observed source\",\"links\":[]}}]. Use the exact retained task ID, at most 10 total requests/withdrawals, and reasons <=2000 characters. Native questions and uncertain receipts cannot be withdrawn this way. Withdrawal records an agent decision with an audit trail, never human approval or completion. If this execution supplies scoped controller access, discover human_tasks/human_task/withdraw_task through capabilities to inspect exact versions and retire obsolete actions during work; keep the manifest as the successful-turn fallback.",
+        "If a human action must remain recoverable after this turn (for example a phone test), explicitly declare it in {}. This optional regular JSON file is outside out and is not uploaded. Schema: {{\"schema\":\"telecodex.human-requests/v1\",\"requests\":[{{\"id\":\"phone-test\",\"title\":\"Test playback\",\"action\":\"Open the app and report playback.\",\"links\":[]}}]}}. Use at most 10 requests, unique IDs (64 ASCII letters/digits/dash/underscore), titles <=120 characters, actions <=8000 characters and at most 5 public http(s) links {{\"label\":\"App\",\"url\":\"https://example.org\"}}. Never put secrets or private endpoints into previews or links. Telecodex admits the declaration only after successful native completion and scopes it to this turn's human, topic and native thread. /pending (also /questions) reopens it. Do not declare a request already answered; ordinary prose creates no durable request. To retire a task issued in this same human/topic/native thread when its action is no longer needed, add optional withdrawals: [{{\"id\":\"retained-request-id\",\"reason\":\"Explicit reason and observed source\",\"links\":[]}}]. Use the exact retained task ID, at most 10 total requests/withdrawals, and reasons <=2000 characters. Live native RPC questions and uncertain receipts cannot be withdrawn this way. Withdrawal records an agent decision with an audit trail, never human approval or completion. If this execution supplies scoped controller access, discover human_tasks/human_task/withdraw_task through capabilities to inspect exact versions and retire obsolete actions during work; keep the manifest as the successful-turn fallback.",
         workspace.root.join(interactions::MANIFEST).display()
     ));
 
