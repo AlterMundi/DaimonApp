@@ -95,6 +95,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
  assert.deepEqual(await page.locator('.session-name').allTextContents(),[sessions[1].title,sessions[2].title,sessions[0].title]);
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
+ assert.equal(await page.locator('.session-rail').isVisible(),false,'Pin collapses the menu');
+ assert(await page.getByRole('button',{name:'Show sessions',exact:true}).evaluate(button=>button===document.activeElement),'Pin returns focus to the toggle');
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  await page.locator('#conversation-message').fill('Keep this draft while I look around.');
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
  await page.getByRole('button',{name:sessions[1].title,exact:true}).click();
@@ -113,11 +116,27 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert(await page.locator('#conversation-diagnostics #conversation-inputs .routing-trace').count()>0,'Routing evidence remains under the hood');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Reply to the latest message',exact:true}).click();
+ assert.equal(await page.locator('.session-rail').isVisible(),false,'Reply collapses the menu');
+ assert(await page.locator('#conversation-message').evaluate(input=>input===document.activeElement),'Reply focuses the composer');
  await page.locator('#conversation-message').fill('About that exact result.');await page.locator('#conversation-send').click();
  await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');assert.equal(posts.at(-1).reply.source,'session:7/42');
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  await page.getByRole('button',{name:`Mute ${sessions[0].title}`,exact:true}).click();
+ assert(await page.locator('.session-rail').isVisible(),'Mute keeps the menu open');
  assert.equal(await page.getByRole('button',{name:`Unmute ${sessions[0].title}`,exact:true}).getAttribute('aria-pressed'),'true');
+ await page.getByRole('button',{name:`Solo ${sessions[0].title}`,exact:true}).click();
+ assert(await page.locator('.session-rail').isVisible(),'Solo keeps the menu open');
+ assert.equal(await page.getByRole('button',{name:`Remove solo from ${sessions[0].title}`,exact:true}).getAttribute('aria-pressed'),'true');
+ async function resetInHeader(){
+  const reset=page.locator('.session-rail-header .session-workspace-reset');assert(await reset.isVisible(),'Reset is in the expanded menu header');
+  assert.equal(await page.locator('.session-workspace-toolbar .session-workspace-reset').count(),0,'Collapsed toolbar has no audio reset');
+  const box=await reset.boundingBox(),controls=await page.locator('.session-row-actions').first().boundingBox();
+  assert(Math.abs(box.x-controls.x)<=1&&Math.abs(box.width-controls.width)<=1&&box.y+box.height<=controls.y,`Reset aligns above the controls column: ${JSON.stringify({box,controls})}`);
+ }
+ await resetInHeader();await page.screenshot({path:path.join(output,'desktop-audio-reset.png')});
  await page.getByRole('button',{name:'Hear all sessions: clear mute and solo',exact:true}).click();
+ assert.equal(await page.locator('.session-workspace-reset').isVisible(),false,'Reset hides when filters clear');
+ assert(await page.locator('.session-rail').isVisible(),'Reset keeps the menu open');
  await page.screenshot({path:path.join(output,'desktop-sessions.png')});
  await page.setViewportSize({width:390,height:844});
  await page.locator('#conversation-message').fill('My draft stays here.');await page.screenshot({path:path.join(output,'mobile-sessions.png')});
@@ -131,6 +150,22 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert(layout.state.y>=Math.max(layout.name.bottom,layout.actions.bottom)-1,'Status sits below title and controls');
  assert((await page.getByRole('button',{name:`Mute ${sessions[0].title}`,exact:true}).innerHTML()).includes('M11 5 6 9H3'),'Canonical speaker mute icon');
  await compactControls();
+ await page.getByRole('button',{name:`Mute ${sessions[0].title}`,exact:true}).click();await resetInHeader();
+ await page.screenshot({path:path.join(output,'mobile-audio-reset.png')});
+ await page.getByRole('button',{name:'Hear all sessions: clear mute and solo',exact:true}).click();
+ await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Reply to the latest message',exact:true}).click();
+ assert.equal(await page.locator('.session-rail').isVisible(),false,'Mobile reply collapses the menu');
+ assert(await page.locator('#conversation-message').evaluate(input=>input===document.activeElement),'Mobile reply focuses the composer');
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+ await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[1].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
+ assert.equal(await page.locator('.session-rail').isVisible(),false,'Mobile pin collapses the menu');
+ assert(await page.getByRole('button',{name:'Show sessions',exact:true}).evaluate(button=>button===document.activeElement),'Mobile pin focuses the toggle');
+ assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
+ assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.','Mobile pin/reply preserve draft');
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+ await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
+ await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+
  await page.setViewportSize({width:320,height:740});await bottomMenu();await compactControls();
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No horizontal overflow at 320px');
  const focused=page.locator('.session-row-actions button').first();await page.locator('.session-name').first().focus();await page.keyboard.press('Tab');

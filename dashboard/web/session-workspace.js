@@ -18,7 +18,8 @@
     const toggle=button('☰','Show sessions',()=>showRail(rail.hidden));
     function showRail(open){rail.hidden=!open;toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Hide sessions':'Show sessions';toggle.setAttribute('aria-label',toggle.title);}
     toggle.setAttribute('aria-controls',rail.id);toggle.setAttribute('aria-expanded','false');
-    const reset=button('↺','Hear all sessions: clear mute and solo',()=>onAudio('reset'));
+    const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
+    reset.className='session-workspace-reset';
     const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;expanded=undefined;leave();changed();});
     unpin.innerHTML=pinIcon;
     const status=el('p','','session-workspace-status');status.setAttribute('role','status');
@@ -35,7 +36,8 @@
     viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
-    rail.append(el('h3','Sessions · 24h'),list);toolbar.append(toggle,back,target,unpin,reset);body.append(rail,content);shell.append(body,status,toolbar);
+    const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
+    rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,toolbar);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false;
     let activeHistory,historyBusy=false,historyEpoch=0,observedAt=0;
@@ -96,12 +98,12 @@
           row={data,box:el('article',undefined,'session-row')};
           row.name=button('',data.title,()=>open(row.data));row.name.className='session-name';
           row.state=el('p','','session-row-state');
-          row.reply=button('▱','Reply to the latest message',()=>{const ref=row.data.latest_reply;if(ref)onReply(copy(ref),row.data.title);});
+          row.reply=button('▱','Reply to the latest message',()=>{const ref=row.data.latest_reply;if(ref){showRail(false);onReply(copy(ref),row.data.title);}});
           row.pin=button('⌖','Pin as the input destination',()=>{
             if(row.data.is_entry){pin=undefined;}
             else if(row.data.destination){pin=pin?.id===row.data.id?undefined:{id:row.data.id,title:row.data.title,destination:copy(row.data.destination)};}
             if(expanded && expanded.id!==row.data.id){expanded=undefined;leave();}
-            changed();
+            changed();showRail(false);toggle.focus?.();
           });
           row.pin.innerHTML=pinIcon;row.reply.innerHTML=replyIcon;
           row.mute=button('','Mute this session',()=>onAudio('mute',row.data));

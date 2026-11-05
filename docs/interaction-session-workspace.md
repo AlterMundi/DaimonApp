@@ -146,3 +146,10 @@ mute and solo controls, followed by the readable status. Each control has a
 titles truncate visually while retaining their full accessible name and tooltip.
 Pressed controls and keyboard focus remain visible; the menu stays anchored
 above the composer without changing its draft or selected input target.
+
+Choosing a pin or an exact-message reply collapses the menu. Pin selection
+returns keyboard focus to the menu toggle; reply uses the existing composer
+focus without changing the frozen message reference. Mute and Solo keep the
+menu open. When any audio filter is active, Reset appears in the menu header
+aligned above the controls; clearing filters hides it again. The collapsed
+destination toolbar contains only navigation and the current input destination.

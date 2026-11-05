@@ -10,6 +10,7 @@ class Element{
   before(child){this.parentNode.insertBefore(child,this);}
   remove(){if(this.parentNode){const at=this.parentNode.children.indexOf(this);if(at>=0)this.parentNode.children.splice(at,1);this.parentNode=undefined;}}
   click(){if(!this.disabled)return this.events.click?.();}
+  focus(){this.focused=true;}
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function boot(){
@@ -29,7 +30,7 @@ function boot(){
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error});
   const control=window.SessionWorkspace.mount({timeline,api,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
-    onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='reset')mutes.clear();control.syncAudio();}});
+    onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
   const all=()=>{const result=[];const visit=n=>{result.push(n);n.children.forEach(visit);};visit(root);return result;};
   const byText=text=>all().find(n=>n.tag==='button'&&n.textContent===text);
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
@@ -44,7 +45,11 @@ function boot(){
   assert.deepEqual(f.rows().map(row=>row.children[0].textContent),['Earlier work','Busy work','Conversation']);
   f.getSessions()[0].execution='working';await f.control.refresh('binding');
   assert.equal(f.rows()[0].children[0].textContent,'Busy work');
+  f.byLabel('Show sessions').click();
   await f.rows()[0].children[2].children[1].click();
+  assert.equal(f.byLabel('Your sessions').hidden,true,'Pin selection collapses the menu');
+  assert.equal(f.byLabel('Show sessions').focused,true,'Pin returns focus to the menu toggle');
+  f.byLabel('Show sessions').click();
   assert.equal(f.control.capture().reference.source,'session:7');
   f.byText('Earlier work').click();await tick();
   assert.equal(f.timeline.hidden,true);assert.equal(f.control.capture().reference.source,'session:8');
@@ -53,14 +58,23 @@ function boot(){
   f.byText('Conversation').click();
   assert.equal(f.control.capture().reference,undefined,'Selecting Conversation temporarily overrides a worker pin');
   f.byLabel('Back to the conversation').click();assert.equal(f.control.capture().reference.source,'session:7');
+  f.byLabel('Show sessions').click();
   f.rows()[1].children[2].children[0].click();
+  assert.equal(f.byLabel('Your sessions').hidden,true,'Exact-message reply collapses the menu');
   assert.equal(f.replies[0].ref.source,'session:8/42','Reply freezes the exact clicked latest message');
   f.getSessions()[1].latest_reply={...f.reference(8),source:'session:8/99'};
   await f.control.refresh('binding');assert.equal(f.replies[0].ref.source,'session:8/42');
+  f.byLabel('Show sessions').click();
   f.rows()[0].children[2].children[2].click();
+  assert.equal(f.byLabel('Your sessions').hidden,false,'Mute keeps the menu open');
   assert.equal(f.audioCalls[0][0],'mute');assert.equal(f.rows()[0].children[2].children[2].attrs['aria-pressed'],'true');
   assert.equal(f.byLabel('Hear all sessions: clear mute and solo').hidden,false);
+  f.rows()[0].children[2].children[3].click();
+  assert.equal(f.byLabel('Your sessions').hidden,false,'Solo keeps the menu open');
+  assert.equal(f.rows()[0].children[2].children[3].attrs['aria-pressed'],'true');
+  assert.equal(f.byLabel('Hear all sessions: clear mute and solo').parentNode.className,'session-rail-header','Reset lives in the menu header');
   f.byLabel('Hear all sessions: clear mute and solo').click();
+  assert.equal(f.byLabel('Your sessions').hidden,false,'Reset keeps the menu open');
   assert.equal(f.byLabel('Hear all sessions: clear mute and solo').hidden,true);
   // A different native generation does not rewrite a pin or fall back to integration.
   f.getSessions()[0].destination=f.reference(7,'b');await f.control.refresh('binding');
