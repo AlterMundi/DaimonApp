@@ -21,6 +21,19 @@ from dashboard.provider import Provider, ProviderUnavailable
 
 
 class History(unittest.TestCase):
+    def test_work_anchor_survives_restart_and_remains_owner_and_task_scoped(self):
+        self.history.retain_work(self.visit,100,'a'*64,['task'])
+        self.history.retain_anchor(self.visit,100,'a'*64,'task','opaque-native-cursor')
+        restarted=CodexVoiceHistory(self.root/'visits')
+        self.assertEqual(restarted.work_anchors(100,self.frozen,['task']),{'task':'opaque-native-cursor'})
+        for other in ({**self.frozen,'native_thread':'foreign'},
+                {**self.frozen,'entry_binding':[100,100,8,'native']},
+                {**self.frozen,'binding':'b'*64}):
+            self.assertEqual(restarted.work_anchors(100,other,['task']),{})
+        self.assertEqual(restarted.work_anchors(101,self.frozen,['task']),{})
+        self.assertEqual(restarted.work_anchors(100,self.frozen,['other']),{})
+        with self.assertRaises(ValueError):restarted.retain_anchor(self.visit,100,'a'*64,'other','cursor')
+        with self.assertRaises(ValueError):restarted.retain_anchor(self.visit,100,'a'*64,'task','x'*1025)
     def test_pending_source_and_lost_offer_ack_survive_replacement_without_replay(self):
         self.history.retain_work(self.visit,100,'a'*64,['task'])
         self.assertEqual(self.history.pending_work(100,self.frozen),['task'])

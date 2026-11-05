@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 import uuid
+from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashboard.codex_voice import AvatarVoiceLease, CodexVoice, CodexVoiceRejected, CodexVoiceUnavailable
 
@@ -29,6 +30,7 @@ class Socket:
             self.event('thread/realtime/sdp',sdp='v=0\r\nanswer')
         if method=='thread/realtime/stop':self.event('thread/realtime/closed',reason='requested')
         result=self.results.get(method,{'thread':{'id':'owned'}} if method=='thread/resume' else {})
+        if callable(result):result=result(value['params'])
         self.incoming.put(json.dumps({'id':value['id'],'result':result}))
     def recv(self):
         try:return self.incoming.get(timeout=.05)
@@ -88,6 +90,53 @@ class Voice(unittest.TestCase):
         self.assertIn('Current verified result',call['params']['text'])
         self.assertIn('not a new request',call['params']['text'])
         self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_native_work_anchor_finds_exact_result_after_recent_window_moves_on(self):
+        self.socket.results['thread/turns/list']={'data':[{'id':'old-task','status':'inProgress'}],
+            'backwardsCursor':'opaque-native-anchor','nextCursor':None}
+        anchor=self.voice.work_anchor('old-task')
+        self.assertEqual(anchor,'opaque-native-anchor')
+        later_turns=[{'id':'new-'+str(i),'status':'completed'}for i in range(100)]
+        def later(params):
+            if params.get('cursor')==anchor:
+                self.assertEqual((params['limit'],params['sortDirection']),(1,'asc'))
+                return {'data':[{'id':'old-task','status':'completed'}]}
+            return {'data':later_turns[:32],
+                'nextCursor':'older-native-page'}
+        self.socket.results['thread/turns/list']=later
+        self.socket.results['thread/items/list']={'data':[{'turnId':'old-task','item':{
+            'type':'agentMessage','phase':'final_answer','id':'final','text':'Exact retained result'}}]}
+        self.assertIsNone(self.voice.completed_result('old-task'),'Legacy recent window cannot see older task')
+        result=self.voice.completed_result('old-task',anchor=anchor)
+        self.assertEqual((result['turn'],result['text']),('old-task','Exact retained result'))
+        self.assertFalse(any(v['method']in ('turn/start','turn/steer')for v in self.socket.sent))
+    def test_work_anchor_probe_is_bounded_and_never_manufactures_a_location(self):
+        def page(params):
+            return {'data':[{'id':'other','status':'completed'}],
+                'nextCursor':'page-'+str(len(self.socket.sent)),'backwardsCursor':'other-anchor'}
+        self.socket.results['thread/turns/list']=page
+        before=len(self.socket.sent);self.assertIsNone(self.voice.work_anchor('missing'))
+        self.assertEqual(len(self.socket.sent)-before,4)
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        self.assertIsNone(self.voice.work_anchor('target'))
+    def test_wrong_or_oversized_anchor_never_falls_back_to_another_result(self):
+        self.socket.results['thread/turns/list']={'data':[{'id':'foreign','status':'completed'}]}
+        before=len(self.socket.sent)
+        with self.assertRaises(CodexVoiceUnavailable):self.voice.completed_result('target',anchor='opaque')
+        self.assertEqual(len(self.socket.sent)-before,1)
+        before=len(self.socket.sent)
+        with self.assertRaises(ValueError):self.voice.completed_result('target',anchor='x'*1025)
+        self.assertEqual(len(self.socket.sent),before)
+    def test_optional_anchor_deadline_includes_waiting_for_an_unrelated_rpc(self):
+        before=len(self.socket.sent);clock=self.voice._clock
+        self.voice._clock=Mock(side_effect=[0,1.99,1.99])
+        self.voice._rpc_guard.acquire()
+        try:
+            with self.assertRaisesRegex(CodexVoiceUnavailable,'admission expired'):
+                self.voice.work_anchor('target')
+            self.assertEqual(len(self.socket.sent),before,'No queued optional read after deadline')
+            self.assertFalse(self.voice._rpc_guard.acquire(blocking=False),'Unrelated RPC still owns its slot')
+        finally:
+            self.voice._rpc_guard.release();self.voice._clock=clock
     def test_long_unicode_result_offer_keeps_source_and_notice_in_one_native_frame(self):
         self.voice.start('v=0\r\noffer')
         self.voice.offer_result({'thread':'owned','turn':'task','item':'final','revision':'a'*64,

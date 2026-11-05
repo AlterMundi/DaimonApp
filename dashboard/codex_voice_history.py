@@ -173,6 +173,40 @@ class CodexVoiceHistory:
                 'state':'pending','meaning':'Presentation intent; neither native ACK nor hearing receipt'})
             self._write(current);return True
 
+    def work_anchors(self,human,frozen,turns):
+        """Native metadata locations only, scoped to carried admitted work."""
+        if (not isinstance(turns,list) or len(turns)>32 or any(not isinstance(turn,str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn)for turn in turns)):
+            raise ValueError('Select bounded native work')
+        with history_lock(self.root/'.lock'):
+            values=sorted((read_json(path)for path in self.root.glob('*.json')),
+                key=lambda value:value.get('sequence',0))
+            anchors={}
+            for value in values:
+                if (value.get('human')!=human or value.get('binding')!=frozen['binding']
+                        or value.get('entry_binding')!=frozen['entry_binding']
+                        or value.get('native_thread')!=frozen['native_thread']):continue
+                for turn,anchor in value.get('work_anchors',{}).items():
+                    if turn not in turns:continue
+                    if not isinstance(anchor,str) or not 0<len(anchor.encode())<=1024:
+                        raise ValueError('Native work location is unavailable')
+                    anchors[turn]=anchor
+            return anchors
+
+    def retain_anchor(self,ident,human,binding,turn,anchor):
+        if (not isinstance(turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn)
+                or not isinstance(anchor,str) or not 0<len(anchor.encode())<=1024):
+            raise ValueError('Select one bounded native work location')
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            if turn not in value.get('pending_work',[]):
+                raise ValueError('Native work location needs its admitted task reference')
+            anchors=value.setdefault('work_anchors',{})
+            if turn not in anchors and len(anchors)>=32:
+                raise ValueError('Native work locations reached their visit bound')
+            anchors[turn]=anchor
+            self._write(value)
+
     def finish_work(self,ident,human,binding,turn,status):
         if status not in ('failed','interrupted') or not isinstance(turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn):
             raise ValueError('Select an observed unsuccessful native task')
