@@ -35,7 +35,7 @@
     viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
-    rail.append(el('h3','Sessions · 24h'),list);toolbar.append(toggle,back,target,unpin,reset);body.append(rail,content);shell.append(toolbar,status,body);
+    rail.append(el('h3','Sessions · 24h'),list);toolbar.append(toggle,back,target,unpin,reset);body.append(rail,content);shell.append(body,status,toolbar);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false;
     let activeHistory,historyBusy=false,historyEpoch=0,observedAt=0;

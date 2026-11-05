@@ -62,6 +62,15 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+ async function bottomMenu(){
+  const rect=async selector=>page.locator(selector).evaluate(node=>{const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};});
+  const bar=await rect('.session-workspace-toolbar'),body=await rect('.session-workspace-body'),menu=await rect('.session-rail'),input=await rect('#conversation-dock');
+  assert(body.bottom<=bar.top+1,'Destination toolbar follows the reading area');
+  assert(bar.bottom<=input.top+1,'Destination toolbar sits above the input');
+  assert(menu.bottom<=bar.top+1&&menu.top>=body.top-1,'Sessions expand upward inside the reading area');
+  assert(menu.left>=0&&menu.right<=await page.evaluate(()=>innerWidth),'Session menu stays inside viewport');
+ }
+ await bottomMenu();
  assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
  assert.deepEqual(await page.locator('.session-name').allTextContents(),[sessions[1].title,sessions[2].title,sessions[0].title]);
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
@@ -89,6 +98,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.screenshot({path:path.join(output,'desktop-sessions.png')});
  await page.setViewportSize({width:390,height:844});
  await page.locator('#conversation-message').fill('My draft stays here.');await page.screenshot({path:path.join(output,'mobile-sessions.png')});
+ await bottomMenu();
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No horizontal page overflow');
  const layout=await page.locator('.session-row').first().evaluate(row=>{
   const rect=selector=>{const r=row.querySelector(selector).getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom};};
@@ -101,10 +111,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.getByRole('button',{name:'Hide sessions',exact:true}).click();
  const timeline=page.locator('#conversation-timeline');await timeline.evaluate(node=>{node.scrollTop=0;});await page.waitForTimeout(100);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Programmatic positioning does not compact header');
+ await page.locator('#conversation-presence').evaluate(node=>{node.hidden=false;node.textContent='Pending work';});
  await timeline.hover();await page.mouse.wheel(0,900);await page.waitForTimeout(150);
  assert(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),'User forward scroll compacts header');
+ assert.equal(await page.locator('#conversation-presence').isVisible(),false,'Compact header hides the pending line');
+ const identity=await page.locator('header .companion-name').boundingBox(),header=await page.locator('header').boundingBox();
+ assert(identity.y>=header.y&&identity.y+identity.height<=header.y+header.height,'Compact identity remains fully visible');
+ await page.screenshot({path:path.join(output,'mobile-compact.png')});
  await page.mouse.wheel(0,-300);await page.waitForTimeout(150);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Reverse scroll restores header');
+ assert(await page.locator('#conversation-presence').isVisible(),'Reverse scroll restores the pending line');
  await page.screenshot({path:path.join(output,'mobile-conversation.png')});
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  workspaceAllowed=false;await page.locator('#conversation-refresh').evaluate(button=>button.click());
