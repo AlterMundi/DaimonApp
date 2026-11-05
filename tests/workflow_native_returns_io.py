@@ -283,7 +283,9 @@ def qualify_completion_race(binary,ack_after_terminal=False):
         old, local = receipt['local'], receipt['collection_local']
         assert old != local and receipt['native_turn'] == j.detached
         assert j.row('SELECT first_turn FROM native_collections WHERE local_turn=?', (old,)) == [(j.old_turn,)]
-        assert j.row('SELECT status FROM turns WHERE id=?', (old,)) == [('completed',)]
+        # Idle admission can precede the old collector's committed terminal row.
+        # Observe the exact receipt; a later timeout still fails this invariant.
+        j.wait(lambda: j.row('SELECT status FROM turns WHERE id=?', (old,)) == [('completed',)])
         # Two actual existing heartbeat observations establish active then terminal
         # recovery. No new wakeup, timer or provider input is installed for this test.
         j.wait(lambda: j.row("SELECT detail FROM native_collections WHERE local_turn=?", (local,)) == [('Exact workflow turn active; terminal canonical result pending',)], seconds=40)

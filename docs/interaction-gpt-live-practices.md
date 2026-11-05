@@ -203,8 +203,9 @@ capture-only browser recovery and transcript timeline are now wired, disabled by
 default. The [operator contract](interaction-native-codex-voice.md) records the
 configuration, bounds and rollback. Production629 remains unchanged.
 
-Twelve mounted API tests cover fresh auth/CSRF, frozen binding, owner holds,
-closure uncertainty, late admitted work and cancellation during open/start.
+Thirteen mounted API tests cover fresh auth/CSRF, frozen binding, owner holds,
+closure uncertainty, late admitted work, cancellation during open/start and
+actual TCP disconnect while terminal reconciliation is still pending.
 After observed native closure, one bounded current-turn read reconciles accepted
 work with the existing durable collector; browser closure does not cancel it.
 Owner-selected identity digests and source observation times are retained.
@@ -220,6 +221,35 @@ transactionally enforced across separate recovery keys. Completed transcript vis
 are never recursively serialized into reconnect context. Prior source02d9dd64
 CI41990799341 passed; the application delta needs its own final CI and combined
 native tool/voice/identity qualification before receiving activation.
+
+### Actual application boundary observation —5 November2026
+
+One new test-owned Luna-low thread used the candidate application API, browser
+client and existing native login for two WebRTC visits. Synthetic speech was the
+only input; no physical microphone or production conversation was used. The voice
+read back CompAII's name and a unique word supplied only through its owner-selected
+identity item. Browser WebAudio measured nonzero remote signal. Both microphone
+WAV chunks have protected byte/digest receipts. One actual dynamic controller
+capabilities call passed through the existing owner collector; its completed
+native answer is retained after browser closure.
+
+The journey is **partial**, not reconnect acceptance. The verifier used an async
+browser polling predicate that advanced before the intended tool-ready boundary;
+the retained native rollout places the only backing task after the first close.
+The second visit ended on “Bien, lo verifico” before the useful conclusion. One
+visit's projection still said active when the fixture stopped. Preserve those
+observations; do not infer useful continuity from two connections, speech energy
+or the committed backend result alone. A new zero-model TCP test independently
+confirms that client disconnect can finish reconciliation and commit terminal
+metadata; it does not explain this fixture's unfinished projection by itself.
+
+Keep the accepted native work and originals. Do not rerun the original qualifier.
+The next semantic follow-up must observe the existing result, with no repeated
+capabilities request, wait for useful spoken return and committed visit state,
+and preserve the actual request/closure chronology. The fixture remains below
+32MiB with a256KiB report bound; after qualification retain compact reports and
+native history, retiring only generated synthetic media. No provider default,
+production service, original history or diagnostic limit changed.
 
 The inspected native startup-context builder explicitly excludes AGENTS, repo
 memory instructions and memory summaries. Do not claim that the foreground voice

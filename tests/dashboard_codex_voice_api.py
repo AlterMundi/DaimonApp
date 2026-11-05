@@ -1,6 +1,7 @@
 """Mounted native voice endpoints with synthetic owner; zero model/media calls."""
 from pathlib import Path
 import asyncio
+import json
 import queue
 import sys
 import tempfile
@@ -195,6 +196,44 @@ class Mounted(unittest.TestCase):
             self.assertEqual(Native.opened[-1].stops,1)
             self.assertEqual(self.app.state.voice_active,set())
         self.assertEqual(len(Native.opened),2)
+    def test_network_disconnect_keeps_reconciliation_until_terminal_metadata(self):
+        import socket as sockets
+        import uvicorn
+        import websocket
+        entered=threading.Event();release=threading.Event()
+        def current(owner):
+            entered.set()
+            if not release.wait(3):raise TimeoutError('Synthetic reconciliation was not released')
+            return None
+        self.owner.codex_voice_current=current
+        listener=sockets.socket();listener.bind(('127.0.0.1',0));listener.listen(5)
+        server=uvicorn.Server(uvicorn.Config(self.app,log_level='error',access_log=False))
+        thread=threading.Thread(target=lambda:server.run(sockets=[listener]),daemon=True)
+        thread.start()
+        try:
+            deadline=time.monotonic()+3
+            while not server.started and time.monotonic()<deadline:time.sleep(.01)
+            self.assertTrue(server.started)
+            socket=websocket.create_connection('ws://127.0.0.1:'+str(listener.getsockname()[1])+
+                '/api/interaction/voice/codex',origin='https://example.test',timeout=3)
+            try:
+                socket.send(json.dumps(self.meta));self.assertEqual(json.loads(socket.recv())['type'],'prepared')
+                socket.send(json.dumps({'type':'offer','sdp':'v=0\r\nsynthetic-offer'}))
+                self.assertEqual(json.loads(socket.recv())['type'],'answer')
+                self.assertEqual(json.loads(socket.recv())['type'],'transcript')
+                socket.send(json.dumps({'type':'close'}))
+                self.assertTrue(json.loads(socket.recv())['confirmed'])
+            finally:socket.close()
+            self.assertTrue(entered.wait(2));release.set()
+            history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+            deadline=time.monotonic()+3
+            while history.read(self.visit,100,'a'*64)['state']=='active'and time.monotonic()<deadline:time.sleep(.01)
+            self.assertEqual(history.read(self.visit,100,'a'*64)['state'],'closed')
+            self.assertTrue(Native.opened[-1].closed)
+        finally:
+            release.set();server.should_exit=True;thread.join(timeout=5);listener.close()
+        self.assertFalse(thread.is_alive())
+
     def test_complete_app_auth_capability_assets_and_upload_middleware(self):
         from dashboard.app import create_app
         from dashboard.companion import permitted

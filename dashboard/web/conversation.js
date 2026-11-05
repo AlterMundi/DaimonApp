@@ -74,7 +74,8 @@ window.Conversation = (() => {
       voiceMode?.configure(voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
       if(voiceEngine){
         voiceEngine.value=voiceChoice;voiceEngine.disabled=!!voiceSession?.active;
-        voiceEngine.querySelector('option[value="codex"]').disabled=!codexEnabled;
+        const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
+        if(codexOption)codexOption.disabled=!codexEnabled;
       }
       if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&voiceChoice!=='codex';
     }
