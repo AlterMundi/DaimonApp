@@ -35,11 +35,15 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
-      if(old.schema==='telecodex.voice-recovery/v3'){
-        if(!Array.isArray(old.items)||old.items.length<3||old.items.length>128||
+      if(['telecodex.voice-recovery/v3','telecodex.voice-recovery/v4'].includes(old.schema)){
+        if(!Array.isArray(old.items)||old.items.length<(old.schema.endsWith('/v4')?1:3)||old.items.length>128||
             old.items.some(v=>!v.id||!v.blob||!Number.isFinite(v.blob.size))||
             new Set(old.items.map(v=>v.id)).size!==old.items.length||
             old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery is malformed');
+        if(old.schema.endsWith('/v4')&&!old.items.some(v=>v.native_fragment===true))throw Error('Recording fragment envelope changed');
+        for(const item of old.items.filter(v=>v.native_fragment===true)){
+          if(!/^[a-f0-9-]{36}$/.test(item.fragment_group||'')||!Number.isSafeInteger(item.fragment_offset)||item.fragment_offset<0||item.fragment_offset>31*32000||!Number.isInteger(item.ordinal)||item.ordinal<0||item.ordinal>=32||item.native_review!==true||item.blob.size<=44||item.blob.size>64044)throw Error('Recording fragment is malformed');
+        }
         return [...old.items];
       }
       if(old.schema==='telecodex.voice-recovery/v2'){
@@ -51,27 +55,50 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete(key);
+      else if(items.some(v=>v.native_fragment===true))store.put({schema:'telecodex.voice-recovery/v4',items},key);
       else store.put(items.length===1?items[0]:{schema:items.length>2?'telecodex.voice-recovery/v3':'telecodex.voice-recovery/v2',items},key);
+    }
+    function boundedRecords(store,items,other){
+      const combined=[...items,...records(other)];
+      if(combined.length>128||combined.some(v=>!Number.isFinite(v.blob?.size))||combined.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery limit reached');
+      items.sort((a,b)=>(a.capture_started||0)-(b.capture_started||0));storeRecords(store,items);
+    }
+    function nativeBundle(value,fragments){
+      if(key!=='codex_voice'||!Array.isArray(fragments)||fragments.length>32||new Set(fragments.map(v=>v.id)).size!==fragments.length)throw Error('Select exact native recording fragments');
+      if(value&&(!value.blob||value.blob.size>20*1024*1024||value.native_fragment||new Blob([JSON.stringify({...value,blob:undefined})]).size>65536))throw Error('Invalid sealed native recording');
+      return operation('readwrite',(store,old,other)=>{
+        const items=records(old);
+        const group=value?.id||fragments[0]?.fragment_group;
+        if(fragments.some(v=>v.fragment_group!==group)||items.filter(v=>v.native_fragment===true&&v.fragment_group===group).length!==fragments.length)throw Error('Native recording fragment group changed');
+        for(const ref of fragments){
+          const item=items.find(v=>v.id===ref.id);
+          if(!item||item.native_fragment!==true||item.audio_sha256!==ref.audio_sha256||item.binding!==ref.binding||item.fragment_group!==ref.fragment_group||item.fragment_offset!==ref.fragment_offset||value&&(item.binding!==value.binding||item.fragment_group!==value.id||item.codex_visit!==value.codex_visit||item.ordinal!==value.ordinal))throw Error('Native recording fragments changed');
+        }
+        const retained=items.filter(v=>!fragments.some(ref=>ref.id===v.id));
+        if(value){if(retained.some(v=>v.id===value.id||v.binding!==value.binding))throw Error('Native recording identity changed');retained.push(value);}
+        boundedRecords(store,retained,other);
+      });
     }
     return {
       read:()=>operation('readonly',(_store,old)=>records(old)[0]),
       list:()=>operation('readonly',(_store,old)=>records(old)),
       put:(value,parallel=false)=>{
         const {blob,...meta}=value;
+        if(value.native_fragment===true&&(key!=='codex_voice'||!value.fragment_group||!Number.isSafeInteger(value.fragment_offset)))return Promise.reject(Error('Invalid native recording fragment'));
         if(!blob || blob.size>20*1024*1024 || new Blob([JSON.stringify(meta)]).size>65536)return Promise.reject(Error('Recording recovery limit reached'));
         return operation('readwrite',(store,old,other)=>{
           const items=records(old),index=items.findIndex(v=>v.id===value.id);
+          if(value.native_fragment===true&&items.some(v=>v.id===value.fragment_group))throw Error('Native recording group is already sealed');
           if(index>=0){if(items[index].audio_sha256!==value.audio_sha256)throw Error('Recording identity changed');items[index]=value;}
           else{
             if(items.length>=128||(parallel?items.filter(v=>v.native_review!==true&&v.reconnect_review!==true).length>=2:items.length>=1)||items.some(v=>v.binding!==value.binding))throw Error('Another unfinished recording is retained');
             items.push(value);
           }
-          const combined=[...items,...records(other)];
-          if(combined.length>128||combined.some(v=>!Number.isFinite(v.blob?.size))||combined.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery limit reached');
-          items.sort((a,b)=>(a.capture_started||0)-(b.capture_started||0));
-          storeRecords(store,items);
+          boundedRecords(store,items,other);
         });
       },
+      sealNative:(value,fragments)=>nativeBundle(value,fragments),
+      discardNative:fragments=>nativeBundle(undefined,fragments),
       review:value=>operation('readwrite',(store,old)=>{
         const items=records(old),item=items.find(v=>v.id===value.id);
         if(!item||item.audio_sha256!==value.audio_sha256||item.binding!==value.binding||

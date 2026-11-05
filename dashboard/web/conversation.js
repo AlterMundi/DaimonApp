@@ -2215,14 +2215,15 @@ window.Conversation = (() => {
         panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
         panel.append(node('summary',`${selected.length} voice recording${selected.length===1?'':'s'} kept locally`));
         for(const original of selected){
-          const row=node('div',undefined,'conversation-tools'),label=node('span',`Voice recording · ${Math.ceil((original.blob.size-44)/32000)}s · local copy`);
+          const partial=original.captureStop==='interrupted_prefix';
+          const row=node('div',undefined,'conversation-tools'),label=node('span',`${partial?'Recovered audio prefix':'Voice recording'} · ${Math.ceil((original.blob.size-44)/32000)}s · local copy${partial?' · ending may be missing':''}`);
           const retry=node('button','Retry saving'),save=node('button','Save audio'),discard=node('button','Discard local copy');
           for(const button of [retry,save,discard])button.type='button';
           retry.title='Save this same original; never send the conversation again';
           discard.title='Discard this local copy; accepted work continues';
-          retry.addEventListener('click',async()=>{retry.disabled=true;try{await codexVoiceSession.retry(original);}catch{label.textContent='Original not confirmed; your local audio is kept.';}finally{retry.disabled=false;}});
+          retry.addEventListener('click',async()=>{retry.disabled=true;try{await codexVoiceSession.retry(original);}catch{label.textContent=partial?'Recovered audio prefix not confirmed; your local copy is kept and its ending may be missing.':'Original not confirmed; your local audio is kept.';}finally{retry.disabled=false;}});
           save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.codex_visit+'-'+original.ordinal+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-          discard.addEventListener('click',()=>{void codexVoiceSession.discard(original);});
+          discard.addEventListener('click',async()=>{discard.disabled=true;try{await codexVoiceSession.discard(original);}catch{label.textContent='Local audio is kept; its capture may still be finishing in another page.';}finally{discard.disabled=false;}});
           row.append(label,retry,save,discard);panel.append(row);
         }
       },

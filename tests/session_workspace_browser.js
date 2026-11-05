@@ -3,6 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+const reloadCase=process.env.QUALIFICATION_RELOAD==='1';let prefixSupport=false;
 const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
@@ -29,12 +30,14 @@ const server=http.createServer(async(req,res)=>{
    return json({visits:Array.from({length:older?2:8},(_,i)=>({id:`retained-${older?'older':'recent'}-${i}`,created_at:1704067100-i*10,items:[
     {id:`retained-source-${i}`,role:i%2?'assistant':'user',text:`${older?'Earlier retained':'Recent retained'} voice source ${i}`,observed_at:1704067100-i*10}]})),more:!older,before:older?null:cursor});
   }
+  if(reloadCase&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='GET')return json({state:'closed',...(prefixSupport?{capture_prefix_retention:'v1'}:{})});
   if(route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST'){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks);
    const parts=route.split('/'),visit=parts[4],ordinal=Number(parts[6]);
+   if(reloadCase)fs.writeFileSync(path.join(output,'tone-original-'+voiceUploads.length+'.wav'),raw,{flag:'wx'});
    voiceUploads.push({visit,ordinal,bytes:raw.length,sha:require('node:crypto').createHash('sha256').update(raw).digest('hex')});
    if(!uploadFailed){uploadFailed=true;return json({detail:'Synthetic first receipt unavailable'},503);}
-   return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,native_replay:'never'}});
+   return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,native_replay:'never',...(req.headers['x-voice-capture-stop']?{capture_stop:req.headers['x-voice-capture-stop']}:{})}});
   }
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
   if(route.startsWith('interaction/requests/')){if(req.method==='POST')questionPosts++;return json(question());}
@@ -80,7 +83,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  });
  if(codexCase)await context.addInitScript(()=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
-  const fixture=window.codexFixture={opens:0,contexts:[],peers:[],audioRequests:0,audioRequestedWhileNativeOpen:false};
+  const fixture=window.codexFixture={opens:0,contexts:[],peers:[],captureBytes:0,audioRequests:0,audioRequestedWhileNativeOpen:false};
+  let captureModule;Object.defineProperty(window,'StreamingVoice',{configurable:true,get:()=>captureModule,set(value){captureModule={...value,async openCapture(...args){const c=await value.openCapture(...args);c.subscribe(e=>{if(e.pcm)fixture.captureBytes+=e.pcm.byteLength;});return c;}};}});
   const actualFetch=window.fetch.bind(window);window.fetch=(url,...args)=>{if(String(url).endsWith('api/interaction/audio')){fixture.audioRequests++;fixture.audioRequestedWhileNativeOpen ||= fixture.peers.some(peer=>peer.connectionState!=='closed')||fixture.contexts.some(ctx=>ctx.state!=='closed');}return actualFetch(url,...args);};
   window.AudioContext=class extends ActualContext{constructor(...args){super(...args);fixture.contexts.push(this);}};
   navigator.mediaDevices.getUserMedia=async()=>{
@@ -109,7 +113,31 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
- if(codexCase){
+ if(codexCase&&reloadCase){
+  await page.locator('#conversation-voice-engine').selectOption('codex');await page.locator('#conversation-companion pre').click();
+  await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');await page.waitForTimeout(3500);
+  const before=await page.evaluate(()=>codexFixture.captureBytes);assert(before>32000);
+  const locked=await page.evaluate(async()=>{const row=(await VoiceInput.recoveryStore('codex_voice').list())[0];return navigator.locks.request('daimon-native-voice:'+row.codex_visit,{ifAvailable:true},lock=>lock===null);});
+  assert(locked,'The real browser lock remains held while microphone capture owns its fragments');
+  assert.equal(voiceUploads.length,0,'Only local fragments persist before normal original sealing');
+  await page.reload({waitUntil:'load'});await page.locator('.session-workspace-toolbar').waitFor({state:'visible'});
+  const panel=page.locator('#conversation-codex-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
+  await page.getByText(/Recovered audio prefix/).waitFor({state:'visible'});
+  assert.equal(await page.evaluate(()=>codexFixture.opens),0,'Reload does not reopen the microphone');
+  const recovered=await page.evaluate(async()=>{const rows=await VoiceInput.recoveryStore('codex_voice').list();return {count:rows.length,bytes:rows.reduce((n,v)=>n+v.blob.size-44,0),fragments:rows.every(v=>v.native_fragment===true)};});
+  assert(recovered.fragments&&recovered.bytes>=32000&&recovered.bytes<=before,'Retain the exact committed prefix, never claim a missing tail');
+  assert(await page.evaluate(async()=>{const row=(await VoiceInput.recoveryStore('codex_voice').list())[0];return navigator.locks.request('daimon-native-voice:'+row.codex_visit,{ifAvailable:true},lock=>!!lock);}), 'Reload releases the old page capture lock');
+  await panel.getByRole('button',{name:'Retry saving',exact:true}).click();
+  await page.getByText(/Recovered audio prefix not confirmed/).waitFor();
+  assert.equal(voiceUploads.length,0,'Old backend capability refuses prefix upload before any external write');
+  prefixSupport=true;await panel.getByRole('button',{name:'Retry saving',exact:true}).click();
+  await page.getByText(/Recovered audio prefix not confirmed/).waitFor();
+  await page.waitForFunction(async()=>{const v=await VoiceInput.recoveryStore('codex_voice').list();return v.length===1&&v[0].captureStop==='interrupted_prefix'&&!v[0].native_fragment;});
+  await panel.getByRole('button',{name:'Retry saving',exact:true}).click();await panel.waitFor({state:'hidden'});
+  assert.equal(voiceUploads.length,2);assert.deepEqual(voiceUploads[0],voiceUploads[1],'Explicit retry saves identical prefix bytes/visit/ordinal');
+  assert.equal(posts.length,0);assert.equal(await page.evaluate(()=>codexFixture.opens),0);
+  report.state='qualified-native-reload-prefix-recovery';report.beforePCM=before;report.recovered=recovered;report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
+ }else if(codexCase){
   await page.locator('#conversation-voice-choice').waitFor({state:'visible'});
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','OpenAI never replaces the default');
   assert.equal(await page.evaluate(()=>codexFixture.opens),0);
