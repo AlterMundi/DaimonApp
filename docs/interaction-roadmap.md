@@ -135,6 +135,18 @@ context delivery or task completion alone does not qualify it. Preserve native
 handoff ownership and investigate the supported native speech/attention path,
 without user-input replay or another manual delegation loop.
 
+The source-linked predecessor-offer follow-up now carries exact pending native
+task references across visits, reads only a completed task's own final item and
+waits for connected WebRTC before presenting it. Its retained intent prevents
+uncertain speech replay. A three-visit actual case automatically announced the
+late result, suppressed a repeat on the next connection and recalled the code
+without another tool/backend task. All originals and transcript barriers survived.
+Native delegation remains automatic; this is result presentation, not another
+execution loop. Optional source/offer failures must not cut useful voice. The
+native guide records the bounded source/frame/journal rules and failed controls;
+arbitrary result/task kinds, long pressure/corrections/questions and phone/hearing
+remain unfinished.
+
 ## Qwen iteration checkpoint —5November2026
 
 PR608 is receiving-selected: oversized closed reconnect can obtain a source-bound

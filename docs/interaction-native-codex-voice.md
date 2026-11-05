@@ -280,6 +280,58 @@ adjudication used the retained answer, native final message, audio measurements
 and committed original/closure receipts; no provider input was repeated to repair
 the verifier. There is no independent output ASR or physical hearing acceptance.
 
+## Source-linked predecessor result offers
+
+The native application carries exact pending work references across voice visits
+on the same authenticated entry/thread. It does not infer that a task was caused
+by nearby speech. At reconnect it uses the supported
+[`thread/turns/list` and `thread/items/list`](https://learn.chatgpt.com/docs/app-server#api-overview)
+reads to select a completed task and its own final-answer item, restricted to the
+exact turn. Commentary, another turn's message and task acceptance do not qualify
+as a completed result. Native automatic handoff ownership remains unchanged.
+
+The browser sends a transport-only `ready` receipt after WebRTC connects. A
+predecessor completion can then be presented through native `appendSpeech`,
+without another acoustic question, backend turn, tool invocation or client-managed
+delegation. The notice identifies the exact turn and full-text revision. Its
+meaning and excerpt fit in480 UTF-8 bytes, leaving room for the native prefix:
+the inspected V3 writer splits standalone context at500bytes. For a partial
+excerpt it asks for an availability offer rather than guessed missing details.
+This is assistant presentation context, never a fabricated human utterance.
+
+Before submission, the existing visit journal retains the task/item/revision and
+presentation intent. An ACK means native acceptance, not semantic delivery or
+hearing. Missing ACKs are not automatically replayed on another connection. The
+journal holds source references rather than another copy of task output. At most
+32pending tasks/offers/outcomes fit in a visit under the existing512visit/32MiB
+history bounds. Native failed/interrupted outcomes stop accumulating as pending;
+they do not become successful-result offers or delete the original task. A task
+outside the bounded native read window remains unresolved, not guessed.
+
+An optional result-read failure keeps useful voice running and is not polled
+again during that visit. An unconfirmed speech submission keeps its retained
+intent without replay. Binding/grant checks remain mandatory. Nothing watches,
+speaks or wakes a model after the foreground voice visit closes. Current native
+CLI generation-ownership limitations are unchanged.
+
+One actual mounted three-visit case held one fresh read-only tool reply across
+confirmed voice replacement. The new visit automatically announced the correct
+fixture code after that reply was released once. A third visit produced no repeat
+during the4-second pre-question observation, then recalled the code in useful
+audio without a second tool or backend task. The offer fit in one336-byte native
+context frame; its persisted turn/item/revision matched the native completion.
+Three complete transcripts and original receipts (1,814,662bytes total), remote
+peaks0.304/0.262 for offer/recall and positive RTP energy were retained.
+
+Earlier controls remain negative: a generic standalone offer addressed an older
+matter; a first integrated long envelope was ACKed without the useful answer;
+one manual fixture paired a later message with an earlier turn ID and therefore
+cannot qualify exact source identity. The corrected implementation selects the
+item through the exact native turn and keeps the notice together. These bounded
+observations do not establish universal causality, arbitrary long/partial result
+speech, independent ASR, sustained interruptions/corrections or phone/hearing
+acceptance. Those remain open under303 and the complete roadmap.
+
 ## Source-backed earlier memory
 
 The native memory catalog adds a metadata-only index of complete retained visits

@@ -45,7 +45,7 @@ async function fixture(){
  await engine.hold();assert.equal(engine.active,false);assert.equal(records.length,0);
  assert.equal(requests.length,1);assert(requests[0].url.includes('/voice/codex/visits/'));
  assert(!requests.some(r=>/transcrib|\/inputs/.test(r.url)));
- assert.deepEqual(sockets[0].sent.map(v=>v.type||'binding'),['binding','offer','close']);
+ assert.deepEqual(sockets[0].sent.map(v=>v.type||'binding'),['binding','offer','ready','close']);
  assert.equal(peers[0].connectionState,'closed');assert(stops>0);
  assert.equal(peers[0].channel.label,'oai-events');assert(peers[0].channel.closed);
  failUpload=true;assert.equal(await engine.start(),true);listener({pcm:new Uint8Array(32000).buffer});

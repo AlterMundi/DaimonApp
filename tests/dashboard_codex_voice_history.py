@@ -21,6 +21,24 @@ from dashboard.provider import Provider, ProviderUnavailable
 
 
 class History(unittest.TestCase):
+    def test_pending_source_and_lost_offer_ack_survive_replacement_without_replay(self):
+        self.history.retain_work(self.visit,100,'a'*64,['task'])
+        self.assertEqual(self.history.pending_work(100,self.frozen),['task'])
+        replacement=str(uuid.uuid4());self.history.open(replacement,100,self.frozen,str(uuid.uuid4()))
+        result={'thread':'native','turn':'task','item':'final','revision':'a'*64}
+        self.assertTrue(self.history.claim_result(replacement,100,self.frozen,result))
+        third=str(uuid.uuid4());self.history.open(third,100,self.frozen,str(uuid.uuid4()))
+        self.assertEqual(self.history.pending_work(100,self.frozen),[])
+        self.assertFalse(self.history.claim_result(third,100,self.frozen,result),'A lost ACK must not repeat speech')
+        value=self.history.read(replacement,100,'a'*64)
+        self.assertEqual(value['result_offers'][0]['state'],'pending')
+        self.assertNotIn('text',value['result_offers'][0],'The ledger keeps source references, not result copies')
+        with self.assertRaises(ValueError):self.history.claim_result(third,100,{**self.frozen,'native_thread':'foreign'},result)
+    def test_unsuccessful_tasks_stop_pending_growth_without_a_success_offer(self):
+        self.history.retain_work(self.visit,100,'a'*64,['failed','still-running'])
+        self.history.finish_work(self.visit,100,'a'*64,'failed','interrupted')
+        self.assertEqual(self.history.pending_work(100,self.frozen),['still-running'])
+        self.assertNotIn('result_offers',self.history.read(self.visit,100,'a'*64))
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)

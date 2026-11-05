@@ -49,10 +49,11 @@ class Owner:
 
 class Native:
     opened=[];emit_turn=False;bad_generation=False;lose_closure=False;open_delay=0;start_delay=0
+    results={}
     opening_seen=threading.Event();starting_seen=threading.Event()
     def __init__(self,home,thread,*,lease):
         self.session_id=str(uuid.uuid4());self.events=queue.Queue();self.started=False
-        self.closure_observed=False;self.stops=0;self.closed=False;self.opened.append(self)
+        self.closure_observed=False;self.stops=0;self.closed=False;self.offers=[];self.opened.append(self)
         self.opening_seen.set();time.sleep(self.open_delay)
     def start(self,sdp,**kwargs):
         self.starting_seen.set();time.sleep(self.start_delay)
@@ -65,6 +66,8 @@ class Native:
         if self.emit_turn:values.append({'method':'turn/started','params':{'turn':{'id':'native-work'}}})
         self.events.put(values)
     def remember(self,memory):self.memory=memory
+    def completed_result(self,turn):return self.results.get(turn)
+    def offer_result(self,result):self.offers.append(result)
     def receive(self,timeout):
         try:return self.events.get(timeout=timeout)
         except queue.Empty:return []
@@ -92,7 +95,7 @@ class Mounted(unittest.TestCase):
         self.client=TestClient(self.app,base_url='https://example.test')
         self.addCleanup(self.client.close)
         self.patch=patch('dashboard.codex_voice_api.CodexVoice',Native);self.patch.start();self.addCleanup(self.patch.stop)
-        Native.opened=[];Native.emit_turn=Native.bad_generation=Native.lose_closure=False
+        Native.opened=[];Native.results={};Native.emit_turn=Native.bad_generation=Native.lose_closure=False
         Native.open_delay=Native.start_delay=0;Native.opening_seen.clear();Native.starting_seen.clear()
         self.visit=str(uuid.uuid4());self.meta={'id':self.visit,'binding':'a'*64,'csrf':self.csrf}
         self.headers={'origin':'https://example.test','x-dashboard-csrf':self.csrf,'x-voice-binding':'a'*64}
@@ -294,6 +297,59 @@ class Mounted(unittest.TestCase):
         with self.socket()as socket:self.start(socket);self.close(socket)
         self.assertEqual(self.owner.collected,['late-native-work'])
         self.assertEqual(Native.opened[0].stops,1)
+    def test_pending_completion_waits_for_media_ready_and_is_not_reoffered(self):
+        self.owner.current='pending-task'
+        result={'thread':'native','turn':'pending-task','item':'final','revision':'a'*64,
+            'text':'Verified late result','more':False}
+        Native.results['pending-task']=result
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        with self.socket()as socket:
+            self.start(socket)
+            self.assertEqual(Native.opened[-1].offers,[],'SDP alone is not connected media')
+            socket.send_json({'type':'ready'})
+            deadline=time.monotonic()+2
+            while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
+            self.assertEqual(Native.opened[-1].offers,[result])
+            self.close(socket)
+        self.assertEqual(history.read(self.visit,100,'a'*64)['result_offers'][0]['state'],'acknowledged')
+        self.visit=str(uuid.uuid4());self.meta={**self.meta,'id':self.visit}
+        with self.socket()as socket:
+            self.start(socket);socket.send_json({'type':'ready'});self.close(socket)
+        self.assertEqual(Native.opened[-1].offers,[],'An exact result is not repeated across visits')
+    def test_lost_native_offer_ack_keeps_intent_without_retry_after_reconnect(self):
+        self.owner.current='pending-task'
+        Native.results['pending-task']={'thread':'native','turn':'pending-task','item':'final',
+            'revision':'a'*64,'text':'Verified result','more':False}
+        def lost(native,result):
+            native.offers.append(result)
+            raise TimeoutError('Synthetic lost speech ACK')
+        with patch.object(Native,'offer_result',lost):
+            with self.socket()as socket:
+                self.start(socket);socket.send_json({'type':'ready'})
+                deadline=time.monotonic()+2
+                while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
+                self.assertEqual(len(Native.opened[-1].offers),1)
+                self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        self.assertEqual(history.read(self.visit,100,'a'*64)['result_offers'][0]['state'],'pending')
+        self.visit=str(uuid.uuid4());self.meta={**self.meta,'id':self.visit}
+        with self.socket()as socket:
+            self.start(socket);socket.send_json({'type':'ready'});self.close(socket)
+        self.assertEqual(Native.opened[-1].offers,[])
+    def test_optional_source_read_failure_keeps_voice_and_is_not_polled_again(self):
+        self.owner.current='pending-task'
+        with patch.object(Native,'completed_result',side_effect=ValueError('Synthetic unavailable source'))as read:
+            with self.socket()as socket:
+                self.start(socket);socket.send_json({'type':'ready'})
+                deadline=time.monotonic()+2
+                while not read.called and time.monotonic()<deadline:time.sleep(.005)
+                native=Native.opened[-1]
+                native.events.put([{'method':'thread/realtime/item/completed','params':{'item':{
+                    'id':'still-listening','type':'transcriptSegment','role':'assistant',
+                    'text':'Voice still works.','realtimeSessionId':native.session_id}}}])
+                self.assertEqual(socket.receive_json()['item']['text'],'Voice still works.')
+                self.close(socket)
+        self.assertEqual(read.call_count,1)
     def test_observed_native_turn_is_not_attached_twice_at_close(self):
         Native.emit_turn=True;self.owner.current='native-work'
         with self.socket()as socket:self.start(socket);self.close(socket)
@@ -344,7 +400,7 @@ class Mounted(unittest.TestCase):
         entered=threading.Event();release=threading.Event();reads=[]
         def current(owner):
             reads.append(owner)
-            if len(reads)==1:
+            if len(reads)==2:
                 entered.set()
                 if not release.wait(5):raise TimeoutError('Synthetic reconciliation was not released')
             return None
