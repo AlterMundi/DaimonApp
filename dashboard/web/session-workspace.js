@@ -31,16 +31,17 @@
     technicalButton.setAttribute('aria-pressed','false');
     const earlier=button('Earlier','Read earlier messages',()=>history('before'));
     const newer=button('Newer','Read newer messages',()=>history('after'));
+    const retryHistory=button('Retry reading','Retry reading this conversation',()=>history(retryDirection));retryHistory.hidden=true;
     const entries=el('div',undefined,'session-messages');entries.setAttribute('role','log');entries.setAttribute('aria-label','Selected session messages');
     const historyStatus=el('p','','session-history-status');historyStatus.setAttribute('role','status');
-    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,earlier,entries,newer);
+    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
     rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,toolbar);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
-    let activeHistory,historyBusy=false,historyEpoch=0,observedAt=0;
+    let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){renderSelection();onTarget();}
@@ -70,7 +71,7 @@
     }
     function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
-    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';}
+    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row){
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();toggle.focus?.();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
@@ -152,7 +153,7 @@
             status.textContent='Your selected session changed. Select it again before sending; the current destination has not been replaced.';
         }
         render();onReady(true);
-        if(expanded&&!expanded.is_entry)void history('after');
+        if(expanded&&!expanded.is_entry&&activeHistory)void history('after');
       }catch(error){
         if(owned!==epoch)return;
         if(error.status===403||error.status===401){
@@ -202,7 +203,7 @@
     }
     async function history(direction){
       if(!allowed||!expanded||expanded.is_entry||historyBusy)return;
-      historyBusy=true;const owned=historyEpoch,selection=expanded;
+      historyBusy=true;retryHistory.hidden=true;const owned=historyEpoch,selection=expanded;
       const query=new URLSearchParams({technical:String(technical)});
       if(activeHistory){query.set('revision',activeHistory.revision);query.set(direction==='before'?'before':'after',activeHistory[direction==='before'?'before':'after']);}
       if(!activeHistory)historyStatus.textContent='Reading…';
@@ -222,7 +223,17 @@
         if(direction==='before')entries.scrollTop=previousTop+entries.scrollHeight-previousHeight;
         else if(!direction || direction==='after'&&nearEnd)entries.scrollTop=entries.scrollHeight;
         onReady(true);
-      }catch(error){if(owned===historyEpoch){if(error.status===401||error.status===403)revoke();else historyStatus.textContent=error.status===409?'This conversation changed. Select it again to refresh.':'Conversation unavailable. Your draft is kept.';}}
+      }catch(error){
+        if(owned===historyEpoch){
+          if(error.status===401||error.status===403)revoke();
+          else {
+            if(error.status===409)clearHistory();
+            retryDirection=error.status===409?undefined:direction;
+            historyStatus.textContent=error.status===409?'This conversation changed. Retry reading to refresh.':'Conversation unavailable. Your draft is kept.';
+            retryHistory.hidden=false;
+          }
+        }
+      }
       finally{if(owned===historyEpoch)historyBusy=false;}
     }
     return {refresh,capture,syncAudio,pinState,pinSource,reset:()=>resetBinding(undefined),get active(){return allowed;},

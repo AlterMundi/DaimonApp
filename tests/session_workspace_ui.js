@@ -16,8 +16,9 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function boot(){
   const document={createElement:tag=>new Element(tag)},window={},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
-  const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:Date.now()/1000});
-  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false;
+  const observedAt=Date.now()/1000;
+  const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
+  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false;
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
@@ -25,6 +26,7 @@ function boot(){
     if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated};
     const url=new URL(route,'https://fixture.invalid');
     if(held){const hold=held;held=undefined;return hold;}
+    if(failHistory)throw Error('Synthetic history connection lost');
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,has_earlier:false,more:false};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error});
@@ -36,7 +38,7 @@ function boot(){
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
   return {root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
-    setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
+    failHistory:value=>{failHistory=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
@@ -82,6 +84,19 @@ function boot(){
   f.getSessions()[0].destination=f.reference(7,'b');await f.control.refresh('binding');
   assert.equal(f.control.canSend(),false);assert.equal(f.control.capture().reference.revision,'a'.repeat(64));
   f.byLabel('Send to the conversation').click();assert.equal(f.control.canSend(),true);assert.equal(f.control.capture(),undefined);
+  // A failed initial history read stays actionable rather than returning to
+  // an endless Reading indicator on every metadata observation.
+  const broken=boot();await broken.control.refresh('binding');broken.failHistory(true);
+  broken.byText('Busy work').click();await tick();
+  assert.equal(broken.byLabel('Retry reading this conversation').hidden,false);
+  assert(broken.root.textContent.includes('Conversation unavailable'));
+  const initialReads=broken.reads.length;await broken.control.refresh('binding');await tick();
+  assert.equal(broken.reads.length,initialReads+1,'Metadata refresh does not restart failed initial history');
+  assert.equal(broken.byLabel('Retry reading this conversation').hidden,false);
+  broken.failHistory(false);broken.byLabel('Retry reading this conversation').click();await tick();
+  assert(broken.root.textContent.includes('Retained answer'));
+  assert.equal(broken.byLabel('Retry reading this conversation').hidden,true);
+  assert.equal(broken.control.capture().reference.source,'session:7','Reading retry preserves the selected destination');
   // Late selected-history reads cannot appear under another session's heading.
   const release=f.holdHistory();f.byText('Busy work').click();f.byText('Earlier work').click();await tick();
   release({schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{text:'Stale other session',kind:'message',role:'assistant',id:'stale',position:1,next_position:2}],before:1,after:2});await tick();
