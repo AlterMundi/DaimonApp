@@ -1,7 +1,7 @@
 "use strict";
 // A foreground, bounded view. No persisted microphone opt-in or second sender.
 window.ConversationVoiceMode=(()=>{
-  function mount({portrait,onEnter,onLeave,onSuspend,onSpeak,onReconnect,onResumeAudio,canStart,canReconnect=()=>true,canEnter=canStart}){
+  function mount({portrait,onEnter,onLeave,onSuspend,onSpeak,onReconnect,onResumeAudio,onReview,getAttention=()=>0,canStart,canReconnect=()=>true,canEnter=canStart}){
     if(!portrait || typeof document.createElement('dialog').showModal!=='function')return;
     const dialog=document.createElement('dialog');dialog.className='voice-mode';
     dialog.setAttribute('aria-label','Direct voice conversation');
@@ -13,9 +13,10 @@ window.ConversationVoiceMode=(()=>{
     const caption=document.createElement('p');caption.className='voice-mode-caption';
     const speak=document.createElement('button');speak.type='button';speak.textContent='Speak again';
     const back=document.createElement('button');back.type='button';back.textContent='Back to conversation';
-    const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(speak,back);
+    const review=document.createElement('button');review.type='button';review.hidden=true;
+    const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(review,speak,back);
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
-    let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
+    let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
     const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',foreground_saved:'Phrase saved · voice conversation',review:'Recording needs review'};
     let audioPaused=false,audioEnabled=true;
     const canResumeAudio=()=>continuous&&listening&&!preparing&&!directPending&&typeof onResumeAudio==='function'&&(audioPaused||!audioEnabled);
@@ -36,6 +37,12 @@ window.ConversationVoiceMode=(()=>{
       if(detection.textContent!==text)detection.textContent=text;
       detection.hidden=!continuous||!text;
     }
+    function attention(count){
+      const pending=Number.isSafeInteger(count)&&count>0?count:0;
+      review.hidden=!pending||typeof onReview!=='function';review.textContent=`For you · ${pending}`;
+      review.setAttribute('aria-label',`For you · ${pending} pending requests`);
+      if(review.hidden&&opened&&document.activeElement===review)back.focus();
+    }
     function entryState(){
       portrait.dataset.voiceEntry=String(available);
       if(!available){
@@ -51,9 +58,9 @@ window.ConversationVoiceMode=(()=>{
     // The old alternating view keeps its shorter five-minute opt-in.
     function armClose(){clearTimeout(timer);timer=setTimeout(close,(continuous?10:5)*60*1000);}
     function close(){
-      if(!opened)return;opened=false;clearTimeout(timer);clearTimeout(rearm);
+      if(!opened)return lastClose;opened=false;clearTimeout(timer);clearTimeout(rearm);
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
-      entryState();onLeave();portrait.focus();
+      entryState();lastClose=onLeave();portrait.focus();return lastClose;
     }
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;
@@ -61,7 +68,7 @@ window.ConversationVoiceMode=(()=>{
       opened=true;audioPaused=false;audioEnabled=true;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
-      document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();
+      document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();attention(getAttention());
       armClose();status.textContent='Opening microphone…';caption.textContent='';speak.hidden=true;onSpeak();
     }
     function maybeRearm(){
@@ -116,6 +123,7 @@ window.ConversationVoiceMode=(()=>{
     }
     portrait.addEventListener('click',open);
     portrait.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
+    review.addEventListener('click',()=>{if(opened&&typeof onReview==='function')onReview(()=>{if(!opened)return false;(review.hidden?back:review).focus();return true;});});
     back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
     speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){armClose();onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
     document.addEventListener('visibilitychange',()=>{
@@ -124,7 +132,7 @@ window.ConversationVoiceMode=(()=>{
       else close();
     });
     window.addEventListener('pagehide',close);
-    return {update,close,get active(){return opened;},configure(enabled,direct=false){
+    return {update,attention,close,get active(){return opened;},configure(enabled,direct=false){
       if(opened&&continuous!==(direct===true))close();
       continuous=direct===true;
       if(enabled!==true&&!available)return;

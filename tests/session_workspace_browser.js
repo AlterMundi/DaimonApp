@@ -3,7 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
-const codexCase=process.env.QUALIFICATION_CODEX==='1';let uploadFailed=false;const voiceUploads=[];
+const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -12,6 +12,7 @@ const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a close
 for(const row of sessions)row.last_activity_at=Date.now()/1000;
 sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
+const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1});
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 const base=()=>({binding,csrf:'fixture-csrf',items:[],cursor:0,newest:0,more:false});
@@ -35,6 +36,8 @@ const server=http.createServer(async(req,res)=>{
    if(!uploadFailed){uploadFailed=true;return json({detail:'Synthetic first receipt unavailable'},503);}
    return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,native_replay:'never'}});
   }
+  if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
+  if(route.startsWith('interaction/requests/')){if(req.method==='POST')questionPosts++;return json(question());}
   if(route==='interaction/access')return json({csrf:'fixture-csrf',label:'Synthetic operator'});
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
@@ -50,8 +53,9 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_reply_updates:true,can_listen:false,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_reply_updates:true,can_listen:listenCase,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
+  if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
   if(route==='interaction/alerts')return json({state:'available',producers:[],incidents:[],csrf:'fixture-csrf'});
   if(route==='interaction/events'){res.writeHead(200,{'content-type':'text/event-stream'});res.write(': synthetic fixture\n\n');return;}
@@ -76,7 +80,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  });
  if(codexCase)await context.addInitScript(()=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
-  const fixture=window.codexFixture={opens:0,contexts:[],peers:[]};
+  const fixture=window.codexFixture={opens:0,contexts:[],peers:[],audioRequests:0,audioRequestedWhileNativeOpen:false};
+  const actualFetch=window.fetch.bind(window);window.fetch=(url,...args)=>{if(String(url).endsWith('api/interaction/audio')){fixture.audioRequests++;fixture.audioRequestedWhileNativeOpen ||= fixture.peers.some(peer=>peer.connectionState!=='closed')||fixture.contexts.some(ctx=>ctx.state!=='closed');}return actualFetch(url,...args);};
   window.AudioContext=class extends ActualContext{constructor(...args){super(...args);fixture.contexts.push(this);}};
   navigator.mediaDevices.getUserMedia=async()=>{
    const ctx=new window.AudioContext(),source=ctx.createOscillator(),gain=ctx.createGain(),dest=ctx.createMediaStreamDestination();
@@ -117,6 +122,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0,'History reading admits no new input');
   assert.equal(await page.locator('#conversation-message').inputValue(),'My draft survives voice history reading.');
   await page.locator('#conversation-message').fill('');
+  await page.locator('#conversation-message').fill('My unsent draft stays while I review the question.');
   await page.locator('#conversation-voice-engine').selectOption('codex');
   await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});
@@ -124,9 +130,38 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-voice-engine').evaluate(select=>{select.value='provider';select.dispatchEvent(new Event('change'));});
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'codex','Active mode stays frozen');
   await page.screenshot({path:path.join(output,'codex-desktop-voice.png')});
+  pendingQuestion=true;await page.evaluate(()=>document.querySelector('#conversation-refresh').click());
+  const voiceReview=page.locator('.voice-mode').getByRole('button',{name:'For you · 1 pending requests',exact:true});
+  await voiceReview.waitFor({state:'visible'});await voiceReview.click();
+  const pendingPanel=page.getByRole('dialog',{name:'For you',exact:true});await pendingPanel.waitFor({state:'visible'});
+  await pendingPanel.getByRole('button',{name:'Read request',exact:true}).click();
+  await pendingPanel.getByText('Where should we meet: in the garden or in the workshop?',{exact:true}).waitFor();
+  assert(await page.locator('.voice-mode').isVisible(),'Review overlays Avatar without closing its microphone');
+  assert.equal(await page.evaluate(()=>codexFixture.peers.every(peer=>peer.connectionState==='connected')),true);
+  assert.equal(posts.length,0);assert.equal(questionPosts,0,'Review is not an approval or answer');
+  await page.screenshot({path:path.join(output,'codex-desktop-attention.png')});
+  await pendingPanel.getByRole('button',{name:'Close',exact:true}).click();
+  assert(await voiceReview.evaluate(button=>button===document.activeElement),'Closing review returns keyboard focus to Avatar');
+
   await page.setViewportSize({width:390,height:844});await page.waitForTimeout(450);
   await page.screenshot({path:path.join(output,'codex-mobile-voice.png')});
-  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await voiceReview.click();
+  await pendingPanel.getByRole('button',{name:'Answer in conversation',exact:true}).waitFor({state:'visible'});
+  await page.screenshot({path:path.join(output,'codex-mobile-attention.png')});
+  if(listenCase){
+   assert.equal(await page.evaluate(()=>codexFixture.audioRequests),0,'No ordinary question audio starts over active native voice');
+   await pendingPanel.getByRole('button',{name:'Listen to question',exact:true}).click();
+   await page.waitForFunction(()=>codexFixture.audioRequests===1);
+   assert.equal(await page.evaluate(()=>codexFixture.audioRequestedWhileNativeOpen),false,'Explicit question reading must wait for native media closure');
+   assert.equal(await page.locator('.voice-mode').isVisible(),false);
+  }
+  await pendingPanel.getByRole('button',{name:'Answer in conversation',exact:true}).click();
+  assert.equal(await page.locator('.voice-mode').isVisible(),false,'Explicit written reply returns from Avatar');
+  assert.equal(await page.locator('#conversation-message').inputValue(),'My unsent draft stays while I review the question.');
+  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'request:'+'9'.repeat(32));
+  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.revision),'d'.repeat(64));
+  assert.equal(posts.length,0);assert.equal(questionPosts,0,'Choosing a written reply still requires explicit Send');
+
   await page.waitForFunction(()=>codexFixture.contexts.every(ctx=>ctx.state==='closed')&&codexFixture.peers.every(peer=>peer.connectionState==='closed'),null,{timeout:10000});
   await page.locator('#conversation-codex-recovery').waitFor({state:'visible'});
   await page.locator('#conversation-codex-recovery summary').click();
@@ -140,7 +175,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-voice-engine').selectOption('provider');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1);
   assert.equal(errors.length,0,errors.join('\n'));
-  report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.viewports=['1280x800','390x844'];
+  report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.attention={reviewKeptCapture:true,exactQuestionReply:true,unsentDraftPreserved:true,decisionPosts:questionPosts,...(listenCase?{listenAfterClosure:true}:{} )};report.viewports=['1280x800','390x844'];
  }else{
  assert.equal(await page.getByRole('button',{name:'Show routing map',exact:true}).count(),0,'Messages have no routing-map shortcut');
  await page.getByRole('button',{name:'Under the hood',exact:true}).click();

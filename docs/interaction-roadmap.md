@@ -135,6 +135,16 @@ context delivery or task completion alone does not qualify it. Preserve native
 handoff ownership and investigate the supported native speech/attention path,
 without user-input replay or another manual delegation loop.
 
+Avatar now exposes the existing For you panel and scoped pending count without
+stopping voice or renewing its budget. Explicit request read-aloud waits for the
+existing capture/peer closure barrier before ordinary speech is requested.
+Explicit written-answer selection exits
+through ordinary hold/flush, preserves the draft and binds the exact question
+revision; reading/selection alone sends no answer. Shipped-shell synthetic
+Chromium qualifies this combined pending-question/voice/recovery UI at desktop
+and mobile widths. Actual native question creation and spoken incorporation
+remain open; Core mode/features/defaults are unchanged.
+
 The complete fullscreen controller had a separate inherited five-minute guard
 that closed continuous Avatar before its configured600second capture budget.
 Its continuous view guard now uses ten minutes; the old alternating view retains

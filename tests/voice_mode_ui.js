@@ -1,6 +1,6 @@
 // Shipped fullscreen controller with synthetic callbacks; no capture or models.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function boot({suspend=false,reconnect}={}){
+function boot({suspend=false,reconnect,onReview,getAttention,leaveResult}={}){
  const timers=[],listeners={},nodes=[];
  class Node{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.events={};this.hidden=false;this.dataset={};this.classList={add(){},remove(){}};nodes.push(this);}
@@ -11,14 +11,14 @@ function boot({suspend=false,reconnect}={}){
   setAttribute(key,value){this.attributes[key]=value;}
   getAttribute(key){return this.attributes[key]??null;}removeAttribute(key){delete this.attributes[key];}
   addEventListener(name,fn){this.events[name]=fn;}
-  showModal(){this.open=true;}close(){this.open=false;}focus(){this.focused=true;}
+  showModal(){this.open=true;}close(){this.open=false;}focus(){this.focused=true;document.activeElement=this;}
  }
  const body=new Node('body'),header=new Node('header'),portrait=new Node('pre');body.append(header);header.append(portrait);
  const document={body,hidden:false,createElement:tag=>new Node(tag),createComment:()=>new Node('comment'),addEventListener:(name,fn)=>listeners[name]=fn};
  const window={addEventListener:(name,fn)=>listeners[name]=fn};
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document,setTimeout:(fn,ms)=>{const timer={fn,ms};timers.push(timer);return timer;},clearTimeout:t=>{if(t)t.cancelled=true;}});
  let starts=0,enters=0,leaves=0,suspends=0,resumes=0,canStart=true,canEnter=true;
- const mode=window.ConversationVoiceMode.mount({portrait,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
+ const mode=window.ConversationVoiceMode.mount({portrait,onReview,getAttention,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;return leaveResult;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
  return {mode,portrait,header,nodes,timers,document,listeners,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
 }
 const f=boot();f.mode.configure(false);f.portrait.events.click();assert.equal(f.counts().starts,0);
@@ -116,3 +116,23 @@ assert.equal(continuousBudget.counts().leaves,0);
 const endContinuous=continuousBudget.timers.find(t=>!t.cancelled&&t.ms===600000);assert(endContinuous,'Continuous view still has a finite ten-minute stop path');
 endContinuous.fn();assert.equal(continuousBudget.mode.active,false);assert.equal(continuousBudget.counts().leaves,1,'Budget expiry closes through the ordinary owner once');
 console.log('Avatar view budget: continuous voice survives the legacy five-minute deadline and closes at ten minutes.');
+
+let pendingCount=2,reviews=0,restoreReview;
+const attentionView=boot({getAttention:()=>pendingCount,onReview:restore=>{reviews++;restoreReview=restore;}});
+attentionView.mode.configure(true,true);attentionView.portrait.events.click();
+const reviewButton=attentionView.nodes.find(n=>n.attributes['aria-label']==='For you · 2 pending requests');
+assert(reviewButton&&!reviewButton.hidden,'Opening Avatar reads already-pending attention');
+const attentionTimers=attentionView.timers.filter(t=>t.ms===600000&&!t.cancelled).length;
+reviewButton.events.click();assert.equal(attentionView.timers.filter(t=>t.ms===600000&&!t.cancelled).length,attentionTimers,'Review cannot reset the microphone/view budget');assert.equal(reviews,1);assert.equal(attentionView.mode.active,true);assert.equal(attentionView.counts().leaves,0,'Reading attention does not close capture or answer a request');
+restoreReview();assert.equal(reviewButton.focused,true,'Closing attention can return focus to Avatar');
+pendingCount=0;attentionView.mode.attention(pendingCount);assert.equal(reviewButton.hidden,true);
+restoreReview();assert.equal(attentionView.nodes.find(n=>n.textContent==='Back to conversation').focused,true,'Withdrawn attention returns focus to the remaining Avatar control');
+attentionView.mode.attention(3);assert.equal(reviewButton.textContent,'For you · 3');
+attentionView.mode.close();assert.equal(attentionView.counts().leaves,1);assert.equal(restoreReview(),false,'Closed Avatar declines focus restoration so For you can use its ordinary opener');
+console.log('Avatar attention: existing/live pending counts, review without capture stop, withdrawal and focus restoration passed.');
+
+const ownerClosed=Promise.resolve(),closureView=boot({leaveResult:ownerClosed});
+closureView.mode.configure(true,true);closureView.portrait.events.click();
+assert.equal(closureView.mode.close(),ownerClosed,'Explicit read-aloud can await the engine closure barrier');
+assert.equal(closureView.mode.close(),ownerClosed,'A timer-closed view retains its existing closure barrier');
+assert.equal(closureView.counts().leaves,1,'Waiting again never closes/replays the engine twice');
