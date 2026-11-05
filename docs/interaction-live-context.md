@@ -329,6 +329,28 @@ within24576bytes. It does not acquire the integrator's frozen reader, acknowledg
 incorporation, reopen the producer, admit work or wake a model. Oversize context
 requires actual semantic compaction; no clipping or fallback to recent excerpts.
 
+The closed-reconnect compaction candidate returns `resume_requirement` instead
+of an oversized seed: `kind=semantic_checkpoint`, exact generation/through and
+serialized bytes/max_bytes. This read remains model-free. An explicit reconnect
+may then issue one owner-only `checkpoint_needed` with reason `reconnect` and
+its new visit UUID as `request_id`. The request upgrades any earlier active
+pressure request and carries its own revision. Earlier frozen-reader ACKs cannot
+acknowledge that new revision. It uses the existing internal native return,
+complete paginated reader and semantic checkpoint writer, including after close.
+The `checkpoint_writer` object is an executable controller call after adding
+`arguments.text`; explanatory fields live separately in `checkpoint_writer_notes`.
+A complete closed pressure checkpoint must fit the complete reconnect envelope
+before its exact source projection is retired. Rejection leaves sources intact.
+
+Web preparation waits at most20seconds and12half-second-spaced observations,
+rechecking the authenticated binding, before any new producer/provider/microphone
+opens. An ACK is insufficient: only a complete fitting seed permits continuation.
+Pending preparation preserves the previous established visit in browser recovery
+metadata. A failed never-ready attempt cannot replace it with an unopened UUID.
+`foreground_resume_compaction=v1` advertises this native support; ordinary
+`foreground_resume=v1` remains compatible. This candidate is not yet selected
+receiving software or useful physical voice acceptance.
+
 A new producer may `open` with `resume: {dialogue,generation,revision}`. Native
 storage revalidates that exact owned seed in the opening transaction. The copied
 prior context becomes the attributed initial checkpoint at sequence0, with its

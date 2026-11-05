@@ -355,6 +355,125 @@ class CheckpointContext(Returning):
         return CanonicalRouting.handle_extra_rpc(self,message,send)
 
 
+class ReconnectCheckpointContext(Returning):
+    """Read every exact page through native controls before semantic retirement."""
+    def __init__(self,binary):
+        self.pages=0;self.read_texts=[];self.fixture_errors=[];self.control_serial=0
+        super().__init__(binary)
+
+    def call_context(self,send,ident,arguments):
+        self.control_serial+=1;ident=f'{ident}-{self.control_serial}'
+        send({'id':ident,'method':'item/tool/call','params':{
+            'threadId':self.web_thread,'turnId':self.web_turn,'callId':ident,
+            'tool':'interaction_controller','arguments':arguments}})
+
+    def finish_context(self):
+        self.broadcast(self.web_thread,'turn/completed',{'turn':{'id':self.web_turn,'status':'completed'}})
+
+    def read_context(self,send,view,full):
+        self.reading_full=full;self.read_view=view;self.parts=[]
+        if view['range'].get('complete'):
+            self.accept_content(send,view['range']['content'])
+        else:
+            self.call_context(send,'route-reconnect-page',{'operation':'live_context','arguments':{
+                'action':'part','dialogue':view['dialogue'],'revision':view['range']['revision'],'offset':0}})
+
+    def accept_content(self,send,content):
+        self.read_texts.extend(e['text'] for e in content['events'])
+        self.call_context(send,'route-reconnect-ack',self.read_view['after_incorporation'])
+
+    def handle_extra_rpc(self,message,send):
+        try:return self.context_rpc(message,send)
+        except Exception as error:
+            self.fixture_errors.append((type(error).__name__,str(error)[:256]));raise
+
+    def context_rpc(self,message,send):
+        method=message.get('method');p=message.get('params',{});ident=message.get('id')
+        if method=='turn/start' and 'toolOutput' in p:
+            output=json.loads(p['toolOutput']['output']);assert p['input']==[]
+            self.internal_packets.append(p);self.web_thread=p['threadId']
+            self.web_turn='reconnect-native-'+str(len(self.internal_packets));self.pending_context=output
+            send({'id':ident,'result':{'turn':{'id':self.web_turn}}})
+            self.broadcast(self.web_thread,'turn/started',{'turn':{'id':self.web_turn,'status':'inProgress'}})
+            self.read_context(send,{'dialogue':output['dialogue'],'range':output['evidence'],
+                'after_incorporation':output['after_incorporation']},False)
+            return True
+        if method is None and str(ident).startswith('route-reconnect-'):
+            ident=ident.rsplit('-',1)[0]
+            assert message['result']['success'],message
+            view=json.loads(message['result']['contentItems'][0]['text'])
+            if ident=='route-reconnect-page':
+                self.pages+=1;self.parts.append(view['range']['text']);self.read_view=view
+                if view['range']['more']:
+                    self.call_context(send,ident,{'operation':'live_context','arguments':{
+                        'action':'part','dialogue':view['dialogue'],'revision':view['range']['revision'],
+                        'offset':view['range']['next']}})
+                else:self.accept_content(send,json.loads(''.join(self.parts)))
+            elif ident=='route-reconnect-full':self.read_context(send,view,True)
+            elif ident=='route-reconnect-ack':
+                if self.reading_full:
+                    writer=self.read_view['checkpoint_writer']
+                    writer['arguments']['text']='The corrected key is violet, replacing orange. Keep the unresolved bell question and its source references. No work was admitted or replayed.'
+                    self.call_context(send,'route-reconnect-checkpoint',writer)
+                elif self.pending_context.get('checkpoint_request'):
+                    self.call_context(send,'route-reconnect-full',self.pending_context['checkpoint_reader'])
+                else:self.finish_context()
+            elif ident=='route-reconnect-checkpoint':self.finish_context()
+            return True
+        return CanonicalRouting.handle_extra_rpc(self,message,send)
+
+
+def qualify_reconnect_compaction(binary):
+    j=ReconnectCheckpointContext(binary)
+    try:
+        j.start();j.admit('Seed synthetic closed reconnect continuity.',topic=1)
+        j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.messages.clear()
+        provider=Provider({'receiver_config':str(j.config),'state_dir':str(j.root/'reconnect-dashboard'),'bot_id':123})
+        @contextmanager
+        def database():
+            db=sqlite3.connect(j.root/'context.sqlite3',timeout=3);db.row_factory=sqlite3.Row
+            try:
+                with db:yield db
+            finally:db.close()
+        history=NativeHistory(database,'reconnect-scope')
+        binding=provider.presentation_list(0,0)['binding'];dialogue=str(uuid.uuid4())
+        async def owner(function,*args):return await asyncio.to_thread(function,*args)
+        async def scenario():
+            old=NativeContext(history,provider,100,dialogue,binding,owner);await old.open()
+            originals=['The key is orange. '+('Original attributed context. '*500),
+                'Correction: the key is violet. Unresolved: where is the bell? '+('Retain original uncertainty. '*500)]
+            for text in originals:
+                history.retain(100,dialogue,binding,str(uuid.uuid4()),text,'d'*64,0,closed=True)
+            await old._sync(old.record)
+            await asyncio.to_thread(j.wait,lambda:j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",(dialogue,))==[(2,)])
+            await asyncio.to_thread(j.idle)
+            await old.close()
+            needed=await old._call(old.record,'resume_read')
+            assert needed['resume_requirement']['bytes']>24576
+            fresh=NativeContext(history,provider,100,str(uuid.uuid4()),binding,owner)
+            preparing=[]
+            async def progress():preparing.append(True)
+            seed=await fresh.resume_context(dialogue,on_preparing=progress)
+            assert preparing==[True] and seed['bytes']<=24576
+            assert 'violet' in seed['content']['checkpoint']['text']
+            assert fresh.record is None,'Preparation must not open a new producer'
+            assert j.pages>=4 and all(text in j.read_texts for text in originals)
+            assert not j.fixture_errors,j.fixture_errors
+            await fresh.open()
+            doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(fresh.dialogue,))[0][0])
+            assert doc['resume_source']==fresh.resume_source
+            assert doc['checkpoint']['text']==json.dumps(seed['content'],ensure_ascii=False,separators=(',',':'))
+            await fresh.close()
+        asyncio.run(scenario())
+        assert j.row('SELECT count(*) FROM interaction_instructions')==[(0,)]
+        assert j.row('SELECT count(*) FROM conversation_inputs')==[(0,)]
+        assert not j.messages
+        print('PASS closed oversized reconnect through exact paginated native incorporation, full semantic checkpoint and source-bound successor opening; original correction retained, no human/work replay; synthetic reasoning, zero providers or models')
+    finally:
+        if sys.exc_info()[0]:print('Reconnect fixture errors:',j.fixture_errors,file=sys.stderr)
+        j.close()
+
+
 def qualify_rollover(binary):
     j=CheckpointContext(binary)
     try:
@@ -448,5 +567,6 @@ def qualify_rollover(binary):
 
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
-    if '--detached-semantic' in sys.argv[2:]:qualify(binary,detached_semantic=True)
-    else:qualify(binary);qualify(binary,detached_semantic=True);qualify_rollover(binary)
+    if '--reconnect-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary)
+    elif '--detached-semantic' in sys.argv[2:]:qualify(binary,detached_semantic=True)
+    else:qualify(binary);qualify(binary,detached_semantic=True);qualify_rollover(binary);qualify_reconnect_compaction(binary)

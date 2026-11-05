@@ -12,7 +12,7 @@ import uuid
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from dashboard.native_context import NativeContext
+from dashboard.native_context import NativeContext, ResumePending
 from dashboard.native_dialogue import DialogueCapacity
 from dashboard.native_history import NativeHistory
 from dashboard.provider import ProviderUnavailable
@@ -135,6 +135,44 @@ class Context(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.provider,'conversation_live_context',side_effect=overflow):
             with self.assertRaises(ValueError):await bad.resume_context(self.dialogue)
         self.assertIsNone(bad.record)
+
+    async def test_oversized_resume_requests_one_semantic_checkpoint_before_opening(self):
+        old=self.producer();await old.open();await old.close()
+        fresh=self.producer(str(uuid.uuid4()));original=self.provider.conversation_live_context
+        reads=0;progress=[];checks=[]
+        def compact(body):
+            nonlocal reads
+            value=original(body)
+            if body['action']=='resume_read':
+                reads+=1
+                if reads==1:
+                    value.pop('resume');value['resume_requirement']={'kind':'semantic_checkpoint','generation':old.record['generation'],'through':0,'bytes':30000,'max_bytes':24576}
+            return value
+        async def preparing():progress.append('preparing')
+        async def recheck():checks.append('checked')
+        with patch.object(self.provider,'conversation_live_context',side_effect=compact):
+            seed=await fresh.resume_context(self.dialogue,on_preparing=preparing,recheck=recheck)
+        requests=[c for c in self.provider.calls if c['action']=='checkpoint_needed']
+        self.assertEqual(len(requests),1);self.assertEqual(requests[0]['request_id'],fresh.dialogue)
+        self.assertEqual(requests[0]['reason'],'reconnect');self.assertIsNone(requests[0]['tokens'])
+        self.assertEqual(progress,['preparing']);self.assertEqual(checks,['checked'])
+        self.assertLessEqual(seed['bytes'],24576);self.assertIsNone(fresh.record)
+        self.assertEqual(set(self.provider.producers),{self.dialogue})
+
+    async def test_pending_resume_is_bounded_and_never_creates_or_replays_a_producer(self):
+        old=self.producer();await old.open();await old.close()
+        fresh=self.producer(str(uuid.uuid4()));fresh.resume_observations=1
+        original=self.provider.conversation_live_context
+        def pending(body):
+            value=original(body)
+            if body['action']=='resume_read':
+                value.pop('resume');value['resume_requirement']={'kind':'semantic_checkpoint','generation':old.record['generation'],'through':0,'bytes':30000,'max_bytes':24576}
+            return value
+        with patch.object(self.provider,'conversation_live_context',side_effect=pending):
+            with self.assertRaises(ResumePending):await fresh.resume_context(self.dialogue)
+        self.assertEqual(len([c for c in self.provider.calls if c['action']=='checkpoint_needed']),1)
+        self.assertIsNone(fresh.record);self.assertEqual(set(self.provider.producers),{self.dialogue})
+        self.assertFalse(self.provider.fresh)
 
     async def test_resume_rejects_unknown_or_foreign_previous_without_creating_producer(self):
         p=self.producer();await p.open()

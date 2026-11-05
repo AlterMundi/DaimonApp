@@ -21,7 +21,7 @@ from .live_transcription import VoiceInbox
 from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
 from .native_dialogue import NativeDialogue, DialogueUnavailable
 from .native_foreground import ForegroundBridge, ForegroundUnavailable
-from .native_context import NativeContext
+from .native_context import NativeContext, ResumePending
 from .native_caption import CaptionAudio
 from .native_caption_recovery import CaptionRecovery
 from .private_state import private_directory
@@ -589,7 +589,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     if capabilities.get('foreground_resume')!='v1':
                         raise ForegroundUnavailable('Selected listener cannot restore the prior voice context')
                     context_producer=NativeContext(app.state.native_history,provider,owner,meta['id'],meta['binding'],context_owner)
-                    context['prior_conversation']=await context_producer.resume_context(reconnect['previous_dialogue'])
+                    async def preparing_context():
+                        await send({'type':'context_preparing'})
+                    context['prior_conversation']=await context_producer.resume_context(reconnect['previous_dialogue'],on_preparing=preparing_context,recheck=recheck)
                 identity=await asyncio.to_thread(being_identity,selected)
                 if identity is not None:context['being_identity']=identity
                 while len(json.dumps(context,ensure_ascii=False).encode())>32768:
@@ -714,7 +716,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             await notice_if_idle()
         except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect) as error:
             close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error)
-            with suppress(Exception):await send({'type':'review','message':'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.'})
+            with suppress(Exception):await send({'type':'review','message':('The conversation is still being prepared. Reconnect voice to continue; your recordings and work are kept.' if isinstance(error,ResumePending) else 'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.')})
         except BaseException as error:
             close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error);raise
         finally:

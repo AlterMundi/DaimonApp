@@ -235,6 +235,25 @@ async function ready(value,diagnostics=false,mode='manual',seconds){const pendin
   assert.equal(successor.sent.filter(v=>v instanceof ArrayBuffer).length,0,'Old captured audio is never replayed');
   oldSocket.push({type:'review',message:'Late old close'});await tick();assert(recovery.engine.active);
   recovery.engine.hold();
+  const preparing=boot(),previousSocket=await ready(preparing),previousDialogue=previousSocket.sent[0].id;
+  preparing.engine.hold();
+  const attempt=preparing.engine.reconnect();await until(()=>preparing.sockets[1]?.sent.length);
+  preparing.sockets[1].push({type:'context_preparing'});await tick();
+  assert(preparing.states.some(v=>v.message==='Keeping our conversation ready…'));
+  assert.equal(preparing.permissionCalls,1,'Compaction preparation must not acquire another microphone');
+  preparing.sockets[1].push({type:'review',message:'The conversation is still being prepared.'});
+  assert.equal(await attempt,false);
+  const retry=preparing.engine.reconnect();await until(()=>preparing.sockets[2]?.sent.length);
+  const retryMeta=preparing.sockets[2].sent[0];
+  assert.equal(retryMeta.reconnect.previous_dialogue,previousDialogue,'Retry keeps the last established context, not a nonexistent failed producer');
+  preparing.sockets[2].push({type:'ready',id:retryMeta.id,activity_mode:'manual'});
+  assert.equal(await retry,true);preparing.engine.hold();
+  const neverReady=boot(),initial=neverReady.engine.start();await until(()=>neverReady.sockets[0]?.sent.length);
+  neverReady.sockets[0].push({type:'review',message:'Provider unavailable'});assert.equal(await initial,false);
+  const newAttempt=neverReady.engine.reconnect();await until(()=>neverReady.sockets[1]?.sent.length);
+  assert.equal(neverReady.sockets[1].sent[0].reconnect,undefined,'A first failed preflight has no prior context to restore');
+  neverReady.sockets[1].push({type:'ready',id:neverReady.sockets[1].sent[0].id,activity_mode:'manual'});
+  assert.equal(await newAttempt,true);neverReady.engine.hold();
   // Already-running old work must neither block nor close a new epoch.
   for(const outcome of ['success','failure']){
     let complete,entered=false;
