@@ -52,6 +52,17 @@ def selected(paths, previous=None):
 
 
 class MatrixHostScope(unittest.TestCase):
+    def test_browser_native_voice_regression_uses_existing_dashboard_gate(self):
+        self.assertEqual(selected([
+            "dashboard/web/codex-conversation.js",
+            "tests/codex_conversation_ui.js",
+            "tests/ci_matrix_host_scope.py",
+            ".github/workflows/ci.yml",
+            "docs/interaction-native-codex-voice.md",
+        ]), set())
+        self.assertIn("node tests/codex_conversation_ui.js", WORKFLOW.read_text())
+        self.assertIn("text", selected(["tests/codex_conversation_ui.js", "src/app.rs"]))
+
     def test_host_changes_keep_the_real_canonical_consumer_without_unrelated_native_suites(
         self,
     ):
