@@ -417,21 +417,22 @@ class CodexVoice:
         if (not isinstance(rows,list) or len(rows)>32
                 or any(not isinstance(row,dict) or row.get('turnId')!=turn for row in rows)):
             raise CodexVoiceUnavailable('Native result belongs to another task')
-        finals=[]
+        finals=[];substantive=False
         for row in rows:
             item=row.get('item',{})
             if item.get('type')!='agentMessage' or item.get('phase')!='final_answer':continue
             text=item.get('text');ident=item.get('id')
-            if (not isinstance(text,str) or not text.strip() or '\0' in text
+            if (not isinstance(text,str) or '\0' in text
                     or not isinstance(ident,str) or not 1<=len(ident)<=128):
                 raise CodexVoiceUnavailable('Native final result unavailable')
             raw=text.encode()
+            substantive=substantive or bool(text.strip())
             # Keep the full-source revision while bounding its spoken excerpt.
             excerpt=raw[:4096].decode('utf-8',errors='ignore')
             finals.append({'thread':self.thread_id,'turn':turn,'item':ident,
                 'revision':hashlib.sha256(raw).hexdigest(),'text':excerpt,
                 'more':len(raw)>4096})
-        if not finals:return None
+        if not substantive:return None
         complete=page.get('nextCursor')is None
         if len(finals)==1 and complete:return finals[0]
         # Multiple native invocations can finish within one turn, including a

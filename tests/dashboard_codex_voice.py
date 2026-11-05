@@ -120,6 +120,20 @@ class Voice(unittest.TestCase):
         self.assertFalse(result['source_window_complete'])
         self.assertEqual([v['item']for v in result['finals']],['latest'])
         self.assertEqual(len([v for v in self.socket.sent if v['method']=='thread/items/list']),1)
+    def test_empty_native_final_does_not_hide_the_retained_substantive_result(self):
+        import hashlib
+        self.socket.results['thread/turns/list']={'data':[{'id':'target','status':'completed'}]}
+        empty={'turnId':'target','item':{'type':'agentMessage','phase':'final_answer','id':'empty','text':''}}
+        report={'turnId':'target','item':{'type':'agentMessage','phase':'final_answer','id':'report','text':'Written report'}}
+        self.socket.results['thread/items/list']={'data':[empty,report],'nextCursor':None}
+        result=self.voice.completed_result('target')
+        self.assertEqual([v['item']for v in result['finals']],['report','empty'])
+        self.assertEqual(result['finals'][1]['revision'],hashlib.sha256(b'').hexdigest())
+        self.socket.results['thread/items/list']['data']=[empty]
+        self.assertIsNone(self.voice.completed_result('target'),'An empty-only final is not a ready result')
+        report['item']['text']=' '*4096+'Substantive content outside the excerpt'
+        self.socket.results['thread/items/list']['data']=[empty,report]
+        self.assertIsNotNone(self.voice.completed_result('target'),'Blank excerpt is not a blank source')
     def test_collection_notice_fits_native_frame_at_maximum_source_bounds(self):
         self.voice.start('v=0\r\noffer')
         result={'thread':'owned','turn':'t'*128,'finals':[

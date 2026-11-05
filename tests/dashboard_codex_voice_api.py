@@ -372,6 +372,27 @@ class Mounted(unittest.TestCase):
         with self.socket()as socket:
             self.start(socket);socket.send_json({'type':'ready'});self.close(socket)
         self.assertEqual(Native.opened[-1].offers,[])
+    def test_completion_before_close_is_carried_until_source_presentation_is_claimed(self):
+        Native.emit_turn=True
+        result={'thread':'native','turn':'native-work','item':'report','revision':'a'*64,
+            'text':'Completed before closure','more':False}
+        with self.socket()as socket:
+            self.start(socket)
+            native=Native.opened[-1]
+            native.events.put([{'method':'turn/completed','params':{
+                'turn':{'id':'native-work','status':'completed'}}}])
+            self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        frozen=self.owner.codex_voice_binding('a'*64)
+        self.assertEqual(history.pending_work(100,frozen),['native-work'])
+        Native.emit_turn=False;Native.results['native-work']=result
+        self.visit=str(uuid.uuid4());self.meta={**self.meta,'id':self.visit}
+        with self.socket()as socket:
+            self.start(socket);socket.send_json({'type':'ready'})
+            deadline=time.monotonic()+2
+            while not Native.opened[-1].offers and time.monotonic()<deadline:time.sleep(.005)
+            self.assertEqual(Native.opened[-1].offers,[result]);self.close(socket)
+        self.assertEqual(history.pending_work(100,frozen),[])
     def test_lost_native_offer_ack_keeps_intent_without_retry_after_reconnect(self):
         self.owner.current='pending-task'
         Native.results['pending-task']={'thread':'native','turn':'pending-task','item':'final',

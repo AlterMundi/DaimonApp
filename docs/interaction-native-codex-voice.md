@@ -61,10 +61,53 @@ It completed before the first voice closure; no pending reference reached the
 successor, so no result offer occurred. The browser correctly failed its expected
 availability observation. That does not test the new collection speech context.
 Retain the appendix and its originals; do not repeat accepted work to repair this
-fixture. Continuity around completion just before closure remains to resolve.
-The live case ran the pre-review-correction candidate; count-neutral wording and
-optional storage handling have targeted test/review evidence only. Production
-remains selected658; this candidate is not spoken/receiving acceptance.
+fixture. The candidate now carries newly observed admitted work through closure
+even when it completes first: completion is not a source-presentation receipt.
+The next connected visit can claim its existing result once; failed/interrupted
+outcomes and already persisted presentation intents remain excluded. Active
+native handoffs still own foreground responses. A later availability notice may
+follow earlier native speech; it is neither another execution nor a hearing
+receipt. Existing32reference bounds stay unchanged, and historical lost queues
+are not rewritten from anchors. A mounted start/completion/close/replacement test
+and focused independent review cover this correction.
+Its next actual continuation preserved the pending task across closure, but source
+reading found a573character plan followed by an empty native final and refused
+the whole result. No presentation intent or offer was made. The candidate retains
+that empty item's exact ID/digest alongside the substantive final; only an
+entirely blank source window remains without a ready-result offer. Substantive
+content is checked on the full source, before excerpt truncation. Targeted tests
+cover empty companions, empty-only results and content beyond a whitespace-only
+excerpt. Four originals2526044bytes and two output masters from the negative case
+were hash verified; accepted plan generation is not repeated.
+The missing delivery then reused that same receiver and unclaimed native plan,
+without new backing work or source/tool calls. One anchored read retained the
+substantive/empty source pair; its ledger digest matched the359byte speech offer.
+The completed caption said the written result was ready for review after5.93s;
+independent ASR of the exact retained PCM agreed. Two originals1059588bytes and
+one output master were hash verified and the visit closed/transcript_complete.
+The raw browser failure remains: its matcher compared server timestamp seconds
+with milliseconds. Normalizing the retained observation proves the short notice
+within the original25second window; neither a longer timeout nor another offer
+was needed. The plan's acknowledged presentation intent remains intact. Only
+missing corrected recall/replacements may continue; never reset that intent.
+The missing recall continuation then used the same receiver/configuration/binding
+and existing native result. Three visits and two explicit UI reconnects returned
+the corrected report label and existing code in completed captions and retained
+audio. One native backing recall, zero source/tool calls; the original plan offer
+was not repeated. All three visits closed/transcript_complete; four originals
+2876936bytes and three output masters were hash verified, with final Back UI
+closure observed. Independent ASR recognized label/code in all three outputs:
+the middle combined speech window returned empty, while its exact8–13second
+answer window recognized both. Preserve that empty draft and the targeted draft.
+Earlier negative cases remain negative; these continuations complete their
+missing effects without rerunning accepted work or resetting offer intents.
+
+The complete delta has92focused transport/history/API tests and focused independent
+review. The final full-source whitespace correction has targeted tests/review;
+the retained live notice used the same substantive573character source, so no
+provider rerun was needed. Receiving selection is owned by the current deployment
+record. This qualifies the bounded source/notice/replacement path, not arbitrary
+concurrent results, legacy lost queues, general memory or physical phone/hearing.
 
 Owner briefv5 distinguishes missing foreground context from a result already
 held by the native conversation. A request not to search again still permits
