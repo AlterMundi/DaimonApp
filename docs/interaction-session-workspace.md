@@ -29,9 +29,13 @@ start a native/model process, enroll a router target or acknowledge work.
 Pins and expanded views are bounded, in-memory client intent. They are cleared
 on binding/authentication changes, not saved as transcript data. Back does not
 clear the composer draft or an already frozen recording. Audio filters retain
-only their existing binding-scoped preferences. Per-update audio controls remain
-as a fallback when the complete workspace is unavailable; they are hidden only
-when the grouped rail controls are active.
+only their existing binding-scoped preferences. Per-update compact Mute/Solo controls remain beside update titles and share
+the same audio preferences as the menu. Their pin control resolves only through
+the current authorized complete inventory, matching an exact target key or the
+integrating entry; unknown or ambiguous destinations remain unavailable. No
+label matching or second pin store is used. Reset remains in the menu when the
+workspace is available, with per-update fallback Reset otherwise. The destination
+line highlights its unpin control while an explicit pin is active.
 
 ## Status and permissions
 
@@ -146,3 +150,10 @@ mute and solo controls, followed by the readable status. Each control has a
 titles truncate visually while retaining their full accessible name and tooltip.
 Pressed controls and keyboard focus remain visible; the menu stays anchored
 above the composer without changing its draft or selected input target.
+
+Choosing a pin or an exact-message reply collapses the menu. Pin selection
+returns keyboard focus to the menu toggle; reply uses the existing composer
+focus without changing the frozen message reference. Mute and Solo keep the
+menu open. When any audio filter is active, Reset appears in the menu header
+aligned above the controls; clearing filters hides it again. The collapsed
+destination toolbar contains only navigation and the current input destination.
