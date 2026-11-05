@@ -3,7 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
-const codexCase=process.env.QUALIFICATION_CODEX==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
+const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -53,8 +53,9 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_reply_updates:true,can_listen:false,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_reply_updates:true,can_listen:listenCase,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
+  if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
   if(route==='interaction/alerts')return json({state:'available',producers:[],incidents:[],csrf:'fixture-csrf'});
   if(route==='interaction/events'){res.writeHead(200,{'content-type':'text/event-stream'});res.write(': synthetic fixture\n\n');return;}
@@ -79,7 +80,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  });
  if(codexCase)await context.addInitScript(()=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
-  const fixture=window.codexFixture={opens:0,contexts:[],peers:[]};
+  const fixture=window.codexFixture={opens:0,contexts:[],peers:[],audioRequests:0,audioRequestedWhileNativeOpen:false};
+  const actualFetch=window.fetch.bind(window);window.fetch=(url,...args)=>{if(String(url).endsWith('api/interaction/audio')){fixture.audioRequests++;fixture.audioRequestedWhileNativeOpen ||= fixture.peers.some(peer=>peer.connectionState!=='closed')||fixture.contexts.some(ctx=>ctx.state!=='closed');}return actualFetch(url,...args);};
   window.AudioContext=class extends ActualContext{constructor(...args){super(...args);fixture.contexts.push(this);}};
   navigator.mediaDevices.getUserMedia=async()=>{
    const ctx=new window.AudioContext(),source=ctx.createOscillator(),gain=ctx.createGain(),dest=ctx.createMediaStreamDestination();
@@ -146,6 +148,13 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await voiceReview.click();
   await pendingPanel.getByRole('button',{name:'Answer in conversation',exact:true}).waitFor({state:'visible'});
   await page.screenshot({path:path.join(output,'codex-mobile-attention.png')});
+  if(listenCase){
+   assert.equal(await page.evaluate(()=>codexFixture.audioRequests),0,'No ordinary question audio starts over active native voice');
+   await pendingPanel.getByRole('button',{name:'Listen to question',exact:true}).click();
+   await page.waitForFunction(()=>codexFixture.audioRequests===1);
+   assert.equal(await page.evaluate(()=>codexFixture.audioRequestedWhileNativeOpen),false,'Explicit question reading must wait for native media closure');
+   assert.equal(await page.locator('.voice-mode').isVisible(),false);
+  }
   await pendingPanel.getByRole('button',{name:'Answer in conversation',exact:true}).click();
   assert.equal(await page.locator('.voice-mode').isVisible(),false,'Explicit written reply returns from Avatar');
   assert.equal(await page.locator('#conversation-message').inputValue(),'My unsent draft stays while I review the question.');
@@ -166,7 +175,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-voice-engine').selectOption('provider');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1);
   assert.equal(errors.length,0,errors.join('\n'));
-  report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.attention={reviewKeptCapture:true,exactQuestionReply:true,unsentDraftPreserved:true,decisionPosts:questionPosts};report.viewports=['1280x800','390x844'];
+  report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.attention={reviewKeptCapture:true,exactQuestionReply:true,unsentDraftPreserved:true,decisionPosts:questionPosts,...(listenCase?{listenAfterClosure:true}:{} )};report.viewports=['1280x800','390x844'];
  }else{
  assert.equal(await page.getByRole('button',{name:'Show routing map',exact:true}).count(),0,'Messages have no routing-map shortcut');
  await page.getByRole('button',{name:'Under the hood',exact:true}).click();

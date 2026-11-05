@@ -1,6 +1,6 @@
 // Shipped fullscreen controller with synthetic callbacks; no capture or models.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function boot({suspend=false,reconnect,onReview,getAttention}={}){
+function boot({suspend=false,reconnect,onReview,getAttention,leaveResult}={}){
  const timers=[],listeners={},nodes=[];
  class Node{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.events={};this.hidden=false;this.dataset={};this.classList={add(){},remove(){}};nodes.push(this);}
@@ -18,7 +18,7 @@ function boot({suspend=false,reconnect,onReview,getAttention}={}){
  const window={addEventListener:(name,fn)=>listeners[name]=fn};
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document,setTimeout:(fn,ms)=>{const timer={fn,ms};timers.push(timer);return timer;},clearTimeout:t=>{if(t)t.cancelled=true;}});
  let starts=0,enters=0,leaves=0,suspends=0,resumes=0,canStart=true,canEnter=true;
- const mode=window.ConversationVoiceMode.mount({portrait,onReview,getAttention,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
+ const mode=window.ConversationVoiceMode.mount({portrait,onReview,getAttention,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;return leaveResult;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
  return {mode,portrait,header,nodes,timers,document,listeners,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
 }
 const f=boot();f.mode.configure(false);f.portrait.events.click();assert.equal(f.counts().starts,0);
@@ -130,3 +130,9 @@ restoreReview();assert.equal(attentionView.nodes.find(n=>n.textContent==='Back t
 attentionView.mode.attention(3);assert.equal(reviewButton.textContent,'For you · 3');
 attentionView.mode.close();assert.equal(attentionView.counts().leaves,1);assert.equal(restoreReview(),false,'Closed Avatar declines focus restoration so For you can use its ordinary opener');
 console.log('Avatar attention: existing/live pending counts, review without capture stop, withdrawal and focus restoration passed.');
+
+const ownerClosed=Promise.resolve(),closureView=boot({leaveResult:ownerClosed});
+closureView.mode.configure(true,true);closureView.portrait.events.click();
+assert.equal(closureView.mode.close(),ownerClosed,'Explicit read-aloud can await the engine closure barrier');
+assert.equal(closureView.mode.close(),ownerClosed,'A timer-closed view retains its existing closure barrier');
+assert.equal(closureView.counts().leaves,1,'Waiting again never closes/replays the engine twice');

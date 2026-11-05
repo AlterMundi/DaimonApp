@@ -16,7 +16,7 @@ window.ConversationVoiceMode=(()=>{
     const review=document.createElement('button');review.type='button';review.hidden=true;
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(review,speak,back);
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
-    let available=false,opened=false,marker,timer,rearm,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
+    let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
     const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',foreground_saved:'Phrase saved · voice conversation',review:'Recording needs review'};
     let audioPaused=false,audioEnabled=true;
     const canResumeAudio=()=>continuous&&listening&&!preparing&&!directPending&&typeof onResumeAudio==='function'&&(audioPaused||!audioEnabled);
@@ -58,9 +58,9 @@ window.ConversationVoiceMode=(()=>{
     // The old alternating view keeps its shorter five-minute opt-in.
     function armClose(){clearTimeout(timer);timer=setTimeout(close,(continuous?10:5)*60*1000);}
     function close(){
-      if(!opened)return;opened=false;clearTimeout(timer);clearTimeout(rearm);
+      if(!opened)return lastClose;opened=false;clearTimeout(timer);clearTimeout(rearm);
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
-      entryState();onLeave();portrait.focus();
+      entryState();lastClose=onLeave();portrait.focus();return lastClose;
     }
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;

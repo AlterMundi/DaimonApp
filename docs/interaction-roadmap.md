@@ -136,7 +136,9 @@ handoff ownership and investigate the supported native speech/attention path,
 without user-input replay or another manual delegation loop.
 
 Avatar now exposes the existing For you panel and scoped pending count without
-stopping voice or renewing its budget. Explicit written-answer selection exits
+stopping voice or renewing its budget. Explicit request read-aloud waits for the
+existing capture/peer closure barrier before ordinary speech is requested.
+Explicit written-answer selection exits
 through ordinary hold/flush, preserves the draft and binds the exact question
 revision; reading/selection alone sends no answer. Shipped-shell synthetic
 Chromium qualifies this combined pending-question/voice/recovery UI at desktop

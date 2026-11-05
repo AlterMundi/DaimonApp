@@ -505,6 +505,9 @@ network poller, model call or automatic approval/answer is introduced. The count
 uses current scoped cards on open and updates with their existing observations.
 Reviewing does not hold voice, reopen a provider or reset either visit deadline.
 Closing the panel restores focus to Avatar, or its normal opener if Avatar ended.
+Explicit Listen to question first awaits the existing owner closure barrier,
+including a view already closed by its timer, before requesting ordinary audio.
+It keeps the same pending card visible and never opens a second speech owner.
 A withdrawn count hides the shortcut and returns focus to Back to conversation.
 
 Choosing Answer in conversation explicitly closes Avatar through its existing
@@ -517,7 +520,11 @@ that the current surface/grant does not already support.
 A model-free shipped-shell Chromium journey at1280x800 and390x844 observes a new
 question during native-style voice, reads it while its RTC peer stays connected,
 returns keyboard focus and chooses the exact question/revision for a written
-reply with its draft intact. Zero question-decision or ordinary-input POSTs;
+reply with its draft intact. A further synthetic read-aloud variant reproduced an audio request while native
+media was still open; the corrected variant waits until every native peer/context
+is closed. Its ordinary-audio route deliberately returns503, with no provider
+call; this proves ordering, not successful playback. Zero question-decision or
+ordinary-input POSTs;
 original retention/retry uses identical recording bytes/visit and does not reopen
 voice. Fullscreen count/withdrawal/deadline/focus tests and existing question
 choice/receipt/scope fixtures cover their respective boundaries. This is UI and

@@ -239,7 +239,12 @@ window.Conversation = (() => {
       read:key=>window.localStorage?.getItem(key),write:(key,value)=>window.localStorage?.setItem(key,value)
     }:undefined);let canSpeakLive=false;
     let pendingNavigation,internalNavigation,internalControls;
-    const requestControls = window.RequestControls.mount({api,getBinding:()=>binding,setCsrf,unauthorized:failed,onReply:(...args)=>{pendingNavigation?.close(false);voiceMode?.close();return selectFocus(...args);},onListen:listenTo,getCanListen:()=>canListen,getCanDecide:()=>!readOnly&&!standalone,makeCopy:read=>copyButton(()=>copyParts(read)),onSource:offerVoice});
+    async function listenFromAttention(source){
+      try{await voiceMode?.close();}
+      catch{audioState('Voice could not finish closing. Return to the conversation before listening.');return;}
+      return listenTo(source);
+    }
+    const requestControls = window.RequestControls.mount({api,getBinding:()=>binding,setCsrf,unauthorized:failed,onReply:(...args)=>{pendingNavigation?.close(false);voiceMode?.close();return selectFocus(...args);},onListen:listenFromAttention,getCanListen:()=>canListen,getCanDecide:()=>!readOnly&&!standalone,makeCopy:read=>copyButton(()=>copyParts(read)),onSource:offerVoice});
     const taskControls=window.HumanTaskControls?.mount({api,getBinding:()=>binding,setCsrf,unauthorized:failed,canReply:()=>!readOnly,makeCopy:read=>copyButton(()=>copyParts(read)),onReply:task=>{
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();voiceContext=undefined;selectFocus({source:`task:${task.id}`,revision:task.revision,context_only:true},`${task.label} · ${task.title}`);return true;
@@ -2240,12 +2245,14 @@ window.Conversation = (() => {
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:()=>{
-        if(voiceModePrevious?.continuous){voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}
-        else microphone?.hold();conversationOnly=false;sound?.update({conversationOnly:false});
+        let held;
+        if(voiceModePrevious?.continuous){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}
+        else held=microphone?.hold();conversationOnly=false;sound?.update({conversationOnly:false});
         if(voiceModePrevious?.enabled){voiceSuspended=voiceModePrevious.suspended;voiceStatus();}
         else disableVoice();
         voiceModePrevious=undefined;audioFilterChanged();companion?.update({});
         if(voiceEngine)voiceEngine.disabled=!!voiceSession?.active;
+        return held;
       }
     });
     setMode(initialMode(), true, false);
