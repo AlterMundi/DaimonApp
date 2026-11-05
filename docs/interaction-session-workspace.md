@@ -35,8 +35,12 @@ when the grouped rail controls are active.
 
 ## Status and permissions
 
-The rail lists all owned sessions within the existing 128-session bound, sorted
-by actual conversation activity rather than observer refresh time. Existing
+The authorized inventory retains all owned sessions within the existing128-session
+bound. The rail shows sessions active within24hours, with fresh running/tool/active-
+goal sessions first, then recent conversation activity. A fresh currently working
+session counts as active now even if its last conversational message is older.
+An old hidden row does not clear an explicit pin, recording or draft. Observer
+refresh time alone never qualifies an idle session as recent. Existing
 fresh observer facts show work, tools, active/blocked goals and human action.
 Stale/unknown facts are explicit and color is accompanied by text/icons.
 `result_available` means a retained final assistant message exists in that current
