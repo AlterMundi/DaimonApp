@@ -95,7 +95,7 @@ window.VoiceInput = (() => {
     const remaining=document.querySelector('#conversation-voice-remaining');
     const RECORDING_MILLIS=120000,clock=()=>window.performance?.now?.()??Date.now();
     const recovery=recoveryStore();let restoreBinding,restoring=false,continuousOwned=false,recoveryFree=false,lastConfirmed;
-    let checking=false,statusTimer;const statusAttempts=new Map();
+    let checking=false,statusTimer,noticeDismissible=false;const statusAttempts=new Map();
     function clearStatusTimer(){clearTimeout(statusTimer);statusTimer=undefined;}
     function scheduleStatus(immediate=false){
       if(!available||pending?.retentionBlocked||!pending?.uncertainSubmission||pending.binding!==getBinding()||document.hidden||window.navigator.onLine===false)return;
@@ -103,7 +103,7 @@ window.VoiceInput = (() => {
       if(statusTimer!==undefined&&!immediate)return;
       clearStatusTimer();statusTimer=setTimeout(()=>{statusTimer=undefined;void checkStatus(true);},immediate?0:[1000,3000,10000,30000][used]);
     }
-    function notice(text,attention=false){state.removeAttribute?.('data-live-caption');state.setAttribute('aria-live','polite');state.textContent=text;state.setAttribute('data-attention',String(attention));}
+    function notice(text,attention=false){noticeDismissible=false;state.removeAttribute?.('data-live-caption');state.setAttribute('aria-live','polite');state.textContent=text;state.setAttribute('data-attention',String(attention));}
     function caption(text){notice(text);state.setAttribute('data-live-caption','true');state.setAttribute('aria-live','off');state.scrollLeft=state.scrollWidth;}
     let available=false, liveAvailable=false, liveMode='prepared', generation=0, recorder, stream, parts=[], bytes=0, timer, pending, latestSaved, uploading=false, controller;
     let phase='idle', commit=false, readySelection,recordingStarted,countdownTimer,conversationCapture=false;
@@ -139,16 +139,16 @@ window.VoiceInput = (() => {
       button.disabled=!available || !getBinding() || !supported() || restoring || uploading || phase==='permission' || phase==='finalizing';
       button.setAttribute('aria-pressed',String(phase==='recording'));
       syncSend();
-      discard.hidden=!pending&&!['permission','recording','ready','finalizing'].includes(phase);discard.disabled=uploading;
+      discard.hidden=!noticeDismissible&&!pending&&!['permission','recording','ready','finalizing'].includes(phase);discard.disabled=uploading;
       if(save){save.hidden=!pending;save.disabled=uploading;}if(review)review.hidden=!pending;
-      discard.textContent='×';discard.setAttribute('aria-label',pending?'Discard local recording':'Discard recording');discard.title=pending?'Discard local recording':'Discard recording';
+      discard.textContent='×';discard.setAttribute('aria-label',noticeDismissible?'Dismiss recording notice':pending?'Discard local recording':'Discard recording');discard.title=noticeDismissible?'Dismiss recording notice':pending?'Discard local recording':'Discard recording';
       check.hidden=!pending; check.disabled=uploading||checking;check.textContent=checking?'Checking delivery…':'Check delivery';
       onActivity(uploading || ['permission','recording','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
     }
     function stopTracks() {if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
     function cancelRecording(message='Recording discarded. Nothing was sent.') {
       clearStatusTimer();checking=false;generation++;commit=false;latestSaved=undefined;const old=recorder;recorder=undefined;
-      if(old?.discard)old.discard();else if(old && old.state!=='inactive')old.stop();stopTracks();parts=[];bytes=0;phase='idle';notice(message,!!message && message!=='Recording discarded. Nothing was sent.');controls();
+      if(old?.discard)old.discard();else if(old && old.state!=='inactive')old.stop();stopTracks();parts=[];bytes=0;phase='idle';notice(message,!!message && message!=='Recording discarded. Nothing was sent.');noticeDismissible=!!message&&!pending;controls();
     }
     function reset() {
       clearStatusTimer();statusAttempts.clear();checking=false;
@@ -392,6 +392,7 @@ window.VoiceInput = (() => {
     button.addEventListener('click',()=>ownsSend()?submit():start());
     send?.addEventListener('click',()=>{if(ownsSend())return submit();});
     discard.addEventListener('click',()=>{
+      if(noticeDismissible){notice('');controls();return;}
       if(uploading)return;
       const frozen=pending,message=frozen?'Discard the local recording? An earlier submission may already be saved on the server. This does not cancel it. Save a copy first if you need the audio.':'Discard this voice recording? The recorded audio will be deleted without sending it. Choose Cancel to keep it.';
       if(window.confirm?.(message)){
