@@ -2,10 +2,11 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),crypto=require('node:crypto').webcrypto;
 const source=fs.readFileSync('dashboard/web/codex-conversation.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function locks(){const held=new Set();return {async request(name,_options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
 async function fixture(){
  const records=[],requests=[],sockets=[],peers=[],states=[];let listener,recoveryValues=[],failUpload=false,stops=0;
  const binding='a'.repeat(64),media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
- const navigator={mediaDevices:{getUserMedia:async()=>media}};
+ const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>media}};
  class Socket{
   static OPEN=1;constructor(){sockets.push(this);this.readyState=1;this.sent=[];queueMicrotask(()=>this.onopen());}
   send(raw){const v=JSON.parse(raw);this.sent.push(v);
@@ -24,7 +25,7 @@ async function fixture(){
   close(){this.connectionState='closed';this.onconnectionstatechange?.();}
  }
  class Audio{play(){return Promise.resolve();}pause(){}}
- const store={list:async()=>[...records],put:async v=>{records.push(v);},remove:async v=>{const i=records.findIndex(r=>r.id===v.id);if(i>=0)records.splice(i,1);}};
+ const store={list:async()=>[...records],put:async v=>{records.push(v);},sealNative:async(v,refs)=>{for(const ref of refs){const i=records.indexOf(ref);assert(i>=0);records.splice(i,1);}records.push(v);},remove:async v=>{const i=records.findIndex(r=>r.id===v.id);if(i>=0)records.splice(i,1);}};
  const window={RTCPeerConnection:Peer,indexedDB:{},location:{href:'https://example.test/interaction/'},
   VoiceInput:{recoveryStore:key=>{assert.equal(key,'codex_voice');return store;}},StreamingVoice:{supported:()=>true,
    wav(parts){return new Blob([new Uint8Array(44),...parts],{type:'audio/wav'});},
@@ -55,6 +56,10 @@ async function fixture(){
  failUpload=false;await engine.retry(original);
  assert.equal(records.length,0);assert.equal(original.audio_sha256,digest);
  assert.equal(requests.length,3);assert.equal(sockets.length,2,'Original retry opened another voice visit');
+ const prefix={...original,captureStop:'interrupted_prefix'},stalePrefix={...prefix,native_fragments:[{id:'stale-fragment'}]};
+ records.push({...prefix,ordinal:prefix.ordinal+1});
+ await assert.rejects(engine.discard(stalePrefix),/Recovered original changed/);assert.equal(records.length,1);
+ records[0]=prefix;await engine.discard(stalePrefix);assert.equal(records.length,0,'Discard after an uncertain prefix save removes only the identical sealed original');
  assert(states.some(v=>v.pending));await sleep(0);
  assert.equal(engine.active,false,'Retired socket callback revived the visit');
  let resolvePermission,oldStops=0;
@@ -96,7 +101,7 @@ async function captureDeadlineFixture(){
   async setRemoteDescription(){now+=7000;this.connectionState='connected';this.onconnectionstatechange();}
   close(){this.connectionState='closed';this.onconnectionstatechange?.();}
  }
- const store={list:async()=>[],put:async v=>{put=v;},remove:async()=>{}};
+ const store={list:async()=>[],put:async v=>{put=v;},sealNative:async v=>{put=v;},remove:async()=>{}};
  const window={location:{href:'https://example.test/interaction/'},RTCPeerConnection:Peer,indexedDB:{},
   VoiceInput:{recoveryStore:()=>store},StreamingVoice:{supported:()=>true,wav:parts=>new Blob([new Uint8Array(44),...parts]),
    openCapture:async()=>{let deadline;return {subscribe(fn){listener=fn;return ()=>{};},
@@ -105,7 +110,7 @@ async function captureDeadlineFixture(){
  async function fetch(url,options){return {ok:true,json:async()=>({visit:put.codex_visit,binding,
   recording:{ordinal:put.ordinal,audio_sha256:put.audio_sha256,audio_bytes:options.body.size,native_replay:'never'}})};}
  const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch','setTimeout','clearTimeout',source+';return window.CodexConversation;')(
-  window,{mediaDevices:{getUserMedia:async()=>media}},{hidden:false},crypto,Socket,Peer,class{pause(){}},fetch,setTimer,clearTimer);
+  window,{locks:locks(),mediaDevices:{getUserMedia:async()=>media}},{hidden:false},crypto,Socket,Peer,class{pause(){}},fetch,setTimer,clearTimer);
  const engine=api.create({headers:()=>({'x-dashboard-csrf':'action'}),getBinding:()=>binding});
  assert.equal(await engine.start(),true);listener({pcm:new Uint8Array(32000).buffer});
  // Seven seconds of SDP negotiation must not move the capture budget's deadline.

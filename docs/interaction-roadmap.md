@@ -37,6 +37,15 @@ for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
 ## Current provider priority —5November2026
 
+Native Codex page-reload durability now retains bounded local audio fragments
+before final original sealing. Recovered prefixes explicitly disclose a possibly
+missing tail; only explicit saving against a closed capable visit is allowed.
+Per-visit browser ownership and atomic exact-group transactions preserve live
+capture across another page's review. See the native voice guide's abrupt-reload
+section for measured loss/recovery, compatible rollback and remaining physical
+phone/background acceptance. This is a web durability correction, not completion
+of the ongoing device, full-memory or long-term workflow roadmap.
+
 Nicolas2a453b61 closes this Qwen iteration and selects moving now to OpenAI
 voice/GPT-Live. Unproven sustained phone/hearing/noise acceptance remains in
 #301/#304/#609; it is not a gate for starting the comparison and is not silently

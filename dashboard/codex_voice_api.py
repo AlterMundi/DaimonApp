@@ -49,7 +49,7 @@ def install(app,config,provider,authorize,origins):
     async def visit_status(visit:str,request:Request):
         binding=request.headers.get('x-voice-binding','')
         session=await http_owner(request,binding)
-        try:return await asyncio.to_thread(history.read,visit,session['human'],binding)
+        try:return {**await asyncio.to_thread(history.read,visit,session['human'],binding),'capture_prefix_retention':'v1'}
         except (OSError,ValueError):raise HTTPException(404,'Voice visit unavailable')from None
 
     @app.get('/api/interaction/voice/codex/visits')
@@ -67,6 +67,9 @@ def install(app,config,provider,authorize,origins):
     async def original(visit:str,ordinal:int,request:Request):
         binding=request.headers.get('x-voice-binding','')
         session=await http_owner(request,binding,write=True)
+        capture_stop=request.headers.get('x-voice-capture-stop')
+        if capture_stop not in (None,'interrupted_prefix'):
+            raise HTTPException(400,'Unknown native recording provenance')
         if not 0<=ordinal<32:raise HTTPException(400,'Recording index exceeds bound')
         if uploads.locked():raise HTTPException(429,'Two voice originals are being retained')
         try:
@@ -79,7 +82,7 @@ def install(app,config,provider,authorize,origins):
                         data.extend(part)
                 if (await authorize(request))['human']!=session['human']:
                     raise HTTPException(403,'Voice audience changed')
-                receipt=await asyncio.to_thread(history.recording,visit,session['human'],binding,ordinal,bytes(data),provider)
+                receipt=await asyncio.to_thread(history.recording,visit,session['human'],binding,ordinal,bytes(data),provider,capture_stop=capture_stop)
             return {'visit':visit,'binding':binding,'recording':receipt}
         except (OSError,ValueError,ProviderUnavailable):
             raise HTTPException(409,'Original could not be confirmed; keep the same local audio and inspect its receipt')from None

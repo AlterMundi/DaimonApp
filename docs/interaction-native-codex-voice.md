@@ -4,6 +4,59 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Abrupt page reload and retained audio prefixes
+
+Native microphone capture now journals immutable approximately one-second WAV
+fragments in the existing local recovery store, independently of remote uploads.
+Normal approximately30second originals atomically replace their exact fragment
+group before upload. The combined ordinary/native20MiB and128record limits remain;
+each group has at most32fragments, with at most two pending local transactions.
+Storage failure or lag holds capture visibly, preserving retained audio. No new
+capture service, ASR route, model call or native work admission is introduced.
+
+This fixes an observed reload loss: real Chromium captured112000PCMbytes but
+reloaded with zero local originals and zero uploads. The same fixture's ordered
+closure retained its original. An asynchronous pagehide flush cannot guarantee
+durability when the document is destroyed. The corrected shipped-shell regression
+recovers96000committed PCMbytes from that112000byte capture. It labels the result
+**Recovered audio prefix; ending may be missing**, never a complete recording.
+Uncommitted frames and the subsecond tail can still be lost on abrupt destruction.
+Neither this result nor graceful pagehide qualification proves physical phone
+suspend/process-kill acceptance.
+
+Reload does not reopen the microphone or upload automatically. Explicit Retry
+saving first requires a closed matching visit and the server's
+`capture_prefix_retention:v1` capability. It seals the exact contiguous fragments,
+sends `x-voice-capture-stop: interrupted_prefix` and verifies the immutable partial
+receipt. An unavailable or older backend refuses before the write. A failed
+receipt preserves that same sealed prefix for byte-identical explicit retry or
+discard; Save audio remains available. This never replays accepted conversation
+input or native work. Server receipts preserve the client-reported partial meaning
+across restart and refuse changing complete/partial provenance for the same bytes.
+
+An origin-scoped [Web Lock](https://w3c.github.io/web-locks/#api-lock-manager-request)
+per visit remains held through capture and queued retention; page destruction
+releases it. Another page may review retained fragments but cannot seal/discard
+them while the producer owns the lock. Recovery uses `ifAvailable`, without
+stealing, polling or a heartbeat. A browser without this API refuses native capture
+before opening a provider or microphone. Exact group membership and the sealed
+group fence reject stale subsets and late fragment appends.
+
+Fragment envelopes use `telecodex.voice-recovery/v4`; sealing returns to existing
+compatible original envelopes. **Rollback must retain a fragment-aware browser
+reader** while v4 data exists. Reverting only the backend keeps Save audio and
+refuses partial uploads through the capability check. Do not restore browser or
+server databases, erase originals, force an older reader or replay input. This
+web-only change preserves native/Core/configuration/defaults and all600second
+visit/context/storage bounds. Receiving selection is recorded separately.
+
+Qualification includes actual IndexedDB-style transaction race fixtures, server
+HTTP/history restart/provenance tests, and the mounted1280/390px normal native
+journey. The actual Chromium reload regression also checks real lock ownership
+and release, older-server refusal and an identical retry after a503receipt.
+These are synthetic transport/media fixtures with zero provider/native calls.
+Reuse the selected652 native CI baseline; no Rust implementation changed.
+
 ## Initial receiving activation —5 November2026
 
 CompAII ITACA first exposed the separately selectable mode in UI `0976269baac7`,

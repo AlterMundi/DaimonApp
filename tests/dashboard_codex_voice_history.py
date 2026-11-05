@@ -53,6 +53,17 @@ class History(unittest.TestCase):
         self.audio=wav_bytes(b'\x01\x00'*8000)
     def retain(self,ordinal=0,audio=None):
         return self.history.recording(self.visit,100,'a'*64,ordinal,audio or self.audio,self.provider)
+    def test_interrupted_prefix_is_closed_scoped_and_cannot_be_relabelled(self):
+        def prefix():return self.history.recording(self.visit,100,'a'*64,0,self.audio,self.provider,capture_stop='interrupted_prefix')
+        with self.assertRaises(ValueError):prefix()
+        self.provider.retain_voice_capture.assert_not_called()
+        self.history.state(self.visit,100,'a'*64,'closed')
+        receipt=prefix();self.assertEqual(receipt['capture_stop'],'interrupted_prefix')
+        self.assertIn('unsaved tail may be missing',receipt['meaning'])
+        self.assertEqual(prefix(),receipt)
+        with self.assertRaises(ValueError):self.retain()
+        restarted=CodexVoiceHistory(self.root/'visits')
+        self.assertEqual(restarted.read(self.visit,100,'a'*64)['recordings'],[receipt])
     def test_memory_catalog_scopes_sources_and_never_copies_transcripts(self):
         item={'id':'remembered','type':'transcriptSegment','role':'user','text':'Actual retained correction',
               'realtimeSessionId':self.session}

@@ -6,8 +6,8 @@ window.CodexConversation=(()=>{
   function create({headers,getBinding,onState=()=>{},onCaption=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
     const recovery=window.VoiceInput?.recoveryStore('codex_voice');
     let socket,peer,channel,media,capture,unsubscribe,audio,visit,binding,active=false,starting=false,closing=false;
-    let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),timer;
-    let audible=true,paused=false,connected=false,restored,restoring,historyBefore,historyGeneration=0,openingCount=0;
+    let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),durable=Promise.resolve(),timer,fragmentParts=[],fragmentBytes=0,segment,persistingFragments=0;
+    let audible=true,paused=false,connected=false,restored,restoring,historyBefore,historyGeneration=0,openingCount=0,unlockCapture;
     const originals=new Map();
     const state=message=>onState({active,starting,floor:false,pending:originals.size>0,working:closing,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',message});
@@ -19,33 +19,75 @@ window.CodexConversation=(()=>{
       return response.json();
     }
     async function review(){
-      const values=await recovery.list();for(const value of values)originals.set(value.id,value);
+      const values=await recovery.list(),groups=new Map();originals.clear();
+      for(const value of values){
+        if(!value.native_fragment){originals.set(value.id,value);continue;}
+        const group=groups.get(value.fragment_group)||[];group.push(value);groups.set(value.fragment_group,group);
+      }
+      for(const [id,fragments] of groups){
+        fragments.sort((a,b)=>a.fragment_offset-b.fragment_offset);let offset=0;
+        if(!/^[a-f0-9-]{36}$/.test(id)||fragments.length>32)throw Error('Native recording fragments need review');
+        const first=fragments[0];
+        for(const value of fragments){
+          if(value.fragment_offset!==offset||value.binding!==first.binding||value.codex_visit!==first.codex_visit||value.ordinal!==first.ordinal||value.blob.size<=44||value.blob.size>64044||await digest(value.blob)!==value.audio_sha256)throw Error('Native recording fragments changed');
+          offset+=value.blob.size-44;
+        }
+        if(offset>31*32000)throw Error('Native recording prefix exceeds its bound');
+        const blob=window.StreamingVoice.wav(await Promise.all(fragments.map(value=>value.blob.slice(44).arrayBuffer())));
+        originals.set(id,{...first,id,blob,native_fragment:undefined,fragment_group:undefined,fragment_offset:undefined,
+          audio_sha256:await digest(blob),captureStop:'interrupted_prefix',native_fragments:fragments});
+      }
       onRecovery([...originals.values()]);state();return [...originals.values()];
     }
-    async function upload(original){
+    function withVisitLock(id,run){
+      if(!navigator.locks?.request)return Promise.reject(Error('This browser cannot safely coordinate local voice recovery'));
+      return navigator.locks.request('daimon-native-voice:'+id,{ifAvailable:true},lock=>{
+        if(!lock)throw Error('The original voice capture is still finishing in another page');return run();
+      });
+    }
+    async function upload(original,prefixChecked=false){
       if(original.binding!==getBinding())throw Error('Recording belongs to a different conversation');
+      if(original.captureStop==='interrupted_prefix'&&!prefixChecked){
+        const status=await request(`visits/${original.codex_visit}`);
+        if(status.capture_prefix_retention!=='v1'||status.state!=='closed')throw Error('Keep the recovered prefix until its original voice visit is closed and supported');
+      }
       const value=await request(`visits/${original.codex_visit}/recordings/${original.ordinal}`,{
-        method:'POST',headers:{'content-type':'audio/wav'},body:original.blob});
+        method:'POST',headers:{'content-type':'audio/wav',...(original.captureStop==='interrupted_prefix'?{'x-voice-capture-stop':'interrupted_prefix'}:{})},body:original.blob});
       const receipt=value.recording;
       if(value.visit!==original.codex_visit||value.binding!==original.binding
           ||receipt?.ordinal!==original.ordinal||receipt.audio_sha256!==original.audio_sha256
-          ||receipt.audio_bytes!==original.blob.size||receipt.native_replay!=='never')throw Error('Original receipt changed');
+          ||receipt.audio_bytes!==original.blob.size||receipt.native_replay!=='never'||original.captureStop==='interrupted_prefix'&&receipt.capture_stop!=='interrupted_prefix')throw Error('Original receipt changed');
       await recovery.remove(original);originals.delete(original.id);onRecovery([...originals.values()]);
       return receipt;
     }
+    function checkpoint(){
+      if(fragmentBytes<32000)return;
+      if(persistingFragments>=2){void hold('Local recording storage is falling behind. Your retained audio needs review.');return;}
+      const selected=segment,blob=window.StreamingVoice.wav(fragmentParts),offset=selected.offset;selected.offset+=fragmentBytes;
+      fragmentParts=[];fragmentBytes=0;persistingFragments++;
+      durable=durable.then(async()=>{
+        if(selected.failed)return;
+        const value={id:crypto.randomUUID(),binding:selected.binding,codex_visit:selected.visit,ordinal:selected.ordinal,
+          blob,mime:'audio/wav',capture_started:selected.started,native_review:true,native_fragment:true,
+          fragment_group:selected.id,fragment_offset:offset,audio_sha256:await digest(blob)};
+        await recovery.put(value,true);selected.fragments.push(value);
+      }).catch(()=>{selected.failed=true;void hold('Local recording storage needs review. Save the retained original.');}).finally(()=>{persistingFragments--;});
+    }
     function flush(captureStop){
       if(!bytes)return;
-      const blob=window.StreamingVoice.wav(parts),index=ordinal++,id=crypto.randomUUID(),selectedVisit=visit,selectedBinding=binding;
-      parts=[];bytes=0;
-      chain=chain.then(async()=>{
+      const blob=window.StreamingVoice.wav(parts),index=ordinal++,selected=segment,id=selected.id,selectedVisit=visit,selectedBinding=binding;
+      parts=[];bytes=0;fragmentParts=[];fragmentBytes=0;
+      segment={id:crypto.randomUUID(),binding,visit,ordinal,started:Date.now(),offset:0,fragments:[]};
+      const sealed=durable.then(async()=>{
         const value={id,binding:selectedBinding,codex_visit:selectedVisit,ordinal:index,blob,
           mime:'audio/wav',capture_started:Date.now(),native_review:true,captureStop,
           audio_sha256:await digest(blob)};
         // Keep the in-memory original even if durable local admission fails.
         originals.set(id,value);onRecovery([...originals.values()]);
-        await recovery.put(value,true);
-        try{await upload(value);}catch{state('Original recording kept for recovery.');}
-      }).catch(()=>{void hold('Local recording storage needs review. Save the retained original.');});
+        await recovery.sealNative(value,selected.fragments);return value;
+      });
+      durable=sealed.catch(()=>{void hold('Local recording storage needs review. Save the retained original.');});
+      chain=chain.then(async()=>{const value=await sealed;try{await upload(value);}catch{state('Original recording kept for recovery.');}}).catch(()=>{void hold('Local recording storage needs review. Save the retained original.');});
     }
     async function hold(message='Voice paused. Accepted work continues.'){
       if(closing)return;closing=true;active=starting=connected=false;clearTimeout(timer);state(message);
@@ -62,17 +104,19 @@ window.CodexConversation=(()=>{
         let deadline;await Promise.race([ended,new Promise(resolve=>{deadline=setTimeout(resolve,3000);})]);clearTimeout(deadline);
       }
       socket?.close();socket=undefined;closeAck=undefined;
-      await chain;closing=false;state(message);onRecovery([...originals.values()]);
+      await chain;unlockCapture?.();unlockCapture=undefined;closing=false;state(message);onRecovery([...originals.values()]);
     }
     async function start(){
       if(active||starting||closing||document.hidden||!supported())return false;
       if(openingCount>=2){state('Finish the pending microphone permission before starting again.');return false;}
       openingCount++;
       binding=getBinding();const owned=++epoch;visit=crypto.randomUUID();parts=[];bytes=total=ordinal=0;
-      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio;
+      fragmentParts=[];fragmentBytes=0;segment={id:crypto.randomUUID(),binding,visit,ordinal:0,started:Date.now(),offset:0,fragments:[]};
+      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio,ownedUnlock;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&selectedBinding===getBinding();
       function closeRetired(){
         ownedCapture?.close();ownedChannel?.close();ownedPeer?.close();ownedAudio?.pause();
+        ownedUnlock?.();
         for(const track of ownedMedia?.getTracks()||[])track.stop();
       }
       starting=true;paused=false;connected=false;state('Preparing voice');
@@ -81,6 +125,10 @@ window.CodexConversation=(()=>{
         if(!current())throw Error('Voice recovery read retired');
         if(pending.some(v=>v.binding!==binding)||pending.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024-600*32000)
           throw Error('Recover retained originals before starting another voice visit.');
+        await new Promise((resolve,reject)=>{
+          withVisitLock(visit,()=>new Promise(done=>{let released=false;ownedUnlock=()=>{if(!released){released=true;done();}};resolve();})).catch(reject);
+        });
+        if(!current()){ownedUnlock?.();throw Error('Voice storage ownership retired');}unlockCapture=ownedUnlock;
         const target=new URL('api/interaction/voice/codex',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
         socket=new WebSocket(target);
         const transport=socket;
@@ -138,7 +186,7 @@ window.CodexConversation=(()=>{
           if(!value.pcm)return;
           const pcm=value.pcm;
           if(!(pcm instanceof ArrayBuffer)||!pcm.byteLength||pcm.byteLength%2||pcm.byteLength>32000||total+pcm.byteLength>seconds*32000){void hold('Voice capture reached its bound.');return;}
-          parts.push(pcm);bytes+=pcm.byteLength;total+=pcm.byteLength;
+          parts.push(pcm);bytes+=pcm.byteLength;total+=pcm.byteLength;fragmentParts.push(pcm);fragmentBytes+=pcm.byteLength;checkpoint();
           if(bytes>=30*32000)flush();
           if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.');
         });
@@ -178,8 +226,27 @@ window.CodexConversation=(()=>{
     }
     return {start,reconnect:start,hold,restoreHistory,
       resetHistory:()=>{historyGeneration++;restored=historyBefore=undefined;onHistory({loading:false,more:false});},
-      retry:async original=>{if(original.binding!==getBinding())throw Error('Recording belongs to a different conversation');binding=original.binding;await upload(original);state();},
-      discard:async original=>{await recovery.remove(original);originals.delete(original.id);onRecovery([...originals.values()]);state();},
+      retry:async original=>{if(original.binding!==getBinding())throw Error('Recording belongs to a different conversation');binding=original.binding;
+        if(original.captureStop==='interrupted_prefix')return withVisitLock(original.codex_visit,async()=>{
+          const status=await request(`visits/${original.codex_visit}`);if(status.state!=='closed'||status.capture_prefix_retention!=='v1')throw Error('Original voice visit is not closed or prefix recovery is unavailable');
+          if(original.native_fragments){
+            const current=(await recovery.list()).find(value=>value.id===original.id);
+            if(current){
+              if(current.native_fragment||current.audio_sha256!==original.audio_sha256||current.binding!==original.binding||current.codex_visit!==original.codex_visit||current.ordinal!==original.ordinal||current.captureStop!=='interrupted_prefix')throw Error('Recovered original changed');
+              original=current;
+            }else{const {native_fragments,...sealed}=original;await recovery.sealNative(sealed,native_fragments);original=sealed;}
+            originals.set(original.id,original);
+          }
+          await upload(original,true);state();
+        });
+        await upload(original);state();},
+      discard:async original=>{if(original.native_fragments)await withVisitLock(original.codex_visit,async()=>{
+        const current=(await recovery.list()).find(value=>value.id===original.id);
+        if(current){
+          if(current.native_fragment||current.audio_sha256!==original.audio_sha256||current.binding!==original.binding||current.codex_visit!==original.codex_visit||current.ordinal!==original.ordinal||current.captureStop!=='interrupted_prefix')throw Error('Recovered original changed');
+          await recovery.remove(current);
+        }else await recovery.discardNative(original.native_fragments);
+      });else await recovery.remove(original);originals.delete(original.id);onRecovery([...originals.values()]);state();},
       setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},
       pause:()=>{paused=true;audio?.pause();state();},resume:()=>{paused=false;audio?.play().catch(()=>{paused=true;state('Tap Resume audio to listen.');});state();},
       release:()=>false,get originals(){return [];}, // Never feed native originals to ordinary Send recovery.

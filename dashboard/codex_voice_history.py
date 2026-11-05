@@ -382,7 +382,9 @@ class CodexVoiceHistory:
             selected['observed_at']=time.time()
             value['items'].append(selected);self._write(value);return value
 
-    def recording(self,ident,human,binding,ordinal,data,provider):
+    def recording(self,ident,human,binding,ordinal,data,provider,*,capture_stop=None):
+        if capture_stop not in (None,'interrupted_prefix'):
+            raise ValueError('Unknown native recording provenance')
         if type(ordinal)is not int or not 0<=ordinal<32:
             raise ValueError('Native voice recording index exceeds bound')
         from .live_transcription import wav_bytes
@@ -393,9 +395,12 @@ class CodexVoiceHistory:
         original=str(uuid.uuid5(uuid.UUID(self.ident(ident)),'human-recording:'+str(ordinal)))
         with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
+            if capture_stop and value['state']!='closed':
+                raise ValueError('Recovered prefixes require a closed voice visit')
             old=next((r for r in value['recordings']if r['ordinal']==ordinal),None)
             if old is not None:
                 if old['audio_sha256']!=digest:raise ValueError('Original recording cannot be replaced')
+                if old.get('capture_stop')!=capture_stop:raise ValueError('Original recording provenance cannot be changed')
             # Preserve the same shared receiver store/budgets as ordinary voice.
             # This path never invokes ASR, input dispatch, native work or Retry.
             from pathlib import Path
@@ -428,6 +433,8 @@ class CodexVoiceHistory:
             receipt={'id':original,'ordinal':ordinal,'audio_sha256':digest,'audio_bytes':len(data),
                 'mime':'audio/wav','archive':archive,'native_replay':'never',
                 'meaning':'App microphone recording for this visit; no inferred word timing or new work admission'}
+            if capture_stop:
+                receipt.update(capture_stop=capture_stop,meaning='Client-reported recovered audio prefix; the unsaved tail may be missing. No inferred word timing or new work admission')
             if old is None:value['recordings'].append(receipt)
             else:value['recordings'][value['recordings'].index(old)]=receipt
             self._write(value)

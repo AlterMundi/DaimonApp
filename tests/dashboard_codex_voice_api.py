@@ -266,6 +266,22 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.client.post(route,content=wav_bytes(b'\x02\x00'*16000),headers=self.headers).status_code,409)
         status=self.client.get(route.rsplit('/recordings',1)[0],headers=self.headers).json()
         self.assertEqual(len(status['recordings']),1);self.assertEqual(len(status['items']),1)
+    def test_prefix_retention_requires_closed_visit_and_preserves_provenance(self):
+        audio=wav_bytes(b'\x01\x00'*16000)
+        headers={**self.headers,'x-voice-capture-stop':'interrupted_prefix'}
+        route=f'/api/interaction/voice/codex/visits/{self.visit}'
+        with self.socket()as socket:
+            self.start(socket)
+            self.assertEqual(self.client.get(route,headers=self.headers).json()['capture_prefix_retention'],'v1')
+            self.assertEqual(self.client.post(route+'/recordings/0',content=audio,headers=headers).status_code,409)
+            self.close(socket)
+        first=self.client.post(route+'/recordings/0',content=audio,headers=headers)
+        self.assertEqual(first.status_code,200,first.text)
+        self.assertEqual(first.json()['recording']['capture_stop'],'interrupted_prefix')
+        self.assertEqual(self.client.post(route+'/recordings/0',content=audio,headers=headers).json(),first.json())
+        self.assertEqual(self.client.post(route+'/recordings/0',content=audio,headers=self.headers).status_code,409)
+        self.assertEqual(self.client.post(route+'/recordings/1',content=audio,headers={**headers,'x-voice-capture-stop':'invented'}).status_code,400)
+        self.assertEqual(self.owner.collected,[])
     def test_bad_binding_or_shared_capacity_refuses_before_native_open(self):
         for occupied,meta in ((False,{**self.meta,'binding':'b'*64}),(True,self.meta)):
             if occupied:self.app.state.voice_active.add(100)
