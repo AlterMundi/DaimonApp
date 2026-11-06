@@ -53,6 +53,17 @@ class Creation(unittest.TestCase):
         self.assertEqual(call.session_id, 'opaque:live/example')
         self.assertNotIn('answer', repr(call))
 
+    def test_stored_fork_uses_exact_source_route_without_copying_prompt_or_retry(self):
+        client=self.client(httpx.Response(200,json={'session':{'id':'opaque:live/child'},'transport':{'type':'webrtc','sdp':'v=0 answer'}}))
+        call=client.fork('opaque:live/example','v=0 child offer')
+        self.assertEqual(call.session_id,'opaque:live/child')
+        self.assertEqual(str(self.calls[0].url),'https://api.openai.com/v1/live/sessions/opaque%3Alive%2Fexample/fork')
+        self.assertEqual(json.loads(self.calls[0].content),{'transport':{'type':'webrtc','sdp':'v=0 child offer'}})
+        with self.assertRaises(LiveUnavailable):client.create('v=0 fallback',self.spec)
+        self.assertEqual(len(self.calls),1)
+        with self.assertRaises(ValueError):self.client(self.success()).fork('', 'v=0 offer')
+        with self.assertRaises(LiveUnavailable):self.client(self.success()).fork('opaque:live/example','v=0 offer')
+
     def test_client_delegation_keeps_existing_backend_outside_voice_session(self):
         spec = session_spec('Owner voice context', client_delegation=True)
         self.client(self.success()).create('v=0 offer', spec)

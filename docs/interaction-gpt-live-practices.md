@@ -175,6 +175,26 @@ Semantic checkpoint/renewal/reconnect, integrating memory/work/tools,
 artifacts/questions and family-pilot acceptance remain unfinished. Do not present
 this isolated Responses comparison as the full CompAII conversation.
 
+### Provider-stored continuation option —6November2026
+
+The public comparison now has an owner-selected stored-fork path, default off and
+requiring explicit permitted project storage. It follows OpenAI's WebRTC fork
+workflow rather than reconstructing a nested startup prompt: one new SDP offer,
+one trusted closed parent, a flat source/configuration reference and a new child
+ID for media/control. Known pending/client requirements or changed policies block
+admission before the microphone. The existing fresh-call digest contract remains
+compatible; an uncertain fork never retries as a fresh session.
+
+Component25/mounted23 synthetic tests cover the encoded source route, new child
+ID, one root plus repeated continuations, wall-clock reversal, changed/nonstored
+parents, pending work, missing responses, cross-process exact readback and known-child recovery after
+the closed parent becomes unavailable.
+These prove protocol/journal construction, not actual project storage, semantic
+recall, backend/tool inheritance, useful speech or hearing across forks. The
+[current contract](interaction-public-gpt-live.md#optional-provider-stored-continuation)
+retains those gaps and OpenAI's storage/data-policy prerequisites. Ordinary
+provider defaults, current native/Core work and diagnostic bounds are unchanged.
+
 ### Instruction delivery and the public transport boundary —6November2026
 
 Two additional native controls used the same isolated owner/thread, not human

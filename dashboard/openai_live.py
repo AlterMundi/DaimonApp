@@ -104,6 +104,13 @@ def creation_request(sdp, spec):
     return {'session': frozen, 'transport': {'type': 'webrtc', 'sdp': sdp}}
 
 
+def fork_request(source_session,sdp):
+    """Only the documented WebRTC offer; provider inherits stored context."""
+    if not _text(source_session,1024) or not _text(sdp,65536) or not sdp.startswith('v=0'):
+        raise ValueError('Select a retained stored session and bounded WebRTC offer')
+    return {'transport':{'type':'webrtc','sdp':sdp}}
+
+
 @dataclass(frozen=True)
 class LiveCall:
     session_id: str
@@ -138,6 +145,15 @@ class OpenAILive:
 
     def create(self, sdp, spec):
         payload = creation_request(sdp, spec)
+        return self._post(self.endpoint,payload)
+
+    def fork(self,source_session,sdp):
+        payload=fork_request(source_session,sdp)
+        call=self._post(self.endpoint+'/'+quote(source_session,safe='')+'/fork',payload,successful=(200,201))
+        if call.session_id==source_session:raise LiveUnavailable('creation_unconfirmed')
+        return call
+
+    def _post(self,endpoint,payload,*,successful=(201,)):
         key = self._project_key()
         with self._guard:
             if self._attempted:
@@ -147,9 +163,9 @@ class OpenAILive:
             deadline = time.monotonic() + 30
             with httpx.Client(transport=self._transport, follow_redirects=False,
                               timeout=httpx.Timeout(20, connect=5, write=10, pool=5)) as client:
-                with client.stream('POST', self.endpoint,
+                with client.stream('POST', endpoint,
                         headers={'Authorization': 'Bearer ' + key}, json=payload) as response:
-                    if response.status_code != 201:
+                    if response.status_code not in successful:
                         outcome = ('creation_rejected' if 400 <= response.status_code < 500
                                    and response.status_code != 408 else 'creation_unconfirmed')
                         raise LiveUnavailable(outcome, status=response.status_code)
