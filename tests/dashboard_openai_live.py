@@ -169,6 +169,9 @@ class DurableCreation(unittest.TestCase):
 
     def test_exact_offer_retry_in_a_new_process_only_reads_the_receipt(self):
         first = self.create()
+        reordered = {key: self.spec[key] for key in reversed(self.spec)}
+        self.assertEqual(self.visits.create(self.ident, 100, self.owner, 'v=0 offer',
+            reordered, self.client(self.success())), first)
         program = '''import json,sys
 sys.path.insert(0,sys.argv[1])
 from dashboard.openai_live_visits import LiveCreations

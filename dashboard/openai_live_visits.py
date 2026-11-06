@@ -133,7 +133,7 @@ class LiveCreations:
         owner = self._owner(human, frozen)
         path = self._path(ident)
         request = creation_request(sdp, spec)
-        digest = hashlib.sha256(json.dumps(request, allow_nan=False, ensure_ascii=False,
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, allow_nan=False, ensure_ascii=False,
             separators=(',', ':')).encode()).hexdigest()
         with history_lock(self.root / '.lock'):
             if path.exists() or path.is_symlink():
