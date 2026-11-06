@@ -31,6 +31,7 @@ const server=http.createServer(async(req,res)=>{
     {id:`retained-source-${i}`,role:i%2?'assistant':'user',text:`${older?'Earlier retained':'Recent retained'} voice source ${i}`,observed_at:1704067100-i*10}]})),more:!older,before:older?null:cursor});
   }
   if(reloadCase&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='GET')return json({state:'closed',...(prefixSupport?{capture_prefix_retention:'v1'}:{})});
+  if(route.endsWith('/capture/ended')&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST')return json({capture:'ended'});
   if(route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST'){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks);
    const parts=route.split('/'),visit=parts[4],ordinal=Number(parts[6]);
@@ -103,7 +104,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   window.WebSocket=class{
    static OPEN=1;constructor(url){if(!String(url).endsWith('/voice/codex'))return new actualSocket(url);fixture.opens++;this.readyState=1;queueMicrotask(()=>this.onopen());}
    send(raw){const value=JSON.parse(raw),emit=value=>queueMicrotask(()=>this.onmessage({data:JSON.stringify(value)}));
-    if(value.binding){this.visit=value.id;emit({type:'prepared',id:this.visit,session_seconds:600});}
+    if(value.binding){this.visit=value.id;emit({type:'prepared',id:this.visit,session_seconds:600,logical_visit:'v1',admission:null});}
+    if(value.type==='capture')emit({type:'capture_ready',id:this.visit,admission:{id:this.visit,remaining_seconds:600,expires:Date.now()/1000+600,max_input_pcm_bytes:600*32000,generation:0}});
     if(value.type==='offer'){emit({type:'answer',id:this.visit,sdp:'v=0 synthetic-answer'});emit({type:'transcript',id:this.visit,item:{id:'source-1',role:'assistant',text:'A synthetic native voice reply.'}});}
     if(value.type==='close')emit({type:'closed',id:this.visit,confirmed:true});
    }
@@ -113,8 +115,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
+ assert.equal(await page.locator('#conversation-compose #conversation-voice-engine').count(),0,'Voice engine is not an ordinary composer control');
+ assert.equal(await page.locator('#conversation-diagnostics #conversation-voice-engine').count(),1,'Development voice selection lives under the hood');
+ async function selectEngine(value){
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.locator('#conversation-voice-engine').selectOption(value);
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+ }
+
  if(codexCase&&reloadCase){
-  await page.locator('#conversation-voice-engine').selectOption('codex');await page.locator('#conversation-companion pre').click();
+  await selectEngine('codex');await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');await page.waitForTimeout(3500);
   const before=await page.evaluate(()=>codexFixture.captureBytes);assert(before>32000);
   const locked=await page.evaluate(async()=>{const row=(await VoiceInput.recoveryStore('codex_voice').list())[0];return navigator.locks.request('daimon-native-voice:'+row.codex_visit,{ifAvailable:true},lock=>lock===null);});
@@ -138,7 +148,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0);assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   report.state='qualified-native-reload-prefix-recovery';report.beforePCM=before;report.recovered=recovered;report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
  }else if(codexCase){
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   await page.locator('#conversation-voice-choice').waitFor({state:'visible'});
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','OpenAI never replaces the default');
   assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   await page.locator('#conversation-message').fill('My draft survives voice history reading.');
@@ -151,7 +163,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.locator('#conversation-message').inputValue(),'My draft survives voice history reading.');
   await page.locator('#conversation-message').fill('');
   await page.locator('#conversation-message').fill('My unsent draft stays while I review the question.');
-  await page.locator('#conversation-voice-engine').selectOption('codex');
+  await selectEngine('codex');
   await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});
   assert(await page.locator('#conversation-voice-engine').isDisabled());
@@ -200,7 +212,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0,'Native original recovery never uses ordinary Send');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1,'Recovery does not reopen or replay voice');
   assert.equal(await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('daimon-voice-recovery',1);r.onsuccess=()=>{const db=r.result,tx=db.transaction('capture','readonly'),q=tx.objectStore('capture').get('pending');q.onsuccess=()=>{resolve(q.result===undefined);db.close();};q.onerror=reject;};r.onerror=reject;})),true);
-  await page.locator('#conversation-voice-engine').selectOption('provider');
+  await selectEngine('provider');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1);
   assert.equal(errors.length,0,errors.join('\n'));
   report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.attention={reviewKeptCapture:true,exactQuestionReply:true,unsentDraftPreserved:true,decisionPosts:questionPosts,...(listenCase?{listenAfterClosure:true}:{} )};report.viewports=['1280x800','390x844'];

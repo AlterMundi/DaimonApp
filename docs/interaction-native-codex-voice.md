@@ -300,7 +300,8 @@ conversation defaults remain unchanged. Current-owner capability, public shell,
 exact native/browser assets and local health passed. No provider call, voice
 session or microphone capture accompanied activation.
 
-Choose **OpenAI · Codex voice** before entering Avatar. Engine selection remains
+Choose **OpenAI · Codex voice** in **Under the hood** before entering Avatar.
+The selector is a development control, outside the ordinary composer. Engine selection remains
 frozen during a visit. The existing mode stays available; no automatic fallback.
 This is receiving delivery, not sustained phone/hearing acceptance or complete
 long-term continuity. Keep those gaps explicit. Roll back the web/configuration
@@ -394,7 +395,7 @@ observations into a provider outage. The successful case used the mounted
 application's actual media, original-retention and reconnection paths.
 
 The browser defaults to the existing provider. Explicitly choose
-`OpenAI · Codex voice` before entering Avatar. Freeze engine and enrolled
+`OpenAI · Codex voice` in **Under the hood** before entering Avatar. Freeze engine and enrolled
 integrating thread per visit. Disable switching during capture. Failure or loss
 of capability never silently falls back or changes selection. Ordinary
 conversation work and the Qwen/Gemini configuration remain intact.
