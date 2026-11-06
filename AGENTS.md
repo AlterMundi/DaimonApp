@@ -292,3 +292,12 @@ from unchanged Rust/audio builds; source/dependency/unknown-file changes keep
 normal qualification. The embedded scope program is regression-tested. Actual
 isolated old-to-new package qualification remains required separately; mocks do
 not prove receiving adoption. This moves an existing check, never skips it.
+
+The shared avatar wardrobe remains the pinned Ani/Oliva editor, adapted through
+the existing account API and a closed same-origin parent bridge. Keep models,
+designs and immutable revisions distinct. Saving/editing never activates; render
+the candidate before a generation-conditional use and preserve the previous art
+on failure. Initial account loading keeps editor inputs inert. Revision lists
+carry summaries, not all designs. Artwork choices never assert mic/agent state.
+See docs/interaction-avatar-workshop.md; source/browser fixtures are not real
+Home-cookie, receiver, child or device acceptance.

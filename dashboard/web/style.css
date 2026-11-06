@@ -1148,3 +1148,13 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 #heartbeat-lanes span {font-size:14px;line-height:1.35;}
 @keyframes heartbeat-pulse {50% {opacity:.35;}}
 @media (prefers-reduced-motion:reduce) {.heartbeat-heart[data-state="operational"] {animation:none;}}
+
+/* The shared workshop keeps its authored layout inside one account-owned dialog. */
+.avatar-workshop-dialog {width:min(1180px,98vw);max-width:98vw;height:94dvh;max-height:94dvh;padding:.6rem;overflow:hidden;background:var(--dm-background,#0b1018);color:var(--dm-text,#eee);border:1px solid currentColor;border-radius:var(--dm-radius,16px)}
+.avatar-workshop-dialog[open] {display:flex;flex-direction:column;gap:.5rem}
+.avatar-workshop-dialog > button {align-self:flex-end;min-height:44px}
+.avatar-workshop-dialog iframe {width:100%;min-height:0;flex:1;border:0;background:var(--dm-background,#0b1018)}
+.workshop-portrait {width:clamp(100px,22vw,180px);height:120px;flex-shrink:0}
+#avatar-workshop-status {display:block;font-size:14px;max-width:24rem}
+#avatar-workshop-open,#avatar-workshop-pause {font-size:14px;min-height:36px;padding:.3rem .6rem}
+@media(max-width:480px){.avatar-workshop-dialog{height:98dvh;max-height:98dvh;padding:.25rem}.workshop-portrait{width:100px;height:90px}}

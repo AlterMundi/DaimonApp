@@ -75,5 +75,16 @@ class Mounted(unittest.TestCase):
         self.assertEqual(response.status_code,413)
         self.assertEqual(self.store.snapshot(100)['generation'],0)
 
+    def test_only_shipped_editor_assets_are_public(self):
+        path='/assets/avatar-workshop/'
+        response=self.client.get(path+'experiments/school-avatar-quest/index.html')
+        self.assertEqual(response.status_code,200)
+        self.assertIn('Usar este avatar',response.text)
+        module=self.client.get(path+'renderer.mjs')
+        self.assertEqual(module.status_code,200)
+        self.assertIn('javascript',module.headers['content-type'])
+        for name in ('PROVENANCE.json','validate-design.mjs','100.json','../../avatar-workshop/100.json'):
+            self.assertEqual(self.client.get(path+name).status_code,404,name)
+
 
 if __name__=='__main__':unittest.main()

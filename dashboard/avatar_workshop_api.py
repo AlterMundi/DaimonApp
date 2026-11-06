@@ -2,8 +2,10 @@
 import asyncio
 import json
 import secrets
+from pathlib import Path
 
 from fastapi import HTTPException,Request
+from fastapi.responses import FileResponse
 
 from .avatar_workshop import AvatarWorkshop,WorkshopConflict
 from .provider import ProviderUnavailable
@@ -12,6 +14,18 @@ from scripts.speech_render import RenderError
 
 def install(app,config,provider,authorize,origins):
     store=AvatarWorkshop(config['state_dir'])
+    # Only the shipped MIT editor/modules are public. Account revisions never
+    # enter this tree, and request paths cannot select arbitrary local files.
+    public=Path(__file__).parent/'web/avatar-workshop'
+    assets={p.relative_to(public).as_posix():p for p in public.rglob('*')
+            if p.is_file() and not p.is_symlink() and p.suffix in ('.mjs','.css','.html','.json')
+            and p.name!='PROVENANCE.json' and p.name!='validate-design.mjs'}
+
+    @app.get('/assets/avatar-workshop/{name:path}')
+    async def workshop_asset(name:str):
+        if name not in assets:raise HTTPException(404,'Workshop asset unavailable')
+        media='text/javascript' if name.endswith('.mjs') else None
+        return FileResponse(assets[name],media_type=media,headers={'Cache-Control':'public, max-age=0, must-revalidate'})
 
     async def owner(request,write=False):
         session=await authorize(request)

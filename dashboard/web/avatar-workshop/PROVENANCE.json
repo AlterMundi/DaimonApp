@@ -24,6 +24,16 @@
     "skills/ascii-avatar-author/scripts/model-runtime.mjs": "f895c7be40dceea5283b2999842fbb8a8283f35971c5805297d6c2905beea73d",
     "experiments/school-avatar-quest/model.mjs": "ad38da25188a6cf13e58f1a04c05fb205bdaab73da565f7cd0a435ee296f8924",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
-    "skills/ascii-avatar-author/assets/example.avatar.json": "f8aae8c3186762828994c16ed5e2bb04f6698c2a68c9cfd75098a74f3a1a36d6"
-  }
+    "skills/ascii-avatar-author/assets/example.avatar.json": "f8aae8c3186762828994c16ed5e2bb04f6698c2a68c9cfd75098a74f3a1a36d6",
+    "experiments/school-avatar-quest/app.mjs": "4a0090d2469e5413df3b8d554f00acef4dcb54467708a935f70f76183f2f7ff2",
+    "experiments/school-avatar-quest/index.html": "214d844fe530a30198c407984eb032769868f1272cd0a679562751d6813f964f",
+    "experiments/school-avatar-quest/style.css": "4b6abf04bb8b11507044e7e1f378e3166eea5e20483c3a64c32fed9a7fd13a7d",
+    "experiments/school-avatar-quest/wardrobe.css": "7395b297a702b83ab4e6617d75596c2050d0ba421b7d89f430cf52acc9a7be31",
+    "experiments/school-avatar-quest/wardrobe.mjs": "bccefeb741f6f7d837ded3762f3008b6606f01f66d279787ef6613301e5585bb"
+  },
+  "receiving_adaptations": [
+    "app.mjs: authenticated lazy revision storage, explicit use/cancel and account copy",
+    "index.html: account copy and explicit use/cancel; no unvendored laboratory",
+    "storage.mjs: parent-owned authenticated API bridge; no IndexedDB authority"
+  ]
 }

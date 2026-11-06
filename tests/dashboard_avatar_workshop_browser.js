@@ -1,0 +1,71 @@
+// Actual MIT editor/Canvas2D and App API/storage; no providers or real accounts.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+(async()=>{
+ const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});
+ try{
+  const page=await browser.newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
+  page.setDefaultTimeout(5000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser error:',e.message);});page.on('dialog',dialog=>dialog.accept());
+  const origin=process.argv[2];await page.goto(origin);await page.locator('#avatar-workshop-open').click();
+  const editor=page.frameLocator('iframe');await editor.locator('#save').waitFor({state:'visible'});
+  await editor.locator('#save').click();await editor.locator('#use-avatar').waitFor({state:'visible'});
+  await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);
+  assert.equal(await page.locator('#conversation-companion pre').isVisible(),true,'Save must keep previous avatar');
+  await editor.locator('#use-avatar').click();await page.locator('.workshop-portrait').waitFor();
+  assert.equal(await page.locator('#conversation-companion pre').isVisible(),false);
+  const first=await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL());
+  await page.waitForTimeout(500);assert.equal(await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL()),first,'Reduced motion stays still');
+  await editor.locator('#cancel-workshop').click();await page.reload();await page.locator('.workshop-portrait').waitFor();
+  assert.equal(await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL()),first,'Saved active version reloads through API');
+  await page.locator('#avatar-workshop-open').click();
+  const model=path.resolve('dashboard/web/avatar-workshop/skills/ascii-avatar-author/assets/example.avatar.json');
+  await editor.locator('main:not([inert])').waitFor();await editor.locator('#photo').setInputFiles(model);await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#save').disabled).catch(async e=>{console.error(await editor.locator('#message').textContent());throw e;});await editor.locator('#save').click();
+  await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);
+  assert.equal(await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL()),first,'Editing a custom model preserves active catalogue avatar');
+  await editor.locator('#use-avatar').click();
+  await page.waitForFunction(old=>document.querySelector('.workshop-portrait').toDataURL()!==old,first);
+  const custom=await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL());
+  await editor.locator('#versions').click();assert.equal(await editor.locator('#history button').count(),2);
+  await editor.locator('#close-versions').click();
+  await editor.locator('#tab-accessories').click();await editor.locator('[data-prop]').first().click();
+  await editor.locator('#tab-details').click();await editor.locator('[data-prop]').first().click();await editor.locator('#save').click();
+  await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);
+  const saved=await page.evaluate(async()=>{const state=await(await fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}})).json();return(await fetch('/api/interaction/avatars/'+state.editing,{headers:{'X-Test-Actor':'100'}})).json();});
+  assert.equal(saved.design.gestures.find(g=>g.id===saved.design.activeGestureId).props.length,2,'Object and floating detail survive together');
+  await page.evaluate(()=>window.testRejectActivation=true);await editor.locator('#use-avatar').click();
+  await page.waitForFunction(()=>document.querySelector('iframe').contentDocument.querySelector('#message').textContent.includes('Synthetic activation refusal'));
+  assert.equal(await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL()),custom,'Failed activation keeps previous portrait');
+  await page.evaluate(()=>window.testRejectActivation=false);
+  const png=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=c.height=32;const x=c.getContext('2d');x.fillStyle='#e0b045';x.fillRect(0,0,32,32);x.fillStyle='#152a35';x.fillRect(8,8,16,16);return c.toDataURL().split(',')[1];});
+  await editor.locator('#photo').setInputFiles({name:'generated-test.png',mimeType:'image/png',buffer:Buffer.from(png,'base64')});
+  await page.waitForFunction(()=>document.querySelector('iframe').contentDocument.querySelector('#message').textContent.includes('Tu imagen ya está'));
+  await editor.locator('#save').click();await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);
+  await editor.locator('#use-avatar').click();await page.waitForFunction(old=>document.querySelector('.workshop-portrait').toDataURL()!==old,custom);
+  let image=await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL());
+  // Both original drawing sizes and authored prop/detail tabs remain usable.
+  for(const size of [{width:375,height:812},{width:320,height:740}]){
+   await page.setViewportSize(size);
+   assert(await editor.locator('#portrait').evaluate(c=>c.width>0&&c.height>0));
+   assert(await editor.locator('#compact').evaluate(c=>c.width>0&&c.height>0));
+   await editor.locator('#tab-accessories').click();await editor.locator('#tab-details').click();
+   assert(await editor.locator('body').evaluate(b=>b.scrollWidth<=innerWidth+1),'Narrow workshop overflow');
+  }
+  image=await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL());
+  await editor.locator('body').evaluate(()=>scrollTo(0,0));
+  if(process.env.WORKSHOP_SCREENSHOT)await page.screenshot({path:process.env.WORKSHOP_SCREENSHOT});
+  await editor.locator('#cancel-workshop').click();assert.equal(await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL()),image,'Cancel keeps current active version');
+  await page.evaluate(()=>{for(const [key,value] of Object.entries({background:'#f4efdf',surface:'#fffaf0',text:'#352745',accent:'#654ba0'}))document.body.style.setProperty('--dm-'+key,value);});
+  await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();
+  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(255, 250, 240)','Light surface follows the selected appearance');
+  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).color),'rgb(53, 39, 69)','Light text follows the selected appearance');
+  await page.evaluate(()=>{document.body.style.setProperty('--dm-text','#112233');window.dispatchEvent(new Event('home-style:resolved'));});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('iframe').contentDocument.querySelector('.stage.world')).color==='rgb(17, 34, 51)');
+  await editor.locator('#cancel-workshop').click();
+  await page.evaluate(()=>{testActor='200';testAvatar.bind('actor200');});
+  assert.equal(await page.locator('.workshop-portrait').count(),0,'Actor change removes private portrait');
+  await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();await editor.locator('#versions').click();
+  assert.equal(await editor.locator('#history button').count(),0,'Another actor has an isolated version library');
+  assert.deepEqual(errors,[]);
+  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, reduced motion, large/compact and375/320 layouts; no provider calls');
+ }finally{await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

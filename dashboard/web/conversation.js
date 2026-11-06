@@ -99,6 +99,7 @@ window.Conversation = (() => {
       compose.before(dock); dock.append(playback, compose);
     }
     const companion=standalone?window.ConversationCompanion?.mount():undefined;
+    const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
     if(standalone){
       const line=$("#conversation-presence"),caption=$("#conversation-companion .companion-caption"),phases=$("#conversation-companion .companion-phases");
       if(line && caption){
@@ -1636,6 +1637,7 @@ window.Conversation = (() => {
       const keepNative=nativeEnabled&&nativeVoiceSession?.active&&error.status!==401&&error.status!==403;
       presentState({connected:false},!keepNative);
       if (error.status === 401 || error.status === 403) {
+        avatarWorkshop?.reset();
         onUnauthorized?.(error);
         workspace?.reset();clearFiles();
         pause("access");stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
@@ -1736,6 +1738,7 @@ window.Conversation = (() => {
         }
       }
       companion?.configure?.(value.expression_pack,value.expression_pack_sha256);
+      avatarWorkshop?.bind(value.binding);
       companion?.observe(value.activity);
       binding = value.binding;timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
       canBudgets=!readOnly && value.can_view_coordination===true;
