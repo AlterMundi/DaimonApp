@@ -47,14 +47,26 @@
     viewBar.append(heading,conversationButton,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
-    const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
-    rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
+    let showAll=false;
+    const railHeading=el('h3','Sessions · 24h');
+    function syncScope(){const label=showAll?'Show recent sessions':'Show all sessions';scopeToggle.textContent=label;scopeToggle.setAttribute('aria-label',label);scopeToggle.setAttribute('aria-pressed',String(showAll));railHeading.textContent=showAll?'Sessions · All':'Sessions · 24h';}
+    const scopeToggle=button('Show all sessions','Show all sessions',()=>{showAll=!showAll;syncScope();remember();render();});scopeToggle.className='session-scope-toggle';
+    const railHeader=el('div',undefined,'session-rail-header');railHeader.append(railHeading,reset);
+    rail.append(railHeader,scopeToggle,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
     timeline.before(shell);content.append(timeline,view);
-    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
+    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
+    const followKey='interaction.followed-session.v1';
+    function saved(){
+      try{const raw=window.localStorage?.getItem(followKey);if(!raw||raw.length>1024)return;const value=JSON.parse(raw),opaque=id=>id===null||typeof id==='string'&&/^[a-f0-9]{24}$/.test(id);if(value?.version===1&&value.binding===binding&&opaque(value.id)&&(!Object.hasOwn(value,'view')||opaque(value.view))&&(!Object.hasOwn(value,'all')||typeof value.all==='boolean'))return value;}catch{}
+    }
+    function remember(){
+      const id=pin?.id||null,view=expanded?.id||null;if(!binding||[id,view].some(v=>v!==null&&!/^[a-f0-9]{24}$/.test(v)))return;
+      try{window.localStorage?.setItem(followKey,JSON.stringify({version:1,binding,id,view,all:showAll}));}catch{}
+    }
     let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0,lastHistoryAttempt=0;
     function selected(){return expanded||pin;}
-    function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
-    function changed(){renderSelection();onTarget();}
+    function capture(){const value=selected();if(value&&!value.is_entry&&!value.destination)throw Error('Your saved session is unavailable. Select a destination before sending.');return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
+    function changed(){remember();renderSelection();onTarget();}
     function renderSelection(){
       const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';
       back.hidden=!expanded;
@@ -118,7 +130,7 @@
     function render(){
       // Visibility is separate from intent: an expired row must not silently
       // erase a selected pin or change the target of an existing recording.
-      const recent=[...inventory.values()].filter(row=>active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
+      const recent=[...inventory.values()].filter(row=>showAll||active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
         .sort((a,b)=>Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
       const visible=new Set(recent.map(row=>row.id));
       for(const [id,row] of rows)if(!visible.has(id)){row.box.remove();rows.delete(id);}
@@ -144,7 +156,7 @@
       renderSelection();syncAudio();
     }
     function resetBinding(next){
-      epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;inventory.clear();rows.clear();list.replaceChildren();leave();
+      epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;restoreChecked=false;showAll=false;syncScope();inventory.clear();rows.clear();list.replaceChildren();leave();
       allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';retryStatus.hidden=true;onReady(false);onTarget();
     }
     async function refresh(nextBinding){
@@ -159,8 +171,17 @@
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
-          if(!row?.destination || row.destination.source!==selection.destination.source || row.destination.revision!==selection.destination.revision)
+          if(!row?.destination || row.destination.source!==selection.destination?.source || row.destination.revision!==selection.destination?.revision)
             status.textContent='Your selected session changed. Select it again before sending; the current destination has not been replaced.';
+        }
+        if(!restoreChecked){
+          restoreChecked=true;const previous=saved();showAll=typeof previous?.all==='boolean'?previous.all:value.default_filter==='all';syncScope();
+          if(previous?.id){const row=inventory.get(previous.id);pin=row?.destination&&!row.is_entry?{id:row.id,title:row.title,destination:copy(row.destination)}:{id:previous.id,title:'Unavailable saved session'};}
+          const viewId=previous?.view,viewRow=inventory.get(viewId);
+          if(viewRow?.is_entry||viewRow?.destination)open(viewRow);
+          else if(viewId)expanded={id:viewId,title:'Unavailable saved session'};
+          if((pin&&!pin.destination)||(expanded&&!expanded.is_entry&&!expanded.destination))status.textContent='Your saved session is unavailable. Select a destination before sending.';
+          renderSelection();onTarget();
         }
         render();onReady(true);
         if(expanded&&!expanded.is_entry&&(activeHistory||!retryHistory.hidden&&Date.now()-lastHistoryAttempt>=5000))

@@ -136,3 +136,8 @@ Development = "/your-development-mount"
 # session_options={store=true}. Project storage must be enabled/permitted.
 # This uploads/stores the voice conversation with the provider; never enable
 # it implicitly or interpret a closed-source fork as backend work completion.
+
+# Optional receiver-owned session menu default. Saved per-browser choices win.
+# This changes visibility only within the existing authorized inventory.
+# [session_workspace]
+# default_filter = "recent" # or "all" for an explicitly selected receiver profile

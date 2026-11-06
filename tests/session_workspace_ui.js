@@ -13,8 +13,8 @@ class Element{
   focus(){this.focused=true;}
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function boot(){
-  const document={createElement:tag=>new Element(tag)},window={},root=new Element('main'),timeline=new Element('div');root.append(timeline);
+function boot({storage=new Map(),defaultFilter}={}){
+  const document={createElement:tag=>new Element(tag)},window={localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
@@ -24,7 +24,7 @@ function boot(){
     reads.push(route);
     if(deny)throw Object.assign(Error('No workspace'),{status:403});
     if(route==='interaction/sessions'&&failWorkspace)throw Object.assign(Error('Synthetic metadata outage'),{status:503});
-    if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated};
+    if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated,default_filter:defaultFilter};
     const url=new URL(route,'https://fixture.invalid');
     if(held){const hold=held;held=undefined;return hold;}
     if(historyFailures.length)throw Object.assign(Error('Synthetic replaced history'),{status:historyFailures.shift()});
@@ -39,11 +39,29 @@ function boot(){
   const byText=text=>all().find(n=>n.tag==='button'&&n.textContent===text);
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
-  return {root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
+  return {storage,root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
     failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
+  const storage=new Map(),profile=boot({storage});
+  const inventory=profile.getSessions().map((row,i)=>({...row,id:String(i+1).repeat(24)}));
+  inventory[1].last_activity_at=Date.now()/1000-172800;
+  profile.setSessions(inventory);await profile.control.refresh('binding');
+  assert.equal(profile.rows().length,2,'Recent remains the ordinary default');
+  profile.byLabel('Show all sessions').click();assert.equal(profile.rows().length,3);
+  profile.byLabel('Pin as the input destination').click();
+  profile.byText('Earlier work').click();await tick();
+  assert.equal(profile.control.capture().reference.source,'session:8');
+  const restored=boot({storage});restored.setSessions(inventory.map(row=>({...row,destination:row.destination?{...row.destination,revision:'c'.repeat(64)}:null})));
+  await restored.control.refresh('binding');await tick();
+  assert.equal(restored.control.capture().reference.source,'session:8');assert.equal(restored.control.capture().reference.revision,'c'.repeat(64),'Reload uses fresh authorized references');
+  restored.byLabel('Back to the conversation').click();assert.equal(restored.control.capture().reference.source,'session:7','Back restores the prior explicit pin');
+  assert.equal(restored.rows().length,3,'All/recent preference survives reload');
+  const persisted=storage.get('interaction.followed-session.v1');assert(!persisted.includes('session:')&&!persisted.includes('Earlier work'),'Only opaque navigation preferences are retained');
+  const missing=boot({storage});missing.setSessions([]);await missing.control.refresh('binding');assert.throws(()=>missing.control.capture(),/saved session is unavailable/);
+  const foreign=boot({storage});await foreign.control.refresh('different-binding');assert.equal(foreign.control.capture(),undefined,'Another binding cannot adopt the saved target');
+  const allProfile=boot({defaultFilter:'all'});allProfile.setSessions(inventory);await allProfile.control.refresh('binding');assert.equal(allProfile.rows().length,3,'Explicit receiving profile can select all registered sessions');
   const f=boot();await f.control.refresh('binding');
   assert.equal(f.control.active,true);assert.equal(f.control.capture(),undefined);
   assert.deepEqual(f.rows().map(row=>row.children[0].textContent),['Earlier work','Busy work','Conversation']);

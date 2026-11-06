@@ -900,7 +900,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         session=await authorize_async(request)
         if not workspace_granted(session):
             raise HTTPException(403,'Session workspace grant changed')
-        return result
+        return {**result,'default_filter':'all' if config.get('session_workspace',{}).get('default_filter')=='all' else 'recent'}
 
     @app.get('/api/interaction/sessions/{ident}')
     async def conversation_selected_session(request: Request,ident: str,technical: bool=False,
