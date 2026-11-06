@@ -47,8 +47,17 @@
     viewBar.append(heading,conversationButton,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
-    const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
-    rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
+    let showAll=false;
+    const railHeading=el('h3','Sessions · 24h');
+    const scopeToggle=button('Show all sessions','Show all sessions',()=>{
+      showAll=!showAll;scopeToggle.setAttribute('aria-pressed',String(showAll));
+      const label=showAll?'Show recent sessions':'Show all sessions';
+      scopeToggle.textContent=label;scopeToggle.title=label;scopeToggle.setAttribute('aria-label',label);
+      railHeading.textContent=showAll?'Sessions · All':'Sessions · 24h';render();
+    });
+    scopeToggle.className='session-scope-toggle';scopeToggle.setAttribute('aria-pressed','false');
+    const railHeader=el('div',undefined,'session-rail-header');railHeader.append(railHeading,reset);
+    rail.append(railHeader,scopeToggle,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
     let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0,lastHistoryAttempt=0;
@@ -118,7 +127,7 @@
     function render(){
       // Visibility is separate from intent: an expired row must not silently
       // erase a selected pin or change the target of an existing recording.
-      const recent=[...inventory.values()].filter(row=>active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
+      const recent=[...inventory.values()].filter(row=>showAll||active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
         .sort((a,b)=>Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
       const visible=new Set(recent.map(row=>row.id));
       for(const [id,row] of rows)if(!visible.has(id)){row.box.remove();rows.delete(id);}

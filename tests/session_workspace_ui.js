@@ -149,6 +149,18 @@ function boot(){
   records[2].last_activity_at=now-172800;records[2].execution='working';
   await aging.control.refresh('binding');
   assert.deepEqual(aging.rows().map(row=>row.children[0].textContent),['Conversation','Busy work'],'Active now counts as activity; expired idle sessions are hidden');
+  aging.byLabel('Show all sessions').click();
+  assert.deepEqual(aging.rows().map(row=>row.children[0].textContent),['Conversation','Busy work','Earlier work'],'All sessions includes older authorized conversations');
+  assert.equal(aging.byLabel('Show recent sessions').attrs['aria-pressed'],'true');
+  aging.byText('Earlier work').click();await tick();
+  const olderTarget=JSON.stringify(aging.control.capture());
+  aging.byLabel('Show recent sessions').click();
+  assert.equal(aging.byText('Earlier work'),undefined);
+  assert.equal(JSON.stringify(aging.control.capture()),olderTarget,'Visibility does not change an older selected destination');
+  aging.byLabel('Show all sessions').click();
+  aging.setSessions([...records,{...records[1],id:'future',title:'A later new section',last_activity_at:null}]);
+  await aging.control.refresh('binding');assert(aging.byText('A later new section'),'All mode includes future inventory rows without a last-message timestamp');
+  aging.byLabel('Show recent sessions').click();
   aging.rows()[1].children[2].children[1].click();
   records[0].last_activity_at=now-86401;await aging.control.refresh('binding');
   assert.equal(aging.control.capture().reference.source,'session:7');
