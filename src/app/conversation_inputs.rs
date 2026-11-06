@@ -469,6 +469,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             result["foreground_interpretation"] = json!("gpt-transcribe/v1");
         }
         result["foreground_context"] = json!("v1");
+        result["foreground_public_live_transcripts"] = json!("v1");
         result["foreground_audio_observations"] = json!("v1");
         result["foreground_derived_captions"] = json!("v1");
         result["foreground_guidance"] = json!("v1");
