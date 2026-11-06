@@ -43,6 +43,11 @@ The authorized inventory retains all owned sessions within the existing128-sessi
 bound. The rail shows sessions active within24hours, with fresh running/tool/active-
 goal sessions first, then recent conversation activity. A fresh currently working
 session counts as active now even if its last conversational message is older.
+`Show all sessions` includes every authorized inventory row, including older
+conversations and new sections without a message timestamp. `Show recent sessions`
+restores the24hour view. This visibility toggle neither broadens the server grant
+nor changes a selected destination, draft, recording or audio preference. It
+loads no additional transcript and remains an in-memory display choice.
 An old hidden row does not clear an explicit pin, recording or draft. Observer
 refresh time alone never qualifies an idle session as recent. Existing
 fresh observer facts show work, tools, active/blocked goals and human action.
