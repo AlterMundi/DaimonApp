@@ -60,12 +60,20 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).color),'rgb(53, 39, 69)','Light text follows the selected appearance');
   await page.evaluate(()=>{document.body.style.setProperty('--dm-text','#112233');window.dispatchEvent(new Event('home-style:resolved'));});
   await page.waitForFunction(()=>getComputedStyle(document.querySelector('iframe').contentDocument.querySelector('.stage.world')).color==='rgb(17, 34, 51)');
+  await editor.locator('#tab-avatar').focus();await page.keyboard.press('ArrowRight');
+  assert.equal(await editor.locator('#tab-expression').getAttribute('aria-selected'),'true','Original keyboard tab navigation works');
+  await editor.locator('#versions').click();
+  const downloading=page.waitForEvent('download');await editor.locator('#export').click();const download=await downloading,stream=await download.createReadStream(),chunks=[];
+  let bytes=0;for await(const chunk of stream){bytes+=chunk.length;assert(bytes<=524288);chunks.push(chunk);}
+  const exported=Buffer.concat(chunks);assert.equal(JSON.parse(exported).schema,'ascii-quest-design/v2');
+  await editor.locator('#restore').setInputFiles({name:'roundtrip-design.json',mimeType:'application/json',buffer:exported});
+  await page.waitForFunction(()=>document.querySelector('iframe').contentDocument.querySelector('#message').textContent.includes('Diseño abierto'));
   await editor.locator('#cancel-workshop').click();
   await page.evaluate(()=>{testActor='200';testAvatar.bind('actor200');});
   assert.equal(await page.locator('.workshop-portrait').count(),0,'Actor change removes private portrait');
   await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();await editor.locator('#versions').click();
   assert.equal(await editor.locator('#history button').count(),0,'Another actor has an isolated version library');
   assert.deepEqual(errors,[]);
-  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, reduced motion, large/compact and375/320 layouts; no provider calls');
+  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

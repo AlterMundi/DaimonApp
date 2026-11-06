@@ -32,7 +32,7 @@
     "experiments/school-avatar-quest/wardrobe.mjs": "bccefeb741f6f7d837ded3762f3008b6606f01f66d279787ef6613301e5585bb"
   },
   "receiving_adaptations": [
-    "app.mjs: authenticated lazy revision storage, explicit use/cancel and account copy",
+    "app.mjs: authenticated lazy revision storage, explicit use/cancel and account copy; compact editable JSON keeps export within the import limit",
     "index.html: account copy and explicit use/cancel; no unvendored laboratory",
     "storage.mjs: parent-owned authenticated API bridge; no IndexedDB authority",
     "style.css: existing local Space Grotesk font face",
@@ -47,7 +47,7 @@
     "experiments/avatar-studio/motion.mjs": "0541a3643aa8a0d6fef62b5a50dd05ea8fc1fb035e566c312fc134a0a429e79f",
     "experiments/avatar-studio/rig.mjs": "d0b0dc08f5bf7356b6bc1a6a24e52bdedc54846f7ebabebcfdeba74034b99ccd",
     "experiments/avatar-studio/scenes.mjs": "01af916bd28ed6cbbcbb0c1bc2fdf876a3b68d51ef92ab02f614c6d1c99e6155",
-    "experiments/school-avatar-quest/app.mjs": "133d366e718f96fdc9180e6c6f99e991d685847c014a8b1a96bd6a215cb9a60e",
+    "experiments/school-avatar-quest/app.mjs": "695735277a14fa90a589ac750d9ac948213c22f9a0220a1c709f0d9d13fc2443",
     "experiments/school-avatar-quest/color.mjs": "3befc2a3a7e64be3be65fabde96f23447206623ffeb3819e89841d9cfbb30c69",
     "experiments/school-avatar-quest/gallery.mjs": "9a0ee1fafdb1e47e3e654f6147b9258f58ae7d7eb2b0172556098c9faea84566",
     "experiments/school-avatar-quest/image-avatar.mjs": "e4bbba0b606f4fd1d483467fee1608d13f95399a23155afe82b0d4e502a6e8d8",

@@ -53,7 +53,8 @@ with a closed parent-message contract. The parent owns existing authenticated
 API calls and CSRF; credentials never enter iframe URLs or messages. Catalogue,
 custom model, image conversion, eight authored expressions, colour, large/compact
 previews, per-expression object plus floating detail and editable export/import
-remain the original implementation. Account listing contains summaries; a design
+remain the original implementation. Editable JSON export uses compact serialization
+so a valid bounded design does not exceed the import limit just from indentation. Account listing contains summaries; a design
 is loaded only when editing or using that version. No IndexedDB becomes authority.
 
 Saving updates only the editing pointer. Use pre-renders the saved candidate
@@ -77,7 +78,8 @@ keyboard controls, touch targets and local reduced-motion alternatives.
 Canvas2D renderer against mounted App endpoints and real temporary account files.
 It uses synthetic authorizers, not Home cookies or actual paired actors. Catalogue
 and custom-model save/use/reload, prior-avatar preservation, activation refusal,
-image fallback, simultaneous object/detail persistence, actor isolation, reduced
+image fallback, simultaneous object/detail persistence, editable JSON export/import
+roundtrip, original keyboard tab navigation, actor isolation, reduced
 motion and375/320layouts passed in Chromium. Run it with the existing installed
 Playwright module (`PLAYWRIGHT_MODULE`) and browser (`CHROMIUM_EXECUTABLE`); it
 owns one temporary server/browser/state root with a120second cap. Optional
