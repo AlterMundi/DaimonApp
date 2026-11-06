@@ -539,7 +539,7 @@ hearing acceptance still require integration. They remain part of the full goal;
 do not report this source prototype as a completed voice circuit or silently
 fall back to Responses to conceal the gap.
 
-Qualification includes six pipeline tests,32mounted API tests, nine interpretation
+Qualification includes eight pipeline tests,32mounted API tests, nine interpretation
 tests and eleven result tests, using the locked Python3.11 dependencies, plus
 browser closure/state regressions. The mounted route exercises the complete
 source→interpretation→native handoff→canonical result→context ACK path, a missing
@@ -547,3 +547,6 @@ reader before paid creation, failed interpretation with one voice close, and a
 slow interpretation where Close stays responsive and the late derivative is
 retained without native dispatch. All provider/model peers are synthetic. These
 checks do not establish real CompAII identity, memory, speech, billing or hearing.
+The result scan retains its native cursor across bounded catch-up batches; a
+tested64-item unrelated backlog does not permanently hide the later matching
+answer. Source cursors/unknown append guards still apply before any new send.

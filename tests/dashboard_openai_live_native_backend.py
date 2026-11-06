@@ -134,6 +134,35 @@ class Backend(unittest.TestCase):
         self.assertFalse(value['admission']['ended'],'This exercises the in-process fence, not a durable close marker')
         self.assertEqual(value['native_originals']['0']['interpretation']['state'],'completed')
         self.assertEqual(self.imports,[]);self.assertEqual(self.writes,[]);self.assertEqual(len(self.asr),1)
+        receipt=prepare_native(self.visits,self.ident,100,self.owner,self.delegation,
+            self.provider,self.key,factory,stopped=stopped)
+        self.assertEqual(receipt['state'],'held');self.assertEqual(len(self.asr),1)
+
+    def test_result_scan_continues_after_bounded_unrelated_pages(self):
+        self.ready();self.run_pipeline();test=self
+        def page(delivery,native,direction):
+            rows=[{'id':'native:'+str(n),'revision':'d'*64,'kind':'integrator_answer',
+                'local_turn':42 if n==65 else 99} for n in range(native+1,min(native+8,65)+1)]
+            return {'binding':self.owner['binding'],'items':rows,
+                'cursor':{'delivery':0,'native':min(native+8,65)},'more':native+8<65}
+        self.provider.presentation_list=page
+        class Sideband:
+            def send(self,command):test.updates.append(command)
+        channel=Sideband()
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        value=self.visits.read(self.ident,100,self.owner)
+        self.assertEqual(value['delegations'][self.delegation]['native_pipeline']['return_after'],64)
+        result=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(result['state'],'sent');self.assertEqual(result['source'],'native:65')
+        self.assertEqual(len(self.writes),1);self.assertEqual(len(self.updates),1)
+
+    def test_stop_before_worker_starts_does_not_leave_a_pending_voice_close(self):
+        self.ready();stopped=threading.Event();stopped.set()
+        result=prepare_native(self.visits,self.ident,100,self.owner,self.delegation,
+            self.provider,self.key,self.recognizer,stopped=stopped)
+        self.assertEqual(result['state'],'held');self.assertEqual(self.asr,[])
+        self.assertEqual(self.provider.submissions,0)
+        self.assertEqual(self.visits.close_intent(self.ident,100,self.owner)['type'],'session.close')
 
 
 if __name__=='__main__':unittest.main()

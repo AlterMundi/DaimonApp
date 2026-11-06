@@ -23,7 +23,7 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
                    recognizer_factory=None, stopped=None):
     """Once per trusted sealed request; component intents own unknown effects."""
     def current(check_capture=True):
-        if stopped is not None and stopped.is_set():
+        if check_capture and stopped is not None and stopped.is_set():
             raise ValueError('Native source preparation stopped; preserve in-flight outcomes')
         if not provider.authorized(human) or provider.public_live_binding(owner['binding']) != owner:
             raise ProviderUnavailable('Native preparation owner changed')
@@ -43,7 +43,16 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
         work = value['delegations'].get(delegation, {})
         if work.get('target') != 'client': raise ValueError('Select a trusted client delegation')
         if 'native_pipeline' in work: return dict(work['native_pipeline'])
-        history.check_capture(value)
+        if value['admission']['epoch']!=history.epoch:
+            raise ValueError('Restart cannot start unattempted native preparation')
+        cancelled=stopped is not None and stopped.is_set()
+        try:history.check_capture(value)
+        except ValueError:cancelled=True
+        if cancelled:
+            work['native_pipeline']={'state':'held','work_completed':False,
+                'meaning':'No new preparation was started; previous component outcomes are retained.'}
+            work['state']='native_preparation_held';history._write(value)
+            return dict(work['native_pipeline'])
         seal = work.get('source_seal', {})
         if seal.get('state') not in ('sealed','empty'):
             raise ValueError('Select a confirmed source window')
@@ -100,11 +109,12 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
 
 
 def return_one_native_part(history, ident, human, owner, delegation, provider, sideband):
-    """One bounded source page per foreground poll; never starts native work.
+    """Read at most eight source pages and append one fragment per foreground poll.
 
     Same-turn progress/answers are supported here. Cross-turn native callbacks,
     older worker deliveries and renewal catch-up still require retained trace
-    association and cursor integration; they must not be guessed from recency.
+    association integration; they must not be guessed from recency. The native
+    scan cursor is retained so a long unrelated backlog cannot stall catch-up.
     """
     if not provider.authorized(human) or provider.public_live_binding(owner['binding'])!=owner:
         raise ProviderUnavailable('Native result owner changed')
@@ -120,7 +130,14 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                 row['next_offset'],provider,sideband)
     native=provider.conversation_input_status(work['native_work']['root'])
     if type(native.get('local_turn')) is not int: return None
-    cursor={'delivery':0,'native':work['native_work']['native_source_floor']}
+    def scanned(after):
+        if type(after) is not int or after<0:raise ValueError('Invalid native result cursor')
+        with history_lock(history.root / '.lock'):
+            latest=history.read(ident,human,owner)
+            pipeline=latest['delegations'][delegation]['native_pipeline']
+            pipeline['return_after']=max(pipeline.get('return_after',0),after)
+            history._write(latest)
+    cursor={'delivery':0,'native':work['native_pipeline'].get('return_after',work['native_work']['native_source_floor'])}
     for _ in range(8):
         page=provider.presentation_list(cursor['delivery'],cursor['native'],'after')
         if page.get('binding')!=owner['binding']:raise ProviderUnavailable('Native result conversation changed')
@@ -130,7 +147,10 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     and source.get('current') is not False and source.get('correction_pending') is not True
                     and source.get('native_binding_current') is not False
                     and not any(row['source']==source['id'] and row['revision']==source['revision'] for row in updates)):
-                return return_native_part(history,ident,human,owner,delegation,source['id'],source['revision'],0,provider,sideband)
+                result=return_native_part(history,ident,human,owner,delegation,source['id'],source['revision'],0,provider,sideband)
+                scanned(int(source['id'].split(':')[1]))
+                return result
+        scanned(page.get('cursor',cursor)['native'])
         if not page.get('more'): break
         if page.get('cursor')==cursor:raise ValueError('Native result cursor did not advance')
         cursor=page['cursor']
