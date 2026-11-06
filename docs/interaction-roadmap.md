@@ -46,6 +46,18 @@ for all negative cases, exact media/ASR evidence and limitations. Deployment tru
 remains with the current receiving record; this is not full being-memory or phone
 acceptance.
 
+The current public GPT-Live guide documents provider-owned summarization and
+engine replacement. Prefer that lifecycle instead of implementing an application
+turn loop or an invented elapsed-audio pressure threshold. Native Codex remains a
+distinct observed protocol; its public-GPT-Live limit/pressure parity and hidden
+engine replacement are unproven. A bounded original-instruction
+placement probe failed actual identity verification and was not selected;
+selected663 keeps its qualified developer-initial brief. Schema acceptance alone
+does not prove application. Native instruction/pressure/hidden-rotation parity
+still needs evidence; do not add a custom summary/delegation loop or duplicate
+briefs to conceal that gap. See the
+[provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions-6november2026).
+
 The6November native lifecycle inspection separates the next requirement from
 those manual reconnect tests. Retained numeric usage reports audio duration,
 not observed context-token headroom. Native backend compaction is not physical
@@ -55,7 +67,7 @@ state machine. The new candidate below adds reactive recovery inside the unchang
 600second admission; it does not yet qualify sustainable pressure-based renewal. Do not reinterpret several manual opens,
 an audio-duration counter or a compaction ACK as the two required automatic
 successor installations. See the
-[native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection--6november2026).
+[native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection-6november2026).
 
 The terminal-close candidate now retains the native lease through final work
 reconciliation/control closure and terminal metadata commit. Its close response

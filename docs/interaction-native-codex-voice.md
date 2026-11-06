@@ -1191,3 +1191,23 @@ the peer, recorder or offer stage. The normal close barrier still owns cleanup.
 This observation is browser-reported evidence, not proof of a provider failure.
 An older empty visit with `native_start: not_attempted` cannot establish which
 browser operation failed. Do not infer context exhaustion or replay its inputs.
+
+### Original-instructions placement probe —6November2026
+
+A distinct finite native trial moved the unchanged owner brief from its developer
+initial item to supported per-session `prompt`. The loaded executable's generated
+experimental schema advertises that field, and the inspected native source maps
+it to voice instructions. Nevertheless, the native transcript for a short identity
+question read Soy ChatGPT. The session event supplied no instructions text for a
+prefix check. This is a negative model-behavior result, not proof of which layer
+ignored or overrode the request; the cause remains unknown. The two-replacement
+phase was not reached. An independent output ASR draft rendered the name as
+Chajikiti, so it does not verify exact spoken wording. Preserve both drafts,
+original/canonical transcript and output; no physical hearing was established.
+
+The change was not deployed. Selected663 retains its qualified developer-initial
+owner brief and native default prompt. Do not add duplicated briefs, assume the
+field was applied, or replace native handoffs to hide this result. The public
+GPT-Live guide's automatic summarization/engine replacement is the preferred
+provider lifecycle when available; native parity remains unproven. See the
+[provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions-6november2026).
