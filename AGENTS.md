@@ -1,5 +1,11 @@
 # Interaction development boundaries
 
+The native text CI job keeps its30minute bound. Its isolated native-return and
+goal-control fixtures share the existing four-worker ceiling, with independent
+temporary stores/peers, all original invocations/flags and every exit/log retained.
+This replaces serial scheduling that exhausted the measured job deadline in
+run42262198798; it does not skip tests, retry actions or change product behavior.
+
 Current Avatar planning is the4November slice in docs/interaction-roadmap.md;
 GPT-Live adaptation follows docs/interaction-gpt-live-practices.md. Keep the
 diagnostic context/visit limits unchanged. Qwen as integrator was a rejected,
@@ -56,9 +62,12 @@ Synthetic checks are not public access or full CompAII acceptance.
 The prepared public client-delegation bridge uses existing native foreground
 originals/formulations, not transcript fragments or raw durability chunks as
 completed human turns. The owner-only backend_mode=native prototype now connects
-sealed audio, interpretation, native work and same-turn results. Default Responses
+sealed audio, interpretation, native work, same-turn results and exact current
+trace-associated worker deliveries. Missing trace revisions never authorize an
+excerpt-based speech fallback. Default Responses
 and other providers remain unchanged. It is not receiving/real voice acceptance;
-cross-turn returns, continuation and physical qualification remain unfinished.
+returns across voice visits, complete older-trace pagination, native callbacks,
+continuation and physical qualification remain unfinished.
 A retained work intent only permits same-root status
 reads after unknown outcomes; never resubmit it to repair an observation.
 Prepared native result returns use exact current canonical revisions and native
@@ -74,6 +83,11 @@ Native preparation has one finite owned task per visit. End/close fences new
 interpretation/dispatch before cleanup waits for any in-flight outcome; it never
 cancels independent native work. Reader capability is checked before paid voice
 creation. Keep native client renewal explicit until qualified; no fallback.
+Native result discovery likewise owns one task and checks that visit's stop
+fence between reads/before append admission. Close must stay responsive while
+that task is blocked. A recorded `not_sent` append is a known close-before-write
+outcome, not retry authority; a transport uncertainty remains distinct. Preserve
+the source and independent native work through finite cleanup.
 The optional managed Responses conversation reader follows the documented
 function-result/continuation lifecycle. Keep owner reads distinct from full DMK
 memory and native work execution. Never replay a retained result/continuation

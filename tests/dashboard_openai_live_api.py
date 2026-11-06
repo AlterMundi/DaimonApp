@@ -155,9 +155,15 @@ class Mounted(unittest.TestCase):
                 socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'unconfirmed')
         self.assertEqual(Client.instances,[]);self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def test_native_backend_whole_mounted_source_work_and_result_flow(self):
+    def _native_backend_flow(self,slow_result=False):
         app=FastAPI();app.state.voice_active=set();saved={};calls={'asr':0,'work':0}
+        entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
+        def trace(root):
+            if slow_result:
+                entered.set();self.assertTrue(release.wait(3),'Native result read blocked voice Close')
+            return {'id':root,'entry_binding':frozen['entry_binding'],'routes':[]}
+        owner.conversation_input_trace=trace
         owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
         def capture(metadata,data,**options):
             saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
@@ -214,15 +220,30 @@ class Mounted(unittest.TestCase):
                     socket.send_json({'type':'source_sealed','request':request['request'],
                         'through_ordinal':1,'capture_bytes':len(audio)-44})
                     self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
-                    self.assertEqual(socket.receive_json()['event']['type'],'session.commentary.appended')
+                    if slow_result:
+                        self.assertTrue(entered.wait(1));socket.send_json({'type':'close'})
+                        self.assertEqual(socket.receive_json()['type'],'finishing')
+                        self.assertFalse(release.is_set());release.set()
+                        self.assertEqual(socket.receive_json()['type'],'closed')
+                    else:
+                        self.assertEqual(socket.receive_json()['event']['type'],'session.commentary.appended')
+                        self.assertIn('Soy CompAII',next(row['content'] for row in native.sent if row['type']=='session.commentary.append'))
+                        self.close(socket)
                     self.assertEqual(calls,{'asr':1,'work':1})
-                    self.assertIn('Soy CompAII',next(row['content'] for row in native.sent if row['type']=='session.commentary.append'))
-                    self.close(socket)
         self.assertEqual(self.read()['state'],'closed')
         self.assertEqual(self.read()['delegations']['native-task']['native_pipeline']['state'],'admitted')
-        updates=list(self.read()['native_result_updates'].values())
-        self.assertEqual(len(updates),1);self.assertEqual(updates[0]['state'],'context_injected')
-        self.assertNotIn('heard',updates[0]);self.assertFalse(self.read()['delegations']['native-task']['native_pipeline']['work_completed'])
+        updates=list(self.read().get('native_result_updates',{}).values())
+        self.assertEqual(len(updates),0 if slow_result else 1)
+        if not slow_result:
+            self.assertEqual(updates[0]['state'],'context_injected');self.assertNotIn('heard',updates[0])
+        else:self.assertEqual([row['type'] for row in native.sent],['session.close'])
+        self.assertFalse(self.read()['delegations']['native-task']['native_pipeline']['work_completed'])
+
+    def test_native_backend_whole_mounted_source_work_and_result_flow(self):
+        self._native_backend_flow()
+
+    def test_slow_native_result_read_keeps_close_responsive_without_canceling_work(self):
+        self._native_backend_flow(slow_result=True)
 
     def test_native_backend_rejects_unqualified_continuation_or_mixed_context(self):
         for settings in ({'conversation_context':True},{'source_seals':False},

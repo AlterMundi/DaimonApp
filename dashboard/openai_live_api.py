@@ -135,7 +135,7 @@ def install(app, config, provider, authorize, origins):
         if socket.headers.get('origin') not in origins:
             await socket.close(code=1008);return
         await socket.accept()
-        lease=sideband=creating=read_browser=read_provider=preparing=None
+        lease=sideband=creating=read_browser=read_provider=preparing=returning=None
         result_index=0
         preparation_stopped=threading.Event()
         visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
@@ -226,6 +226,11 @@ def install(app, config, provider, authorize, origins):
                             if action!={'type':'close'}:raise ValueError('Select a matching source acknowledgment or an explicit close')
                             await begin_close()  # A duplicate close observes the same intent.
                         read_browser=asyncio.create_task(message(1024))
+                    if returning is not None and returning.done():
+                        completed=returning;returning=None
+                        try:completed.result()
+                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable):
+                            if not closing:native_failure=True;await begin_close()
                     if preparing is not None and preparing.done():
                         completed=preparing;preparing=None
                         try:outcome=completed.result()
@@ -254,13 +259,13 @@ def install(app, config, provider, authorize, origins):
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
                                         stopped=preparation_stopped))
-                            if native_backend:
+                            if native_backend and returning is None:
                                 ready=[key for key,row in value['delegations'].items()
                                     if row.get('native_work',{}).get('state')=='observed']
                                 if ready:
                                     result_index%=len(ready)
-                                    await asyncio.to_thread(return_one_native_part,history,visit,human,owner,
-                                        ready[result_index],provider,sideband)
+                                    returning=asyncio.create_task(asyncio.to_thread(return_one_native_part,history,visit,human,owner,
+                                        ready[result_index],provider,sideband,stopped=preparation_stopped))
                                     result_index+=1
                     if closing:
                         command=await asyncio.to_thread(history.close_intent,visit,human,owner)
@@ -296,6 +301,8 @@ def install(app, config, provider, authorize, origins):
                         with suppress(BaseException):await asyncio.wait_for(asyncio.shield(creating),50)
                     if preparing is not None:
                         with suppress(BaseException):await asyncio.wait_for(asyncio.shield(preparing),50)
+                    if returning is not None:
+                        with suppress(BaseException):await asyncio.wait_for(asyncio.shield(returning),50)
                     if sideband is not None:
                         with suppress(Exception):await asyncio.to_thread(sideband.detach)
                     if admitted:

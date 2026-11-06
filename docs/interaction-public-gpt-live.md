@@ -524,6 +524,17 @@ including when the durable capture-end marker has not yet been written.
 
 Same-turn canonical native progress/results are polled through bounded existing
 presentation pages and returned with the source/revision/append safeguards above.
+Worker returns use the original's existing native trace, including all covered
+request links rather than only a delivery's representative request. The trace
+now includes the scoped canonical source revision, or null when that source is
+unavailable. Up to five routes/eight results per route are inspected per poll;
+an explicit `more_results` remains incomplete coverage. Available, current,
+instruction-covered results are rechecked against the exact original and
+canonical revision immediately before one context append. A worker can finish
+after the native turn and outside the current conversation page; no history
+rescan, repeated ASR or new work is required. Unavailable routes are read afresh
+later. Older readers lacking result revisions keep same-turn results only;
+their excerpts are never manufactured into a revision or speech source.
 Ordinary speech fragments prefer sentence/whitespace boundaries within the byte
 cap instead of splitting a word. Injection ACKs remain separate from hearing.
 Native handoff observation is not a completed task: admitted native work remains
@@ -531,9 +542,18 @@ owned by Codex after voice closes. Preparation failures, while current authority
 remains valid, use the single close-intent/finalization path and retain their
 receipts. A duplicate browser close observes that same intent. Confirmed closure
 updates the UI to the ended/review state instead of leaving “Finishing” visible.
+Result discovery also has one owned task per visit: a slow native trace or
+canonical read cannot occupy the browser-control loop. Close sets the existing
+visit stop fence before cleanup; reads check it between owner calls and before
+creating a new append intent. If Close is observed after intent persistence but
+before the transport call, the journal records `not_sent`, distinct from a lost
+send acknowledgment. Neither state permits replay. Already-started writes keep
+their actual outcome. Cleanup waits for the owned task with the existing finite
+50second bound; it never cancels the independent native work or reopens audio.
 
 This prototype deliberately accepts only `resume_mode="fresh"`. Native stored
-fork/semantic continuation, older and cross-turn worker returns, first-marker
+fork/semantic continuation, returns across voice visits, complete older-trace
+pagination, cross-turn native callbacks, first-marker
 question scope, long/concurrent semantic incorporation and actual memory/device/
 hearing acceptance still require integration. They remain part of the full goal;
 do not report this source prototype as a completed voice circuit or silently
@@ -547,6 +567,15 @@ reader before paid creation, failed interpretation with one voice close, and a
 slow interpretation where Close stays responsive and the late derivative is
 retained without native dispatch. All provider/model peers are synthetic. These
 checks do not establish real CompAII identity, memory, speech, billing or hearing.
+Four additional pipeline tests cover trace-located late workers, unavailable and
+uncovered results becoming observable later, fresh association rechecks and
+foreign-owner refusal. The owner/SQLite/native HTTP journey checks canonical
+revision equality for both originals covered by a shared worker delivery.
+A further mounted race keeps a trace read blocked while Close reaches finishing
+and trusted closure; the work stays admitted and no late context append occurs.
+Two result tests distinguish closure during a canonical read from the known
+unsent post-intent outcome. These33mounted and13result tests pass with the locked
+dependencies on Python3.11 and3.13; no provider/device acceptance follows.
 The result scan retains its native cursor across bounded catch-up batches; a
 tested64-item unrelated backlog does not permanently hide the later matching
 answer. Source cursors/unknown append guards still apply before any new send.
