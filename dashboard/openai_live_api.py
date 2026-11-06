@@ -34,7 +34,7 @@ def install(app, config, provider, authorize, origins):
     backend_mode=selected.get('backend_mode','responses')
     if backend_mode not in ('responses','native'):raise ValueError('Select an explicit public Live backend')
     native_backend=backend_mode=='native'
-    if (set(selected)-{'enabled','api_key_file','identity_file','backend_instructions_file',
+    if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options',
             'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
@@ -43,6 +43,14 @@ def install(app, config, provider, authorize, origins):
             or not 300 <= selected.get('session_seconds',600) <= 600):
         raise ValueError('Select owner-configured public GPT-Live and bounded capture')
     instructions=private_bytes(selected['identity_file'],8192).decode()
+    native_enabled=selected.get('native_backend_enabled',False)
+    if type(native_enabled) is not bool:raise ValueError('Select an explicit native voice choice')
+    native_file=selected.get('native_identity_file')
+    if native_file is not None and (not isinstance(native_file,str) or not Path(native_file).is_absolute()):
+        raise ValueError('Select an absolute owner native voice brief')
+    native_instructions=instructions
+    if native_file is not None and (native_backend or native_enabled):
+        native_instructions=private_bytes(native_file,8192).decode()
     backend=None if native_backend else private_bytes(selected['backend_instructions_file'],8192).decode()
     context=selected.get('conversation_context',False)
     if type(context) is not bool:raise ValueError('Select owner conversation-context access')
@@ -58,7 +66,7 @@ def install(app, config, provider, authorize, origins):
         raise ValueError('Native backend requires source seals and uses native context, not Responses tools')
     if context:tools.append(TOOL)
     options={'session_options':selected.get('session_options'),'delegation_options':selected.get('delegation_options')}
-    spec=(session_spec(instructions,client_delegation=True,**options) if native_backend else
+    spec=(session_spec(native_instructions,client_delegation=True,**options) if native_backend else
         session_spec(instructions, backend_model=selected.get('backend_model'),
             backend_instructions=backend, backend_tools=tools,backend_options=selected.get('backend_options'),**options))
     if 'format' in spec.get('audio',{}):raise ValueError('WebRTC negotiates its audio format')
@@ -67,10 +75,9 @@ def install(app, config, provider, authorize, origins):
         raise ValueError('Stored continuation requires explicit storage configuration')
     if native_backend and resume!='fresh':
         raise ValueError('Native client renewal needs its sourced continuation integration; no silent mode fallback')
-    native_enabled=selected.get('native_backend_enabled',False)
-    if type(native_enabled) is not bool or native_enabled and (native_originals or resume!='fresh'):
+    if native_enabled and (native_originals or resume!='fresh'):
         raise ValueError('The additional native choice requires fresh, sealed-source visits')
-    native_spec=session_spec(instructions,client_delegation=True,**options) if native_enabled else None
+    native_spec=session_spec(native_instructions,client_delegation=True,**options) if native_enabled else None
     configured_native,configured_spec,configured_seals=native_backend,spec,source_seals
     seconds=selected.get('session_seconds',600)
     history=LiveCreations(Path(config['state_dir'])/'public-live-visits')

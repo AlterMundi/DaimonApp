@@ -124,6 +124,8 @@ Development = "/your-development-mount"
 # enabled = false
 # api_key_file = "/private/explicit-openai-project-key"
 # identity_file = "/private/selected-live-identity.txt"
+# native_backend_enabled = false # separately selectable native client mode
+# native_identity_file = "/private/selected-native-live-identity.txt" # native template, <=8192bytes
 # backend_instructions_file = "/private/selected-responses-instructions.txt"
 # backend_model = "OWNER_SELECTED_RESPONSES_MODEL"
 # session_seconds = 600

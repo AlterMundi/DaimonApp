@@ -521,7 +521,16 @@ native Codex login and deliberately chosen integrator settings are unchanged.
 Native mode creates the documented `delegation.type="client"` session and uses
 the existing native integrator for reasoning, memory and execution. It does not
 start a second Responses backend. Keep the existing approved voice API custody
-and select an appropriate bounded voice brief through `identity_file`; retained
+and select an appropriate bounded native voice brief through
+`openai_live.native_identity_file`. Render the
+[native voice template](../templates/public-live-native-voice-brief.txt) with the
+actual being, paired human and dialect. This separate private absolute file is
+read once (maximum8192bytes) when the app starts; Responses keeps `identity_file`.
+Its native capability description delegates authorized memory and work to the
+existing integrator. It must not inherit the managed reader's limited-context
+description. For existing configurations without this optional field,
+`identity_file` remains the fallback; an explicitly selected unreadable native
+file refuses startup rather than silently using the managed brief. Retained
 Responses-only backend settings are not used in native mode.
 
 Native mode requires source seals (enabled for that explicit mode), forbids
