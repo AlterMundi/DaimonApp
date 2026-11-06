@@ -76,6 +76,43 @@ while redesigning their transport-specific implementation where necessary.
 
 ## Decisions from inspected sources
 
+### Provider-managed lifecycle and durable voice instructions —6November2026
+
+The current [GPT-Live session guide](https://developers.openai.com/api/docs/guides/live-conversations#manage-longer-conversations)
+describes provider-owned background summarization and engine replacement inside
+a session, preserving original startup instructions. It documents a128k default
+window, replacement above90%usage and up to8192tokens of restored recent/summary
+history. Important facts and outstanding operations still belong in the application.
+Its usage example includes `context_window.usage_ratio`; the actual native Codex
+cases retained `audio_duration_ms` instead. These are different contracts: do not
+assign public GPT-Live limits or hidden-engine behavior to native Codex without
+observing that boundary. Unknown native headroom remains unknown.
+
+Prefer that documented provider lifecycle where available. Do not add an elapsed-
+audio threshold, custom summarizer or application turn/delegation loop merely to
+imitate it. Native backing compaction is a separate asynchronous operation; its
+ACK is not a voice-engine renewal or a semantic recall proof. Keep source-linked
+originals/corrections/questions/work in the existing ledgers and qualify actual
+continued speech separately from provider/internal context acknowledgments.
+
+Inspection of native sourcef7f163c6 found distinct placement paths: developer
+`initialItems` are history; per-session `prompt` becomes voice instructions, with
+an explicit configured backend-prompt override taking precedence. The previous
+app supplied its owner brief in initial history, preserving native prompt and
+handoff behavior. A bounded trial removed that initial brief and used `prompt`
+instead. The loaded executable's experimental schema advertises the field, but
+the actual voice answered Soy ChatGPT to a short identity question. The session
+event exposed no instructions for prefix verification. No two-replacement phase
+was reached. This does not establish where the request was ignored or overridden.
+
+The trial was not selected: keep663's qualified initial owner brief. Schema/ACK
+acceptance is not semantic application; do not duplicate the brief or copy the
+native default prompt into an application-owned shadow template to make a test
+pass. Preserve the negative original/output and receiving schema evidence.
+Further native instruction/pressure parity requires actual application evidence,
+not public-GPT-Live assumptions. No native build, config/provider/default change,
+credential handoff or model-attention mechanism follows from this investigation.
+
 ### Native lifecycle boundary inspection —6November2026
 
 Reuse retained measurements before opening another provider session. Three
@@ -109,7 +146,7 @@ sourcef7f163c6, separately from receiving binary acceptance, found:
   physical generations. Its source/restoration/result ledgers qualify manual
   recovery; they do not implement automatic pressure-driven renewal.
 
-The next implementation must preserve one explicit logical microphone admission
+The lifecycle work must preserve one explicit logical microphone admission
 and its original expiry/PCM allowance across physical successors. It must stop
 admitting audio at a supported quiet boundary, retain the last originals and
 canonical transcript, verify the source-linked semantic checkpoint, retire old
@@ -307,10 +344,12 @@ production service, original history or diagnostic limit changed.
 
 The inspected native startup-context builder explicitly excludes AGENTS, repo
 memory instructions and memory summaries. Do not claim that the foreground voice
-inherits CompAII's identity merely by resuming its backend thread. The client now
-supports a bounded owner-selected identity/capability item using native V3
-`initialItems` with the `developer` role. This preserves native prompt, startup
-context and handoffs; it is not fabricated human speech or a new backend turn.
+inherits CompAII's identity merely by resuming its backend thread. The initial client
+used a bounded owner-selected identity/capability item through native V3
+`initialItems` with the `developer` role. The6November instruction-placement
+probe above failed actual identity verification and was not selected. Keep the
+qualified initial item, native startup context and handoffs; this does not
+fabricate human speech or start a new backend turn.
 The item is optional and capped at8192UTF-8 bytes. Synthetic wire tests and
 independent review qualify construction/refusal, not actual provider uptake.
 The application caller loads it from the owner's private selected context, never
