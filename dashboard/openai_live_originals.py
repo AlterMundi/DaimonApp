@@ -15,6 +15,9 @@ def enroll_original(history, ident, human, owner, ordinal, provider):
     if type(ordinal) is not int or not 0 <= ordinal < 32:
         raise ValueError('Select one bounded public recording ordinal')
 
+    def receipt(value):
+        return {k:v for k,v in value.items() if k not in ('interpretation','interpretation_reserve')}
+
     def authorized():
         if (not provider.authorized(human)
                 or provider.public_live_binding(owner['binding']) != owner):
@@ -36,7 +39,7 @@ def enroll_original(history, ident, human, owner, ordinal, provider):
             if previous['id'] != recording['id'] or previous['audio_sha256'] != recording['audio_sha256']:
                 raise ValueError('Native original identity changed')
             if previous['state'] == 'observed':
-                return previous
+                return receipt(previous)
         else:
             if value.get('admission', {}).get('epoch') != history.epoch:
                 raise ValueError('A restarted voice visit cannot enroll old originals')
@@ -81,4 +84,4 @@ def enroll_original(history, ident, human, owner, ordinal, provider):
         current.update(state='observed', phase=result['phase'], work_admitted=False,
                        meaning='Native acoustic original retained; no ASR, formulation or work requested.')
         history._write(value)
-        return dict(current)
+        return receipt(current)

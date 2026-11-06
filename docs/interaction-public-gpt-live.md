@@ -265,3 +265,42 @@ actual native668 owner/SQLite foreground journey with synthetic transport and
 zero models: one original, exact hash and chronology, no extra ASR/work, lost ACK
 then restarted read-only reconciliation, and later-correction order. These are
 native admission facts, not physical hearing or full being/memory acceptance.
+
+#### Prepared OpenAI interpretation component
+
+`openai_live_transcription.py` implements the current official file-transcription
+route (`gpt-transcribe`, `/v1/audio/transcriptions`) for a completed canonical WAV.
+It reuses approved project-key custody, never Codex credentials or another audio
+provider. It is not mounted or selected in receiving684. Older transcription
+model examples are deprecated in the current official guide; do not silently
+substitute one of them or the configured ordinary voice-note ASR.
+
+An interpretation requires an observed native acoustic reservation and the exact
+still-uninterpreted canonical source, current actor/binding, and original bytes.
+A visit admits at most16 interpretation attempts within its existing600second
+recording bound. Each paid intent reserves20KiB inside the existing bounded visit
+record before HTTP. The result replaces that reservation; concurrent source
+writes cannot consume its promised space. Response bytes/text, input PCM, network
+waits and redirects are bounded. Errors, interruption and uncertain replies never
+repeat the POST. An old receipt can be read without key access or another model
+call; restart cannot start a previously unattempted interpretation.
+
+Completed text is retained under the frozen acoustic source even if viewer access
+is revoked during HTTP, then access is checked before exposing or using it. It is
+a machine interpretation, not verified written human speech or work authority.
+The component does not synthesize a native original from Live captions, run the
+ordinary file-ASR fallback, or dispatch work. Its HTTP/model, timeout, restart,
+revocation, result-space and once-only behavior currently have mocked-provider
+qualification; no paid transcription has been used to claim acceptance.
+
+Remaining native boundary: the existing writer commits interpretations through
+its source-verified voice preparation path. Public OpenAI results need a qualified
+owner-scoped import into that same foreground journal, with source hash, actor,
+chronology and immutable-completion checks; do not change global ASR defaults or
+claim this import already exists. Only after that boundary can the existing native
+foreground delegate own actual work and return a sourced result to continuing
+Live speech. Native context/memory, late results, interruption, renewal and
+physical hearing remain required by the full goal.
+
+Official contract: https://developers.openai.com/api/docs/guides/speech-to-text
+and https://developers.openai.com/api/docs/guides/live-delegation .
