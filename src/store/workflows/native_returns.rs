@@ -30,6 +30,8 @@ pub(crate) struct WorkflowReturn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_activation: Option<super::super::heartbeat::lanes::Activation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_revision: Option<String>,
     pub envelope: Value,
     pub phase: String,
@@ -215,6 +217,19 @@ fn current_on(
         )?
     {
         return Ok(false);
+    }
+    if admission && r.attention_generation.is_some() {
+        let Some(activation) = r.attention_activation.as_ref() else {
+            return Ok(false);
+        };
+        if !super::super::heartbeat::lanes::current_on(
+            conn,
+            context.human,
+            context.entry,
+            activation,
+        )? {
+            return Ok(false);
+        }
     }
     match &context.parent {
         ReturnParent::Heartbeat(parent) => {
@@ -587,6 +602,10 @@ impl Store {
                     id: id.clone(),
                     workflow: w.id.clone(),
                     attention_generation: w.attention.as_ref().map(|owner| owner.generation),
+                    attention_activation: w
+                        .attention
+                        .as_ref()
+                        .and_then(|owner| owner.activation.clone()),
                     reported_revision: None,
                     envelope: envelope.clone(),
                     phase: "reserved".into(),
@@ -726,7 +745,17 @@ impl Store {
                 "Heartbeat requires an exclusive source binding"
             );
             super::super::heartbeat::execution_claim_on(
-                &tx, local, w.human, w.entry, &w.native, generation, id,
+                &tx,
+                local,
+                w.human,
+                w.entry,
+                &w.native,
+                generation,
+                id,
+                w.native_returns[index]
+                    .attention_activation
+                    .as_ref()
+                    .context("Missing heartbeat activation")?,
             )?;
         }
         bind_on(&tx, local, id)?;

@@ -37,6 +37,7 @@ pub(super) fn unresolved_on(conn: &Connection, human: i64, entry: SessionKey) ->
 
 /// Only a fresh serialized entry-worker turn may claim ownership. An internal
 /// return steered into an existing turn never establishes cancellation rights.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::store) fn claim_on(
     conn: &rusqlite::Transaction<'_>,
     local: i64,
@@ -45,10 +46,15 @@ pub(in crate::store) fn claim_on(
     native: &str,
     generation: u64,
     source: &str,
+    activation: &lanes::Activation,
 ) -> Result<()> {
     anyhow::ensure!(
         generation_current_on(conn, human, entry, generation)?,
         "Heartbeat admission is paused or stale"
+    );
+    anyhow::ensure!(
+        lanes::current_on(conn, human, entry, activation)?,
+        "Heartbeat lane is paused or stale"
     );
     anyhow::ensure!(
         load(conn, local)?.is_none(),
@@ -80,7 +86,7 @@ pub(in crate::store) fn claim_on(
     save(
         conn,
         local,
-        &json!({"local":local,"generation":generation,"source":source,"native":native,"physical":null,"phase":"owned","terminal_status":null,"inference_allowance":allowance}),
+        &json!({"local":local,"generation":generation,"activation":activation,"source":source,"native":native,"physical":null,"phase":"owned","terminal_status":null,"inference_allowance":allowance}),
     )?;
     conn.execute_batch("CREATE TRIGGER IF NOT EXISTS heartbeat_execution_turn_deleted AFTER DELETE ON turns BEGIN DELETE FROM bot_state WHERE key='heartbeat_execution:'||OLD.id; END;")?;
     Ok(())
@@ -93,6 +99,15 @@ impl Store {
         entry: SessionKey,
         claim_pause: bool,
     ) -> Result<Vec<Value>> {
+        self.heartbeat_executions_scoped(human, entry, claim_pause, None)
+    }
+    pub(crate) fn heartbeat_executions_scoped(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        claim_pause: bool,
+        lane: Option<HeartbeatLane>,
+    ) -> Result<Vec<Value>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let mut records = selected(&tx, human, entry)?;
@@ -101,7 +116,11 @@ impl Store {
             // either transferred ownership before this transaction or refuses
             // before its provider write once this claim wins.
             for r in &mut records {
-                if r["phase"] == "owned" {
+                if r["phase"] == "owned"
+                    && lane.is_none_or(|lane| {
+                        r["activation"]["lane"] == serde_json::to_value(lane).unwrap()
+                    })
+                {
                     r["phase"] = json!("stopping");
                     save(
                         &tx,
@@ -133,6 +152,7 @@ impl Store {
             bound && record["phase"] == "owned" && record["physical"].is_null(),
             "Heartbeat allocation no longer owns a fresh execution"
         );
+        let activation: lanes::Activation = serde_json::from_value(record["activation"].clone())?;
         if let Some(owner) = record.get("owner") {
             super::delegation::owner_current_on(
                 &conn,
@@ -140,6 +160,10 @@ impl Store {
                 &serde_json::from_value(owner.clone())?,
             )?;
         } else {
+            anyhow::ensure!(
+                lanes::current_on(&conn, human, entry, &activation)?,
+                "Heartbeat lane is paused or stale"
+            );
             anyhow::ensure!(
                 generation_current_on(
                     &conn,
@@ -277,6 +301,7 @@ mod tests {
                 },
             )
             .unwrap();
+        super::super::enable_test_lanes(&store, 100, entry);
         store
             .heartbeat_control(100, entry, HeartbeatCommand::Resume { generation: 1 })
             .unwrap();
@@ -309,10 +334,62 @@ mod tests {
             "heartbeat-native",
             2,
             "exact-source",
+            &lanes::Activation {
+                lane: HeartbeatLane::Messaging,
+                generation: 1,
+            },
         )?;
         tx.commit()?;
         Ok(())
     }
+    #[test]
+    fn heartbeat_lane_pause_claims_only_its_exact_owned_execution() {
+        let (_f, s, entry) = setup();
+        let local = fresh(&s, &entry, "");
+        own(&s, &entry, local).unwrap();
+        s.heartbeat_control(
+            100,
+            entry.key,
+            HeartbeatCommand::PauseLane {
+                lane: HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        let unrelated = s
+            .heartbeat_executions_scoped(100, entry.key, true, Some(HeartbeatLane::Reports))
+            .unwrap();
+        assert_eq!(unrelated[0]["phase"], "owned");
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, entry.key)
+                .unwrap()
+                .is_some()
+        );
+        s.heartbeat_control(
+            100,
+            entry.key,
+            HeartbeatCommand::PauseLane {
+                lane: HeartbeatLane::Messaging,
+            },
+        )
+        .unwrap();
+        let selected = s
+            .heartbeat_executions_scoped(100, entry.key, true, Some(HeartbeatLane::Messaging))
+            .unwrap();
+        assert_eq!(selected[0]["phase"], "stopping");
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, entry.key)
+                .is_err()
+        );
+        assert!(
+            s.heartbeat_native_started(local, "late-exact-physical")
+                .unwrap()
+        );
+        assert_eq!(
+            s.heartbeat_executions(100, entry.key, false).unwrap()[0]["physical"],
+            "late-exact-physical"
+        );
+    }
+
     #[test]
     fn inference_reservation_read_is_exact_nonrefilling_and_fenced_by_owner_and_pause() {
         let (_file, s, entry) = setup();

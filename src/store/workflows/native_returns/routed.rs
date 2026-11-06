@@ -330,6 +330,7 @@ fn reserve(
         id: return_id.clone(),
         workflow: String::new(),
         attention_generation: None,
+        attention_activation: None,
         envelope,
         phase: "reserved".into(),
         local: None,

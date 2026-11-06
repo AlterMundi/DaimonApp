@@ -8,6 +8,8 @@ pub(in crate::store) struct AttentionOwner {
     pub entry: SessionKey,
     pub native: String,
     pub generation: u64,
+    #[serde(default)]
+    pub activation: Option<lanes::Activation>,
 }
 
 pub(in crate::store) fn owner_current_on(
@@ -15,6 +17,14 @@ pub(in crate::store) fn owner_current_on(
     human: i64,
     owner: &AttentionOwner,
 ) -> Result<()> {
+    let activation = owner
+        .activation
+        .as_ref()
+        .context("Attention lane attribution missing")?;
+    anyhow::ensure!(
+        lanes::current_on(conn, human, owner.entry, activation)?,
+        "Attention lane is paused or stale"
+    );
     let (_, native) = super::super::presentation::entry_on(conn, human, owner.entry)?;
     anyhow::ensure!(
         native == owner.native
@@ -51,6 +61,7 @@ pub(in crate::store) fn owner_for_turn_on(
     let owner = match record.get("owner") {
         Some(value) => serde_json::from_value(value.clone())?,
         None => AttentionOwner {
+            activation: Some(serde_json::from_value(record["activation"].clone())?),
             entry,
             native: native.into(),
             generation: record["generation"]
@@ -103,7 +114,7 @@ pub(in crate::store) fn claim_delegate_on(
     super::executions::save(
         tx,
         local,
-        &json!({"local":local,"generation":owner.generation,"source":instruction,"native":native,"physical":null,"phase":"owned","terminal_status":null,"owner":owner,"inference_allowance":allocation}),
+        &json!({"local":local,"generation":owner.generation,"activation":owner.activation,"source":instruction,"native":native,"physical":null,"phase":"owned","terminal_status":null,"owner":owner,"inference_allowance":allocation}),
     )?;
     Ok(())
 }

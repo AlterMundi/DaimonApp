@@ -96,6 +96,7 @@ pub(crate) struct Check {
     native: String,
     epoch: String,
     pub matrix_inbox: Option<HeartbeatInboxSource>,
+    activation: lanes::Activation,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::store) struct Offer {
@@ -123,6 +124,8 @@ pub(in crate::store) struct Parent {
     #[serde(default)]
     pub progress_after: i64,
     pub next_lane: bool,
+    #[serde(default)]
+    pub next_activation: usize,
     pub stopped_reason: Option<String>,
     #[serde(default)]
     pub inbox_state: Option<String>,
@@ -242,6 +245,14 @@ pub(in crate::store) fn current(
                 || r.reported_revision.is_some())
     {
         return Ok(false);
+    }
+    if admission {
+        let Some(activation) = r.attention_activation.as_ref() else {
+            return Ok(false);
+        };
+        if !lanes::current_on(conn, p.human, p.entry, activation)? {
+            return Ok(false);
+        }
     }
     // Accepted execution narration remains owned by this entry even when its
     // actions consume or change the offered sources. This grants no new work.
@@ -400,6 +411,7 @@ pub(in crate::store) fn configure_on(
             progress_start,
             progress_after: progress_start,
             next_lane: false,
+            next_activation: 0,
             stopped_reason: None,
             inbox_state: None,
             seen: BTreeMap::new(),
@@ -474,7 +486,18 @@ pub(super) fn resume_on(
     if bound(conn, &p)? {
         for r in &mut p.native_returns {
             if unsubmitted_on(conn, r)? {
-                r.attention_generation = Some(generation)
+                r.attention_generation = Some(generation);
+                if let Some(activation) = &mut r.attention_activation {
+                    let raw: String = conn.query_row(
+                        "SELECT value FROM bot_state WHERE key=?1",
+                        [format!("heartbeat_control:{human}:{session}")],
+                        |row| row.get(0),
+                    )?;
+                    let control: Control = serde_json::from_str(&raw)?;
+                    if let Some(selected) = lanes::selected(&control, activation.lane) {
+                        activation.generation = selected.generation;
+                    }
+                }
             }
         }
         save(conn, &p)?;
@@ -497,6 +520,7 @@ fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
         || !bound(conn, &p)?
         || purpose_on(conn, &p).is_err()
         || !generation_current_on(conn, c.human, c.entry, c.generation)?
+        || !lanes::current_on(conn, c.human, c.entry, &c.activation)?
         || Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
         || resources::status_on(conn, c.session, c.human)?["state"] != "available"
     {
@@ -538,6 +562,26 @@ impl Store {
         if control.paused || !bound(&tx, &p)? || purpose_on(&tx, &p).is_err() {
             return Ok(None);
         }
+        let available = [
+            (
+                HeartbeatLane::Messaging,
+                p.contract.matrix_replies || p.contract.matrix_inbox.is_some(),
+            ),
+            (HeartbeatLane::WorkflowReturns, p.contract.workflows),
+            (HeartbeatLane::Reports, !p.contract.reports.is_empty()),
+            (HeartbeatLane::SessionProgress, p.contract.session_progress),
+        ];
+        let activation = (0..available.len()).find_map(|offset| {
+            let index = (p.next_activation % available.len() + offset) % available.len();
+            let (lane, configured) = available[index];
+            configured
+                .then(|| lanes::selected(&control, lane))
+                .flatten()
+                .map(|a| (index, a))
+        });
+        let Some((index, activation)) = activation else {
+            return Ok(None);
+        };
         // Restart keeps original uncertainty and the same bounded retry journal.
         for r in &mut p.native_returns {
             if r.instance != self.instance_id {
@@ -563,6 +607,7 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
+        p.next_activation = (index + 1) % available.len();
         p.checks += 1;
         p.next_check_ms = now + i64::from(p.contract.interval_seconds) * 1000;
         // A failed source read still consumes this finite observation. It must
@@ -578,7 +623,12 @@ impl Store {
             binding: p.binding,
             native: p.native,
             epoch: p.epoch,
-            matrix_inbox: p.contract.matrix_inbox,
+            matrix_inbox: if activation.lane == HeartbeatLane::Messaging {
+                p.contract.matrix_inbox
+            } else {
+                None
+            },
+            activation,
         }))
     }
     pub(crate) fn heartbeat_check_current(&self, c: &Check) -> Result<bool> {
@@ -601,11 +651,6 @@ impl Store {
             return Ok(None);
         };
         let (human, entry, session) = (c.human, c.entry, c.session);
-        let control = Control {
-            paused: false,
-            generation: c.generation,
-            changed_at: String::new(),
-        };
         if let Some(source) = &c.matrix_inbox {
             // Roll back all partial event/cursor writes before retaining a
             // failed observation. The check/cadence remains consumed.
@@ -642,7 +687,7 @@ impl Store {
             return Ok(None);
         }
         let mut lanes = [vec![], vec![], vec![], vec![], vec![]];
-        if p.contract.matrix_replies {
+        if c.activation.lane == HeartbeatLane::Messaging && p.contract.matrix_replies {
             let value = super::super::matrix::heartbeat_attention_on(&tx, human, entry, &p.seen)?;
             for item in value["envelopes"].as_array().into_iter().flatten() {
                 if let (Some(key), Some(revision)) =
@@ -658,7 +703,7 @@ impl Store {
                 }
             }
         }
-        if p.contract.workflows {
+        if c.activation.lane == HeartbeatLane::WorkflowReturns && p.contract.workflows {
             let (after, offers) =
                 super::super::workflows::heartbeat_offers_on(&tx, human, entry, p.workflow_after)?;
             p.workflow_after = after;
@@ -667,12 +712,16 @@ impl Store {
                 .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
                 .collect();
         }
-        lanes[2] = super::reports::offers(&p.contract.reports)?
-            .into_iter()
-            .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
-            .collect();
+        lanes[2] = super::reports::offers(if c.activation.lane == HeartbeatLane::Reports {
+            &p.contract.reports
+        } else {
+            &[]
+        })?
+        .into_iter()
+        .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
+        .collect();
         let mut progress_next = None;
-        if p.contract.session_progress {
+        if c.activation.lane == HeartbeatLane::SessionProgress && p.contract.session_progress {
             let (after, offers) = super::super::presentation::heartbeat_progress_on(
                 &tx,
                 human,
@@ -686,7 +735,7 @@ impl Store {
                 .filter(|o| p.seen.get(&o.key) != Some(&o.revision))
                 .collect();
         }
-        if let Some(source) = &p.contract.matrix_inbox {
+        if let Some(source) = &c.matrix_inbox {
             if p.inbox_state.as_deref() == Some("available") {
                 lanes[3] =
                     super::super::matrix::inbox::offers_on(&tx, human, entry, source, &p.seen)?;
@@ -708,7 +757,7 @@ impl Store {
             return Ok(None);
         }
         let id = format!("heartbeat:{human}:{session}:{}", Uuid::now_v7());
-        let mut envelope = json!({"schema":"daimon.heartbeat-offer/v1","offers":selected,"internal_evidence":true,"publication_grant":false});
+        let mut envelope = json!({"schema":"daimon.heartbeat-offer/v1","lane":c.activation.lane,"offers":selected,"internal_evidence":true,"publication_grant":false});
         if let Some((source, revision)) = purpose_on(&tx, &p)? {
             envelope["operating_purpose"] = json!({"input_ref":p.contract.purpose.as_ref().unwrap().input_ref,"human_id":human,"channel":source.channel,"event_id":source.event_id,"revision":revision,"reader":{"operation":"heartbeat_source","arguments":{"return_id":id,"source":"purpose:human","revision":revision,"offset":0}},"meaning":"Actual retained human operating-purpose original, not new speech or peer authority. Read before selecting an ordinary workflow under this same original and preserve peer source attribution."});
         }
@@ -725,7 +774,8 @@ impl Store {
         let r = WorkflowReturn {
             id: id.clone(),
             workflow: String::new(),
-            attention_generation: Some(control.generation),
+            attention_generation: Some(c.generation),
+            attention_activation: Some(c.activation.clone()),
             reported_revision: None,
             envelope,
             phase: "reserved".into(),
@@ -848,10 +898,62 @@ mod inbox_tests {
             },
         )
         .unwrap();
+        super::super::enable_test_lanes(&s, 100, e);
         s.heartbeat_control(100, e, H::Resume { generation: 1 })
             .unwrap();
         (f, s, e, source)
     }
+    #[test]
+    fn heartbeat_lane_pause_fences_a_late_sdk_page_without_affecting_other_lane_changes() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let before = selected.after;
+        s.heartbeat_control(
+            100,
+            e,
+            H::PauseLane {
+                lane: HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        assert!(s.heartbeat_check_current(&c).unwrap());
+        s.heartbeat_control(
+            100,
+            e,
+            H::PauseLane {
+                lane: HeartbeatLane::Messaging,
+            },
+        )
+        .unwrap();
+        assert!(!s.heartbeat_check_current(&c).unwrap());
+        assert!(
+            s.heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)]))))
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(selection(&s, e, &source).after, before);
+        assert!(s.heartbeat_begin_check(100, e).unwrap().is_none());
+        let state = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(state["producer"]["checks"], 1);
+        s.heartbeat_control(
+            100,
+            e,
+            H::ResumeLane {
+                lane: HeartbeatLane::Messaging,
+                generation: 2,
+            },
+        )
+        .unwrap();
+        due(&s, e);
+        let next = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        assert_eq!(next.activation.generation, 3);
+        assert_eq!(next.activation.lane, HeartbeatLane::Messaging);
+    }
+
     #[test]
     fn progress_pages_do_not_advance_past_unselected_rows_under_five_lane_contention() {
         let (_f, s, e, _) = setup();

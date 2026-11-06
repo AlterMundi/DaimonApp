@@ -586,12 +586,20 @@ pub(in crate::store) fn resume_attention_on(
         };
         if owner.entry != entry
             || owner.native != native
-            || owner.generation >= generation
+            || owner.generation > generation
             || !live_on(conn, &w)?
         {
             continue;
         }
+        let Some(activation) = owner.activation.as_ref() else {
+            continue;
+        };
+        let Some(activation) = super::heartbeat::lanes::refreshed(conn, human, entry, activation)?
+        else {
+            continue;
+        };
         w.attention.as_mut().unwrap().generation = generation;
+        w.attention.as_mut().unwrap().activation = Some(activation.clone());
         for r in &mut w.native_returns {
             if r.attention_generation.is_some()
                 && matches!(r.phase.as_str(), "reserved" | "retained_unsent")
@@ -600,6 +608,7 @@ pub(in crate::store) fn resume_attention_on(
                 && r.collection_local.is_none()
             {
                 r.attention_generation = Some(generation);
+                r.attention_activation = Some(activation.clone());
             }
         }
         save_on(conn, &w)?;
@@ -1451,6 +1460,7 @@ mod tests {
                 },
             ],
         };
+        super::heartbeat::enable_test_lanes(&s, 100, entry.key);
         (f, s, entry, plan)
     }
     fn declare(s: &Store, e: &SessionRecord, p: WorkflowPlan) -> Value {
@@ -1751,7 +1761,7 @@ mod tests {
         {
             // Test-owned server receipt, not a new public tagging or funding API.
             let conn = s.conn.lock().unwrap();
-            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1",[&delivery.id]).unwrap();
+            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2,'$.returns[0].attention_activation',json('{\"lane\":\"messaging\",\"generation\":1}')) WHERE id=?1",[&delivery.id]).unwrap();
         }
         let local = turn(&s, &entry, "");
         assert!(s.workflow_native_link(&selected.id, local).is_err());
@@ -1879,7 +1889,7 @@ mod tests {
             // Only the server-owned fixture marks this retained source; peer
             // text and requesting models cannot mint an attention generation.
             let conn = s.conn.lock().unwrap();
-            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2) WHERE id=?1", [&delivery.id]).unwrap();
+            conn.execute("UPDATE interaction_deliveries SET native_return=json_set(native_return,'$.returns[0].attention_generation',2,'$.returns[0].attention_activation',json('{\"lane\":\"messaging\",\"generation\":1}')) WHERE id=?1", [&delivery.id]).unwrap();
         }
         s.heartbeat_control(
             100,
@@ -4194,6 +4204,17 @@ mod tests {
         reports: Vec<crate::store::HeartbeatReportSource>,
     ) {
         use crate::store::{HeartbeatCommand as H, HeartbeatProducerContract};
+        let selected_lane = if reports.is_empty() {
+            super::heartbeat::HeartbeatLane::WorkflowReturns
+        } else {
+            super::heartbeat::HeartbeatLane::Reports
+        };
+        for lane in super::heartbeat::HeartbeatLane::IMPLEMENTED {
+            if lane != selected_lane {
+                s.heartbeat_control(100, entry.key, H::PauseLane { lane })
+                    .unwrap();
+            }
+        }
         s.heartbeat_control(100, entry.key, H::Pause).unwrap();
         let resources = crate::store::heartbeat::test_contract();
         let expiry = resources.expires_at_unix_ms;
@@ -4890,6 +4911,10 @@ mod tests {
                 "native-1",
                 2,
                 "attention-source",
+                &super::heartbeat::lanes::Activation {
+                    lane: super::heartbeat::HeartbeatLane::Messaging,
+                    generation: 1,
+                },
             )
             .unwrap();
             tx.commit().unwrap();
@@ -5217,6 +5242,46 @@ mod tests {
         let w = load_on(&conn, 100, entry.key, view["id"].as_str().unwrap()).unwrap();
         assert_eq!(w.attention.as_ref().unwrap().generation, 2);
         assert_eq!(w.attention.as_ref().unwrap().native, "native-1");
+    }
+
+    #[test]
+    fn heartbeat_lane_pause_propagates_to_children_and_preserves_human_handover() {
+        use crate::store::heartbeat::{HeartbeatCommand as H, HeartbeatLane as L};
+        let (_file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let i = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        let target = s.get_session(i.target).unwrap().unwrap();
+        let local = turn(&s, &target, &i.text);
+        s.interaction_transport(&i.id, 100, local, P::Submitting, None)
+            .unwrap();
+        assert!(
+            s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
+                .unwrap()
+        );
+        s.heartbeat_control(100, entry.key, H::PauseLane { lane: L::Reports })
+            .unwrap();
+        let rows = s
+            .heartbeat_executions_scoped(100, entry.key, true, Some(L::Reports))
+            .unwrap();
+        assert_eq!(rows.iter().filter(|r| r["phase"] == "owned").count(), 2);
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, i.target)
+                .unwrap()
+                .is_some()
+        );
+        s.heartbeat_native_started(local, "child-physical").unwrap();
+        s.heartbeat_external_input(local).unwrap();
+        s.heartbeat_control(100, entry.key, H::PauseLane { lane: L::Messaging })
+            .unwrap();
+        let rows = s
+            .heartbeat_executions_scoped(100, entry.key, true, Some(L::Messaging))
+            .unwrap();
+        assert_eq!(rows.iter().filter(|r| r["phase"] == "stopping").count(), 1);
+        assert_eq!(
+            rows.iter().filter(|r| r["phase"] == "transferred").count(),
+            1
+        );
     }
 
     #[test]

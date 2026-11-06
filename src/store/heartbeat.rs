@@ -1,5 +1,7 @@
 //! Persistent scoped attention control. No scheduler, inference or goal mutation.
 use super::*;
+pub(in crate::store) mod lanes;
+pub use lanes::HeartbeatLane;
 mod delegation;
 mod executions;
 pub(in crate::store) use delegation::{
@@ -25,6 +27,13 @@ pub enum HeartbeatCommand {
     Resume {
         generation: u64,
     },
+    PauseLane {
+        lane: HeartbeatLane,
+    },
+    ResumeLane {
+        lane: HeartbeatLane,
+        generation: u64,
+    },
     ConfigureResources {
         generation: u64,
         contract: HeartbeatResources,
@@ -40,6 +49,8 @@ struct Control {
     paused: bool,
     generation: u64,
     changed_at: String,
+    #[serde(default)]
+    lanes: lanes::Controls,
 }
 /// Admission-only fence. Presentation/history remain readable while paused.
 /// A missing control record never authorizes an automatic attention generation.
@@ -90,7 +101,46 @@ impl Store {
                 paused: true,
                 generation: 0,
                 changed_at: String::new(),
+                lanes: Default::default(),
             });
+        let lane_change = match &command {
+            HeartbeatCommand::PauseLane { lane } => Some((*lane, true, None)),
+            HeartbeatCommand::ResumeLane { lane, generation } => {
+                Some((*lane, false, Some(*generation)))
+            }
+            _ => None,
+        };
+        if let Some((lane, paused, generation)) = lane_change {
+            anyhow::ensure!(
+                paused || lane.supported(),
+                "This activation lane is not implemented"
+            );
+            let c = control.lanes.entry(lane).or_default();
+            anyhow::ensure!(
+                generation.is_none_or(|g| g == c.generation),
+                "Lane generation changed; inspect status before resume"
+            );
+            if c.paused != paused {
+                anyhow::ensure!(
+                    paused || c.generation < 9_007_199_254_740_991,
+                    "Lane generation capacity reached"
+                );
+                c.paused = paused;
+                c.generation = c.generation.saturating_add(1).min(9_007_199_254_740_991);
+                control.changed_at = now_string();
+            }
+            tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,serde_json::to_string(&control)?])?;
+            if !paused {
+                super::workflows::resume_attention_on(
+                    &tx,
+                    human,
+                    entry,
+                    &native,
+                    control.generation,
+                )?;
+                producer::resume_on(&tx, human, entry, control.generation)?;
+            }
+        }
         let selected = match command {
             HeartbeatCommand::ConfigureResources {
                 generation,
@@ -123,7 +173,9 @@ impl Store {
                 producer::configure_on(&tx, human, entry, contract)?;
                 None
             }
-            HeartbeatCommand::Status => None,
+            HeartbeatCommand::Status
+            | HeartbeatCommand::PauseLane { .. }
+            | HeartbeatCommand::ResumeLane { .. } => None,
             HeartbeatCommand::Pause => Some(true),
             HeartbeatCommand::Resume { generation } => {
                 if generation != control.generation {
@@ -165,9 +217,35 @@ impl Store {
         let producer = producer::status_on(&conn, human, session)
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
         Ok(
-            json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,
+            json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,"lanes":lanes::status(&control),
             "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
         )
+    }
+}
+
+#[cfg(test)]
+pub(in crate::store) fn enable_test_lanes(store: &Store, human: i64, entry: SessionKey) {
+    store
+        .heartbeat_control(human, entry, HeartbeatCommand::Pause)
+        .unwrap();
+    for lane in HeartbeatLane::IMPLEMENTED {
+        let status = store
+            .heartbeat_control(human, entry, HeartbeatCommand::Status)
+            .unwrap();
+        let name = serde_json::to_value(lane).unwrap();
+        let c = &status["lanes"][name.as_str().unwrap()];
+        if c["paused"] == true {
+            store
+                .heartbeat_control(
+                    human,
+                    entry,
+                    HeartbeatCommand::ResumeLane {
+                        lane,
+                        generation: c["generation"].as_u64().unwrap(),
+                    },
+                )
+                .unwrap();
+        }
     }
 }
 

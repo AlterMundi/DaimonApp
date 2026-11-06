@@ -30,12 +30,24 @@ pub(super) async fn execute(
             super::matrix::inbox_matches(&cfg, source)?;
         }
     }
-    let pause = matches!(&command, HeartbeatCommand::Pause);
+    let lane = match &command {
+        HeartbeatCommand::PauseLane { lane } => Some(*lane),
+        _ => None,
+    };
+    let pause = matches!(&command, HeartbeatCommand::Pause) || lane.is_some();
     // Persist the fence before attempting cancellation or any native read.
     let mut value = app.shared.store.heartbeat_control(human, entry, command)?;
-    let records = app.shared.store.heartbeat_executions(human, entry, pause)?;
+    let records = app
+        .shared
+        .store
+        .heartbeat_executions_scoped(human, entry, pause, lane)?;
     let mut observations = Vec::new();
-    for r in records.iter().filter(|r| r["phase"] == "stopping" && pause) {
+    for r in records.iter().filter(|r| {
+        r["phase"] == "stopping"
+            && pause
+            && lane
+                .is_none_or(|lane| r["activation"]["lane"] == serde_json::to_value(lane).unwrap())
+    }) {
         let Some(physical) = r["physical"].as_str() else {
             observations.push(serde_json::json!({"local":r["local"],"state":"unconfirmed","reason":"physical_identity_not_yet_observed"}));
             continue;
@@ -113,11 +125,18 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     let command = match fields.as_slice() {
         ["status"] => HeartbeatCommand::Status,
         ["pause"] => HeartbeatCommand::Pause,
+        ["pause-lane", lane] => HeartbeatCommand::PauseLane {
+            lane: serde_json::from_value(serde_json::json!(lane))?,
+        },
+        ["resume-lane", lane, generation] => HeartbeatCommand::ResumeLane {
+            lane: serde_json::from_value(serde_json::json!(lane))?,
+            generation: generation.parse()?,
+        },
         ["resume", generation] => HeartbeatCommand::Resume {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause|resume GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause|resume GENERATION|pause-lane LANE|resume-lane LANE GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(
