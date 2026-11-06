@@ -1,3 +1,4 @@
+let heartbeatView;
 "use strict";
 const $ = (selector) => document.querySelector(selector);
 const monitorOnly = new URL(location.href).searchParams.get('view') === 'monitor';
@@ -479,6 +480,7 @@ function closeConversationAlerts() {
   $("#conversation-alerts-toggle").setAttribute("aria-expanded","false");
 }
 function clearConversationAlerts() {
+  heartbeatView?.reset();
   conversationAlertsGeneration++;conversationAlertsRead=undefined;conversationAlertsAgain=false;conversationAlertsDenied=false;lastConversationAlerts=undefined;
   closeConversationAlerts();delete $("#operations").dataset.conversationOverlay;$("#operations").hidden=true;
   $("#conversation-alerts-toggle").hidden=true;$("#conversation-alerts-close").hidden=true;
@@ -590,6 +592,7 @@ function traffic(data) {
 }
 async function refresh(force = false) {
   if (refreshing || !authenticated) return;
+  if(!document.hidden)void heartbeatView?.refresh();
   if (conversationMode) { void refreshConversationAlerts(); return conversationView?.refresh(force); }
   if (document.hidden && !force) return;
   refreshing = true;
@@ -858,3 +861,5 @@ const conversationView = window.Conversation?.mount({
     $("#refresh").disabled = true;
   }
 })();
+
+heartbeatView = window.InteractionHeartbeat?.mount({api, authenticated:()=>authenticated});

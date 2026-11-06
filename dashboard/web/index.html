@@ -30,6 +30,7 @@
     <script src="assets/session-workspace.js" defer></script>
     <script src="assets/conversation.js" defer></script>
     <script src="assets/live.js" defer></script>
+    <script src="assets/heartbeat.js" defer></script>
     <script src="assets/app.js" defer></script>
   </head>
   <body>
@@ -61,7 +62,7 @@
       <section id="conversation" hidden aria-label="Integrating conversation">
         <section id="conversation-companion" hidden aria-label="Conversation companion">
           <pre aria-hidden="true"></pre>
-          <div><span class="companion-name">daimon: <span id="conversation-daimon">Daimon</span></span><span id="conversation-account" hidden></span><p class="companion-caption"></p><div class="companion-phases" role="status" aria-live="polite" aria-label="Observed activity"></div></div>
+          <div><span class="companion-name">daimon: <span id="conversation-daimon">Daimon</span> <button id="heartbeat-toggle" class="heartbeat-heart" type="button" aria-label="Heartbeat · status unavailable" aria-controls="heartbeat-menu" aria-expanded="false">♥</button></span><section id="heartbeat-menu" class="heartbeat-menu" hidden aria-label="Heartbeat controls"><p id="heartbeat-status" role="status">Status unavailable</p><p id="heartbeat-generation" class="note"></p><div id="heartbeat-lanes"></div><button id="heartbeat-refresh" type="button">Refresh status</button><button id="heartbeat-close" type="button">Close</button></section><span id="conversation-account" hidden></span><p class="companion-caption"></p><div class="companion-phases" role="status" aria-live="polite" aria-label="Observed activity"></div></div>
         </section>
         <div class="conversation-tools" id="conversation-observation"><button id="conversation-back" type="button">← Sessions</button><button id="conversation-refresh" type="button">Refresh replies</button>
         <p id="conversation-state" role="status" aria-live="polite">Connecting to your conversation…</p></div>

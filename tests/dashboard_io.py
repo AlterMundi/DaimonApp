@@ -65,6 +65,21 @@ class DashboardHTTP(unittest.TestCase):
         return self.client.get('/api/state').json()['csrf']
     def stop(self,nonce,csrf):
         return self.client.post('/api/stop',json={'nonce':nonce},headers={**self.headers,'x-dashboard-csrf':csrf})
+    def test_heartbeat_status_is_owner_read_only_and_rechecks_access(self):
+        from dashboard.provider import ProviderUnavailable
+        from dashboard.companion import permitted
+        status={'schema':'telecodex.heartbeat-control/v1','admission_paused':True,
+            'generation':1,'producer':{'state':'not_configured'},'executions':[]}
+        self.provider.heartbeat_status=lambda:status
+        self.assertEqual(self.client.get('/api/interaction/heartbeat').status_code,401)
+        csrf=self.login()
+        self.assertEqual(self.client.get('/api/interaction/heartbeat').json(),status)
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json={'action':'resume','generation':1},headers={**self.headers,'x-dashboard-csrf':csrf}).status_code,405)
+        self.assertTrue(permitted('GET','/api/interaction/heartbeat',scope='monitor_readonly'))
+        self.assertFalse(permitted('POST','/api/interaction/heartbeat'))
+        def revoke():self.provider.allowed=False;return status
+        self.provider.heartbeat_status=revoke
+        self.assertEqual(self.client.get('/api/interaction/heartbeat').status_code,401)
     def test_avatar_recovery_runs_bounded_asr_before_existing_owner_completion(self):
         csrf=self.login();calls=[]
         ident='10000000-0000-4000-8000-000000000001';dialogue='20000000-0000-4000-8000-000000000002'

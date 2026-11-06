@@ -1135,3 +1135,16 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .session-audio-controls button[aria-pressed="true"] { color:var(--bg);background:var(--accent);outline:0; }
 
 .session-workspace .session-scope-toggle {width:100%;min-height:32px;margin:2px 0;padding:4px 8px;font-size:14px;text-align:left;}
+/* A heartbeat is animated only with explicit current operational evidence. */
+.heartbeat-heart {display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:2px;border:0;background:transparent;color:var(--muted,#aaa);font-size:20px;vertical-align:middle;}
+.heartbeat-heart[data-state="operational"] {color:var(--accent,#85d4e7);animation:heartbeat-pulse 1.4s ease-in-out infinite;}
+.heartbeat-heart[data-state="error"] {color:var(--danger,#f29b9b);}
+#conversation-companion {position:relative;}
+.heartbeat-menu {position:absolute;right:0;top:100%;z-index:20;max-width:min(360px,calc(100vw - 32px));padding:12px;border:1px solid var(--muted,#777);border-radius:12px;background:var(--panel,#101923);font-size:14px;box-shadow:0 8px 24px #0006;}
+.heartbeat-menu[hidden] {display:none;}
+.heartbeat-menu p {margin:0 0 8px;}
+#heartbeat-lanes>div {display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;margin:6px 0;}
+#heartbeat-lanes button {padding:4px;min-height:32px;font-size:14px;}
+#heartbeat-lanes span {font-size:14px;line-height:1.35;}
+@keyframes heartbeat-pulse {50% {opacity:.35;}}
+@media (prefers-reduced-motion:reduce) {.heartbeat-heart[data-state="operational"] {animation:none;}}
