@@ -42,7 +42,7 @@
     rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
-    let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0;
+    let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0,lastHistoryAttempt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){renderSelection();onTarget();}
@@ -154,7 +154,8 @@
             status.textContent='Your selected session changed. Select it again before sending; the current destination has not been replaced.';
         }
         render();onReady(true);
-        if(expanded&&!expanded.is_entry&&activeHistory)void history('after');
+        if(expanded&&!expanded.is_entry&&(activeHistory||!retryHistory.hidden&&Date.now()-lastHistoryAttempt>=5000))
+          void history(activeHistory?'after':undefined);
       }catch(error){
         if(owned!==epoch)return;
         if(error.status===403||error.status===401){
@@ -202,17 +203,18 @@
         box.remove();
       }
     }
-    async function history(direction){
+    async function history(direction,recovered=false){
       if(!allowed||!expanded||expanded.is_entry||historyBusy)return;
-      historyBusy=true;retryHistory.hidden=true;const owned=historyEpoch,selection=expanded;
+      historyBusy=true;lastHistoryAttempt=Date.now();retryHistory.hidden=true;const owned=historyEpoch,selection=expanded;
       const query=new URLSearchParams({technical:String(technical)});
-      if(activeHistory){query.set('revision',activeHistory.revision);query.set(direction==='before'?'before':'after',activeHistory[direction==='before'?'before':'after']);}
+      if(activeHistory){query.set('revision',activeHistory.revision);query.set(direction==='before'?'before':'after',activeHistory[direction==='before'?'before':'after']);
+        if(activeHistory[direction==='before'?'beforeScan':'afterScan'])query.set('scan','true');}
       if(!activeHistory)historyStatus.textContent='Reading…';
       try{
         const result=await api(`interaction/sessions/${selection.id}?${query}`);if(owned!==historyEpoch)return;
         if(result.schema!=='daimon.session-view/v1'||!Array.isArray(result.items)||result.items.length>80)throw Error('Conversation unavailable');
-        if(!activeHistory){activeHistory={revision:result.revision,before:result.before,after:result.after,hasEarlier:result.has_earlier,moreAfter:result.more};}
-        else if(direction==='before'){activeHistory.before=result.before;activeHistory.hasEarlier=result.has_earlier;}else {activeHistory.after=result.after;activeHistory.moreAfter=result.more;}
+        if(!activeHistory){activeHistory={revision:result.revision,before:result.before,after:result.after,beforeScan:result.before_scan,afterScan:result.after_scan,hasEarlier:result.has_earlier,moreAfter:result.more};}
+        else if(direction==='before'){activeHistory.before=result.before;activeHistory.beforeScan=result.before_scan;activeHistory.hasEarlier=result.has_earlier;}else {activeHistory.after=result.after;activeHistory.afterScan=result.after_scan;activeHistory.moreAfter=result.more;}
         const previousHeight=entries.scrollHeight,previousTop=entries.scrollTop;
         const nearEnd=previousHeight-previousTop-entries.clientHeight<80;
         if(direction==='before')for(const item of [...result.items].reverse())appendItem(item,true);
@@ -220,7 +222,7 @@
         // Keep only a bounded DOM window. Removed messages remain in native
         // history and can be read again with its existing cursors.
         trimHistory(direction==='before');
-        earlier.hidden=!activeHistory.hasEarlier;newer.hidden=!activeHistory.moreAfter;historyStatus.textContent=result.skipped_records?'Some retained records are unavailable.':'Live conversation';
+        earlier.hidden=!activeHistory.hasEarlier;newer.hidden=!activeHistory.moreAfter;historyStatus.textContent=result.skipped_records?'Some content could not be previewed.':'Live conversation';
         if(direction==='before')entries.scrollTop=previousTop+entries.scrollHeight-previousHeight;
         else if(!direction || direction==='after'&&nearEnd)entries.scrollTop=entries.scrollHeight;
         onReady(true);
@@ -229,6 +231,7 @@
           if(error.status===401||error.status===403)revoke();
           else {
             if(error.status===409)clearHistory();
+            if(error.status===409&&!recovered)return history(undefined,true);
             retryDirection=error.status===409?undefined:direction;
             historyStatus.textContent=error.status===409?'This conversation changed. Retry reading to refresh.':'Conversation unavailable. Your draft is kept.';
             retryHistory.hidden=false;

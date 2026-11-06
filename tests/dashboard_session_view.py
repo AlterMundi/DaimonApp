@@ -91,8 +91,36 @@ class SelectedHistory(unittest.TestCase):
         with self.assertRaises(OSError):read(link,'owned')
         with self.assertRaises(ValueError):read(self.path,'another')
         with self.assertRaises(ValueError):read(self.path,'owned',expected_file=(0,0))
-    def test_oversized_record_is_explicit_unavailable_not_a_stuck_cursor(self):
+    def test_oversized_record_does_not_block_the_view_or_change_originals(self):
         self.append(message('x'*(MAX_LINE+1)))
-        with self.assertRaises(ValueError):read(self.path,'owned')
+        original=self.path.read_bytes();page=read(self.path,'owned')
+        self.assertEqual(page['items'],[]);self.assertGreater(page['skipped_records'],0)
+        self.assertFalse(page['has_earlier']);self.assertEqual(self.path.read_bytes(),original)
+    def test_huge_crossing_record_keeps_latest_messages_and_earlier_scan_progress(self):
+        self.append(message('Earlier'),message('x'*(MAX_LINE*4)),message('Latest'))
+        page=read(self.path,'owned');self.assertEqual([v['text']for v in page['items']],['Latest'])
+        self.assertTrue(page['before_scan']);self.assertGreater(page['skipped_records'],0)
+        seen=[]
+        for _ in range(8):
+            if not page['has_earlier']:break
+            old=page['before'];page=read(self.path,'owned',before=old,scan=page['before_scan'],revision=page['revision'])
+            self.assertLess(page['before'],old)
+            seen=[v['text']for v in page['items']]+seen
+        self.assertFalse(page['has_earlier']);self.assertEqual(seen,['Earlier'])
+    def test_forward_scan_crosses_huge_record_and_resumes_at_real_newline(self):
+        self.append(message('First'));page=read(self.path,'owned')
+        self.append(message('x'*(MAX_LINE*4)),message('New answer'))
+        seen=[]
+        for _ in range(16):
+            old=page['after'];page=read(self.path,'owned',after=old,scan=page['after_scan'],revision=page['revision'])
+            self.assertGreater(page['after'],old)
+            seen.extend(v['text']for v in page['items'])
+            if not page['more']:break
+        self.assertFalse(page['more']);self.assertEqual(seen,['New answer'])
+        with self.assertRaises(ValueError):read(self.path,'owned',scan=True)
+    def test_scan_cannot_expose_private_analysis_or_partial_json(self):
+        self.append(message('x'*(MAX_LINE*4),channel='analysis'),message('Visible'))
+        page=read(self.path,'owned');self.assertEqual([v['text']for v in page['items']],['Visible'])
+        self.assertNotIn('xxx',json.dumps(page))
 
 if __name__=='__main__':unittest.main()

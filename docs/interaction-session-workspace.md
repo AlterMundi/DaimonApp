@@ -158,11 +158,23 @@ menu open. When any audio filter is active, Reset appears in the menu header
 aligned above the controls; clearing filters hides it again. The collapsed
 destination toolbar contains only navigation and the current input destination.
 
-Initial selected-history failures stay visible with an explicit Retry reading
-action. Ordinary metadata refresh does not restart a failed initial read or
-replace its error with another Reading indicator. The existing20second API
-deadline bounds that read. Retry preserves the composer/target and reads only
-history; an obsolete file revision clears its old display before a fresh read.
+Selected-history failures retain an explicit Retry reading action. A changed
+file gets one fresh read immediately; persistent conflicts cannot loop. Existing
+workspace refresh events can recover a failed initial read after at least5seconds,
+without a new timer or background reader. The existing20second API deadline still
+bounds each request. Reading recovery preserves the composer, frozen target and
+access checks; it never resends input or starts work.
+
+An oversized record no longer makes the complete conversation unavailable.
+The bounded reader skips its preview and keeps subsequent readable messages.
+`before_scan`/`after_scan` mark byte cursors inside an oversized record; the next
+same-revision `before`/`after` request carries `scan=true` and aligns at a real
+newline before parsing. Each scan makes bounded progress, never decodes a JSON
+fragment as a message and still excludes private analysis. Earlier navigation
+can cross a large record without loading it; original files remain read-only.
+Opening/refreshing the6November VisorX view reproduced the old read-bound failure;
+generic409 wording incorrectly called it a changed conversation. Retrying the
+unchanged record could not fix that parser failure.
 
 ## Metadata refresh recovery
 
