@@ -766,6 +766,21 @@ class Provider:
             raise ValueError('Live context batch exceeds its bound')
         return self.presentation('input foreground context '+json.dumps(body,ensure_ascii=False))
 
+    def conversation_foreground_interpret(self, body):
+        """Import an exact completed machine interpretation; no ASR/work call."""
+        keys={'binding','id','dialogue_id','audio_sha256','model','text','audio_millis','transcription_millis'}
+        if (not isinstance(body,dict) or set(body)!=keys
+                or body.get('model')!='gpt-transcribe'
+                or any(not isinstance(body.get(k),str) or not re.fullmatch('[a-f0-9]{64}',body[k])
+                       for k in ('binding','audio_sha256'))
+                or not isinstance(body.get('text'),str) or not body['text'].strip()
+                or len(body['text'].encode())>16000 or '\0' in body['text']
+                or type(body.get('audio_millis')) is not int or not 1<=body['audio_millis']<=120000
+                or type(body.get('transcription_millis')) is not int or not 0<=body['transcription_millis']<=120000):
+            raise ValueError('Select one exact completed public interpretation')
+        self.input_id(body['id']);self.input_id(body['dialogue_id'])
+        return self.decorate_input(self.presentation('input foreground interpret '+json.dumps(body,ensure_ascii=False)))
+
     def conversation_foreground_complete(self, ident, binding, dialogue):
         """Read a now-completed receipt for the same retained acoustic original."""
         self.input_id(ident);self.input_id(dialogue)

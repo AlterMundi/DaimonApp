@@ -243,6 +243,87 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         assert Path(str(provider.receiver['db_path'])+'.voice',recovered).read_bytes()==wav_bytes(tail)
         assert (j.root/'completed-calls').read_text().splitlines()==['read']
         assert len(j.packets)==1,'Close recovery must not submit another native turn'
+        # Public Live uses this SAME native foreground reservation, without
+        # inventing transcript text, starting ASR or submitting a model turn.
+        from dashboard.openai_live_visits import LiveCreations
+        from dashboard.openai_live_originals import enroll_original
+        public=LiveCreations(j.root/'public-visits');visit=str(uuid.uuid4())
+        owner=provider.public_live_binding(binding);public.prepare(visit,provider.human,owner)
+        receipt=public.recording(visit,provider.human,binding,0,audio(880),provider)
+        from dashboard.provider import ProviderUnavailable
+        native_submit=provider.conversation_voice_submit;native_calls=[]
+        def lost_native_ack(*args,**kwargs):
+            native_calls.append(True);native_submit(*args,**kwargs)
+            raise ProviderUnavailable('Synthetic lost acknowledgement after actual native reservation')
+        provider.conversation_voice_submit=lost_native_ack
+        assert enroll_original(public,visit,provider.human,owner,0,provider)['state']=='unconfirmed'
+        # Restart the App reader, retain the exact native write intent, and read
+        # the actual SQLite/owner receipt instead of submitting it again.
+        public=LiveCreations(j.root/'public-visits')
+        enrolled=enroll_original(public,visit,provider.human,owner,0,provider)
+        assert native_calls==[True]
+        provider.conversation_voice_submit=native_submit
+        assert enrolled['state']=='observed' and enrolled['work_admitted'] is False
+        original=provider.conversation_input_status(receipt['id'])
+        assert original['phase']=='foreground_captured' and original['foreground_dialogue']==visit
+        assert not original.get('text') and original['native_acceptance']=='not_requested'
+        assert not original['voice'].get('transcription')
+        assert original['voice']['audio_sha256']==receipt['audio_sha256']
+        assert enroll_original(public,visit,provider.human,owner,0,provider)==enrolled
+        assert (j.root/'completed-calls').read_text().splitlines()==['read']
+        assert len(j.packets)==1 and not (j.root/'unexpected-asr').exists()
+        correction=str(uuid.uuid4())
+        provider.conversation_foreground_retain({'id':correction,'binding':binding,
+            'dialogue_id':visit,'text':'Later correction belongs after this public acoustic original.'})
+        order=j.row("SELECT event_id FROM original_ingress_order WHERE channel='conversation' ORDER BY id")
+        assert order.index((receipt['id'],))<order.index((correction,))
+        # A fresh, complete public original uses OpenAI interpretation exactly
+        # once, then imports its derivative into the SAME native source row.
+        # The recognizer is synthetic; the owner socket/SQLite/WAV proof are real.
+        from dashboard.openai_live_transcription import interpret_original, commit_interpretation
+        # Separate fixture store: the preceding case intentionally leaves an
+        # unconfirmed provider creation. This does not qualify visit renewal.
+        active=LiveCreations(j.root/'public-import-visits');active_visit=str(uuid.uuid4())
+        active.prepare(active_visit,provider.human,owner)
+        sample=audio(990);acoustic=active.recording(active_visit,provider.human,binding,0,sample,provider)
+        assert enroll_original(active,active_visit,provider.human,owner,0,provider)['state']=='observed'
+        asr_calls=[]
+        class SyntheticRecognizer:
+            model='gpt-transcribe'
+            def transcribe(self,data):
+                assert data==sample;asr_calls.append(True)
+                return 'Interpretación sintética: el destino corregido es Río Cobre.'
+        derivative=interpret_original(active,active_visit,provider.human,owner,0,provider,SyntheticRecognizer())
+        assert derivative['state']=='completed' and asr_calls==[True]
+        native_interpret=provider.conversation_foreground_interpret;native_imports=[]
+        def lost_import_ack(body):
+            native_imports.append(dict(body));native_interpret(body)
+            raise ProviderUnavailable('Synthetic lost acknowledgement after actual native interpretation import')
+        provider.conversation_foreground_interpret=lost_import_ack
+        assert commit_interpretation(active,active_visit,provider.human,owner,0,provider)['state']=='unconfirmed'
+        restarted=LiveCreations(j.root/'public-import-visits')
+        imported=commit_interpretation(restarted,active_visit,provider.human,owner,0,provider)
+        assert imported['state']=='observed' and imported['work_admitted'] is False
+        assert len(native_imports)==1 and asr_calls==[True]
+        provider.conversation_foreground_interpret=native_interpret
+        actual=provider.conversation_input_status(acoustic['id'])
+        assert actual['text']==derivative['text'] and actual['phase']=='foreground'
+        assert actual['voice']['preserve_original'] is True
+        assert actual['capture_questions'] == {}
+        proof=actual['voice']['transcription']
+        assert proof['actual_transcriber']=='gpt-transcribe' and proof['capture_id']==acoustic['id']
+        assert proof['audio_sha256']==acoustic['audio_sha256'] and proof['audio_millis']==200
+        assert 'not' in proof['interpretation'].lower() and actual['native_acceptance']=='not_requested'
+        assert not actual.get('foreground_delegation')
+        assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(acoustic['id'],))==[(1,)]
+        assert native_interpret(native_imports[0])['new_input'] is False
+        assert len(j.packets)==1 and not (j.root/'unexpected-asr').exists()
+        assert Path(str(provider.receiver['db_path'])+'.voice',acoustic['id']).read_bytes()==sample
+        later=str(uuid.uuid4());provider.conversation_foreground_retain({'id':later,'binding':binding,
+            'dialogue_id':active_visit,'text':'Later human correction is preserved after the acoustic original.'})
+        order=j.row("SELECT event_id FROM original_ingress_order WHERE channel='conversation' ORDER BY id")
+        assert order.count((acoustic['id'],))==1 and order.index((acoustic['id'],))<order.index((later,))
+        print('PASS public gpt-transcribe metadata import through actual native owner/SQLite, protected WAV, same original chronology, frozen empty question scope and lost-ACK restart read; synthetic recognizer, no work or paid calls.')
         print('PASS native foreground WAV/proof and immediate-close deferred retention through actual owner/SQLite: actor/binding rechecked, exact unconfirmed WAV retained, no ASR/work/replay on close; one sourced native admission; zero models.')
     finally:j.close()
 

@@ -229,3 +229,113 @@ and close events retain strict source identities. A synthetic spoken backend
 question returned its backend-only fact, completed Responses and trusted close
 with24seconds usage; this is digital qualification, not physical hearing or full
 being/memory/native-tool acceptance.
+
+### Native acoustic-original enrollment (prepared; default off)
+
+The owner-only `openai_live.native_originals=true` option connects newly retained
+public microphone recordings to the existing native foreground reservation.
+This is an intermediate handoff prerequisite, not a completed native tool or
+permission to execute work. It is not selected in receiving684. Browser payloads
+cannot enable it or supply native text/formulations.
+
+The adapter uses the existing public visit journal and the existing native input
+journal, with the original's server-derived UUID, exact WAV hash, frozen actor
+and entry binding. Native `conversation_voice_submit` receives
+`foreground_dialogue=visit` and `defer_foreground=true`. It reserves original
+chronology without ASR, interruption or a native model turn. A later correction
+therefore remains after its acoustic original even before interpretation finishes.
+Interrupted/recovered prefixes stay in review rather than being silently enrolled.
+
+A native write intent is durable before its single submission. Lost ACKs can be
+reconciled by reading that same native input, including after App restart; missing
+status never authorizes another send. Restart cannot backfill an original with no
+retained enrollment intent. Current owner authorization is checked before and
+after native access. Existing original media and journal quotas still apply;
+no new queue, database, attention producer or funding mechanism is introduced.
+
+The native/current-conversation readers can observe a captured original, but this
+release does not manufacture its transcript from Live captions, invoke the
+existing file-ASR fallback, select another provider, or formulate/dispatch tasks.
+Prepared interpretation/import components are described below. The remaining
+work is explicit native handoff and sourced return to continuing speech,
+interruption and renewal.
+Keep this option off until that complete comparison journey is qualified.
+
+Qualification includes locked Python3.11 component/mounted HTTP tests and the
+actual native668 owner/SQLite foreground journey with synthetic transport and
+zero models: one original, exact hash and chronology, no extra ASR/work, lost ACK
+then restarted read-only reconciliation, and later-correction order. These are
+native admission facts, not physical hearing or full being/memory acceptance.
+
+#### Prepared OpenAI interpretation component
+
+`openai_live_transcription.py` implements the current official file-transcription
+route (`gpt-transcribe`, `/v1/audio/transcriptions`) for a completed canonical WAV.
+It reuses approved project-key custody, never Codex credentials or another audio
+provider. It is not mounted or selected in receiving684. Older transcription
+model examples are deprecated in the current official guide; do not silently
+substitute one of them or the configured ordinary voice-note ASR.
+
+An interpretation requires an observed native acoustic reservation and the exact
+still-uninterpreted canonical source, current actor/binding, and original bytes.
+A visit admits at most16 interpretation attempts within its existing600second
+recording bound. Each paid intent reserves20KiB inside the existing bounded visit
+record before HTTP. The result replaces that reservation; concurrent source
+writes cannot consume its promised space. Response bytes/text, input PCM, network
+waits and redirects are bounded. Errors, interruption and uncertain replies never
+repeat the POST. An old receipt can be read without key access or another model
+call; restart cannot start a previously unattempted interpretation.
+
+Completed text is retained under the frozen acoustic source even if viewer access
+is revoked during HTTP, then access is checked before exposing or using it. It is
+a machine interpretation, not verified written human speech or work authority.
+The component does not synthesize a native original from Live captions, run the
+ordinary file-ASR fallback, or dispatch work. Its HTTP/model, timeout, restart,
+revocation, result-space and once-only behavior currently have mocked-provider
+qualification; no paid transcription has been used to claim acceptance.
+
+#### Prepared source-bound native interpretation import
+
+The native owner command `input foreground interpret JSON` imports completed
+`gpt-transcribe` text into its existing held acoustic original. Its closed fields
+are `binding`, `id`, `dialogue_id`, `audio_sha256`, `model`, `text`, `audio_millis`
+and `transcription_millis`. The native writer verifies owned entry/dialogue,
+canonical private WAV, exact hash/duration, immutable completion and original
+chronology. It commits the existing original directly from `foreground_captured`
+to `foreground` in one transaction; it starts no ASR or native work. A matching
+completed import is idempotent even after the working clip was archived.
+
+The importer sets the existing `preserve_original` archive hold atomically with
+the transcript. A status/list read cannot retire this original without an exact
+archive receipt. This does not change the ordinary Qwen/Gemini/native voice-note
+behavior or enlarge existing original-storage quotas. Full storage still refuses
+new preparation instead of discarding unfinished originals.
+
+`commit_interpretation` uses only the retained completed derivative, reserves a
+1KiB native-receipt slot within existing visit quotas, and records an intent before
+its single native write. A lost ACK, crash or missing status only permits reads of
+the same ID. Known-unattempted completed metadata can finish after restart; this
+starts no model, replays no audio/work and creates no new original. Access is
+checked before use/exposure; matched native receipts survive an in-flight viewer
+revocation. Older readers refuse before a new ASR request or native-import intent.
+
+The experimental acoustic enrollment currently narrows question versions to none:
+this route does not yet freeze them at the first local acoustic marker. Questions
+observed at upload time cannot acquire answer/approval authority. Actual voice
+question answers require the first-marker snapshot integration or existing
+explicit controls; this remains part of the unfinished full voice goal.
+
+Qualification includes seven commit-state tests, eight interpretation tests, six
+acoustic-enrollment tests, native store/WAV tests and an actual owner/SQLite/WAV
+journey with synthetic recognizer/transport: one source row, exact machine proof,
+protected original still present after status reads, lost-ACK read reconciliation,
+no extra ASR/work, and later human correction ordering. No paid transcription or
+physical hearing is claimed. These components remain unmounted/unselected.
+
+The existing native foreground delegate must next own explicit work and return
+its sourced result to continuing Live speech. Native context/memory, late returns,
+interruption, physical renewal, hearing and the other full-goal obligations remain
+unfinished; this import is preparation, not an end-to-end acceptance claim.
+
+Official contract: https://developers.openai.com/api/docs/guides/speech-to-text
+and https://developers.openai.com/api/docs/guides/live-delegation .

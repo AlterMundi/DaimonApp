@@ -336,6 +336,92 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         // Retention never calls deliver/submit, selects a worker or answers work.
         return response(app, &input, fresh);
     }
+    #[cfg(unix)]
+    if let Some(body) = args.strip_prefix("foreground interpret ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Interpret {
+            binding: String,
+            id: String,
+            dialogue_id: String,
+            audio_sha256: String,
+            model: String,
+            text: String,
+            audio_millis: u64,
+            transcription_millis: u64,
+        }
+        let selected: Interpret = serde_json::from_str(body)?;
+        if selected.model != "gpt-transcribe"
+            || Uuid::parse_str(&selected.id)
+                .ok()
+                .is_none_or(|v| v.to_string() != selected.id)
+            || selected.text.trim().is_empty()
+            || selected.text.len() > 16000
+            || selected.text.contains('\0')
+        {
+            bail!("Select one completed source-bound OpenAI interpretation");
+        }
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let input = app
+            .shared
+            .store
+            .conversation_input_read(human, cfg.entry(), &selected.id)?;
+        if input.foreground_dialogue.as_deref() != Some(&selected.dialogue_id)
+            || input
+                .voice
+                .as_ref()
+                .is_none_or(|v| v.audio_sha256 != selected.audio_sha256)
+        {
+            bail!("Public interpretation source is not this foreground original");
+        }
+        if let Some(proof) = input
+            .voice
+            .as_ref()
+            .and_then(|v| v.transcription.as_ref())
+            .cloned()
+        {
+            if proof.actual_transcriber.as_deref() != Some("gpt-transcribe")
+                || proof.audio_millis != selected.audio_millis
+            {
+                bail!("A committed interpretation cannot be replaced");
+            }
+            let (input, fresh) = app.shared.store.conversation_foreground_interpretation(
+                human,
+                cfg.entry(),
+                &selected.binding,
+                &selected.id,
+                &selected.dialogue_id,
+                &selected.text,
+                proof,
+            )?;
+            return response(app, &input, fresh);
+        }
+        let path =
+            std::path::PathBuf::from(format!("{}.voice", app.shared.config.db_path.display()))
+                .join(&selected.id);
+        let id = selected.id.clone();
+        let hash = selected.audio_sha256.clone();
+        let proof = tokio::task::spawn_blocking(move || {
+            crate::voice::public_interpretation_source(
+                &path,
+                &id,
+                &hash,
+                selected.audio_millis,
+                selected.transcription_millis,
+            )
+        })
+        .await??;
+        let (input, fresh) = app.shared.store.conversation_foreground_interpretation(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.dialogue_id,
+            &selected.text,
+            proof,
+        )?;
+        return response(app, &input, fresh);
+    }
     if let Some(body) = args.strip_prefix("foreground delegate ") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -378,6 +464,10 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         result["voice_available"] = json!(app.shared.config.voice.is_some());
         result["voice_original_hold"] = json!("v1");
         result["foreground_retention"] = json!("v1");
+        #[cfg(unix)]
+        {
+            result["foreground_interpretation"] = json!("gpt-transcribe/v1");
+        }
         result["foreground_context"] = json!("v1");
         result["foreground_audio_observations"] = json!("v1");
         result["foreground_derived_captions"] = json!("v1");

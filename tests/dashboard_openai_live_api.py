@@ -101,6 +101,35 @@ class Mounted(unittest.TestCase):
     def close(self,socket):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
+    def test_native_original_opt_in_uses_exact_owner_and_never_repeats_lost_ack(self):
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'native_originals':True}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        calls=[];saved={}
+        def submit(metadata,data,**options):
+            calls.append((metadata,options))
+            assert 'text' not in metadata and options=={'foreground_dialogue':self.ident,'defer_foreground':True}
+            saved.update(id=metadata['id'],entry_binding=self.owner.public_live_binding('a'*64)['entry_binding'],
+                foreground_dialogue=self.ident,voice={'audio_sha256':metadata['audio_sha256']},
+                phase='foreground_captured',native_acceptance='not_requested')
+            raise ProviderUnavailable('Synthetic ACK lost after native retention')
+        self.owner.conversation_voice_submit=submit
+        self.owner.conversation_input_status=lambda ident:dict(saved)
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'prepared')
+                path='/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0'
+                audio=wav_bytes(b'\0\0'*800)
+                self.assertEqual(client.post(path,headers={**self.headers,'x-dashboard-csrf':'stale'},content=audio).status_code,403)
+                first=client.post(path,headers=self.headers,content=audio)
+                self.assertEqual(first.status_code,200,first.text)
+                self.assertEqual(first.json()['native_original']['state'],'unconfirmed')
+                again=client.post(path,headers=self.headers,content=audio)
+                self.assertEqual(again.json()['native_original']['state'],'observed')
+                self.assertEqual(len(calls),1);self.assertFalse(again.json()['native_original']['work_admitted'])
+                self.assertEqual(Client.instances[-1].creations,0)
+
     def test_owner_opt_in_context_tool_returns_result_then_resumes_managed_backend(self):
         from dashboard.openai_live_context import NAME
         app=FastAPI();app.state.voice_active=set()
