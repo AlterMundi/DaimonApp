@@ -606,3 +606,9 @@ The regression now verifies visible retry and complete recovery, plus continuati
 after the automatic text bound. Actual Chromium at320/390px verifies the contained
 retry control, the full canonical rendered source and hidden completed controls.
 These are read-only synthetic/browser observations, not new phone acceptance.
+
+Clipboard images pasted into the message textarea use the same ordered image
+preview, fitting, removal and explicit-send path as gallery/camera selections.
+Text-only paste remains native; mixed plain text is retained. No clipboard
+permission, background read or upload is performed by paste. Existing eight-image
+and per-image limits remain unchanged.

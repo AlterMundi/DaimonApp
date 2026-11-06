@@ -232,11 +232,17 @@ class Mounted(unittest.TestCase):
 
     def test_microphone_permission_wait_retains_whole_setup_bound(self):
         timeout=asyncio.timeout
+        deadline={}
         def accelerated(delay):
-            return timeout(.06 if delay==360 else delay)
+            timer=timeout(None if delay==360 else delay)
+            if delay==360:deadline.update(timer=timer,loop=asyncio.get_running_loop())
+            return timer
         with patch('dashboard.codex_voice_api.asyncio.timeout',accelerated),self.socket()as socket:
             socket.send_json({**self.meta,'logical_visit':True})
             self.assertEqual(socket.receive_json()['type'],'prepared')
+            # Expire the real setup timeout after its prepared receipt. A tiny
+            # wall-clock deadline can expire during CI's durable preparation.
+            deadline['loop'].call_soon_threadsafe(deadline['timer'].reschedule,deadline['loop'].time())
             self.assertEqual(socket.receive_json()['type'],'review')
             self.assertEqual(socket.receive_json()['type'],'closed')
         value=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits').read(self.visit,100,'a'*64)
