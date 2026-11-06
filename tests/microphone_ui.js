@@ -12,7 +12,7 @@ function memoryRecovery(){
  }};
  return {values,open(){const request={result:db};queueMicrotask(()=>request.onsuccess?.());return request;}};
 }
-function boot(live=false,recovery,status404=false){
+function boot(live=false,recovery,status404=false,cues=false){
  let now=1000;
  const nodes=new Map(),events={},timers=[],uploads=[],originals=new Map(),received=[],devices=[],activities=[],statusReads=[];
  const document={hidden:false,addEventListener(name,fn){events[name]=fn;},querySelector(name){if(!nodes.has(name))nodes.set(name,{hidden:false,disabled:false,textContent:'',handlers:{},setAttribute(k,v){this[k]=v;},addEventListener(n,f){this.handlers[n]=f;}});return nodes.get(name);}};
@@ -27,6 +27,13 @@ function boot(live=false,recovery,status404=false){
  }
  const media=()=>({stopped:0,getTracks(){return [{stop:()=>this.stopped++}];}});
  const window={indexedDB:recovery,confirm(message){confirmations.push(message);return confirmDiscard;},isSecureContext:true,MediaRecorder:Recorder,crypto,addEventListener(n,fn){events[n]=fn;},navigator:{mediaDevices:{async getUserMedia(){mediaRequests++;if(mediaFailure)throw mediaFailure;if(permission)return permission.promise;return media();}}}};
+ const cueContexts=[],cueTones=[];
+ if(cues)window.AudioContext=class{
+  constructor(){this.state='running';this.currentTime=0;cueContexts.push(this);}
+  resume(){return Promise.resolve();}close(){this.state='closed';return Promise.resolve();}
+  createGain(){return {gain:{setValueAtTime(){},linearRampToValueAtTime(){}},connect(){},disconnect(){}};}
+  createOscillator(){const tone={frequency:{setValueAtTime(hz){tone.hz=hz;}},connect(){},disconnect(){},start(){cueTones.push(tone.hz);},stop(){}};return tone;}
+ };
  async function fetch(_route,options){
   options.route=_route;uploads.push(options);
   if(_route==='api/interaction/voice/recover'){
@@ -55,7 +62,7 @@ function boot(live=false,recovery,status404=false){
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
  let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
- return {timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
+ return {cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
   confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
@@ -270,6 +277,17 @@ function boot(live=false,recovery,status404=false){
  assert.equal(offline.uploads.length,2);assert.deepEqual(offline.uploads[0].headers,offline.uploads[1].headers);assert.equal(offline.uploads[0].body,offline.uploads[1].body,'Explicit retry preserves the exact original bytes');
  const hidden=boot();await hidden.click();hidden.events.pagehide();await until(()=>hidden.devices[0].state==='inactive');assert.equal(hidden.uploads.length,0);assert.equal(hidden.devices[0].stream.stopped,1);
  const delayed=boot(),permission=delayed.permission();const starting=delayed.click();delayed.cancel();const lateMedia=delayed.media();permission.resolve(lateMedia);await starting;assert.equal(lateMedia.stopped,1);assert.equal(delayed.devices.length,0);
+ for(const live of [false,true]){
+  const cues=boot(live,undefined,false,true);await cues.click();
+  const tick=ms=>{cues.advance(ms);cues.timers.find(t=>t.ms===1000&&!t.closed).fn();};
+  tick(110000);tick(0);tick(5000);tick(2000);tick(1000);tick(1000);
+  assert.deepEqual(cues.cueTones,[808,1010,1212,1212,1212],'One warning at10,5,3,2,1seconds; no duplicate tick');
+  cues.cancel();assert.equal(cues.cueContexts[0].state,'closed');
+  assert.equal(cues.uploads.length,0,'Warnings never submit audio');
+  await cues.click();tick(118000);
+  assert.deepEqual(cues.cueTones,[808,1010,1212,1212,1212,1212],'Throttled timer plays only current warning, never a catch-up burst');
+  cues.cancel();assert.equal(cues.cueContexts[1].state,'closed');
+ }
  const counter=boot(true);await counter.click();const remaining=counter.nodes.get('#conversation-voice-remaining');
  assert.equal(remaining.textContent,'2:00 left');assert.equal(remaining.hidden,false);
  counter.preparation().onPartial('Revisable words');counter.advance(105000);counter.timers.find(t=>t.ms===1000&&!t.closed).fn();
