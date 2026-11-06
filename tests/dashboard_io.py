@@ -174,6 +174,12 @@ class DashboardHTTP(unittest.TestCase):
         self.assertEqual(response.text,'data: {}\n\n: keepalive\n\n')
         self.assertEqual(self.provider.calls,[])
 
+    def test_public_live_browser_transport_is_served_as_an_asset(self):
+        response=self.client.get('/assets/openai-live.js')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.content,(Path(__file__).resolve().parents[1]/'dashboard/web/openai-live.js').read_bytes())
+        self.assertEqual(self.client.get('/assets/not-a-public-asset.js').status_code,404)
+
     def test_private_data_and_actions_require_signed_allowed_owner(self):
         self.assertEqual(self.client.get('/api/state').status_code,401)
         self.assertEqual(self.client.post('/api/session',json={'init_data':'101'},headers=self.headers).status_code,403)
