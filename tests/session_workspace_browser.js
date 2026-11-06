@@ -3,6 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
 const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
@@ -50,7 +51,8 @@ const server=http.createServer(async(req,res)=>{
   }
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
   if(route.startsWith('interaction/requests/')){if(req.method==='POST')questionPosts++;return json(question());}
-  if(route==='interaction/access')return json({csrf:'fixture-csrf',label:'Synthetic operator'});
+  if(route==='interaction/access'){accessReads++;return authDenied?json({detail:'Expired'},401):json({csrf:'fixture-csrf',label:'Synthetic operator'});}
+  if(route==='interaction' && readRejections>0){readRejections--;return json({detail:'Synthetic access rejection'},401);}
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
@@ -62,7 +64,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(route==='interaction/inputs'&&req.method==='POST'){
    let raw='';for await(const block of req)raw+=block;const body=JSON.parse(raw);posts.push(body);
-   const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return json(value);
+   const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
   if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
@@ -129,6 +131,29 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  },{publicCase});
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
+ if(authCase){
+  await page.locator('#conversation-message').fill('Keep my unsent draft.');
+  await page.waitForFunction(()=>authenticated && sharedConversationConnected);
+  await page.evaluate(()=>clearInterval(timer));
+  const before=accessReads;readRejections=1;
+  await page.evaluate(()=>api('interaction'));
+  assert(accessReads>before,'A rejected read revalidates the existing session');
+  assert.equal(await page.locator('#feedback').innerText(),'');
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my unsent draft.');
+  readRejections=2;assert.equal(await page.evaluate(()=>api('interaction').catch(e=>e.status)),503);
+  assert.equal(await page.locator('#feedback').innerText(),'','A scoped rejection with valid identity cannot sign out the whole app');
+  authDenied=true;readRejections=1;await page.evaluate(()=>api('interaction').catch(()=>conversationView.unauthenticated()));
+  await page.getByRole('button',{name:'Sign in',exact:true}).waitFor();
+  authDenied=false;await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForFunction(()=>!document.querySelector('#feedback').textContent);
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my unsent draft.');
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);
+  writeRejected=true;const beforeWrite=accessReads;
+  assert.equal(await page.evaluate(()=>api('interaction/inputs',{id:'once',text:'Only one write'}).catch(e=>e.status)),401);
+  assert.equal(posts.length,1);assert.equal(accessReads,beforeWrite,'Writes are never repeated or silently reauthenticated');
+  report.state='qualified-shared-session-recovery';report.accessReads=accessReads;return;
+ }
+
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
  assert.equal(await page.locator('#conversation-compose #conversation-voice-engine').count(),0,'Voice engine is not an ordinary composer control');
  assert.equal(await page.locator('#conversation-diagnostics #conversation-voice-engine').count(),1,'Development voice selection lives under the hood');

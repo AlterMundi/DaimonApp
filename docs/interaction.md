@@ -1558,3 +1558,15 @@ existing exact `attach-active` route; this starts no turn and changes no goal.
 A successful software selection is not receiving continuity until those actual
 collectors, or their terminal native outcomes, are observed. Never repeat a
 queued attachment or software selection to repair a missing observation.
+
+### Shared browser access recovery
+
+A rejected shared-session GET rechecks the existing Home identity once and repeats
+only that read when identity remains valid. A second resource rejection is an
+unavailable observation, not a global sign-out. POSTs never repeat: accepted or
+uncertain input retains its original outcome. After actual access rejection, the
+client can restore current access without a page reload; returning to the tab,
+coming online or the explicit Sign in button rechecks the same remembered session.
+Only the existing shared sign-in client can initiate login when that check fails.
+Malformed identity-service responses return503, not a fabricated expired session.
+No new identity store, token refresh mechanism, capture reopening or work replay.

@@ -31,7 +31,7 @@ function boot(fetchImpl, alertsImpl = () => Promise.resolve({ok:true, json:async
   };
   const context = vm.createContext({
     document,
-    window: { InteractionLive:{mount(){return {start(){},stop(){}};}}, Telegram: { WebApp: { initData: standalone ? undefined : "synthetic", ready() {} } },
+    window: { addEventListener() {}, InteractionLive:{mount(){return {start(){},stop(){}};}}, Telegram: { WebApp: { initData: standalone ? undefined : "synthetic", ready() {} } },
       DaimonHomeAccess:{createClient(){return {async signIn(){signIns++;return {status:'redirecting'};}};}},
       ...(device?{Conversation:{mount(options){monitorHeaders=options.headers;unauthorized=options.onUnauthorized;options.modeChanged(true,true);return {authenticated(){},refresh:async()=>{}};}}}:{}) },
     sessionStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
@@ -79,7 +79,7 @@ const hung = (options) => new Promise((resolve, reject) => {
   async function requestCase(route,body,responses){
     const calls=[];
     const context=vm.createContext({AbortController,setTimeout,clearTimeout,
-      csrf:"fixture",monitorOnly:false,deviceMode:false,authorizationHeaders:()=>({}),
+      csrf:"fixture",monitorOnly:false,deviceMode:false,sharedConversationConnected:false,authorizationHeaders:()=>({}),
       fetch:async (url,options)=>{calls.push({url,options});return responses.shift();}});
     vm.runInContext(apiSource,context);context.route=route;context.body=body;
     try{return {calls,value:await vm.runInContext("api(route,body)",context)};}
@@ -125,8 +125,9 @@ const hung = (options) => new Promise((resolve, reject) => {
   assert.equal(alertView.requests.length,deniedCalls,'A known missing optional grant must not create a request loop');
   assert.equal(draft.value,'Unsent correction');assert.equal(vm.runInContext('authenticated',alertView.context),true);
   let finishOld;
-  const staleAlert=boot(alertAccess,()=>new Promise(resolve=>finishOld=resolve),'conversation',true);
-  await settle();staleAlert.expire();
+  let staleAccessDenied=false;
+  const staleAlert=boot(()=>staleAccessDenied?Promise.resolve({ok:false,status:401,json:async()=>({})}):alertAccess(),()=>new Promise(resolve=>finishOld=resolve),'conversation',true);
+  await settle();staleAccessDenied=true;staleAlert.expire();
   finishOld({ok:true,json:async()=>alertSnapshot});await settle();await settle();
   assert.equal(staleAlert.nodes.get('#conversation-alerts-toggle').hidden,true,'A delayed response cannot restore a cleared alert view after sign-in expiry');
   assert.equal(staleAlert.nodes.get('#incidents').children.length,0);
