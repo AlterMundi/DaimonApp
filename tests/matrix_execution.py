@@ -1477,7 +1477,9 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 group_intent = intent | {"parent": public_page["items"][0],
                                          "send_id": str(uuid.uuid4()),
                                          "text": "An attributed group response."}
-                group_reply = operator_respond(group_intent, host, timeout=1)
+                # This qualifies group authorship/delivery, not one-second
+                # latency. Keep one bounded request without transport retries.
+                group_reply = operator_respond(group_intent, host, timeout=5)
                 self.assertIsNone(group_reply["delivery"].get("destination"))
                 self.assertEqual(group_reply["delivery"]["thread_id"], public["thread_id"])
                 self.assertEqual(operator_respond(group_intent, host, timeout=1, inspect_only=True)

@@ -332,10 +332,105 @@ protected original still present after status reads, lost-ACK read reconciliatio
 no extra ASR/work, and later human correction ordering. No paid transcription or
 physical hearing is claimed. These components remain unmounted/unselected.
 
-The existing native foreground delegate must next own explicit work and return
-its sourced result to continuing Live speech. Native context/memory, late returns,
+The existing native foreground delegate owns explicit work; its sourced result
+must still reach continuing Live speech. Native context/memory, late returns,
 interruption, physical renewal, hearing and the other full-goal obligations remain
 unfinished; this import is preparation, not an end-to-end acceptance claim.
 
 Official contract: https://developers.openai.com/api/docs/guides/speech-to-text
 and https://developers.openai.com/api/docs/guides/live-delegation .
+
+#### Prepared direct client-to-native work bridge
+
+The official client-delegation mode lets GPT-Live delegate to an application's
+existing agent. It is a candidate for the persistent Codex integrator, alongside
+the existing managed Responses comparison, not evidence of a better result yet.
+Choose the mode at session creation; a running Responses visit cannot switch to
+client mode. Keep native Codex subscription authentication and the separate
+approved public voice API project unchanged.
+
+`session.delegation.created` supplies a trusted delegation ID and target, **no
+task text**. Input/output transcript deltas are fragments, not completed turns;
+their approximate session offsets are not packet arrival times. A silence gap
+does not prove an utterance ended. The existing30second durability chunks must
+not be treated as complete instructions or used to bypass the native latest
+captured-correction fence. Exact acoustic sealing/correlation remains unfinished.
+
+The unmounted server component `openai_live_native_work.delegate_native` accepts
+only a retained client delegation, one to eight ordered acoustic originals whose
+OpenAI interpretations were already committed to native storage, and a separately
+attributed assistant formulation. It uses the existing native foreground delegate
+to the integrator; it does not select workers or synthesize human text. The native
+transaction freezes source text/hash, acoustic provenance and capture chronology,
+and independently rejects an older root when a later correction exists.
+
+Before submitting, the component reserves2KiB for its acknowledgment inside the
+existing visit quotas and persists the exact intent/formulation/source hashes.
+The record inherits existing32delegation,8source,8192byte formulation and64KiB
+source-context bounds. It cannot start new work after capture expiry or reader
+restart. Lost acknowledgment, process exit, native rejection or unavailable status
+permit only reads of the same root; none permits another write. Observed receipts
+survive in-flight access revocation without exposing them to the revoked viewer.
+A second delegation cannot reuse an already reserved root. Later corrections may
+include earlier context with a new root; they never replace the first intent.
+
+Nine component tests cover these boundaries. The actual native-owner/SQLite/WAV
+journey also lost the work acknowledgment after admission, reconciled it after
+restarting the App reader and observed one native request containing the exact
+formulation and acoustic proof. Its recognizer, public creation and native model
+are synthetic: no paid call or real model execution was made. Native admission is
+not a completed task, successful memory lookup or heard answer.
+
+The bridge is not mounted or selected. Remaining integration must seal the intended
+speech sources and qualify the real native turn/result through the mounted
+sideband. For client tasks, official results use
+`session.commentary.append` with the original delegation ID; quiet progress uses
+`session.thinking.append`. These500token appends and their context-injection ACKs
+do not establish spoken delivery. Preserve long outputs in native storage and
+use bounded current-source readers, corrections and late-return handling.
+
+`openai_live_native_results.return_native_part` prepares that result return using
+the existing canonical presentation reader. It requires an observed work intent
+and freshly rechecks the original's native ownership. An integrator item must
+belong to its associated local native turn. A worker delivery instead needs an
+available, current, instruction-covered result in the original's existing trace;
+the representative request ID alone is insufficient. Foreign/currentness failures
+and correction-pending sources refuse before a context append. Turn association
+does not itself prove that the model incorporated every instruction; real semantic
+qualification remains required. A final message is not proof of the entire task's
+completion, and progress never becomes a completed-task claim.
+The work intent also freezes the newest canonical native-message cursor before
+admission. A message already present at that boundary cannot return as the new
+answer, even if a later input steers the same native turn. This bounds attribution
+to a new source; semantic incorporation still needs the real-model journey.
+
+Each returned fragment keeps its exact canonical source/revision/character cursor
+and reads the source again before use. Quiet progress uses thinking appends;
+results use commentary appends. A conservative384UTF-8-byte source fragment plus
+a small attribution/partial marker stays below the documented500token append
+bound without assuming a model tokenizer. Long Unicode text is preserved through
+explicit cursors, not truncated into an apparently complete result. No metadata
+identifier must be narrated to the human. At most128append records per visit fit
+inside existing receipt quotas; reaching capacity refuses before writing and keeps
+the remaining canonical cursor. No result archive or new unbounded queue is added.
+
+The exact command and512bytes of acknowledgment space are committed before one
+sideband send. Unknown sends or missing ACKs block advancement and never retry,
+including after App-reader restart. Only the trusted matching append ACK records
+`context_injected`; it is not playback, hearing or work completion. In-flight ACKs
+cannot be downgraded by a late socket-send receipt. Updates remain within the
+existing finite visit and30second finalization envelope. Old visits can read a
+retained receipt but cannot start another append after reader restart.
+
+Ten result tests cover native/request association, ownership/currentness,
+Unicode pagination, quiet progress, unrelated ACKs, lost send/restart, revocation
+and capacity, including an ACK racing the socket-send receipt and a preexisting
+answer in the same native turn. The actual
+owner/SQLite/WAV journey also produces a synthetic final
+item on the admitted native turn, reads its canonical revision and appends that
+result exactly once over a synthetic sideband. Its context-injection ACK remains
+separate from unobserved hearing. These are source/transport qualifications, not
+real model/memory/device acceptance. Automatic result discovery, actual source
+sealing, native late-return/renewal integration and mounted lifecycle completion
+remain unfinished; do not bypass pending-work closure fences merely because a
+source exists.

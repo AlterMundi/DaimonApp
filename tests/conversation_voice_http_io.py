@@ -319,11 +319,73 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         assert native_interpret(native_imports[0])['new_input'] is False
         assert len(j.packets)==1 and not (j.root/'unexpected-asr').exists()
         assert Path(str(provider.receiver['db_path'])+'.voice',acoustic['id']).read_bytes()==sample
+        # A trusted client-delegation event can admit this SAME source into the
+        # existing native integrator. Public creation/native inference are fake;
+        # owner ingress, source freezing and SQLite admission are actual code.
+        from dashboard.openai_live import LiveCall, session_spec
+        from dashboard.openai_live_native_work import delegate_native
+        class SyntheticCreation:
+            def create(self,sdp,spec):
+                assert spec['delegation']['type']=='client'
+                return LiveCall('synthetic:client-delegation','v=0 synthetic answer')
+        active.create(active_visit,provider.human,owner,'v=0 synthetic offer',
+            session_spec('Synthetic qualification only.',client_delegation=True),SyntheticCreation())
+        active.event(active_visit,provider.human,owner,{'type':'session.delegation.created',
+            'event_id':'synthetic-native-work-event','offset_ms':200,
+            'delegation':{'id':'synthetic-native-work','target':'client'}})
+        native_delegate=provider.conversation_foreground_delegate;native_work_calls=[]
+        def lost_work_ack(body):
+            native_work_calls.append(dict(body));native_delegate(body)
+            raise ProviderUnavailable('Synthetic lost work acknowledgment after actual native admission')
+        provider.conversation_foreground_delegate=lost_work_ack
+        formulation='Resolve the synthetic request from the retained public acoustic source; incorporate its correction.'
+        def work(history):
+            return delegate_native(history,active_visit,provider.human,owner,
+                'synthetic-native-work',[0],formulation,provider)
+        assert work(active)['state']=='unconfirmed'
+        assert work(LiveCreations(j.root/'public-import-visits'))['state']=='observed'
+        assert len(native_work_calls)==1 and asr_calls==[True]
+        provider.conversation_foreground_delegate=native_delegate
+        j.wait(lambda:provider.conversation_input_status(acoustic['id'])['phase']=='accepted')
+        delegated=provider.conversation_input_status(acoustic['id'])['foreground_delegation']
+        assert delegated['formulation']==formulation and delegated['sources'][0]['text']==derivative['text']
+        assert delegated['sources'][0]['voice']['audio_sha256']==acoustic['audio_sha256']
+        assert len(j.packets)==2
+        assert formulation in j.packets[-1][1]['input'][0]['text']
+        assert acoustic['audio_sha256'] in j.packets[-1][1]['input'][0]['text']
+        assert not work(active)['work_completed'] and len(native_work_calls)==1
+        # The fixture's native peer now finishes that exact turn. Read the
+        # actual canonical source/revision, return it once over a fake sideband,
+        # and retain a context-injection ACK separately from unobserved hearing.
+        from dashboard.openai_live_native_results import return_native_part
+        native_text='Resultado nativo sintético: el destino corregido es Río Cobre.'
+        j.broadcast(j.web_thread,'item/completed',{'turnId':j.web_turn,'item':{
+            'id':'synthetic-public-result','type':'agentMessage','phase':'final_answer','text':native_text}})
+        j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}})
+        local=provider.conversation_input_status(acoustic['id'])['local_turn']
+        def returned():
+            return [row for row in provider.presentation_list(0,0,'before')['items']
+                if row.get('kind')=='integrator_answer' and row.get('local_turn')==local]
+        j.wait(lambda:bool(returned()))
+        source=returned()[0];updates=[]
+        class SyntheticSideband:
+            def send(self,command):updates.append(dict(command))
+        sideband=SyntheticSideband()
+        def send_result(history):
+            return return_native_part(history,active_visit,provider.human,owner,
+                'synthetic-native-work',source['id'],source['revision'],0,provider,sideband)
+        assert send_result(active)['state']=='sent'
+        assert native_text in updates[0]['content'] and updates[0]['delegation_id']=='synthetic-native-work'
+        active.event(active_visit,provider.human,owner,{'type':'session.commentary.appended',
+            'event_id':'synthetic-native-result-ack','client_event_id':updates[0]['event_id']})
+        returned_receipt=send_result(LiveCreations(j.root/'public-import-visits'))
+        assert returned_receipt['state']=='context_injected' and returned_receipt['hearing']=='not_observed'
+        assert len(updates)==1 and len(native_work_calls)==1 and len(j.packets)==2
         later=str(uuid.uuid4());provider.conversation_foreground_retain({'id':later,'binding':binding,
             'dialogue_id':active_visit,'text':'Later human correction is preserved after the acoustic original.'})
         order=j.row("SELECT event_id FROM original_ingress_order WHERE channel='conversation' ORDER BY id")
         assert order.count((acoustic['id'],))==1 and order.index((acoustic['id'],))<order.index((later,))
-        print('PASS public gpt-transcribe metadata import through actual native owner/SQLite, protected WAV, same original chronology, frozen empty question scope and lost-ACK restart read; synthetic recognizer, no work or paid calls.')
+        print('PASS public gpt-transcribe import, client delegation and exact canonical native result return through actual owner/SQLite/WAV; one synthetic native admission and context append, lost-ACK restart reads, separate injection/hearing; no real inference or paid calls.')
         print('PASS native foreground WAV/proof and immediate-close deferred retention through actual owner/SQLite: actor/binding rechecked, exact unconfirmed WAV retained, no ASR/work/replay on close; one sourced native admission; zero models.')
     finally:j.close()
 
