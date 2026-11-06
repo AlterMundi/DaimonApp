@@ -34,7 +34,7 @@ class SelectedHistory(unittest.TestCase):
             {'type':'response_item','payload':{'type':'function_call_output','output':'Selected output','call_id':'1'}},
             message('An attributed harness input','user'))
         plain=read(self.path,'owned');technical=read(self.path,'owned',technical=True)
-        self.assertEqual([v['text'] for v in plain['items']],['Hello','An attributed harness input'])
+        self.assertEqual([v['text'] for v in plain['items']],['Hello'])
         self.assertEqual([v['kind'] for v in technical['items']],['message','reasoning_summary','tool_call','tool_output','message'])
         self.assertNotIn('private',json.dumps(technical));self.assertIn('not verified human speech',plain['role_meaning'])
     def test_partial_append_is_not_acknowledged_and_completion_appears_once(self):
