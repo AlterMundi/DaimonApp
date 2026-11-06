@@ -36,6 +36,7 @@ class NativeWork(unittest.TestCase):
             'type': 'session.delegation.created', 'event_id': 'source-delegation-1',
             'offset_ms': 200, 'delegation': {'id': self.delegation, 'target': 'client'}})
         self.writes = []
+        self.provider.presentation_list = lambda *args: {'binding':self.owner['binding'],'newest':{'native':0}}
         def write(body):
             self.writes.append(copy.deepcopy(body))
             native = self.provider.retained[body['id']]

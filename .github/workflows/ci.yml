@@ -445,6 +445,7 @@ jobs:
       - run: python -B tests/dashboard_openai_live_transcription.py
       - run: python -B tests/dashboard_openai_live_native_commit.py
       - run: python -B tests/dashboard_openai_live_native_work.py
+      - run: python -B tests/dashboard_openai_live_native_results.py
       - run: python -B tests/dashboard_openai_live_api.py
       - run: node tests/dashboard_openai_live_ui.js
       - run: node tests/dashboard_live_semantic_tail.js

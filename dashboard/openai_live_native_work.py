@@ -59,6 +59,20 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
     fresh = False
     with history_lock(history.root / '.lock'):
         value = history.read(ident, human, owner)
+        work, _ = select(value)
+        needs_boundary = 'native_work' not in work
+    source_floor = None
+    if needs_boundary:
+        # Read outside the journal lock. A retained answer from before this
+        # admission must not be returned as a new result of the delegated work.
+        page = provider.presentation_list(0, 0, 'before')
+        source_floor = page.get('newest', {}).get('native')
+        if (page.get('binding') != owner['binding'] or type(source_floor) is not int
+                or not 0 <= source_floor <= 2**63 - 1):
+            raise ValueError('Native work needs a current canonical source boundary')
+        authorize()
+    with history_lock(history.root / '.lock'):
+        value = history.read(ident, human, owner)
         work, sources = select(value)
         previous = work.get('native_work')
         if previous:
@@ -75,7 +89,7 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
                 raise ValueError('This original root already belongs to another retained work intent')
             previous = {'state': 'intent', 'intent_id': str(uuid.uuid4()),
                 'root': sources[-1]['id'], 'sources': sources, 'formulation': formulation,
-                'work_completed': False}
+                'native_source_floor': source_floor, 'work_completed': False}
             work['native_work'] = previous
             work['native_work_reserve'] = ' ' * 2048
             history._write(value)

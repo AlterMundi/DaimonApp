@@ -271,6 +271,7 @@ class LiveCreations:
                           'session_id':event.get('session',{}).get('id')}
             if event['type'] not in ('session.started','session.updated','session.closed',
                     'session.input_transcript.delta','session.output_transcript.delta',
+                    'session.thinking.appended','session.commentary.appended',
                     'session.delegation.created','response.event','error'):
                 return False
             body = json.dumps({'event_id':event['event_id'],'sha256':digest,'event':stored},
@@ -303,6 +304,9 @@ class LiveCreations:
                     cached['file']=(info.st_dev,info.st_ino,info.st_size+len(body))
                     cached['seen'][event['event_id']]=digest
             changed = False
+            if event['type'] in ('session.thinking.appended','session.commentary.appended'):
+                from .openai_live_native_results import observe_append
+                changed = observe_append(value, event)
             if event['type']=='session.delegation.created':
                 delegation=event.get('delegation',{});key=delegation.get('id')
                 if (not _text(key,1024) or key in value['delegations'] and

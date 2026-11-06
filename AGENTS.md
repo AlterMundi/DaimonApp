@@ -58,6 +58,10 @@ originals/formulations, not transcript fragments or raw durability chunks as
 completed human turns. It remains unmounted pending exact acoustic sealing and
 sourced native returns. A retained work intent only permits same-root status
 reads after unknown outcomes; never resubmit it to repair an observation.
+Prepared native result returns use exact current canonical revisions and native
+turn/original-request association. Append intent, socket send, context-injection
+ACK, task completion and human hearing are separate observations. Unknown
+appends cannot be resent or skipped to repair speech; preserve their source cursor.
 The optional managed Responses conversation reader follows the documented
 function-result/continuation lifecycle. Keep owner reads distinct from full DMK
 memory and native work execution. Never replay a retained result/continuation
