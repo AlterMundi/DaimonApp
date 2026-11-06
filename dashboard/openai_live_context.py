@@ -14,11 +14,12 @@ TOOL = {
     'parameters': {'type': 'object', 'additionalProperties': False,
         'properties': {
             'operation': {'type': 'string', 'enum': ['page', 'part']},
-            'delivery': {'type': 'integer', 'minimum': 0},
-            'native': {'type': 'integer', 'minimum': 0},
-            'matrix': {'type': 'integer', 'minimum': 0},
-            'source': {'type': 'string'}, 'revision': {'type': 'string'},
-            'offset': {'type': 'integer', 'minimum': 0}},
+            'delivery': {'type': 'integer', 'minimum': 0, 'description': 'Page cursor only; ignored for part reads.'},
+            'native': {'type': 'integer', 'minimum': 0, 'description': 'Page cursor only; ignored for part reads.'},
+            'matrix': {'type': 'integer', 'minimum': 0, 'description': 'Page cursor only; ignored for part reads.'},
+            'source': {'type': 'string', 'description': 'Exact source ID for part; ignored for page.'},
+            'revision': {'type': 'string', 'description': 'Exact revision for part; ignored for page.'},
+            'offset': {'type': 'integer', 'minimum': 0, 'description': 'Part offset; ignored for page.'}},
         'required': ['operation', 'delivery', 'native', 'matrix', 'source', 'revision', 'offset']}}
 
 
@@ -32,8 +33,6 @@ def read_context(provider, owner, arguments):
             or any(not isinstance(arguments[k], str) for k in ('source', 'revision'))):
         raise ValueError('Select a bounded conversation read')
     if arguments['operation'] == 'page':
-        if arguments['source'] or arguments['revision'] or arguments['offset']:
-            raise ValueError('Select a page without a source override')
         page = provider.presentation_list(arguments['delivery'], arguments['native'],
             'before', matrix=arguments['matrix'])
         if page.get('binding') != owner['binding'] or len(page.get('items', [])) > 16:
@@ -44,8 +43,6 @@ def read_context(provider, owner, arguments):
                  for row in page['items']]
         result = {'items': items, 'cursor': page.get('cursor'), 'more': page.get('more')}
     elif arguments['operation'] == 'part':
-        if any(arguments[k] for k in ('delivery', 'native', 'matrix')):
-            raise ValueError('Select an exact source without page cursors')
         part = provider.presentation_part(arguments['source'], arguments['revision'], arguments['offset'])
         if (part.get('revision') != arguments['revision'] or part.get('id') != arguments['source']
                 or part.get('offset') != arguments['offset']):
