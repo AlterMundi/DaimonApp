@@ -5,6 +5,19 @@ speech qualification. Their prompt changes do not repeat unchanged Rust/native
 fixtures. Unknown template paths, mixed native/dependency edits and changed owning
 jobs keep their existing broader checks. See tests/ci_matrix_host_scope.py.
 
+Shared avatar workshop integration continues under the SAME full App goal.
+Read docs/interaction-avatar-workshop.md and the pinned module provenance before
+changing the adapter. Existing App authentication/CSRF own the account scope;
+imports never select a human or grant. Edit/save and explicit active-avatar use
+have separate generation-fenced pointers. Preserve previous versions and exact
+lost-ACK outcomes. The original MIT validator/renderer is reused; Node runs only
+on bounded save/import, never per frame. Editor/renderer and authenticated storage
+journeys are implemented and synthetically qualified; receiving acceptance is
+still open. Do not
+activate peer avatars, voice/provider/default/heartbeat flags or publish school
+media as a side effect. Fixed workshop cues are artistic choices, not emotion or
+agent/microphone measurements. Full original voice/client/UX scope remains open.
+
 Native public-voice renewal keeps work on its original native thread. Historical
 returns need current original/result proofs and flat origin-to-destination claims;
 never reuse an old provider delegation ID as a new visit's delegation, copy nested
@@ -314,3 +327,12 @@ from unchanged Rust/audio builds; source/dependency/unknown-file changes keep
 normal qualification. The embedded scope program is regression-tested. Actual
 isolated old-to-new package qualification remains required separately; mocks do
 not prove receiving adoption. This moves an existing check, never skips it.
+
+The shared avatar wardrobe remains the pinned Ani/Oliva editor, adapted through
+the existing account API and a closed same-origin parent bridge. Keep models,
+designs and immutable revisions distinct. Saving/editing never activates; render
+the candidate before a generation-conditional use and preserve the previous art
+on failure. Initial account loading keeps editor inputs inert. Revision lists
+carry summaries, not all designs. Artwork choices never assert mic/agent state.
+See docs/interaction-avatar-workshop.md; source/browser fixtures are not real
+Home-cookie, receiver, child or device acceptance.

@@ -1,0 +1,1037 @@
+{
+  "schema": "ascii-avatar-model/v1",
+  "id": "example-firefly-001",
+  "name": "Luci\u00e9rnaga de prueba",
+  "nodes": [
+    {
+      "id": "body",
+      "type": "ellipse",
+      "cx": 288,
+      "cy": 417,
+      "rx": 85,
+      "ry": 117,
+      "fill": {
+        "type": "radial",
+        "x": 288,
+        "y": 417,
+        "r": 163.79999999999998,
+        "stops": [
+          [
+            0,
+            "#c4e6df"
+          ],
+          [
+            1,
+            "#6997a4"
+          ]
+        ]
+      },
+      "pivot": [
+        288,
+        417
+      ]
+    },
+    {
+      "id": "left-wing",
+      "type": "ellipse",
+      "cx": 204,
+      "cy": 390,
+      "rx": 61,
+      "ry": 101,
+      "fill": "#c4b4df",
+      "pivot": [
+        204,
+        390
+      ],
+      "parent": "body"
+    },
+    {
+      "id": "right-wing",
+      "type": "ellipse",
+      "cx": 372,
+      "cy": 390,
+      "rx": 61,
+      "ry": 101,
+      "fill": "#b6d7dc",
+      "pivot": [
+        372,
+        390
+      ],
+      "parent": "body"
+    },
+    {
+      "id": "glow",
+      "type": "ellipse",
+      "cx": 288,
+      "cy": 474,
+      "rx": 47,
+      "ry": 56,
+      "fill": {
+        "type": "radial",
+        "x": 288,
+        "y": 474,
+        "r": 78.39999999999999,
+        "stops": [
+          [
+            0,
+            "#fff1b0"
+          ],
+          [
+            1,
+            "#d9ae69"
+          ]
+        ]
+      },
+      "pivot": [
+        288,
+        474
+      ],
+      "parent": "body"
+    },
+    {
+      "id": "head",
+      "type": "ellipse",
+      "cx": 288,
+      "cy": 279,
+      "rx": 111,
+      "ry": 99,
+      "fill": {
+        "type": "radial",
+        "x": 288,
+        "y": 279,
+        "r": 155.39999999999998,
+        "stops": [
+          [
+            0,
+            "#def0cc"
+          ],
+          [
+            1,
+            "#86b9b1"
+          ]
+        ]
+      },
+      "pivot": [
+        288,
+        279
+      ],
+      "parent": "body"
+    },
+    {
+      "id": "eye-white--1",
+      "type": "ellipse",
+      "cx": 245,
+      "cy": 277,
+      "rx": 28,
+      "ry": 34,
+      "fill": "#fff0d6",
+      "pivot": [
+        245,
+        277
+      ],
+      "parent": "head",
+      "poses": {
+        "joy": {
+          "ry": 27
+        },
+        "sad": {
+          "ry": 29
+        },
+        "curious": {
+          "ry": 37
+        },
+        "anger": {
+          "ry": 24
+        },
+        "uncertain": {
+          "ry": 33
+        },
+        "focus": {
+          "ry": 26
+        },
+        "welcome": {
+          "ry": 35
+        }
+      }
+    },
+    {
+      "id": "pupil--1",
+      "type": "ellipse",
+      "cx": 245,
+      "cy": 279,
+      "rx": 12,
+      "ry": 22,
+      "fill": "#294a53",
+      "pivot": [
+        245,
+        279
+      ],
+      "parent": "eye-white--1"
+    },
+    {
+      "id": "shine--1",
+      "type": "ellipse",
+      "cx": 241,
+      "cy": 270,
+      "rx": 5,
+      "ry": 6,
+      "fill": "#fffdf0",
+      "pivot": [
+        241,
+        270
+      ],
+      "parent": "pupil--1"
+    },
+    {
+      "id": "brow--1",
+      "type": "path",
+      "path": [
+        [
+          "M",
+          220,
+          229
+        ],
+        [
+          "Q",
+          245,
+          220,
+          270,
+          230
+        ]
+      ],
+      "stroke": "#416573",
+      "fill": null,
+      "width": 5,
+      "parent": "head",
+      "poses": {
+        "sad": {
+          "path": [
+            [
+              "M",
+              220,
+              237
+            ],
+            [
+              "Q",
+              245,
+              221,
+              270,
+              221
+            ]
+          ]
+        },
+        "anger": {
+          "path": [
+            [
+              "M",
+              220,
+              221
+            ],
+            [
+              "Q",
+              245,
+              229,
+              270,
+              237
+            ]
+          ]
+        }
+      },
+      "pivot": [
+        245,
+        230
+      ]
+    },
+    {
+      "id": "eye-white-1",
+      "type": "ellipse",
+      "cx": 331,
+      "cy": 277,
+      "rx": 28,
+      "ry": 34,
+      "fill": "#fff0d6",
+      "pivot": [
+        331,
+        277
+      ],
+      "parent": "head",
+      "poses": {
+        "joy": {
+          "ry": 27
+        },
+        "sad": {
+          "ry": 29
+        },
+        "curious": {
+          "ry": 37
+        },
+        "anger": {
+          "ry": 24
+        },
+        "uncertain": {
+          "ry": 33
+        },
+        "focus": {
+          "ry": 26
+        },
+        "welcome": {
+          "ry": 35
+        }
+      }
+    },
+    {
+      "id": "pupil-1",
+      "type": "ellipse",
+      "cx": 331,
+      "cy": 279,
+      "rx": 12,
+      "ry": 22,
+      "fill": "#294a53",
+      "pivot": [
+        331,
+        279
+      ],
+      "parent": "eye-white-1"
+    },
+    {
+      "id": "shine-1",
+      "type": "ellipse",
+      "cx": 327,
+      "cy": 270,
+      "rx": 5,
+      "ry": 6,
+      "fill": "#fffdf0",
+      "pivot": [
+        327,
+        270
+      ],
+      "parent": "pupil-1"
+    },
+    {
+      "id": "brow-1",
+      "type": "path",
+      "path": [
+        [
+          "M",
+          306,
+          229
+        ],
+        [
+          "Q",
+          331,
+          220,
+          356,
+          230
+        ]
+      ],
+      "stroke": "#416573",
+      "fill": null,
+      "width": 5,
+      "parent": "head",
+      "poses": {
+        "sad": {
+          "path": [
+            [
+              "M",
+              306,
+              221
+            ],
+            [
+              "Q",
+              331,
+              221,
+              356,
+              237
+            ]
+          ]
+        },
+        "anger": {
+          "path": [
+            [
+              "M",
+              306,
+              237
+            ],
+            [
+              "Q",
+              331,
+              229,
+              356,
+              221
+            ]
+          ]
+        }
+      },
+      "pivot": [
+        331,
+        230
+      ]
+    },
+    {
+      "id": "mouth",
+      "type": "path",
+      "path": [
+        [
+          "M",
+          261,
+          334
+        ],
+        [
+          "Q",
+          288,
+          354,
+          315,
+          334
+        ]
+      ],
+      "stroke": "#315651",
+      "fill": null,
+      "width": 5,
+      "parent": "head",
+      "poses": {
+        "joy": {
+          "path": [
+            [
+              "M",
+              253,
+              329
+            ],
+            [
+              "Q",
+              288,
+              364,
+              323,
+              329
+            ]
+          ]
+        },
+        "sad": {
+          "path": [
+            [
+              "M",
+              261,
+              344
+            ],
+            [
+              "Q",
+              288,
+              322,
+              315,
+              344
+            ]
+          ]
+        },
+        "focus": {
+          "path": [
+            [
+              "M",
+              266,
+              341
+            ],
+            [
+              "Q",
+              288,
+              343,
+              310,
+              341
+            ]
+          ]
+        },
+        "uncertain": {
+          "path": [
+            [
+              "M",
+              261,
+              340
+            ],
+            [
+              "Q",
+              288,
+              328,
+              315,
+              344
+            ]
+          ]
+        }
+      },
+      "pivot": [
+        288,
+        340
+      ]
+    }
+  ],
+  "animations": {
+    "calm": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      }
+    ],
+    "curious": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "left-wing",
+        "channel": "rotate",
+        "frames": [
+          0,
+          0.03,
+          0.06,
+          0.1,
+          0.06,
+          0.03,
+          0,
+          -0.03,
+          -0.06,
+          -0.1,
+          -0.06,
+          -0.03
+        ]
+      },
+      {
+        "node": "right-wing",
+        "channel": "rotate",
+        "frames": [
+          0,
+          -0.03,
+          -0.06,
+          -0.1,
+          -0.06,
+          -0.03,
+          0,
+          0.03,
+          0.06,
+          0.1,
+          0.06,
+          0.03
+        ]
+      }
+    ],
+    "joy": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "left-wing",
+        "channel": "rotate",
+        "frames": [
+          0,
+          0.03,
+          0.06,
+          0.1,
+          0.06,
+          0.03,
+          0,
+          -0.03,
+          -0.06,
+          -0.1,
+          -0.06,
+          -0.03
+        ]
+      },
+      {
+        "node": "right-wing",
+        "channel": "rotate",
+        "frames": [
+          0,
+          -0.03,
+          -0.06,
+          -0.1,
+          -0.06,
+          -0.03,
+          0,
+          0.03,
+          0.06,
+          0.1,
+          0.06,
+          0.03
+        ]
+      }
+    ],
+    "sad": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      }
+    ],
+    "anger": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      }
+    ],
+    "uncertain": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      }
+    ],
+    "focus": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      }
+    ],
+    "welcome": [
+      {
+        "node": "body",
+        "channel": "y",
+        "frames": [
+          0,
+          1,
+          2,
+          3,
+          2,
+          1,
+          0,
+          -1,
+          -2,
+          -3,
+          -2,
+          -1
+        ]
+      },
+      {
+        "node": "eye-white--1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "eye-white-1",
+        "channel": "scaleY",
+        "frames": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.12,
+          1
+        ]
+      },
+      {
+        "node": "left-wing",
+        "channel": "rotate",
+        "frames": [
+          0,
+          0.03,
+          0.06,
+          0.1,
+          0.06,
+          0.03,
+          0,
+          -0.03,
+          -0.06,
+          -0.1,
+          -0.06,
+          -0.03
+        ]
+      },
+      {
+        "node": "right-wing",
+        "channel": "rotate",
+        "frames": [
+          0,
+          -0.03,
+          -0.06,
+          -0.1,
+          -0.06,
+          -0.03,
+          0,
+          0.03,
+          0.06,
+          0.1,
+          0.06,
+          0.03
+        ]
+      }
+    ]
+  },
+  "anchors": {
+    "rightHand": [
+      385,
+      450
+    ],
+    "leftHand": [
+      191,
+      450
+    ],
+    "compact": [
+      158,
+      150,
+      260,
+      325
+    ]
+  }
+}

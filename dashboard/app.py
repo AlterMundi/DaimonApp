@@ -183,7 +183,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     return JSONResponse({'detail':exc.detail}, status_code=exc.status_code)
                 bound = 2*1024*1024 if request.url.path.endswith('/visual') else 20*1024*1024
             else:
-                bound = 262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384
+                bound = (1048576 if request.url.path=='/api/interaction/avatars' else
+                    262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
             # Native capture-only uploads own their fresh-auth/CSRF checks,
             # two upload slots,30s deadline and bounded streaming body. Do not
             # buffer them before that admission in the general JSON middleware.
@@ -274,6 +275,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
     from .openai_live_api import install as install_openai_live
     can_public_live=install_openai_live(app,config,provider,authorize_async,[origin,*additional_origins])
+    from .avatar_workshop_api import install as install_avatar_workshop
+    install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins])
 
     public = Path(__file__).parent / 'web'
 
@@ -301,11 +304,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         client_build = hashlib.sha256((public / 'index.html').read_bytes())
-        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             client_build.update(name.encode() + b'\0' + asset)
             version = hashlib.sha256(asset).hexdigest()[:16]
             body = body.replace('assets/'+name+'"', 'assets/'+name+'?v='+version+'"')
+        for path in sorted((public / 'avatar-workshop').rglob('*')):
+            if path.is_file():
+                client_build.update(path.relative_to(public).as_posix().encode()+b'\0'+path.read_bytes())
         build_id = client_build.hexdigest()
         build_label = ''.join('<span>'+digit+'</span>' for digit in build_id[:12])
         body = body.replace('<div id="client-build" hidden></div>',
@@ -396,7 +402,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]
