@@ -57,11 +57,14 @@ class MatrixHostScope(unittest.TestCase):
             "dashboard/web/codex-conversation.js",
             "tests/codex_conversation_ui.js",
             "tests/session_workspace_browser.js",
+            "tests/session_workspace_ui.js",
             "tests/ci_matrix_host_scope.py",
             ".github/workflows/ci.yml",
             "docs/interaction-native-codex-voice.md",
         ]), set())
         self.assertIn("node tests/codex_conversation_ui.js", WORKFLOW.read_text())
+        self.assertIn("node tests/session_workspace_ui.js", WORKFLOW.read_text())
+        self.assertIn("text", selected(["tests/session_workspace_ui.js", "src/app.rs"]))
         self.assertIn("text", selected(["tests/codex_conversation_ui.js", "src/app.rs"]))
 
     def test_host_changes_keep_the_real_canonical_consumer_without_unrelated_native_suites(
