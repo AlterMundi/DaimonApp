@@ -1,10 +1,13 @@
 """Mounted public Live auth, source/creation loss and original recovery; zero models."""
 import asyncio
+import copy
+import hashlib
 import json
 from pathlib import Path
 import queue
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -142,6 +145,171 @@ class Mounted(unittest.TestCase):
             app=FastAPI();app.state.voice_active=set()
             config={**self.config,'openai_live':{**self.config['openai_live'],**flags}}
             with self.assertRaises(ValueError):install(app,config,self.owner,lambda _:None,['https://example.test'])
+    def test_native_backend_checks_reader_before_microphone_or_paid_creation(self):
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'unconfirmed')
+        self.assertEqual(Client.instances,[]);self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
+
+    def test_native_backend_whole_mounted_source_work_and_result_flow(self):
+        app=FastAPI();app.state.voice_active=set();saved={};calls={'asr':0,'work':0}
+        owner=self.owner;frozen=owner.public_live_binding('a'*64)
+        owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        def capture(metadata,data,**options):
+            saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
+                'foreground_dialogue':options['foreground_dialogue'],'phase':'foreground_captured',
+                'voice':{'audio_sha256':metadata['audio_sha256']},'native_acceptance':'not_requested'}
+            return copy.deepcopy(saved[metadata['id']])
+        def interpret(body):
+            row=saved[body['id']];row.update(text=body['text'],phase='foreground')
+            row['voice']['transcription']={'actual_transcriber':body['model'],'capture_id':body['id'],
+                'audio_sha256':body['audio_sha256'],'audio_millis':body['audio_millis']}
+            return copy.deepcopy(row)
+        def delegate(body):
+            calls['work']+=1;row=saved[body['id']]
+            row.update(phase='accepted',native_acceptance='observed',local_turn=42,foreground_delegation={
+                'intent_id':body['intent_id'],'dialogue_id':self.ident,'formulation':body['formulation'],
+                'sources':[{'id':ident,'capture_order':index+1,'text':saved[ident]['text'],
+                    'text_sha256':hashlib.sha256(saved[ident]['text'].encode()).hexdigest(),
+                    'voice':copy.deepcopy(saved[ident]['voice'])} for index,ident in enumerate(body['source_ids'])]})
+            return copy.deepcopy(row)
+        owner.conversation_voice_submit=capture;owner.conversation_foreground_interpret=interpret
+        owner.conversation_foreground_delegate=delegate;owner.conversation_input_status=lambda ident:copy.deepcopy(saved[ident])
+        owner.presentation_list=lambda delivery,native,direction:{'binding':owner.binding,
+            'newest':{'native':77 if calls['work'] else 0},'items':[{'id':'native:77',
+                'revision':'d'*64,'kind':'integrator_answer','local_turn':42}] if calls['work'] and native<77 else [],
+            'more':False,'cursor':{'delivery':0,'native':77}}
+        owner.presentation_part=lambda source,revision,offset:{'id':source,'revision':revision,'offset':offset,
+            'next_offset':None,'text':'Soy CompAII. Este resultado viene del integrador nativo.',
+            'entry_binding':frozen['entry_binding'][:3]+[owner.binding],
+            'kind':'integrator_answer','local_turn':42,'native_binding_current':True}
+        class Recognizer:
+            model='gpt-transcribe'
+            def transcribe(self,data):calls['asr']+=1;return '¿Quién sos y qué recordás?'
+        send=Client.send
+        def acknowledge(client,event):
+            send(client,event)
+            if event['type']=='session.commentary.append':
+                client.events.put({'type':'session.commentary.appended','event_id':'native-context-ack',
+                    'client_event_id':event['event_id']})
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,owner,authorize,['https://example.test'])
+        with patch('dashboard.openai_live_native_backend.OriginalTranscription',lambda key:Recognizer()),patch.object(Client,'send',acknowledge):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket);self.assertEqual(native.spec['delegation']['type'],'client')
+                    self.assertNotIn('responses',native.spec['delegation'])
+                    audio=wav_bytes(b'\1\0'*800)
+                    self.assertEqual(client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',
+                        headers=self.headers,content=audio).status_code,200)
+                    native.events.put({'type':'session.delegation.created','event_id':'native-request',
+                        'delegation':{'id':'native-task','target':'client'}})
+                    self.assertEqual(socket.receive_json()['type'],'provider_event')
+                    request=socket.receive_json();self.assertEqual(request['type'],'source_seal_requested')
+                    socket.send_json({'type':'source_sealed','request':request['request'],
+                        'through_ordinal':1,'capture_bytes':len(audio)-44})
+                    self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
+                    self.assertEqual(socket.receive_json()['event']['type'],'session.commentary.appended')
+                    self.assertEqual(calls,{'asr':1,'work':1})
+                    self.assertIn('Soy CompAII',next(row['content'] for row in native.sent if row['type']=='session.commentary.append'))
+                    self.close(socket)
+        self.assertEqual(self.read()['state'],'closed')
+        self.assertEqual(self.read()['delegations']['native-task']['native_pipeline']['state'],'admitted')
+        updates=list(self.read()['native_result_updates'].values())
+        self.assertEqual(len(updates),1);self.assertEqual(updates[0]['state'],'context_injected')
+        self.assertNotIn('heard',updates[0]);self.assertFalse(self.read()['delegations']['native-task']['native_pipeline']['work_completed'])
+
+    def test_native_backend_rejects_unqualified_continuation_or_mixed_context(self):
+        for settings in ({'conversation_context':True},{'source_seals':False},
+                         {'resume_mode':'stored_fork','session_options':{'store':True}}):
+            app=FastAPI();app.state.voice_active=set()
+            config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',**settings}}
+            with self.assertRaises(ValueError):install(app,config,self.owner,lambda _:None,['https://example.test'])
+
+    def test_native_interpretation_failure_finalizes_voice_once_without_work_or_retry(self):
+        from dashboard.openai_live_transcription import InterpretationUnavailable
+        app=FastAPI();app.state.voice_active=set();saved={};attempts=[]
+        owner=self.owner;frozen=owner.public_live_binding('a'*64)
+        owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        def capture(metadata,data,**options):
+            saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
+                'foreground_dialogue':options['foreground_dialogue'],'phase':'foreground_captured',
+                'voice':{'audio_sha256':metadata['audio_sha256']},'native_acceptance':'not_requested'}
+            return copy.deepcopy(saved[metadata['id']])
+        owner.conversation_voice_submit=capture;owner.conversation_input_status=lambda ident:copy.deepcopy(saved[ident])
+        class Recognizer:
+            model='gpt-transcribe'
+            def transcribe(self,data):attempts.append(data);raise InterpretationUnavailable('unconfirmed')
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,owner,authorize,['https://example.test'])
+        with patch('dashboard.openai_live_native_backend.OriginalTranscription',lambda key:Recognizer()):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket);audio=wav_bytes(b'\1\0'*800)
+                    self.assertEqual(client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',
+                        headers=self.headers,content=audio).status_code,200)
+                    native.events.put({'type':'session.delegation.created','event_id':'failed-native-request',
+                        'delegation':{'id':'failed-task','target':'client'}})
+                    self.assertEqual(socket.receive_json()['type'],'provider_event');request=socket.receive_json()
+                    socket.send_json({'type':'source_sealed','request':request['request'],
+                        'through_ordinal':1,'capture_bytes':len(audio)-44})
+                    self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
+                    self.assertEqual(socket.receive_json()['type'],'finishing')
+                    socket.send_json({'type':'close'})  # Browser hold duplicates the same close intent.
+                    final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                    self.assertIn('needs review',final['message'])
+        self.assertEqual(len(attempts),1);self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        value=self.read();self.assertEqual(value['state'],'closed')
+        self.assertEqual(value['delegations']['failed-task']['native_pipeline']['state'],'held')
+        self.assertEqual(value['native_originals']['0']['interpretation']['state'],'unconfirmed')
+        self.assertNotIn('native_work',value['delegations']['failed-task'])
+
+    def test_slow_native_preparation_keeps_close_responsive_and_preserves_late_interpretation(self):
+        app=FastAPI();app.state.voice_active=set();saved={};entered=threading.Event();release=threading.Event()
+        self.addCleanup(release.set);owner=self.owner;frozen=owner.public_live_binding('a'*64)
+        owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        def capture(metadata,data,**options):
+            saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
+                'foreground_dialogue':options['foreground_dialogue'],'phase':'foreground_captured',
+                'voice':{'audio_sha256':metadata['audio_sha256']},'native_acceptance':'not_requested'}
+            return copy.deepcopy(saved[metadata['id']])
+        owner.conversation_voice_submit=capture;owner.conversation_input_status=lambda ident:copy.deepcopy(saved[ident])
+        test=self
+        class Recognizer:
+            model='gpt-transcribe'
+            def transcribe(self,data):
+                entered.set();test.assertTrue(release.wait(3),'Preparation blocked voice control instead of running in its owned task')
+                return 'Interpretación que termina después del cierre.'
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,owner,authorize,['https://example.test'])
+        with patch('dashboard.openai_live_native_backend.OriginalTranscription',lambda key:Recognizer()):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket);audio=wav_bytes(b'\1\0'*800)
+                    self.assertEqual(client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',
+                        headers=self.headers,content=audio).status_code,200)
+                    native.events.put({'type':'session.delegation.created','event_id':'slow-native-request',
+                        'delegation':{'id':'slow-task','target':'client'}})
+                    socket.receive_json();request=socket.receive_json()
+                    socket.send_json({'type':'source_sealed','request':request['request'],
+                        'through_ordinal':1,'capture_bytes':len(audio)-44})
+                    self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
+                    self.assertTrue(entered.wait(1));socket.send_json({'type':'close'})
+                    self.assertEqual(socket.receive_json()['type'],'finishing')
+                    self.assertFalse(release.is_set());release.set()
+                    self.assertEqual(socket.receive_json()['type'],'closed')
+        value=self.read()
+        self.assertEqual(value['native_originals']['0']['interpretation']['state'],'completed')
+        self.assertEqual(value['delegations']['slow-task']['native_pipeline']['state'],'held')
+        self.assertNotIn('native_work',value['delegations']['slow-task'])
+        self.assertEqual([row['type'] for row in native.sent],['session.close'])
     def test_native_original_opt_in_uses_exact_owner_and_never_repeats_lost_ack(self):
         app=FastAPI();app.state.voice_active=set()
         async def authorize(request):return {'human':100,'csrf':'fresh'}

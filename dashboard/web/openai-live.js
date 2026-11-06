@@ -8,7 +8,7 @@ window.PublicLiveConversation=(()=>{
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
     let binding,visit,socket,peer,channel,media,capture,audio,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
-    let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false;
+    let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
@@ -145,12 +145,13 @@ window.PublicLiveConversation=(()=>{
       if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
       // Durable local originals survive slow uploads. Do not hold the media
       // lock or freeze navigation for a whole queue of network timeouts.
-      await durable;unlock?.();unlock=undefined;closing=false;state(message);notify();
+      await durable;unlock?.();unlock=undefined;closing=false;state(completionMessage||message);notify();
     }
     async function start(){
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
+      completionMessage=undefined;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
       confirmed.clear();seals.clear();
@@ -182,8 +183,9 @@ window.PublicLiveConversation=(()=>{
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
               if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.');
             });
-            else if(value.type==='finishing'){if(!closing)void hold('Finishing voice; checking pending work.');}
+            else if(value.type==='finishing'){if(!closing)void hold(value.message||'Finishing voice; checking pending work.');}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
+              completionMessage=value.message||(value.type==='closed'?'Voice ended.':undefined);
               closedAck?.(value.type==='closed');abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
               if(!closing){socket=undefined;transport.close();void hold(value.message||'Voice paused. Your original audio is kept.');}
             }

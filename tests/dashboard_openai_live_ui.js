@@ -76,6 +76,7 @@ function fixture(){
  assert.equal(f.sockets[0].sent.find(v=>v.type==='offer').sdp,'v=0 gathered ICE');
  f.records.push({id:'native-original',engine:'codex',codex_visit:'native',blob:new Blob(['native original']),binding:'a'.repeat(64)});
  f.fail(true);f.pcm();await f.engine.hold();await until(()=>f.requests.length===1);
+ assert.equal(f.states.at(-1).message,'Voice ended.','A confirmed close must not stay labeled Finishing');
  assert.equal(f.recovered().length,1);const original=f.recovered()[0];assert.equal(original.engine,'gpt-live');
  f.fail(false);await f.engine.retry(original);
  assert.deepEqual(f.requests[0],f.requests[1],'Explicit retry retains the identical public original');

@@ -127,6 +127,13 @@ class NativeResults(unittest.TestCase):
         with self.assertRaises(ValueError): self.emit()
         self.assertEqual(self.updates,[])
 
+    def test_bounded_spoken_fragment_does_not_split_an_ordinary_word(self):
+        self.ready_result('dato '*75+'corrección nueva. '+'resultado '*30)
+        receipt=self.emit();fragment=self.updates[0]['content'].split('\n',1)[1]
+        self.assertEqual(fragment,self.text[:receipt['next_offset']])
+        self.assertTrue(fragment[-1].isspace())
+        self.assertTrue(self.text[receipt['next_offset']:].startswith('corrección nueva.'))
+
     def test_progress_is_quiet_and_unmatched_ack_cannot_advance_cursor(self):
         self.ready_result('b' * 600); self.source_fields['kind']='integrator_progress'
         result = self.emit()

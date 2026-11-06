@@ -86,6 +86,7 @@ def interpret_original(history,ident,human,owner,ordinal,provider,recognizer=Non
         if 'interpretation' in slot:return dict(slot['interpretation'])
         if value.get('admission',{}).get('epoch')!=history.epoch:
             raise ValueError('Restart cannot start interpretation of an old original')
+        history.check_capture(value)
     if recognizer is None:
         raise ValueError('No retained interpretation; select configured OpenAI access before a new request')
     caps=provider.presentation('input voice capabilities')
@@ -105,6 +106,7 @@ def interpret_original(history,ident,human,owner,ordinal,provider,recognizer=Non
     with history_lock(history.root/'.lock'):
         value=history.read(ident,human,owner);receipt,slot=original(value)
         if 'interpretation' in slot:return dict(slot['interpretation'])
+        history.check_capture(value)
         if sum('interpretation' in s for s in value['native_originals'].values())>=16:
             raise ValueError('Public native interpretation attempt limit reached')
         # Reserve actual record bytes before the paid call; concurrent source
