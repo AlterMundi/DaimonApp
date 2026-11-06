@@ -528,6 +528,15 @@ impl CodexRunner {
     pub async fn live_native_turn(&self, thread: &str) -> Result<Option<String>> {
         tokio::time::timeout(Duration::from_secs(8),async {
             let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;process.initialize().await?;
+            // An idle thread can have more historical turns than the bounded
+            // search below. Absence from that window is not an idle receipt;
+            // use the owner's current status instead of scanning its archive.
+            let id=process.send_request("thread/read",json!({"threadId":thread,"includeTurns":false})).await?;
+            let state=process.await_response(id).await?;
+            if state["thread"]["id"]!=thread {bail!("Native activity binding mismatch");}
+            if state["thread"]["status"]["type"]=="idle" {
+                process.shutdown().await?;return Ok(None);
+            }
             let mut cursor=None::<String>;let mut seen=std::collections::HashSet::new();
             for _ in 0..6 {
                 let id=process.send_request("thread/turns/list",json!({"threadId":thread,"limit":20,"sortDirection":"desc","itemsView":"notLoaded","cursor":cursor})).await?;
