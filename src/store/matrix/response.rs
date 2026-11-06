@@ -526,6 +526,7 @@ mod tests {
             },
         )
         .unwrap();
+        crate::store::heartbeat::enable_test_lanes(&s, 100, e);
         let active = s
             .heartbeat_control(
                 100,
@@ -561,6 +562,10 @@ mod tests {
                 "entry-native",
                 active["generation"].as_u64().unwrap(),
                 "selected-inbox-source",
+                &crate::store::heartbeat::lanes::Activation {
+                    lane: crate::store::heartbeat::HeartbeatLane::Messaging,
+                    generation: 1,
+                },
             )
             .unwrap();
             tx.commit().unwrap();

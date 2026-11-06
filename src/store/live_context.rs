@@ -1659,6 +1659,7 @@ pub(in crate::store) fn reserve_on(
         id,
         workflow: String::new(),
         attention_generation: None,
+        attention_activation: None,
         reported_revision: None,
         envelope: evidence["range"].clone(),
         phase: "reserved".into(),

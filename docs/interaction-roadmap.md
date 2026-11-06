@@ -692,3 +692,44 @@ not silently reset or claimed controlled by heartbeat pause. The candidate remai
 OFF until the combined design is qualified. The opt-in native fixture additionally
 accepts `--native-cli` for a complete packaged Codex entrypoint and `--reports`
 for exact report-source delivery through the real controller.
+
+
+### Messaging-first activation lanes (prepared,6November2026)
+
+The same persisted heartbeat owner control now has `lanes` in status. Missing
+lane records default paused. Global resume opens the overall fence; it does not
+select a lane. Owner console `heartbeat pause-lane messaging` and
+`heartbeat resume-lane messaging LANE_GENERATION` use the same handler as
+`heartbeat_control` with `action: pause_lane`/`resume_lane`, typed `lane`, and the
+exact inspected lane `generation` for resume. Global `pause` remains one step.
+There is one control record, producer, finite resource account and native-return
+journal, not a scheduler or budget per lane. Resume never resets consumption,
+expiry, cursors or unknown outcomes.
+
+Implemented lane selectors are `messaging` (selected Matrix inbox and reply
+sources), `workflow_returns`, `reports` (the explicitly selected metadata reports)
+and `session_progress`. `sensory`, `issues`, `tasks` and `bitacora` are explicit
+unsupported/paused options; resume refuses until their mechanisms are implemented.
+The first receiving activation must select ONLY `messaging`; leave all others off.
+The finite producer source contract still narrows which sources are available.
+A control being enabled does not authorize an unconfigured source or publication.
+
+Each check and reserved return carries a typed lane/generation fence; each batch
+contains one activation lane. A round-robin cursor selects configured enabled
+lanes without mixing cancellation ownership. Messaging can combine its inbox and
+reply offers. A lane pause invalidates late source pages and unsubmitted work at
+existing admission/provider boundaries, then claims interruption only for its exact
+owned executions and descendants. Other lane changes do not invalidate that
+check or cancel unrelated work. Human-transferred turns remain human-owned;
+unknown native outcomes stay retained and cannot be replayed on resume. Source
+content/revision remains immutable: lane ownership is separate server metadata.
+
+Old control records remain readable with all lanes paused. Old unstamped attention
+is retained for inspection/narration but cannot acquire new lane admission by
+inference from a source string. Once lane fields are persisted, retain a compatible
+native reader on rollback; an older strict Control reader cannot parse them.
+Receiving selection must preserve the current hold/workspace-compatible native
+composition and current web/voice changes, rather than deploy the entire older
+PR590 branch. The Core idle-admission dependency and real receiving model/action/
+response/common-pause acceptance remain separate unfinished steps. Source tests
+are not receiving activation, peer uptake or human audio acceptance.
