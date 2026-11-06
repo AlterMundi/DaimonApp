@@ -141,5 +141,15 @@ class NativeWork(unittest.TestCase):
         with self.assertRaises(ValueError): self.delegate(delegation='client-delegation-2')
         self.assertEqual(len(self.writes), 1)
 
+    def test_capture_seal_must_be_acknowledged_before_native_work(self):
+        from dashboard.openai_live_seals import request_seal, accept_seal
+        self.ready_work()
+        command=request_seal(self.visits,self.ident,100,self.owner,self.delegation,self.provider)
+        with self.assertRaises(ValueError):self.delegate()
+        self.assertEqual(self.writes,[])
+        accept_seal(self.visits,self.ident,100,self.owner,{'type':'source_sealed',
+            'request':command['request'],'through_ordinal':1,'capture_bytes':len(self.audio)-44},self.provider)
+        self.assertEqual(self.delegate()['state'],'observed')
+
 
 if __name__ == '__main__': unittest.main()

@@ -35,11 +35,18 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
         work = value['delegations'].get(delegation)
         if not work or work.get('target') != 'client':
             raise ValueError('A trusted client delegation is required, not a transcript fragment')
+        seal = work.get('source_seal')
+        if seal is not None and (seal.get('state') != 'sealed'
+                or [r['ordinal'] for r in seal['recordings']] != ordinals):
+            raise ValueError('Native work must use the exact acknowledged capture window, never an uncertain or empty seal')
         sources = []
         for ordinal in ordinals:
             recording = next((r for r in value['recordings'] if r['ordinal'] == ordinal), None)
             slot = value.get('native_originals', {}).get(str(ordinal), {})
             interpreted = slot.get('interpretation', {})
+            if seal is not None and recording is not None and seal['recordings'][ordinals.index(ordinal)] != {
+                    key: recording[key] for key in ('ordinal','id','audio_sha256','audio_bytes')}:
+                raise ValueError('Native source no longer matches the acknowledged capture seal')
             if (recording is None or recording.get('capture_stop')
                     or slot.get('state') != 'observed' or slot.get('id') != recording['id']
                     or slot.get('audio_sha256') != recording['audio_sha256']
