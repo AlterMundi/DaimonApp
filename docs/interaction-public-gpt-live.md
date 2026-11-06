@@ -446,13 +446,18 @@ new corrections while an earlier request is being prepared.
 
 Within the existing authenticated/CSRF-protected voice visit, only a trusted
 client-delegation source may request a boundary. The server persists a unique
-request and12KiB of receipt space first. The browser synchronously fixes the
-current PCM prefix and flushes it into the existing original-upload pipeline;
+request and12KiB of receipt space first. The browser reuses the recorder's
+existing `boundary(token)` operation to drain pending PCM without stopping the
+microphone. It checks the acknowledged cumulative byte count, then synchronously
+fixes that prefix and flushes it into the existing original-upload pipeline;
 new microphone frames continue in another segment. It acknowledges only after
 all ordinals through that boundary have matching server upload receipts. A
 duplicate request echoes its cached acknowledgment without flushing or uploading
 new audio. Failed originals or changed conversation ownership cannot produce a
 successful acknowledgment and retain ordinary recovery behavior.
+The processing-marker wait is bounded to3seconds; a missing marker preserves
+ordinary original recovery and cannot become a successful source seal. The
+browser fixture includes an unflushed producer tail before acknowledgment.
 
 The server validates a closed acknowledgment containing only the request ID,
 exclusive recording ordinal and cumulative PCM byte count. It requires every

@@ -6,7 +6,7 @@ async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
 function fixture(){
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
- const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{};
+ const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
  const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;order.push('permission');return media;}}};
  class Socket{
@@ -37,7 +37,11 @@ function fixture(){
  const window={RTCPeerConnection:Peer,indexedDB:{},location:{href:'https://example.test/interaction/'},
   VoiceInput:{recoveryStore:key=>{assert.equal(key,'codex_voice');return store;}},StreamingVoice:{supported:()=>true,
    wav:parts=>new Blob([new Uint8Array(44),...parts],{type:'audio/wav'}),
-   openCapture:async()=>({subscribe(fn){listener=fn;return ()=>{};},start(){order.push('recorder');},finish(){listener({finished:true});},close(){recorderCloses++;}})}};
+   openCapture:async()=>{captureBytes=0;return {subscribe(fn){listener=fn;return ()=>{};},start(){order.push('recorder');},
+    boundary(token){queueMicrotask(()=>{
+     if(boundaryTail){const size=boundaryTail;boundaryTail=0;captureBytes+=size;listener({pcm:new Uint8Array(size).buffer});}
+     listener({boundary:token,totalBytes:captureBytes});
+    });},finish(){listener({finished:true});},close(){recorderCloses++;}};}}};
  async function fetch(url,options){
   if(!options.body)return readHistory(String(url),options);
   requests.push({url:String(url),sha:await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer()),bytes:options.body.size});
@@ -57,7 +61,7 @@ function fixture(){
  }
  return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},uploads:run=>{beforeUpload=run;},
-  pcm:()=>listener({pcm:new Uint8Array(32000).buffer}),recovered:()=>recovered,fail:value=>{failUpload=value;},
+  pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
@@ -83,19 +87,19 @@ function fixture(){
  // frames keep recording; duplicate control cannot move the boundary or upload
  // another original. This is a raw prefix, never a completed speech/work claim.
  const sealed=fixture();await sealed.start();let releaseUpload;
- sealed.uploads(()=>new Promise(resolve=>{releaseUpload=resolve;}));sealed.pcm();
+ sealed.uploads(()=>new Promise(resolve=>{releaseUpload=resolve;}));sealed.pcm();sealed.boundaryTail(1000);
  const firstSeal=crypto.randomUUID(),sealSocket=sealed.sockets[0];
  const sealEvent=request=>sealSocket.onmessage({data:JSON.stringify({type:'source_seal_requested',
   visit:sealSocket.id,binding:'a'.repeat(64),request,delegation:'trusted-client-task'})});
  const acknowledgments=()=>sealSocket.sent.filter(row=>row.type==='source_sealed');
  sealEvent(firstSeal);await until(()=>releaseUpload);sealed.pcm();releaseUpload();
  await until(()=>acknowledgments().length===1);
- assert.deepEqual(acknowledgments()[0],{type:'source_sealed',request:firstSeal,through_ordinal:1,capture_bytes:32000});
- assert(sealed.engine.active);assert.equal(sealed.requests.length,1);assert.equal(sealed.requests[0].bytes,32044);
+ assert.deepEqual(acknowledgments()[0],{type:'source_sealed',request:firstSeal,through_ordinal:1,capture_bytes:33000});
+ assert(sealed.engine.active);assert.equal(sealed.requests.length,1);assert.equal(sealed.requests[0].bytes,33044,'Worklet tail must be included before sealing');
  sealEvent(firstSeal);await until(()=>acknowledgments().length===2);
  assert.deepEqual(acknowledgments()[1],acknowledgments()[0]);assert.equal(sealed.requests.length,1);
  sealed.uploads(async()=>{});sealEvent(crypto.randomUUID());await until(()=>acknowledgments().length===3);
- assert.equal(acknowledgments()[2].through_ordinal,2);assert.equal(acknowledgments()[2].capture_bytes,64000);
+ assert.equal(acknowledgments()[2].through_ordinal,2);assert.equal(acknowledgments()[2].capture_bytes,65000);
  assert.equal(sealed.requests.length,2);await sealed.engine.hold();
 
  const missing=fixture();await missing.start();missing.fail(true);missing.pcm();

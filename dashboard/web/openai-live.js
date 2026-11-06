@@ -10,7 +10,7 @@ window.PublicLiveConversation=(()=>{
     let binding,visit,socket,peer,channel,media,capture,audio,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
     let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
-    let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0;
+    let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
@@ -97,15 +97,25 @@ window.PublicLiveConversation=(()=>{
       let pending=seals.get(value.request);
       if(!pending){
         if(seals.size>=32)throw Error('Voice source boundary limit reached');
-        // Freeze the current exact frame prefix synchronously. Later microphone
-        // frames continue in another segment and cannot move this boundary.
-        const captureBytes=total;
-        flush();
-        const through=ordinal,priorUploads=uploads;
         pending=(async()=>{
-          await priorUploads;
-          for(let n=0;n<through;n++)if(!confirmed.has(n))throw Error('A source original still needs review');
-          return {type:'source_sealed',request:value.request,through_ordinal:through,capture_bytes:captureBytes};
+          let timeout;
+          try{
+            // Reuse the recorder's existing processing boundary: it flushes
+            // pending PCM before acknowledging, without stopping live media.
+            const boundary=await new Promise((resolve,reject)=>{
+              if(sourceBoundary)return reject(Error('Another audio boundary is pending'));
+              sourceBoundary={request:value.request,token:'public-seal:'+value.request,resolve,reject};
+              timeout=setTimeout(()=>reject(Error('Audio processing boundary is unconfirmed')),3000);
+              try{capture.boundary(sourceBoundary.token);}catch(error){reject(error);}
+            });
+            clearTimeout(timeout);
+            await boundary.uploads;
+            for(let n=0;n<boundary.through;n++)if(!confirmed.has(n))throw Error('A source original still needs review');
+            return {type:'source_sealed',request:value.request,through_ordinal:boundary.through,capture_bytes:boundary.captureBytes};
+          }finally{
+            clearTimeout(timeout);
+            if(sourceBoundary?.request===value.request)sourceBoundary=undefined;
+          }
         })();
         seals.set(value.request,pending);
       }
@@ -118,6 +128,7 @@ window.PublicLiveConversation=(()=>{
     }
     async function hold(message='Voice paused. Your original audio is kept.'){
       if(closing)return;closing=true;active=starting=false;clearTimeout(timer);state(message);
+      sourceBoundary?.reject(Error('Recording ended before source boundary confirmation'));sourceBoundary=undefined;
       abortOpen?.(Error('Voice activation ended'));abortOpen=undefined;
       if(capture){
         const finished=new Promise(resolve=>{finishAck=resolve;});capture.finish();
@@ -207,6 +218,20 @@ window.PublicLiveConversation=(()=>{
         if(!current())throw Error('Voice recorder retired');
         unsubscribe=capture.subscribe(value=>{
           if(owned!==epoch)return;
+          if(value.boundary){
+            if(sourceBoundary&&value.boundary===sourceBoundary.token){
+              const pending=sourceBoundary;sourceBoundary=undefined;
+              if(!Number.isSafeInteger(value.totalBytes)||value.totalBytes!==total)
+                pending.reject(Error('Audio processing boundary changed'));
+              else{
+                // This callback runs after all preceding worklet PCM messages.
+                // Freeze/flush before resolving, so later frames stay separate.
+                const captureBytes=total;flush();
+                pending.resolve({captureBytes,through:ordinal,uploads});
+              }
+            }
+            return;
+          }
           if(value.finished){finishAck?.(true);return;}
           if(value.captureError){if(!closing)void hold('Microphone recording paused. Review your originals.');return;}
           if(!value.pcm)return;
