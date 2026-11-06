@@ -107,6 +107,22 @@ class Mounted(unittest.TestCase):
             result=self.close(socket);self.assertEqual(result['finalization']['usage_seconds'],12)
         self.assertEqual(self.read()['state'],'closed');self.assertTrue(native.detached)
         self.assertEqual([v['type']for v in native.sent],['session.close'])
+    def test_history_listing_is_authenticated_read_only_and_uses_current_binding(self):
+        path='/api/interaction/voice/gpt-live/visits'
+        with self.socket() as socket:
+            native=self.start(socket)
+            page=self.client.get(path,headers=self.headers)
+            self.assertEqual(page.status_code,200,page.text)
+            self.assertEqual(page.json()['visits'][0]['id'],self.ident)
+            self.assertEqual(set(page.json()['visits'][0]),{'id','created_at','state'})
+            self.assertFalse(page.json()['more']);self.assertEqual(native.creations,1)
+            self.assertEqual(native.sent,[])
+            self.owner.binding='b'*64
+            self.assertEqual(self.client.get(path,headers=self.headers).status_code,409)
+            self.assertEqual(self.client.get(path,headers={**self.headers,'x-voice-binding':'b'*64}).json()['visits'],[])
+            self.owner.binding='a'*64
+            self.close(socket)
+        self.allowed=False;self.assertEqual(self.client.get(path,headers=self.headers).status_code,401)
     def test_known_pending_responses_drain_before_close_without_work_replay(self):
         with self.socket() as socket:
             native=self.start(socket)
@@ -217,6 +233,19 @@ class Journal(unittest.TestCase):
         self.assertEqual(self.history.read(self.ident,100,self.frozen)['state'],'closed')
         with self.assertRaises(LiveUnavailable):self.history.prepare(str(uuid.uuid4()),100,self.frozen,300)
         self.assertEqual(len(self.history.source_page(self.ident,100,'a'*64)['items']),1)
+    def test_history_cursor_pages_exact_owner_visits_without_exposing_other_owners(self):
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'expired','session':{'id':'live_opaque:provider/42'}})
+        first=self.history.read(self.ident,100,self.frozen);first['created_at']=1;self.history._write(first)
+        second=str(uuid.uuid4());self.history.prepare(second,100,self.frozen,300)
+        self.history.create(second,100,self.frozen,'v=0 second',self.spec,Client('test'))
+        page=self.history.visits(100,'a'*64);self.assertEqual(page['visits'][0]['id'],second)
+        self.assertTrue(page['more']);self.assertEqual(page['before'],second)
+        older=self.history.visits(100,'a'*64,before=second)
+        self.assertEqual(older['visits'][0]['id'],self.ident);self.assertFalse(older['more'])
+        self.assertEqual(self.history.visits(101,'a'*64)['visits'],[])
+        with self.assertRaises(ValueError):self.history.visits(101,'a'*64,before=second)
+        with self.assertRaises(ValueError):self.history.visits(100,'b'*64,before=second)
     def test_prepared_capture_is_not_restarted_by_a_new_process(self):
         other=LiveCreations(self.root)
         with self.assertRaises(ValueError):other.prepare(self.ident,100,self.frozen,300)
@@ -249,7 +278,7 @@ class Journal(unittest.TestCase):
         self.assertIsNone(self.history.close_intent(self.ident,100,self.frozen))
     def test_companion_routes_are_exact_and_do_not_grant_native_or_monitor_access(self):
         root='/api/interaction/voice/gpt-live';ident=self.ident
-        for method,path in (('POST',root),('POST',root+'/visits/'+ident+'/recordings/0'),('GET',root+'/visits/'+ident+'/events')):
+        for method,path in (('GET',root+'/visits'),('POST',root),('POST',root+'/visits/'+ident+'/recordings/0'),('GET',root+'/visits/'+ident+'/events')):
             self.assertTrue(permitted(method,path));self.assertFalse(permitted(method,path,scope='monitor_readonly'))
         self.assertFalse(permitted('POST',root+'/visits/'+ident+'/tools'))
         self.assertFalse(permitted('POST',root+'/visits/'+ident+'/recordings/32'))

@@ -57,6 +57,12 @@ def install(app, config, provider, authorize, origins):
             raise HTTPException(409,'Voice conversation binding changed')
         return session,binding
 
+    @app.get('/api/interaction/voice/gpt-live/visits')
+    async def visits(request:Request,before:str|None=None):
+        session,binding=await http_owner(request)
+        try:return await asyncio.to_thread(history.visits,session['human'],binding,before=before)
+        except (OSError,ValueError,RenderError):raise HTTPException(409,'Voice history page unavailable') from None
+
     @app.get('/api/interaction/voice/gpt-live/visits/{visit}')
     async def status(visit:str,request:Request):
         session,binding=await http_owner(request)

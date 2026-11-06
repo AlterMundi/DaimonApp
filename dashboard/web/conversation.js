@@ -504,6 +504,15 @@ window.Conversation = (() => {
       try{await codexVoiceSession?.restoreHistory(older);}catch{}
       finally{if(older&&timeline&&binding===selected){timeline.scrollTop=scroll+timeline.scrollHeight-height;headerBehavior?.syncScroll?.();}}
     });
+    const publicHistoryOlder=node('button','Earlier voice conversation');publicHistoryOlder.type='button';publicHistoryOlder.hidden=true;
+    const publicHistoryTools=node('div',undefined,'conversation-tools timeline-history');publicHistoryTools.hidden=true;
+    publicHistoryTools.dataset.timelineTime='-Infinity';publicHistoryTools.dataset.timelineKey='voice-history-public';
+    publicHistoryTools.append(publicHistoryOlder);timeline?.append(publicHistoryTools);let retryPublicHistoryOlder=false;
+    publicHistoryOlder.addEventListener('click',async()=>{
+      const selected=binding,scroll=timeline?.scrollTop,height=timeline?.scrollHeight,older=retryPublicHistoryOlder;
+      try{await publicLiveSession?.restoreHistory(older,true);}catch{}
+      finally{if(older&&timeline&&binding===selected){timeline.scrollTop=scroll+timeline.scrollHeight-height;headerBehavior?.syncScroll?.();}}
+    });
     function foregroundCard(value){
       if(!value||value.kind!=="voice_foreground"||value.speaker!=="assistant"||typeof value.text!=="string"||value.text.length>16384)return;
       const derived=value.derived_caption,caption=!!(derived?.draft===true&&typeof derived.parent_source==="string"&&derived.parent_source.length<=128);
@@ -790,6 +799,7 @@ window.Conversation = (() => {
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();graph?.reset();graphCursor=0;timeline?.replaceChildren();
       codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;timeline?.append(codexHistoryTools);
+      publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;timeline?.append(publicHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
       inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = undefined;
       latestComposerId = undefined; composerNotice("",false);clearFocus();routingChoices=[];
@@ -2239,13 +2249,15 @@ window.Conversation = (() => {
       panel.setAttribute('aria-label','Voice original recovery');$('#conversation-compose').prepend(panel);
       let speech;const retained=[];
       publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,
+        onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;publicHistoryOlder.disabled=value.loading===true;
+          publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
         onItem:value=>{
           const event=value?.item,role=event?.type==='session.input_transcript.delta'?'user':event?.type==='session.output_transcript.delta'?'assistant':undefined;
           if(!role||typeof event.delta!=='string'||!event.delta||event.delta.length>32768)return;
-          const observed=new Date().toISOString();
+          const observed=value.observed_at||new Date().toISOString();
           for(let offset=0;offset<event.delta.length;){
             if(!speech||speech.visit!==value.visit||speech.role!==role||speech.text.length>=16000){
-              const key='live:'+value.visit+':'+event.event_id+':'+offset;
+              const key='live:'+value.visit+':'+(value.history?String(value.source_order).padStart(8,'0'):event.event_id)+':'+offset;
               const box=node('article',undefined,'reply'),body=node('div',undefined,'reply-text'),status=node('p',undefined,'reply-status'),time=node('time',undefined,'message-time');
               box.append(node('h3',role==='user'?'You · voice':'Voice conversation'),status,body,time);
               speech={key,box,body,status,time,text:'',visit:value.visit,role,binding};retained.push(speech);
@@ -2257,7 +2269,7 @@ window.Conversation = (() => {
           }
           let size=retained.reduce((n,v)=>n+v.text.length,0);
           while(retained.length>64||size>128*1024){const old=retained.shift();size-=old.text.length;old.box.remove();}
-          voiceMode?.update({caption:speech.text.slice(-800)});
+          if(!value.history)voiceMode?.update({caption:speech.text.slice(-800)});
         },
         onRecovery:values=>{
           panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;

@@ -24,6 +24,7 @@ def permitted(method, path, scope='interaction_only', artifact_access=False, ale
         return scope=='interaction_only' and (
             method=='POST' and path=='/api/interaction/voice/gpt-live'
             or method=='POST' and re.fullmatch(r'/api/interaction/voice/gpt-live/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',path) is not None
+            or method=='GET' and path=='/api/interaction/voice/gpt-live/visits'
             or method=='GET' and re.fullmatch(r'/api/interaction/voice/gpt-live/visits/[a-f0-9-]{36}(?:/events)?',path) is not None)
     if path=='/api/interaction/voice/codex' or path.startswith('/api/interaction/voice/codex/'):
         return scope=='interaction_only'and (

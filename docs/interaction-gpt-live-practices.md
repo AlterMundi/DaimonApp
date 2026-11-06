@@ -169,8 +169,9 @@ Synthetic qualification includes the real mounted app/Companion authorization,
 streamed original upload/revocation, browser lifecycle races and shipped Chromium
 shells at desktop/mobile sizes with synthetic audio. The ordinary native Codex
 browser journey also passes. These checks make no provider request and establish
-neither public account access nor hearing/task quality. Full trusted-history UI
-restoration, semantic checkpoint/renewal/reconnect, integrating memory/work/tools,
+neither public account access nor hearing/task quality. The owner-bound transcript viewer now restores existing source pages without
+voice activation; failed reads retain cursor/dedupe and require an explicit retry.
+Semantic checkpoint/renewal/reconnect, integrating memory/work/tools,
 artifacts/questions and family-pilot acceptance remain unfinished. Do not present
 this isolated Responses comparison as the full CompAII conversation.
 

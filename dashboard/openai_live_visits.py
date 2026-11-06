@@ -323,6 +323,22 @@ class LiveCreations:
     def release_sources(self,ident):
         self._sources.pop(ident,None)
 
+    def visits(self,human,binding,*,before=None):
+        """One owner-scoped source visit per page; never controls or model input."""
+        with history_lock(self.root / '.lock'):
+            records,_=self._records()
+            selected=[v for v,_ in records if v['owner']['human']==human
+                and v['owner']['frozen']['binding']==binding and v['state'] in ('created','closed')]
+            selected.sort(key=lambda v:(v['created_at'],v['id']),reverse=True)
+            if before is not None:
+                self._ident(before)
+                index=next((n for n,v in enumerate(selected) if v['id']==before),None)
+                if index is None:raise ValueError('Voice history cursor belongs to another conversation')
+                selected=selected[index+1:]
+            page=selected[:1]
+            return {'visits':[{k:v[k] for k in ('id','created_at','state')} for v in page],
+                'more':len(selected)>1,'before':page[-1]['id'] if len(selected)>1 else None}
+
     def source_page(self,ident,human,binding,*,after=0,revision=None):
         value=self.owned(ident,human,binding)
         if type(after) is not int or after<0:raise ValueError('Select an exact source cursor')

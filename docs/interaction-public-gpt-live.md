@@ -53,6 +53,24 @@ contain at most64events/64KiB with exact revision continuation. Interrupted writ
 count toward capacity. Refuse admission before billing at capacity; never evict
 uncertain work/originals. No automatic retirement or per-frame log is installed.
 
+## Review retained conversation
+
+After reload, the comparison can restore the latest owner-bound voice transcript
+without activating the microphone or connecting to OpenAI. **Earlier voice
+conversation** pages one retained visit at a time through the existing journal;
+its source reader follows exact byte/revision cursors, at most128pages/2MiB per
+visit. Names and spacing remain the provider's automatic transcript, not a
+verified human original, utterance boundary or evidence of hearing/task completion.
+The interface groups fragments for display only, retains its existing64-card/
+128KiB window, and does not feed this viewer history back into a model.
+
+Failed reads retain the same visit cursor and deduplicate already shown source
+IDs. **Retry voice history** resumes that read; ordinary presence refresh does
+not loop failed reads or rescan a successfully restored binding. New/changed
+owners invalidate pending reads before presentation. Prior histories never
+replace live captions. Source/original review grants no new tools, input replay,
+backend completion or new voice-call creation.
+
 ## Closing and uncertainty
 
 One durable intent precedes one creation POST. Exact retries only read retained
@@ -76,7 +94,8 @@ blocks another billed visit.
 Mounted authorization/upload/cancellation tests and Chromium synthetic desktop/
 mobile journeys cover wiring and original recovery. They make no public provider
 request, use no human microphone and prove no hearing quality. Public access,
-useful tasks, full identity/memory/work/tool integration, durable history
-presentation, artifacts/questions and sustainable renewal remain open. Follow the
+useful tasks, full identity/memory/work/tool integration, artifacts/questions
+and sustainable renewal remain open. Retained transcript presentation is
+implemented separately from provider reconnection and memory hydration. Follow the
 [practice comparison](interaction-gpt-live-practices.md) before enabling a
 person-facing trial; this is not full-stack adoption.
