@@ -317,8 +317,9 @@ pausing; repeated commands cannot arm another. It begins restoration early,
 reserving `40 * target_count + 10` seconds of the selected window. The existing conditional metadata RPC and context-aware continuation collector
 retain their native deadlines, and admission checks leave additional time
 for restoring acknowledged pauses. The whole transaction is journaled in the
-existing database, at most 64 records of 128 KiB; capacity refuses further plans
-instead of deleting evidence. No media/history copies or unbounded receipt list
+existing database, at most 64 records of 256 KiB; capacity refuses further plans
+instead of deleting evidence. Preparation is limited to 64 KiB so matched
+pause/restore receipts have space within the retained record bound. No media/history copies or unbounded receipt list
 are created. Keep unresolved transactions; finished records can be retired only
 through an explicitly selected owning retention operation (none runs implicitly).
 

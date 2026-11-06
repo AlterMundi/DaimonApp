@@ -146,8 +146,8 @@ impl Store {
         for i in 0..targets.len() {
             eligible(&tx, human, &doc, i)?;
         }
-        if doc.to_string().len() > 131072 {
-            bail!("Maintenance journal byte bound exceeded");
+        if doc.to_string().len() > 65536 {
+            bail!("Maintenance plan must leave its bounded journal receipt reserve");
         }
         tx.execute(
             "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
@@ -215,7 +215,7 @@ impl Store {
         }
         doc["targets"][index]["phase"] = json!(phase);
         doc["targets"][index][format!("{phase}_receipt")] = receipt;
-        if doc.to_string().len() > 131072 {
+        if doc.to_string().len() > 262144 {
             bail!("Maintenance receipt bound exceeded");
         }
         tx.execute(
@@ -432,5 +432,15 @@ mod tests {
             store.maintenance_read(100, &plan.request_id).unwrap(),
             submitted
         );
+    }
+    #[test]
+    fn scoped_maintenance_reserves_receipt_space_before_any_pause() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &defaults()).unwrap();
+        let mut plan = fixture(&store, "active");
+        plan.targets[0].snapshot.goal.as_mut().unwrap().objective = "界".repeat(12000);
+        assert!(store.maintenance_prepare(100, &plan).is_err());
+        assert!(store.maintenance_read(100, &plan.request_id).is_err());
+        assert!(store.maintenance_pending().unwrap().is_empty());
     }
 }
