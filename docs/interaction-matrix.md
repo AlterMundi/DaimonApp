@@ -296,7 +296,31 @@ there is no automatic rearm or forced stop. A successfully restored receiver is
 checked for code/placement before the exact watcher resumes. No host action,
 global Stop, goal mutation, archive or provider/model selection is performed.
 
-`tests/native_package_handoff.py OLD_CLI CANDIDATE_CLI --scratch /selected/data`
+For the owner-scoped five-minute pause window, use
+`schema=daimon.native-package-handoff/v2` with `lifecycle_deadline_unix` set to
+that transaction's restoration-start time, not its final deadline. The existing
+owner bridge reserves `10 * targets + 40` seconds for restoring exact unchanged
+pauses; do not let native maintenance overlap that reservation. This timestamp
+is materialized only when the qualified package and actual observed target set
+are ready. It creates no goal hold, consent or automatic rearm. Legacy v1 plans
+retain their prior behavior and cannot carry this bounded field; an old helper
+rejects v2 instead of silently ignoring its expiry.
+
+The operator maps the deadline once to monotonic time. With less than200seconds
+left it defers before sending maintenance. Otherwise the fixed native133second
+observation remains intact (138second command cap). After confirmed handoff AND
+actual old-process exit, it skips candidate installation if fewer than66seconds
+remain, restoring the exact selected predecessor instead. Installation is capped
+at15seconds, stopped-only restoration at45seconds, each clipped to the remaining
+window. A lost installer ACK inspects the atomic full-package selection once;
+never resend install. Expiry or unavailable recovery is explicit uncertainty,
+not a guarantee of service readiness or authority to fresh-start/force the host.
+The independent owner bridge still restores only its unchanged acknowledged
+pauses; later human decisions and unknown effects win. Reuse this one operator,
+not a retry coordinator. Tests cover short-window deferral, long-maintenance
+restore reserve and a lost installer ACK with real fixture process identities.
+
+`tests/native_package_handoff.py OLD_CLI CANDIDATE_CLI --scratch /selected/data --lifecycle-seconds 220`
 qualifies the actual complete-package route with an isolated managed receiver,
 live competing start watcher and original loaded thread. It uses only unreachable
 loopback inference and preserves unfinished fixtures on failure. The smaller CI

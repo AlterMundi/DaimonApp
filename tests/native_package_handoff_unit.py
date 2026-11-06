@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from native_package_handoff import adopt, digest, identity, package_identity, selected_package
@@ -49,6 +50,104 @@ class HandoffBoundaries(unittest.TestCase):
 
     def state(self, child):
         return Path(f'/proc/{child.pid}/stat').read_text().split(') ', 1)[1].split()[0]
+
+    def scoped_clock(self, remaining):
+        self.clock = 1000.0
+        self.plan['schema'] = 'daimon.native-package-handoff/v2'
+        self.plan['lifecycle_deadline_unix'] = 1000.0 + remaining
+        self.addCleanup(patch.stopall)
+        patch('native_package_handoff.time.time', return_value=1000.0).start()
+        patch('native_package_handoff.time.monotonic', side_effect=lambda: self.clock).start()
+
+    def test_bounded_plan_cannot_silently_use_legacy_semantics(self):
+        self.scoped_clock(240)
+        self.plan['schema'] = 'daimon.native-package-handoff/v1'
+        with self.assertRaisesRegex(ValueError, 'requires v2'):
+            adopt(self.plan, self.receipt)
+        self.plan['schema'] = 'daimon.native-package-handoff/v2'
+        del self.plan['lifecycle_deadline_unix']
+        with self.assertRaisesRegex(ValueError, 'absolute lifecycle deadline'):
+            adopt(self.plan, self.receipt)
+        for invalid in [None, True, '1240', float('nan'), float('inf')]:
+            self.plan['lifecycle_deadline_unix'] = invalid
+            with self.subTest(deadline=invalid), self.assertRaises(ValueError):
+                adopt(self.plan, self.receipt)
+        self.assertFalse(self.receipt.exists())
+        self.assertNotEqual(self.state(self.watcher), 'T')
+
+    def test_short_scoped_window_defers_before_native_request(self):
+        self.scoped_clock(199)
+        with patch('native_package_handoff.cli') as command:
+            result = adopt(self.plan, self.receipt)
+        command.assert_not_called()
+        self.assertEqual(result['phase'], 'deferred_window_budget')
+        self.assertTrue(result['supervisor_resumed'])
+        self.assertIsNone(self.receiver.poll())
+
+    def test_expired_window_refuses_before_watcher_hold(self):
+        self.scoped_clock(-1)
+        with self.assertRaisesRegex(ValueError, 'fresh bounded'):
+            adopt(self.plan, self.receipt)
+        self.assertFalse(self.receipt.exists())
+        self.assertNotEqual(self.state(self.watcher), 'T')
+
+    def prepare_python_package(self):
+        # Real fixture processes make exit/executable/cgroup checks meaningful.
+        binary = Path(self.plan['package']) / 'bin/codex'
+        shutil.copyfile(sys.executable, binary)
+        previous = self.root / 'packages/app-server-daemon/current/bin/codex'
+        shutil.copyfile(sys.executable, previous)
+        self.plan['files']['bin/codex'] = digest(binary)
+
+    def test_long_maintenance_preserves_reserve_by_skipping_install(self):
+        self.prepare_python_package()
+        self.scoped_clock(201)
+        calls = []
+        def command(binary, args, env, timeout):
+            calls.append((args[0], timeout))
+            if args == ['maintenance']:
+                self.clock += 138
+                self.receiver.terminate()
+                self.receiver.wait(timeout=5)
+                return 0, {'pid': self.receiver.pid, 'outcome': 'handoffReady'}
+            self.assertEqual(args, ['restart', '--if-stopped'])
+            self.clock += 30
+            replacement = self.process()
+            return 0, {'pid': replacement.pid}
+        with patch('native_package_handoff.cli', side_effect=command):
+            result = adopt(self.plan, self.receipt)
+        self.assertEqual(calls, [('maintenance', 138), ('restart', 45)])
+        self.assertEqual(result['phase'], 'restored_previous')
+        self.assertEqual(result['installer_skipped'], 'preserve_stopped_restore_reserve')
+        self.assertTrue(result['supervisor_resumed'])
+        self.assertLess(self.clock, self.plan['lifecycle_deadline_unix'])
+
+    def test_installer_ack_loss_reads_selection_without_retry(self):
+        self.prepare_python_package()
+        self.scoped_clock(240)
+        calls = []
+        def command(binary, args, env, timeout):
+            calls.append((args[0], timeout))
+            if args == ['maintenance']:
+                self.clock += 1
+                self.receiver.terminate()
+                self.receiver.wait(timeout=5)
+                return 0, {'pid': self.receiver.pid, 'outcome': 'handoffReady'}
+            if args[0] == 'update':
+                selected = self.root / 'packages/app-server-daemon/current'
+                (selected / 'codex').symlink_to('bin/codex')
+                self.clock += timeout
+                raise subprocess.TimeoutExpired(args, timeout)
+            self.assertEqual(args, ['restart', '--if-stopped'])
+            self.clock += 5
+            replacement = self.process()
+            return 0, {'pid': replacement.pid}
+        with patch('native_package_handoff.cli', side_effect=command):
+            result = adopt(self.plan, self.receipt)
+        self.assertEqual(calls, [('maintenance', 138), ('update', 15), ('restart', 45)])
+        self.assertEqual(result['phase'], 'restored_candidate')
+        self.assertEqual(result['installer_acknowledgment'], 'unconfirmed')
+        self.assertTrue(result['supervisor_resumed'])
 
     def test_changed_process_refuses_before_any_signal_or_command(self):
         self.plan['supervisor']['start_ticks'] = '0'
