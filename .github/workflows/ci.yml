@@ -127,6 +127,7 @@ jobs:
         run: |
           python -B tests/matrix_conversation_http_io.py target/release/telecodex
           python -B tests/matrix_conversation_http_io.py target/release/telecodex --funded
+          python -B tests/heartbeat_io.py target/release/telecodex --inbox
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
   routing-evaluation:
@@ -245,9 +246,11 @@ jobs:
           python3 -B tests/goal_delegation_io.py target/release/telecodex
           python3 -B tests/goal_recovery_io.py target/release/telecodex
           python3 -B tests/goal_recovery_alerts.py
+          python3 -B tests/native_package_handoff_unit.py -v
           python3 -B tests/goal_inspection_io.py target/release/telecodex
           python3 -B tests/live_tasks_io.py target/release/telecodex
           python3 -B tests/warm_controller_io.py target/release/telecodex
+          python3 -B tests/heartbeat_io.py target/release/telecodex
       # Native-question HTTP journeys also decode voice; provision after goals,
       # before the first voice-capable compatibility group.
       - name: Select voice dependency cache
@@ -332,6 +335,9 @@ jobs:
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
       - run: python3 -B tests/matrix_conversation_http_io.py target/release/telecodex --funded
+        env:
+          PYTHONPATH: .matrix-sdk/src:.matrix-sdk
+      - run: python3 -B tests/heartbeat_io.py target/release/telecodex --inbox
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
       - run: python3 -B tests/fixture_native_idle_io.py target/release/telecodex

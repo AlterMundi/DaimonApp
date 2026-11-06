@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
-"""One selected technical Matrix send; private owner binding, bounded JSON stdin.
+"""Owner-selected Matrix transport and reads; private binding, bounded JSON stdin.
 
 No runtime is loaded outside its daemon, approval is signed, model is invoked
-or uncertain native send retried. Explicit --receive reads one selected-thread
-page; it never installs attention. The controller owns its reservation.
+or uncertain native send retried. --receive reads one selected-thread page;
+--inbox reads one selected channel page. Neither installs attention or reserves
+model work. The controller owns execution and its finite producer contract.
 """
 
 import argparse
 import json
+import math
 import os
+import re
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from matrix_execution import (
-    MatrixConversationTransport,
+    MAX_TEXT_BYTES,
     MatrixConversationReceipt,
+    MatrixConversationTransport,
     MatrixExecutionError,
     canonical,
     closed,
+    destination,
+    identifier,
     strict_json,
 )
 
@@ -64,7 +71,7 @@ class NativeOwnerClient:
         ).invoke(method, params)
 
 
-def configured_client(path, source):
+def configured_client(path, source, *, required_methods=("messaging.send",)):
     from daimon_matrix.client import ClientConfig, LocalClient
     from daimon_matrix.messaging_config import protected_read
 
@@ -95,7 +102,7 @@ def configured_client(path, source):
 
     messaging, observation = load(binding["messaging"]), load(binding["observation"])
     methods = set(messaging.config.capability.methods)
-    if "messaging.send" not in methods or not methods <= {
+    if not set(required_methods) <= methods or not methods <= {
         "messaging.send",
         "messaging.reply",
         "messaging.inbox",
@@ -143,13 +150,255 @@ def receive(value, client, *, timeout=10):
     )
 
 
-def receiving_command(connection, binding, *, receive_only=False):
+def inbox(value, client, *, timeout=10):
+    """One selected authenticated channel page; never send, poll or run a model.
+
+    The native SDK verifies signatures and current audience. This projection
+    preserves source identities; it is not an independent signature verifier,
+    human original, receiving execution approval or evidence of a response.
+    """
+    closed(value, ("source", "channel_id", "after", "limit"))
+    source = closed(value["source"], ("being_ref", "embodiment_id"))
+    destination({"kind": "body", **source})
+    after, limit, channel = value["after"], value["limit"], value["channel_id"]
+    if (
+        type(after) is not int
+        or not 0 <= after <= 2**53 - 1
+        or type(limit) is not int
+        or not 1 <= limit <= 3
+        or not isinstance(channel, str)
+        or not 1 <= len(channel) <= 128
+        or type(timeout) not in (int, float)
+        or not math.isfinite(timeout)
+        or not 0.05 <= timeout <= 60
+        or client.config.expected_server.get("embodiment_id") != source["embodiment_id"]
+    ):
+        raise MatrixExecutionError("Bounded owner-selected inbox page required")
+    deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+    if client.deadline_ns is not None:
+        deadline = min(deadline, client.deadline_ns)
+    selected = replace(client, timeout_seconds=timeout, deadline_ns=deadline)
+    _, observed = selected.invoke("runtime.status", {})
+    runtime = observed.get("result", {}) if observed.get("ok") is True else {}
+    if (
+        runtime.get("schema") != "dm.runtime.status/v1"
+        or runtime.get("being_ref") != source["being_ref"]
+        or runtime.get("local_origin", {}).get("embodiment_id")
+        != source["embodiment_id"]
+    ):
+        raise MatrixExecutionError("Authenticated inbox owner changed")
+    _, response = selected.invoke(
+        "messaging.inbox",
+        {
+            "channel_id": channel,
+            "after": after,
+            "limit": limit,
+        },
+    )
+    page = response.get("result", {}) if response.get("ok") is True else {}
+    if (
+        page.get("channel_id") != channel
+        or not isinstance(page.get("items"), list)
+        or len(page["items"]) > limit
+    ):
+        raise MatrixExecutionError("Authenticated selected inbox page required")
+    cursor, items = after, []
+    for row in page["items"]:
+        sequence, message = row["inbox_sequence"], row["message"]
+        if type(sequence) is not int or not cursor < sequence <= 2**53 - 1:
+            raise MatrixExecutionError("Inbox cursor is not monotonic")
+        author = {
+            "being_ref": message["being_ref"],
+            "embodiment_id": message["origin"]["embodiment_id"],
+        }
+        destination({"kind": "body", **author})
+        digest = message["content_hash"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise MatrixExecutionError("Immutable native message digest required")
+        body = message["payload"]["body"]
+        raw = body.get("text")
+        available = (
+            isinstance(raw, str)
+            and bool(raw.strip())
+            and len(raw.encode()) <= MAX_TEXT_BYTES
+        )
+        items.append(
+            {
+                "inbox_sequence": sequence,
+                "message_id": identifier(message["event_id"]),
+                "message_hash": digest,
+                "author": author,
+                "thread_id": identifier(message["payload"]["intent"]["thread_id"]),
+                "destination": body.get("destination"),
+                "response_context": body.get("response_context"),
+                "coordination": body.get("coordination"),
+                "text": raw if available else None,
+                "state": "available" if available else "unsupported_payload",
+            }
+        )
+        cursor = sequence
+    result = {
+        "schema": "daimon.matrix-inbox-page/v1",
+        "source": source,
+        "channel_id": channel,
+        "after": after,
+        "next_cursor": cursor,
+        "items": items,
+        "page_full": len(page["items"]) == limit,
+        "meaning": "SDK-authenticated peer source, never human speech or execution authority",
+    }
+    if len(canonical(result).encode()) > 65536:
+        raise MatrixExecutionError(
+            "Bounded inbox projection required; cursor not advanced"
+        )
+    return result
+
+
+def respond(value, client, *, timeout=10, inspect_only=False):
+    """Execute/inspect one already retained response intent, never make a new one.
+
+    The application must persist its intent before invoking this adapter. Native
+    Matrix retains the send identity, verifies the parent and determines the
+    group/direct audience. A failed/ambiguous result is never retried here.
+    """
+    closed(
+        value,
+        ("source", "channel_id", "parent", "send_id", "text", "effect_not_after_ms"),
+    )
+    parent = value["parent"]
+    if not isinstance(parent, dict):
+        raise MatrixExecutionError("Retained native parent required")
+    sequence = parent.get("inbox_sequence")
+    identifier(parent.get("message_id"))
+    identifier(parent.get("thread_id"))
+    identifier(value["send_id"])
+    closed(value["source"], ("being_ref", "embodiment_id"))
+    destination({"kind": "body", **value["source"]})
+    if (
+        type(sequence) is not int
+        or not 1 <= sequence <= 2**53 - 1
+        or type(value["effect_not_after_ms"]) is not int
+        or value["effect_not_after_ms"] <= 0
+        or not isinstance(value["text"], str)
+        or not value["text"].strip()
+        or len(value["text"].encode()) > MAX_TEXT_BYTES
+        or type(timeout) not in (int, float)
+        or not math.isfinite(timeout)
+        or not 0.05 <= timeout <= 60
+    ):
+        raise MatrixExecutionError("Bounded retained response intent required")
+    # Reuse the same owner/signature/audience reader and absolute deadline. A
+    # group parent is valid: do not apply the directed-only private-relay helper.
+    deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+    selected = replace(client, timeout_seconds=timeout, deadline_ns=deadline)
+    if not inspect_only:
+        page = inbox(
+            {
+                "source": value["source"],
+                "channel_id": value["channel_id"],
+                "after": sequence - 1,
+                "limit": 1,
+            },
+            selected,
+            timeout=timeout,
+        )
+        if page["items"] != [parent]:
+            raise MatrixExecutionError(
+                "Selected native original differs from retained parent"
+            )
+        method = "messaging.reply"
+        params = {
+            "channel_id": value["channel_id"],
+            "received_channel_id": value["channel_id"],
+            "message_id": parent["message_id"],
+            "send_id": value["send_id"],
+            "text": value["text"],
+            "effect_not_after_ms": value["effect_not_after_ms"],
+        }
+    else:
+        # Inspection cannot author or replay, including after the authoring
+        # deadline. Still bind the observation to the actual current body.
+        _, observed = selected.invoke("runtime.status", {})
+        status = observed.get("result", {}) if observed.get("ok") is True else {}
+        if (
+            status.get("being_ref") != value["source"]["being_ref"]
+            or status.get("local_origin", {}).get("embodiment_id")
+            != value["source"]["embodiment_id"]
+        ):
+            raise MatrixExecutionError("Authenticated response owner changed")
+        method = "messaging.delivery"
+        params = {"channel_id": value["channel_id"], "send_id": value["send_id"]}
+    _, response = selected.invoke(method, params)
+    result = response.get("result", {}) if response.get("ok") is True else {}
+    expected_parent = {
+        "message_id": parent["message_id"],
+        "message_hash": parent["message_hash"],
+        "sender_being_ref": parent["author"]["being_ref"],
+        "sender_embodiment_id": parent["author"]["embodiment_id"],
+    }
+    if (
+        result.get("schema")
+        not in ("dm.tribe.delivery/v1", "dm.tribe.direct-delivery/v1")
+        or result.get("send_id") != value["send_id"]
+        or result.get("author") != value["source"]
+        or result.get("thread_id") != parent["thread_id"]
+        or result.get("response_context") != expected_parent
+    ):
+        raise MatrixExecutionError("Native response differs from retained intent")
+    identifier(result.get("message_id"))
+    if not isinstance(result.get("message_hash"), str) or not re.fullmatch(
+        r"[0-9a-f]{64}", result["message_hash"]
+    ):
+        raise MatrixExecutionError("Immutable response digest required")
+    original_destination = parent.get("destination")
+    if original_destination is None:
+        if result.get("destination") is not None:
+            raise MatrixExecutionError(
+                "A group reply cannot silently narrow its audience"
+            )
+    else:
+        kind = original_destination.get("kind")
+        expected = {"kind": kind, "being_ref": parent["author"]["being_ref"]}
+        if kind == "body":
+            expected["embodiment_id"] = parent["author"]["embodiment_id"]
+        destination(expected)
+        if not isinstance(result.get("destination"), dict) or any(
+            result["destination"].get(k) != v for k, v in expected.items()
+        ):
+            raise MatrixExecutionError(
+                "A direct reply must preserve its native recipient kind"
+            )
+    output = {
+        "schema": "daimon.matrix-response-outcome/v1",
+        "send_id": value["send_id"],
+        "parent_message_id": parent["message_id"],
+        "delivery": result,
+        "meaning": "Native authored/receipt evidence, not model incorporation, task completion or human hearing",
+    }
+    if len(canonical(output).encode()) > 65536:
+        raise MatrixExecutionError(
+            "Bounded response receipt required; inspect retained native outcome"
+        )
+    return output
+
+
+def receiving_command(
+    connection,
+    binding,
+    *,
+    receive_only=False,
+    inbox_only=False,
+    respond_only=False,
+    response_status_only=False,
+):
     """Bootstrap this host module in the existing receiving owner's SDK context.
 
     This is owner configuration, never request/model JSON. Read the current
     native connection each invocation so an SDK successor cannot leave a cached
     host interpreter/import selection. Do not execute a connection's code string.
     """
+    if sum((receive_only, inbox_only, respond_only, response_status_only)) > 1:
+        raise MatrixExecutionError("Select one host mode")
     with connection.open("rb") as stream:
         raw = stream.read(65537)
     if len(raw) > 65536:
@@ -181,7 +430,6 @@ def receiving_command(connection, binding, *, receive_only=False):
     bootstrap = (
         "import os,sys,runpy\n"
         "venv,imports,code,code_digest,code_uid,script,binding,receive_mode=sys.argv[1:]\n"
-        "receive_only=receive_mode=='receive'\n"
         "sys.prefix=sys.exec_prefix=venv\n"
         "sys.path[:0]=[code,imports]\n"
         "sys.dont_write_bytecode=True\n"
@@ -197,7 +445,7 @@ def receiving_command(connection, binding, *, receive_only=False):
         " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
         " raise SystemExit(1)\n"
         "sys.path.insert(0,os.path.dirname(script))\n"
-        "sys.argv=[script,'--binding',binding]+(['--receive'] if receive_only else [])\n"
+        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'send':[]}[receive_mode])\n"
         "runpy.run_path(script,run_name='__main__')\n"
     )
     return [
@@ -212,7 +460,15 @@ def receiving_command(connection, binding, *, receive_only=False):
         command[13],
         script,
         str(binding),
-        "receive" if receive_only else "send",
+        "respond"
+        if respond_only
+        else "response-status"
+        if response_status_only
+        else "inbox"
+        if inbox_only
+        else "receive"
+        if receive_only
+        else "send",
     ]
 
 
@@ -224,15 +480,36 @@ def main():
         type=Path,
         help="Current owner-local receiving SDK connection; no model/request selection",
     )
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--receive",
         action="store_true",
         help="Inspect one retained selected reply page; never send",
     )
+    modes.add_argument(
+        "--inbox",
+        action="store_true",
+        help="Read one owner-selected new-message page; never send",
+    )
+    modes.add_argument(
+        "--respond",
+        action="store_true",
+        help="Submit one owner-retained response intent",
+    )
+    modes.add_argument(
+        "--response-status",
+        action="store_true",
+        help="Inspect that retained intent; never send",
+    )
     args = parser.parse_args()
     if args.native_connection is not None:
         command = receiving_command(
-            args.native_connection, args.binding, receive_only=args.receive
+            args.native_connection,
+            args.binding,
+            receive_only=args.receive,
+            inbox_only=args.inbox,
+            respond_only=args.respond,
+            response_status_only=args.response_status,
         )
         os.execv(command[0], command)
     raw = sys.stdin.buffer.read(65537)
@@ -240,12 +517,42 @@ def main():
         raise MatrixExecutionError("Bounded controller status required")
     value = closed(
         strict_json(raw),
-        ("status", "source", "after", "limit")
+        ("source", "channel_id", "parent", "send_id", "text", "effect_not_after_ms")
+        if args.respond or args.response_status
+        else ("source", "channel_id", "after", "limit")
+        if args.inbox
+        else ("status", "source", "after", "limit")
         if args.receive
         else ("status", "source"),
     )
-    operation = receive if args.receive else send
-    result = operation(value, configured_client(args.binding, value["source"]))
+    operation = (
+        (
+            lambda value, client: respond(
+                value, client, inspect_only=args.response_status
+            )
+        )
+        if args.respond or args.response_status
+        else inbox
+        if args.inbox
+        else receive
+        if args.receive
+        else send
+    )
+    required = (
+        ("messaging.inbox", "messaging.reply")
+        if args.respond
+        else ("messaging.delivery",)
+        if args.response_status
+        else ("messaging.inbox",)
+        if args.inbox
+        else ("messaging.inbox", "messaging.delivery")
+        if args.receive
+        else ("messaging.send",)
+    )
+    result = operation(
+        value,
+        configured_client(args.binding, value["source"], required_methods=required),
+    )
     output = canonical(result)
     if len(output.encode()) > 65536:
         raise MatrixExecutionError("Bounded host outcome required")

@@ -32,6 +32,57 @@ fn digest(value: &Value) -> String {
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
 }
 
+/// Observe only new, already-visible worker commentary. The frozen native
+/// presentation selection remains the audience; this never scans private work.
+pub(super) fn heartbeat_progress_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    start: i64,
+    after: i64,
+) -> Result<(i64, Vec<super::heartbeat::producer::Offer>)> {
+    let (session, native) = entry_on(conn, human, entry)?;
+    let rows = |cursor| -> Result<Vec<i64>> {
+        let mut q = conn.prepare(&format!(
+            "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn
+             JOIN sessions s ON s.id=t.session_id WHERE m.rowid>?1 AND t.session_id<>?2
+             AND m.phase='commentary' AND {NATIVE_VISIBILITY}
+             ORDER BY m.rowid LIMIT 4"
+        ))?;
+        Ok(
+            q.query_map(params![cursor, session, human, native], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?,
+        )
+    };
+    let mut selected = rows(after)?;
+    if selected.is_empty() && after > start {
+        selected = rows(start)?;
+    }
+    let next = selected.last().copied().unwrap_or(start);
+    let mut offers = Vec::new();
+    for row in selected {
+        let id = format!("native:{row}");
+        let Some(source) = source_on(conn, human, entry, &id)? else {
+            continue;
+        };
+        if source["kind"] != "worker_progress" || source["native_binding_current"] != true {
+            continue;
+        }
+        let revision = source["revision"]
+            .as_str()
+            .context("Progress revision missing")?
+            .to_owned();
+        offers.push(super::heartbeat::producer::Offer {
+            key: format!("progress:{id}"), revision: revision.clone(),
+            evidence: json!({"source":format!("progress:{id}"),"revision":revision,
+                "reason":"worker_progress_available","target":source["target"],
+                "reader":{"operation":"conversation_part","arguments":{"source":id,"revision":revision,"offset":0}},
+                "meaning":"Already visible attributed worker commentary, not task completion, new human authority or permission to resume work."}),
+        });
+    }
+    Ok((next, offers))
+}
+
 pub(super) fn entry_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<(i64, String)> {
     conn.query_row(
         "SELECT s.id,COALESCE(s.codex_thread_id,'') FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
@@ -666,7 +717,12 @@ pub(super) fn source_on(
     id: &str,
 ) -> Result<Option<Value>> {
     let (entry_session, entry_native) = entry_on(conn, human, entry)?;
-    let mut source = if let Some(matrix) = id.strip_prefix("matrix:") {
+    let mut source = if let Some(matrix) = id.strip_prefix("matrix-inbox:") {
+        let Some(source) = super::matrix::inbox::source_on(conn, human, entry, matrix)? else {
+            return Ok(None);
+        };
+        source
+    } else if let Some(matrix) = id.strip_prefix("matrix:") {
         let Some(source) = super::matrix::result_on(conn, human, entry, matrix)? else {
             return Ok(None);
         };
@@ -1546,6 +1602,23 @@ mod tests {
             .iter()
             .filter(|s| s["kind"] == "worker_progress")
             .collect::<Vec<_>>();
+        {
+            let conn = store.conn.lock().unwrap();
+            let (cursor, offers) = heartbeat_progress_on(&conn, 100, entry, 0, 0).unwrap();
+            assert!(cursor > 0);
+            assert_eq!(offers.len(), 1);
+            assert_eq!(
+                offers[0].evidence["reader"]["arguments"]["source"],
+                progress[0]["id"]
+            );
+            assert_eq!(offers[0].revision, progress[0]["revision"]);
+            assert!(
+                heartbeat_progress_on(&conn, 100, entry, cursor, cursor)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+        }
         assert_eq!(progress.len(), 1);
         assert_eq!(progress[0]["preview"], "Progress for the web");
         assert_eq!(progress[0]["target"], json!(SessionKey::new(100, Some(7))));

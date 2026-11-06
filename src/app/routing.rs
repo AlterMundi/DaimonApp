@@ -1173,8 +1173,58 @@ fn queue_root(
     Ok(())
 }
 
+/// Returns true only when the prior execution ended and this instruction
+/// reserved the next fresh run. Retained work is never handed to a steer channel.
+fn retain_attention(runs: &mut HashMap<SessionKey, Run>, target: SessionKey, id: &str) -> bool {
+    if let Some(run) = runs.get_mut(&target) {
+        if !run.pending.contains(&id.to_owned()) {
+            run.pending.push(id.to_owned());
+        }
+        false
+    } else {
+        runs.insert(
+            target,
+            Run {
+                root: id.to_owned(),
+                pending: vec![],
+                active: None,
+                native_turn: None,
+            },
+        );
+        true
+    }
+}
+
 fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> {
     if !dispatch_allowed(&app.shared, &i)? {
+        return Ok(());
+    }
+    // Attention work must wait for a fresh, separately reserved execution.
+    // Reuse the existing run queue; physical turn changes must not steer it.
+    if app
+        .shared
+        .store
+        .heartbeat_workflow_delegation(i.human_id, i.target, &i.id)?
+    {
+        let fresh = {
+            let mut runs = app
+                .shared
+                .routing_runs
+                .lock()
+                .expect("routing mutex poisoned");
+            retain_attention(&mut runs, i.target, &i.id)
+        };
+        if fresh {
+            // The previous worker can finish between selection and this check.
+            // Reserve its successor under the same queue lock, then use the
+            // ordinary fresh-execution path rather than the stale steer handle.
+            tokio::spawn(async move {
+                if let Err(error) = enqueue_root(&app, &i).await {
+                    finished(&app.shared, i.target, &i.id, i.human_id);
+                    failure(app.shared.clone(), &i.id, i.human_id, &error.to_string());
+                }
+            });
+        }
         return Ok(());
     }
     let source = app.shared.store.interaction_source(&i.id, i.human_id)?;
@@ -1238,6 +1288,9 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                     let epoch = epoch.clone();
                     let input_id = input_id.clone();
                     Box::pin(async move {
+                        if shared.store.heartbeat_workflow_delegation(human, target, &input_id)? {
+                            bail!("Attention workflow requires a fresh reserved execution; no input was submitted");
+                        }
                         let original = shared.store.interaction_source(&input_id, human)?;
                         if let Some(external) = &original.tribu_source {
                             super::tribu::validate_integrated_source(&shared, external).await?;
@@ -1747,5 +1800,45 @@ pub(super) fn declaration(shared: Arc<AppShared>, root: &str, human: i64, regist
             "A human-action declaration could not be registered. The declaration remains retained with its worker turn for inspection; no completed human action is claimed.".into()
         };
         notice(shared, i.origin, text);
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_routing_tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_pending_waits_across_physical_turns_and_reserves_one_fresh_run() {
+        let target = SessionKey::new(100, Some(7));
+        let mut runs = HashMap::new();
+        runs.insert(
+            target,
+            Run {
+                root: "ordinary-work".into(),
+                pending: vec![],
+                active: None,
+                native_turn: Some("ordinary-physical".into()),
+            },
+        );
+        assert!(!retain_attention(&mut runs, target, "attention-step"));
+        // started/native_started drain this same queue. Reconsidering a pending
+        // step must put it back without changing the active owner's identity.
+        let pending = std::mem::take(&mut runs.get_mut(&target).unwrap().pending);
+        runs.get_mut(&target).unwrap().native_turn = Some("next-physical".into());
+        for id in pending {
+            assert!(!retain_attention(&mut runs, target, &id));
+        }
+        assert!(!retain_attention(&mut runs, target, "attention-step"));
+        let ordinary = runs.remove(&target).unwrap();
+        assert_eq!(ordinary.root, "ordinary-work");
+        assert_eq!(ordinary.native_turn.as_deref(), Some("next-physical"));
+        assert_eq!(ordinary.pending, ["attention-step"]);
+        // finish_execution consumes the retained leg only after the prior
+        // writer ends. A stale handle racing that finish uses this same path.
+        assert!(retain_attention(&mut runs, target, "attention-step"));
+        assert_eq!(runs[&target].root, "attention-step");
+        assert!(runs[&target].active.is_none());
+        assert!(runs[&target].native_turn.is_none());
+        assert!(runs[&target].pending.is_empty());
     }
 }

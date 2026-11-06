@@ -19,6 +19,8 @@ class WorkflowJourney(CanonicalRouting):
                                              for line in text.splitlines()
                                              if line.startswith('Transport provenance: ')))
                 author = provenance['author']
+                if provenance.get('original_human_author') == 100:
+                    return super().handle_extra_rpc(message, send)
                 assert author['kind'] == 'workflow_step'
                 assert provenance['original_human_author'] is None
                 assert provenance['authorized_human'] == 100

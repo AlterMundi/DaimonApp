@@ -37,6 +37,7 @@ def qualify(binary, *, funded=False):
     b = None
     observed = []
     reads = []
+    inbox_reads = []
     mode = {"drop": False, "funded": None, "hold_read": False}
     read_entered, read_release = threading.Event(), threading.Event()
     source_author = {
@@ -52,6 +53,15 @@ def qualify(binary, *, funded=False):
             value = json.loads(self.rfile.read(int(self.headers["content-length"])))
             assert value["source"] == source_author
             client = adapter.SignedGroupClient(sdk.fixture, sdk.sender)
+            if "channel_id" in value:
+                inbox_reads.append(value["after"])
+                outcome=adapter.operator_inbox(value,client,timeout=1)
+                raw=json.dumps(outcome).encode()
+                self.send_response(200)
+                self.send_header("Content-Length",str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
             if "after" in value:
                 assert "results" not in value["status"]
                 reads.append(value["status"]["request"]["id"])
@@ -111,6 +121,7 @@ def qualify(binary, *, funded=False):
             + json.dumps(source_author["embodiment_id"])
             + "}"
         )
+        configured += '\nmatrix_inbox_channel="tribe"'
         configured += (
             "\nmatrix_transport={command="
             + argv
@@ -149,7 +160,7 @@ def qualify(binary, *, funded=False):
         assert resumed["admission_paused"] is False
         paused_again = j.read("heartbeat", "pause")["result"]
         assert paused_again["generation"] > resumed["generation"]
-        assert paused_again["attention_engine"] == "not_implemented"
+        assert paused_again["attention_engine"] == "not_configured"
         request = selected["request"]
         assert request["original"]["text"] == original
         assert b.status(ident)["phase"] == "matrix_requested"
@@ -302,6 +313,27 @@ def qualify(binary, *, funded=False):
         if funded:
             assert state.store.funding_status("episode")["calls"] == 1
             assert state.store.funding_status("episode")["reserved"] == 30
+        # A new native original has no prior human-origin Matrix request.
+        # Read and retain it through the SAME authenticated integrator while
+        # heartbeat admission stays paused; no fabricated human/work input.
+        fresh=sdk.fixture.send_and_settle(sdk.receiver,client_id="test",
+            send_id=str(uuid.uuid4()),thread_id=str(uuid.uuid4()),
+            text="New peer original; no human instruction or execution grant.",
+            destination={"kind":"body",**source_author})
+        intake=j.call("route-new-native-inbox-page","matrix_status",{"inbox_next":True})
+        native_source=next(v for v in intake["items"] if v["source"]=="matrix-inbox:"+fresh["message_id"])
+        exact=j.call("route-read-new-native-original","conversation_part",
+            {"source":native_source["source"],"revision":native_source["revision"],"offset":0})
+        assert exact["kind"]=="matrix_inbox" and exact["text"]=="New peer original; no human instruction or execution grant."
+        assert exact["source_author"]["being_ref"]==sdk.receiver.lane.being_ref
+        assert exact["completed"] is None and exact["current"] is True
+        duplicate=j.call("route-read-after-native-cursor","matrix_status",{"inbox_next":True})
+        assert duplicate["items"]==[] and duplicate["next_cursor"]==intake["next_cursor"]
+        assert inbox_reads==[0,intake["next_cursor"]]
+        assert j.row("SELECT count(*) FROM interaction_matrix_inbox")==[(3,)]
+        assert j.row("SELECT count(*) FROM interaction_instructions")==[(0,)]
+        assert j.read("heartbeat","status")["result"]["admission_paused"] is True
+        assert len(observed)==1 and not j.messages
         # A contextual response carries the selected canonical event, not an
         # automatic peer send or a forged local worker request.
         next_id, _ = b.text(
@@ -423,7 +455,7 @@ def qualify(binary, *, funded=False):
                 ),
             )
         print(
-            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> finite authenticated selected-thread reader -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; zero provider/model calls. Funded mode uses a controlled worker stand-in; real receiving native work/automatic integrator incorporation remain unqualified."
+            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> finite authenticated selected-thread reader -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; new native original retained atomically and read through same integrator source reader during heartbeat pause, without human/work fabrication; zero provider/model calls. Funded mode uses a controlled worker stand-in; real receiving native work/automatic integrator incorporation remain unqualified."
         )
     finally:
         if b:

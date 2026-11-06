@@ -25,10 +25,12 @@ pub(crate) struct WorkflowReturn {
     pub id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workflow: String,
-    /// Set only by a future server-owned heartbeat producer, never peer content.
-    /// Ordinary human-authorized returns retain their independent policy.
+    /// Set by server-owned attention admission or its retained workflow provenance.
+    /// Ordinary independent human-authorized returns keep their existing policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_activation: Option<super::super::heartbeat::lanes::Activation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_revision: Option<String>,
     pub envelope: Value,
@@ -180,6 +182,9 @@ fn bindings_on(conn: &Connection, local: i64) -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 fn selected_on(conn: &Connection, id: &str) -> Result<(ReturnContext, usize)> {
+    if let Some((parent, index)) = super::super::heartbeat::producer::load_return(conn, id)? {
+        return Ok((ReturnContext::heartbeat(parent), index));
+    }
     if let Some(selected) = foreground::load(conn, id)? {
         return Ok(selected);
     }
@@ -213,7 +218,23 @@ fn current_on(
     {
         return Ok(false);
     }
+    if admission && r.attention_generation.is_some() {
+        let Some(activation) = r.attention_activation.as_ref() else {
+            return Ok(false);
+        };
+        if !super::super::heartbeat::lanes::current_on(
+            conn,
+            context.human,
+            context.entry,
+            activation,
+        )? {
+            return Ok(false);
+        }
+    }
     match &context.parent {
+        ReturnParent::Heartbeat(parent) => {
+            super::super::heartbeat::producer::current(conn, parent, r, admission)
+        }
         ReturnParent::Foreground(parent) => foreground::current(conn, parent, r, admission),
         ReturnParent::Routed(parent) => routed::current(conn, parent, r, admission),
         ReturnParent::Workflow(w) => {
@@ -241,6 +262,9 @@ fn current_on(
 }
 fn save_on(conn: &Connection, context: &ReturnContext) -> Result<()> {
     match &context.parent {
+        ReturnParent::Heartbeat(parent) => {
+            super::super::heartbeat::producer::save_returns(conn, parent, &context.native_returns)
+        }
         ReturnParent::Foreground(parent) => foreground::save(conn, parent, &context.native_returns),
         ReturnParent::Routed(parent) => routed::save(conn, parent, &context.native_returns),
         ReturnParent::Workflow(w) => {
@@ -454,6 +478,53 @@ pub(in crate::store) fn source_current_on(conn: &Connection, id: &str) -> Result
     current_on(conn, &w, index, false)
 }
 
+fn recover_contexts_on(
+    tx: &Connection,
+    instance: &str,
+    contexts: Vec<ReturnContext>,
+) -> Result<Vec<ReturnDispatch>> {
+    let mut selected = vec![];
+    let now = Utc::now().timestamp();
+    for mut w in contexts {
+        for index in 0..w.native_returns.len() {
+            let r = &w.native_returns[index];
+            if selected.len() == 4
+                || r.phase != "retained_unsent"
+                || r.attempts == 0
+                || r.attempts >= MAX_RETURN_ATTEMPTS
+                || r.retry_after.is_none_or(|at| at > now)
+                || !current_on(tx, &w, index, true)?
+            {
+                continue;
+            }
+            let r = &mut w.native_returns[index];
+            r.attempts += 1;
+            r.phase = "reserved".into();
+            r.instance = instance.to_owned();
+            r.local = None;
+            r.collection_local = None;
+            r.native_turn = None;
+            r.retry_after = None;
+            let id = r.id.clone();
+            let attempts = r.attempts;
+            let output = w.output(index);
+            selected.push(ReturnDispatch {
+                name: w.name(),
+                attempts,
+                attention_generation: w.native_returns[index].attention_generation,
+                id,
+                human: w.human,
+                entry: w.entry,
+                native: w.native.clone(),
+                epoch: w.epoch.clone(),
+                output,
+            });
+        }
+        save_on(tx, &w)?;
+    }
+    Ok(selected)
+}
+
 impl Store {
     pub(in crate::store) fn init_workflow_returns(&self) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -530,7 +601,11 @@ impl Store {
                 let r = WorkflowReturn {
                     id: id.clone(),
                     workflow: w.id.clone(),
-                    attention_generation: None,
+                    attention_generation: w.attention.as_ref().map(|owner| owner.generation),
+                    attention_activation: w
+                        .attention
+                        .as_ref()
+                        .and_then(|owner| owner.activation.clone()),
                     reported_revision: None,
                     envelope: envelope.clone(),
                     phase: "reserved".into(),
@@ -551,7 +626,7 @@ impl Store {
                 selected.push(ReturnDispatch {
                     name: "workflow_attention",
                     attempts: 1,
-                    attention_generation: None,
+                    attention_generation: w.attention.as_ref().map(|owner| owner.generation),
                     id,
                     human,
                     entry,
@@ -601,45 +676,22 @@ impl Store {
             contexts.extend(routed::retained(&tx, Some(human), Some(entry), true)?);
         }
         contexts.extend(foreground::retained(&tx, human, entry)?);
-        let mut selected = vec![];
-        let now = Utc::now().timestamp();
-        for mut w in contexts {
-            for index in 0..w.native_returns.len() {
-                let r = &w.native_returns[index];
-                if selected.len() == 4
-                    || r.phase != "retained_unsent"
-                    || r.attempts == 0
-                    || r.attempts >= MAX_RETURN_ATTEMPTS
-                    || r.retry_after.is_none_or(|at| at > now)
-                    || !current_on(&tx, &w, index, true)?
-                {
-                    continue;
-                }
-                let r = &mut w.native_returns[index];
-                r.attempts += 1;
-                r.phase = "reserved".into();
-                r.instance = self.instance_id.clone();
-                r.local = None;
-                r.collection_local = None;
-                r.native_turn = None;
-                r.retry_after = None;
-                let id = r.id.clone();
-                let attempts = r.attempts;
-                let output = w.output(index);
-                selected.push(ReturnDispatch {
-                    name: w.name(),
-                    attempts,
-                    attention_generation: w.native_returns[index].attention_generation,
-                    id,
-                    human: w.human,
-                    entry: w.entry,
-                    native: w.native.clone(),
-                    epoch: w.epoch.clone(),
-                    output,
-                });
-            }
-            save_on(&tx, &w)?;
-        }
+        let selected = recover_contexts_on(&tx, &self.instance_id, contexts)?;
+        tx.commit()?;
+        Ok(selected)
+    }
+    pub(crate) fn heartbeat_returns_recover_unsent(
+        &self,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<Vec<ReturnDispatch>> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let contexts = super::super::heartbeat::producer::retained(&tx, human, entry)?
+            .into_iter()
+            .map(ReturnContext::heartbeat)
+            .collect();
+        let selected = recover_contexts_on(&tx, &self.instance_id, contexts)?;
         tx.commit()?;
         Ok(selected)
     }
@@ -693,7 +745,17 @@ impl Store {
                 "Heartbeat requires an exclusive source binding"
             );
             super::super::heartbeat::execution_claim_on(
-                &tx, local, w.human, w.entry, &w.native, generation, id,
+                &tx,
+                local,
+                w.human,
+                w.entry,
+                &w.native,
+                generation,
+                id,
+                w.native_returns[index]
+                    .attention_activation
+                    .as_ref()
+                    .context("Missing heartbeat activation")?,
             )?;
         }
         bind_on(&tx, local, id)?;
