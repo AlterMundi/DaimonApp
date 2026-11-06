@@ -12,7 +12,7 @@ are not part of this source selection.
 App state root, which belongs to one receiving being. Its HTTP adapter is now
 mounted in source through the existing App shared login/Companion grants and
 CSRF. It derives the actor from that session and refuses monitor access to the
-version library. This has not been selected on a receiver.
+version library. Receiving selection is recorded below.
 An actor ID in an imported design or browser request is never authoritative.
 This adapter creates no account, grant, provider session or peer activation.
 
@@ -44,7 +44,7 @@ models/designs or bounded images. Explicit version removal remains unimplemented
 Seven actual-Node/storage tests cover a catalogue design and custom firefly,
 save/reload/edit/use, prior-avatar preservation, account isolation, immutable
 lost-ACK readback, generation conflicts, parent identity, quota refusal and unsafe
-file rejection. Five additional mounted tests cover grants/CSRF, save/reload/use,
+file rejection. Six additional mounted tests cover grants/CSRF, save/reload/use,
 foreign account refusal, access revocation after commit and oversized input.
 They use a test authorizer with the actual grant allowlist and storage validator;
 real Home-cookie/device and receiving delivery acceptance remain separate.
@@ -86,8 +86,34 @@ owns one temporary server/browser/state root with a120second cap. Optional
 `WORKSHOP_SCREENSHOT` writes one selected PNG; it creates no HTML artifact or
 private data publication. Source API/storage suites remain ordinary CI.
 
-The receiving UI/HTTP implementation is source-only, not a deployed workshop or
-real shared-Home/multi-user/device acceptance. Node20+ availability, account-bound
-save/reload/use on each living receiver, physical touch/hearing and school/Oca/
-child acceptance remain open. Native designPack qualification and the full
-original goal remain open. No voice/default/heartbeat/native-display flags change.
+## Receiving selection —6November2026
+
+All three registered living services now select the qualified31e70a0 common web
+composition: CompAII on ITACA, Eko on MEDUSA and Oliva in its active ITACA KVM.
+Compatible overlays preserve each receiver's local Matrix adapter and private
+configuration. Actual local/public workshop entry and renderer bytes, existing
+owner entry reads, foreign-account refusal and service continuity passed. The
+13 storage/mounted tests also ran as each consuming service user with its actual
+Node runtime. These tests use synthetic accounts and temporary design files;
+no production account's avatar was saved or activated by qualification.
+
+CompAII keeps its separately selectable native public voice comparison and prior
+voice defaults. Eko keeps Avatar voice ON and Oliva OFF; OpenAI remains OFF on
+both. Native/Core/Sessions processes and configuration stayed unchanged. Eko's
+existing web service now receives its prepared Node22 runtime through a scoped
+service PATH entry; CompAII and Oliva use their existing/installed Node20. The
+actual service environment and consuming-user execution were checked. Node runs
+only for bounded manual validation; it is never invoked per rendering frame.
+
+Reload the ordinary authenticated Conversation and choose **Personalize avatar**.
+The editor offers preview/save and an explicit Use action; saving does not replace
+the current portrait. Keep the actual prior web selection as software rollback,
+plus the owned service-unit/PATH preimage where applicable. Rollback preserves
+all account versions, existing originals and native work; never restore databases,
+delete personal designs or repeat an uncertain save/activation.
+
+Real shared-Home-cookie save/reload/use, cross-device synchronization, physical
+touch and school/Oca/child acceptance remain open. Native designPack qualification
+and the full original goal remain open. Public served files and synthetic browser
+journeys do not prove a human's successful use or authorize enabling another
+pair's Avatar, voice, provider, heartbeat or native-display flags.
