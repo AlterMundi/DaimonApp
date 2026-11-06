@@ -1133,3 +1133,5 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .session-audio-controls button { width:28px;height:28px;min-width:28px;min-height:28px;padding:4px;margin:0;border:0;border-radius:6px;font-size:15px;line-height:1;background:transparent; }
 .session-audio-controls button svg { width:18px;height:18px; }
 .session-audio-controls button[aria-pressed="true"] { color:var(--bg);background:var(--accent);outline:0; }
+
+.session-workspace .session-scope-toggle {width:100%;min-height:32px;margin:2px 0;padding:4px 8px;font-size:14px;text-align:left;}

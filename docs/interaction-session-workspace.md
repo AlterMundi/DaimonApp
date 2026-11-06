@@ -189,3 +189,16 @@ input, unpin a conversation or open a native model. The5November device warning
 was not reproduced by the owner read (44sessions, destinations available); its
 original network/server cause remains unknown. Do not equate this warning with
 voice failure or claim a transient HTTP cause without a captured response.
+
+## Receiver continuity and visibility preferences
+
+The common client retains one bounded opaque local preference: binding, explicit
+pin ID, opened view ID and all/recent filter. Fresh owner metadata supplies every
+destination on reload; no transcript or authority token is persisted. Back restores
+the prior pin. An unavailable saved target blocks capture instead of redirecting
+input. Another binding ignores it. The ordinary default remains recent24hours;
+`session_workspace.default_filter="all"` preserves a receiver-selected all-session
+default. Either view is limited to the same authorized inventory. Browser focus,
+pageshow and network return retry only remembered-access observation, never input.
+This integrates the selected Eko1109321 navigation behavior while retaining the
+current reply/Detail controls, metadata recovery and shared-auth semantics.

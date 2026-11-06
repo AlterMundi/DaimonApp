@@ -231,3 +231,13 @@ unknown files or changed full-text qualification keep their owning full checks.
 Changes to the profile itself exercise that job; the actual embedded scope
 program is regression-tested. Reuse unchanged native qualification instead of
 repeating unrelated voice, lifecycle and multi-worker fixtures for host Python.
+
+## Shared application release coverage — Nicolas,2026-11-06
+
+Ordinary common-app updates include every registered living receiver by default,
+using Shared Resources and each actual receiving maintenance route. Preserve
+receiver-selected settings, local source improvements, credentials, native work,
+originals and compatible readers. Keep exact per-receiver installed/served receipts
+and pending failures; publication or one author-body deployment is not completion.
+A software update does not enable experimental Avatar/provider billing elsewhere.
+Use docs/interaction-fleet-updates.md; no new model attention or global Stop.

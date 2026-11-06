@@ -768,6 +768,7 @@ const conversationView = window.Conversation?.mount({
     });
     document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!authenticated)void reconnect();});
     window.addEventListener('online',()=>{if(!authenticated)void reconnect();});
+    for(const event of ['pageshow','focus'])window.addEventListener(event,()=>{if(!document.hidden&&!authenticated)void reconnect();});
     try{
       const access=await sharedAccess();
       csrf=access.csrf;sharedConversationConnected=true;authenticated=true;
