@@ -1,5 +1,11 @@
 # Interaction development boundaries
 
+The native text CI job keeps its30minute bound. Its isolated native-return and
+goal-control fixtures share the existing four-worker ceiling, with independent
+temporary stores/peers, all original invocations/flags and every exit/log retained.
+This replaces serial scheduling that exhausted the measured job deadline in
+run42262198798; it does not skip tests, retry actions or change product behavior.
+
 Current Avatar planning is the4November slice in docs/interaction-roadmap.md;
 GPT-Live adaptation follows docs/interaction-gpt-live-practices.md. Keep the
 diagnostic context/visit limits unchanged. Qwen as integrator was a rejected,
