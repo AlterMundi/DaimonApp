@@ -24,6 +24,7 @@ def permitted(method, path, scope='interaction_only', artifact_access=False, ale
         return scope=='interaction_only'and (
             method=='POST'and path=='/api/interaction/voice/codex'
             or method=='POST'and re.fullmatch(r'/api/interaction/voice/codex/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',path)is not None
+            or method=='POST'and re.fullmatch(r'/api/interaction/voice/codex/visits/[a-f0-9-]{36}/capture/ended',path)is not None
             or method=='GET'and re.fullmatch(r'/api/interaction/voice/codex/visits(?:/[a-f0-9-]{36})?',path)is not None)
     if path == '/api/interaction/sessions' or path.startswith('/api/interaction/sessions/'):
         return method == 'GET' and scope == 'interaction_only' and workspace_access is True and re.fullmatch(r'/api/interaction/sessions(?:/[a-f0-9]{24})?',path) is not None

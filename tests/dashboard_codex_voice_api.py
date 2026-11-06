@@ -718,7 +718,19 @@ class Mounted(unittest.TestCase):
             self.assertEqual(result.status_code,200,result.text)
             self.assertEqual(result.json()['recording']['audio_bytes'],len(audio))
             self.assertEqual(client.post(route,content=audio,headers={**headers,'x-dashboard-csrf':'stale'}).status_code,403)
-            for path in ('/api/interaction/voice/codex',route):
+            logical=str(uuid.uuid4())
+            with client.websocket_connect('/api/interaction/voice/codex',headers={'origin':config['origin']})as socket:
+                socket.send_json({'id':logical,'binding':'a'*64,'csrf':headers['x-dashboard-csrf'],
+                    'authorization':headers['authorization'],'logical_visit':True})
+                self.assertEqual(socket.receive_json()['logical_visit'],'v1')
+                socket.send_json({'type':'capture'});self.assertEqual(socket.receive_json()['type'],'capture_ready')
+                socket.send_json({'type':'offer','sdp':'v=0 synthetic-logical-offer'})
+                self.assertEqual(socket.receive_json()['type'],'answer');socket.receive_json()
+                ended=f'/api/interaction/voice/codex/visits/{logical}/capture/ended'
+                self.assertEqual(client.post(ended,headers=headers).status_code,200)
+                self.assertEqual(client.post(ended,headers={**headers,'x-dashboard-csrf':'stale'}).status_code,403)
+                self.close(socket)
+            for path in ('/api/interaction/voice/codex',route,ended):
                 self.assertTrue(permitted('POST',path,'interaction_only'))
                 self.assertFalse(permitted('POST',path,'monitor_readonly'))
             self.assertFalse(permitted('POST',route+'/retry','interaction_only'))
