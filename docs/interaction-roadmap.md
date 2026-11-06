@@ -466,6 +466,66 @@ Shared Resources' maintained Interaction receiving record.
 
 ## Shared attention backend —4November2026
 
+The next source increment reserves a complete execution's maximum provider
+attempts in the SAME SQLite transaction that claims its fresh native writer.
+The parent account is independent of the sixteen retained detail records.
+Pause/resume, restart, source succession and detail pruning do not replenish it;
+unknown or known-unsent outcomes stay conservatively reserved. An initial
+`configure_resources` uses the shared owner handler while paused at the exact
+current generation; a new contract UUID cannot overwrite an existing account.
+The contract supplies total/per-execution attempts, complete request bytes,
+execution seconds and a fixed expiry. Status labels these as reserved request
+attempts, never token or monetary spend. Configuration neither resumes attention
+nor changes native goals or a provider account. No receiving account is created
+by this source work. The last native-submission callback now reads the exact
+already-reserved allocation after owner/generation checks, without charging it
+again. Tagged work requires `turn/startBoundedIfIdle` with that allocation;
+missing/expired allocations and old servers refuse without an unbounded fallback.
+Existing immutable workflows now retain their actual attention execution's
+original account and generation. Each fresh delegated worker reserves its own
+allocation in the same transaction that claims its exclusive local execution;
+it cannot create a target account, replenish the original account or reuse a
+physical writer. Busy routed workers retain attention legs in the existing
+pending queue, including across physical turn changes. Both the common steer
+boundary and final native admission refuse attention work. A worker finishing
+between selection and that check reserves a fresh successor instead of using
+the stale handle. The native request carries attributed internal tool context,
+with the human prompt empty; selected attachments currently refuse explicitly
+rather than being discarded. Worker results retain the attention generation,
+so their return to the integrator also needs a fresh reservation. Scoped pause
+selects root and delegated physical executions; the sixteen-record bound counts
+all live cancellation targets and prunes only terminal/transferred details.
+
+Source qualification includes conserved reservations, duplicate-claim refusal,
+pause before/after child admission, bounded result returns and capacity retention.
+The full text suite passes524 tests (one existing ignored), including the explicit
+Resume regressions below. The routing queue
+regression is local qualification, not a native routed-worker journey or live
+receiving acceptance. Explicit Resume now advances the retained workflow's attention generation only
+while its original entry/native grant remains live. Only return legs with no
+local/native submission binding and reserved/retained-unsent phase advance;
+accepted, submitting, uncertain and previously linked evidence stays unchanged.
+It neither allocates resources nor creates/retries an input. Focused tests prove
+the same queued step can claim its fresh conserved allocation after Resume and
+that replacing the native entry cannot revive an old workflow. Scheduling that
+known-unsent work and the actual native busy-worker journey remain unqualified.
+The bridge now distinguishes the native idle-admission error's exact
+`submitted:false` plus `notIdle`/`pendingTriggerTurn` reasons from a permanent
+rejection or uncertain delivery. Only an idle-only bounded request selects this
+known-unsent outcome. It retires that execution's unsubmitted ownership without
+refunding its reservation. Workflow returns use the existing finite retry/backoff
+journal; a delegated step enters the existing retained-unsent recovery lane only
+with its exact unsubmitted child-ownership proof. Unsupported methods, plan mode,
+missing proof and uncertain/accepted inputs do not select capacity recovery.
+Native socket regressions verify both contention reasons without start/steer
+fallback; store regressions preserve the same instruction/account across recovery
+and refuse to downgrade an ACK. Actual combined native/receiver acceptance and
+automatic queued-child recovery remain unqualified. Typed attachments, positive
+native agent/reviewer allocation, external-tool inference, the finite producer
+and receiving acceptance remain unfinished; do not activate this increment as a
+complete heartbeat.
+
+
 Nicolas requests a heartbeat joining new Matrix messages, assigned tasks,
 authorized session progress/results, presentation and iteration through Avatar,
 and selected experience/discovery evidence for Bitácora. The continuing native
@@ -983,8 +1043,8 @@ pause invalidates older resume generations. One small record per configured
 entry uses the existing state store; no growing operation log or second queue
 is added. Human access needs no live native turn.
 
-The control reports `attention_engine: not_implemented`; it does not activate
-periodic attention or grant funding. Its `owned_execution_control` now exposes
+The control reports `attention_engine: not_configured` until a finite producer
+contract is selected; configuration alone grants no inference funding. Its `owned_execution_control` now exposes
 exact native interruption for server-owned executions, as described below.
 Admission-paused is not provider quiescence: inspect each execution and its
 terminal/unconfirmed observation. Ordinary human contact, shared maintenance,
@@ -1001,9 +1061,9 @@ field, preserving their existing serialized history and separate policy. Pause
 never invalidates presentation/history reads or drops a late canonical native
 ACK. Resume never reopens a previous submitting/uncertain generation.
 
-This adds no public source-tagging API or funding grant. The heartbeat producer,
-bounded/coalesced idle admission and its source/publication contract still need implementation
-before activation. Fresh physical ownership and scoped interruption are supported
+This adds no public source-tagging API or funding grant. The finite producer
+and source/publication contract below reuse this fence; combined native and
+receiving qualification is still required before activation. Fresh physical ownership and scoped interruption are supported
 below; no public producer or automatic attention is enabled. A tagged receipt alone
 is not proof that its physical turn is exclusively owned; do not use it as
 permission to interrupt a human execution.
@@ -1011,6 +1071,13 @@ An RPC already between final validation and its ACK remains a retained
 submitting/uncertain operation; exact ownership, interruption and terminal
 observation must close that race before automatic attention is selected. These
 checks do not establish provider quiescence.
+
+For owned heartbeat collection, native `thread/status/changed: idle` is not a
+terminal receipt. Current Core emits idle before the exact `turn/completed`.
+The collector waits for that physical turn's terminal event, releasing ownership
+only from observed terminal state. The ordinary legacy idle fallback is unchanged.
+Application context and bounded internal work must both appear in the first
+provider request; a context-only sampling pass must not spend the work's allowance.
 
 ### Exact heartbeat execution ownership and scoped pause
 
@@ -1020,15 +1087,19 @@ entry/native owner, current generation, absence of human ingress/collection or
 other source bindings, and at most one unresolved heartbeat execution. Ownership
 is retained beside the existing turn in the state store, with the exact physical
 native ID added on its callback. Tagged execution requires native
-`turn/startIfIdle`, with no fallback to `turn/start`: a local idle observation is
-not an atomic native ownership fence. Older servers reject before submission.
-Core source4dc51af25, now proposed in compaii/codex#10, exposes the existing
-atomic StartIfIdle through that method. Actual App Server mocked-provider busy
-refusal/independent internal-turn and legacy-permission regressions plus317
-protocol/export/schema tests pass. It is not yet receiving-selected and remains
-a prerequisite for actual cancellation qualification; ordinary `toolOutput`
-uses start-or-steer and cannot establish this ownership by itself. Retain at most sixteen records (one live owner
-plus fifteen prior terminal/transferred records); pruning never deletes native
+`turn/startBoundedIfIdle`, with no fallback to `turn/start` or the unbounded
+`turn/startIfIdle`: a local idle observation is not an atomic native ownership
+fence or a resource reservation. Core PR11 extends merged PR10's idle primitive
+with the required allocation. The bridge supplies its conserved attempts, bytes
+and absolute deadline; it cannot refresh them during preparation. Socket tests
+cover exact parameter serialization, unsupported servers, and missing/expired
+allocations without input submission. The actual Core mocked-provider journey
+refuses a busy human writer, then exhausts a one-request allocation locally
+without a second bounded provider request. Native source/receiving selection
+remain distinct; ordinary `toolOutput` uses start-or-steer and cannot establish
+this ownership or these bounds by itself. Retain at most sixteen records across
+the root account's executions, including delegated workers; all live cancellation
+targets count toward that bound. Pruning never deletes native
 history, source receipts or an uncertain execution. Turn deletion removes only
 its matching ownership metadata.
 
@@ -1050,9 +1121,9 @@ may release an owner as `not_submitted`. Resume never resets resource counters o
 replays an uncertain input. The control never invokes session/global Stop.
 
 This is source-level execution control, not a complete running heartbeat.
-The trusted bounded producer, actual resource admission, descendant/successor
-ownership and producer source/publication binding remain to be implemented
-and qualified before automatic activation. Native socket fixtures prove prepared
+The finite producer and reserved workflow delegation are implemented below;
+combined native admission/recovery and receiving qualification remain required
+before automatic activation. Unreserved native agent/reviewer calls refuse. Native socket fixtures prove prepared
 and active ownership refusal prevents provider writes while original work still
 finishes; SQLite tests cover both race winners, late identity, restart and bounded
 retention. They do not prove actual receiving-model cancellation or device hearing.
@@ -1079,7 +1150,178 @@ hearing or acceptance of a fully activated producer.
 
 Meaningful actions, replies, results and pending outcomes belong in that same
 conversation and its enabled audio surface. No-news ticks and routine incorporation
-remain silent. The future trusted producer must bind its finite human-selected
-source/purpose to this existing report path; an execution tag or arbitrary peer
-text cannot manufacture that grant. Activation, real receiving cancellation,
+remain silent. The finite producer binds its human-selected source/purpose to this existing
+report path; an execution tag or arbitrary peer text cannot manufacture that grant. Activation, real receiving cancellation,
 successor ownership and physical device acceptance remain unfinished.
+
+
+### Finite canonical offer producer (development, not receiving activation)
+
+The existing transport-neutral maintenance cycle observes only while holding its
+instance lease. `heartbeat configure-producer GENERATION CONTRACT_JSON` selects
+`interval_seconds` (30–3600), `max_checks` (1–1024), `expires_at_unix_ms` (at most
+seven days and within the existing resource contract), and `matrix_replies` and/or
+`workflows`. Configuration requires paused exact-generation ownership, no unresolved
+execution and an existing finite resource account. It cannot replace/refill an
+existing producer contract. Default remains unconfigured and paused.
+
+One existing `bot_state` parent retains cadence, counters, source-review cursors
+and the existing native-return journal. A check consumes its finite counter even
+if source lookup fails. No-news checks admit no model. Each batch contains at most
+four metadata offers/16 KiB, never copied peer text or fabricated human speech.
+The parent stops at sixteen retained receipts, 256 reviewed source keys or
+256 KiB; it does not delete native history or silently reset its capacity.
+One unresolved batch/execution backpressures observation. Expiry, pause, shutdown,
+missing binding and busy entry prevent new admission. These are observation and
+request-attempt/byte/deadline bounds, not a token or monetary ceiling.
+
+Sources are existing canonical Matrix replies and workflow attention, including
+ready successors. No new remote Matrix inbox reader, private memory pooling or
+peer wakeup is installed. Workflow observation scans four rows with a persisted
+continuation. Matrix observation excludes already reviewed immutable identities
+before its sixteen-result limit, preserving the manual view and separate original
+incorporation. Source readers and original human/workflow authority remain intact.
+
+The producer uses the existing fresh integrating return worker and mandatory
+bounded native method. Reservation charges the existing account atomically with
+exclusive local ownership. Known-unsent retries run only under the held lease,
+retain the exact identity/account and existing finite retry bounds, and revalidate
+admission freshness. An independently incorporated/stale known-unsent batch is
+retired without claiming review, delivery or completion. Submitting/uncertain
+inputs are never retried as new inputs. Resume does not refill counters or revive
+old accepted submissions.
+
+`heartbeat_reported` records review of an exact accepted batch by its owning
+integrator; it is not `matrix_reported`, `workflow_reported`, hearing or completion.
+Accepted action narration stays in the same paired-human conversation even when
+its actions consume/change offered sources. It retains the original native binding
+and admission epoch, grants no Tribe publication, and uses existing canonical/audio
+presentation. Pause stops new inference without erasing accepted narration.
+
+The current source qualification is not receiving deployment or device acceptance.
+DMK consolidation, Source review, assigned-task intake, Bitácora/Avatar handoff,
+combined actual native delegation/recovery and real audio acceptance remain
+separate full-roadmap work. No Instant/provider selection is implied.
+
+
+The opt-in `python3 tests/heartbeat_native_io.py APP_BINARY NATIVE_APP_SERVER`
+qualifies the real wrapper/controller/store and real Core against a finite local
+Responses stand-in, with Telegram disabled and no real provider account. It
+materializes test-only worker contexts through the supported native API, lets the
+wrapper create the integrating thread with its actual dynamic-tool profile, and
+uses explicit final-answer phases. It covers the first useful bounded request,
+canonical source read/review, reserved workflow child, recurrence, an active
+provider request held during exact owner pause, and ordinary contact afterward
+without replenishing the account. It owns/terminates its temporary servers and
+state; this is not a live model, phone or receiving deployment acceptance.
+
+
+Known-unsent attention steps use the existing `workflow_advance` and exact current
+workflow revision. An `admission_attention_required` heartbeat offer points to the
+owned workflow status. The integrator may then recover that same instruction only
+when its prior exclusive execution has an exact native `not_submitted` receipt
+with no physical turn, matching actor/source and a live original attention owner.
+A retained label alone, paused/retired authority, changed predecessor or uncertain/
+accepted/queued instruction never permits this recovery. It preserves the original
+plan, scope and instruction identity through the existing recovery/dispatch path;
+a fresh worker conservatively reserves another execution from the original account.
+There is no refund, refill, replacement UUID or separate retry timer.
+
+The actual-Core fixture's `--busy` variant holds ordinary native work on the
+selected worker. Atomic admission refuses the first delegated attempt before
+provider work; after release, a later finite heartbeat reads the retained status
+and recovers that exact step. It also qualifies recurrence, exact pause and
+ordinary contact afterward. Whole-journey local HTTP observations include setup
+and ordinary work; conservative resource reservations are recorded separately.
+
+### Selected owner reports in the same finite producer
+
+The optional `reports` array on the existing producer contract selects up to eight
+owner-readable JSON reports: an `id` (up to64 ASCII letters/digits/underscore/hyphen),
+an absolute local `path`, and one to16 exact JSON `pointers`. It launches no
+command, provider, poller or second queue. Default is empty, preserving prior
+contracts. Use the existing owning producer's maintained report, not a copied
+conversation or another being's private memory. Receiving permissions remain
+real: an inaccessible root-owned report stays unavailable until its owning
+operator supplies the narrow authorized projection; reading metadata does not
+justify broad directory access.
+
+This is the shared seam for SourceReview offers, DMK worker/consolidation state,
+authorized activity and editorial intake evidence. Select stable meaningful
+fields; exclude changing timestamps/run counters when they alone should not
+wake the integrator. For example, selected SourceReview `/offers`,
+`/local_candidates`, `/unavailable` retain their native source identities; DMK
+`/state`, `/budget_exhausted`, `/phases` report existing work without launching
+capture/consolidation or replenishing its exhausted allowance. These are example
+fields, not installed receiver bindings. No report implies signed native Source
+trust, species membership, an adoption decision or publication authority.
+
+Each finite held-lease check reads at most256KiB per regular report, selecting
+at most64KiB of JSON fields. Invalid/missing/unreadable/oversized reports become
+an explicit stable unavailable observation. Changes to selected values determine
+the revision; clock-only changes outside the selection stay quiet. Matrix,
+workflow and report lanes share the existing four-offer/16KiB batch. Reports
+consume the same check/cursor/receipt capacities and conserved execution account.
+No-news is model-free. Pause prevents new observation; retained exact source
+reads remain available to ordinary human-directed work.
+
+Offers contain only report identity, state, revision and the `heartbeat_source`
+reader. Supply the enclosing `return_id`, offered `source` ID, exact `revision`
+and optional character `offset`; the reader returns at most12000characters and
+an exact continuation. It checks the current integrator/native/entry epoch and
+that this report/revision was actually offered. It reads only selected fields,
+never accepts a path from the caller, and refuses changed revisions. Report paths
+and unselected fields are omitted from offers/source text. Review uses the same
+`heartbeat_reported`, separate from source adoption and task completion. A changed
+known-unsent report batch retires; an accepted narration remains visible under
+its original source authority.
+
+This extends observation only. Shared pause/accounting for selected DMK/editorial
+side effects, new signed-inbox intake and actual receiving learning/Bitácora/voice
+acceptance remain required for Nicolas's combined stack candidate. Existing
+independent SourceReview/DMK jobs keep their original finite contracts; they are
+not silently reset or claimed controlled by heartbeat pause. The candidate remains
+OFF until the combined design is qualified. The opt-in native fixture additionally
+accepts `--native-cli` for a complete packaged Codex entrypoint and `--reports`
+for exact report-source delivery through the real controller.
+
+
+### Messaging-first activation lanes (prepared,6November2026)
+
+The same persisted heartbeat owner control now has `lanes` in status. Missing
+lane records default paused. Global resume opens the overall fence; it does not
+select a lane. Owner console `heartbeat pause-lane messaging` and
+`heartbeat resume-lane messaging LANE_GENERATION` use the same handler as
+`heartbeat_control` with `action: pause_lane`/`resume_lane`, typed `lane`, and the
+exact inspected lane `generation` for resume. Global `pause` remains one step.
+There is one control record, producer, finite resource account and native-return
+journal, not a scheduler or budget per lane. Resume never resets consumption,
+expiry, cursors or unknown outcomes.
+
+Implemented lane selectors are `messaging` (selected Matrix inbox and reply
+sources), `workflow_returns`, `reports` (the explicitly selected metadata reports)
+and `session_progress`. `sensory`, `issues`, `tasks` and `bitacora` are explicit
+unsupported/paused options; resume refuses until their mechanisms are implemented.
+The first receiving activation must select ONLY `messaging`; leave all others off.
+The finite producer source contract still narrows which sources are available.
+A control being enabled does not authorize an unconfigured source or publication.
+
+Each check and reserved return carries a typed lane/generation fence; each batch
+contains one activation lane. A round-robin cursor selects configured enabled
+lanes without mixing cancellation ownership. Messaging can combine its inbox and
+reply offers. A lane pause invalidates late source pages and unsubmitted work at
+existing admission/provider boundaries, then claims interruption only for its exact
+owned executions and descendants. Other lane changes do not invalidate that
+check or cancel unrelated work. Human-transferred turns remain human-owned;
+unknown native outcomes stay retained and cannot be replayed on resume. Source
+content/revision remains immutable: lane ownership is separate server metadata.
+
+Old control records remain readable with all lanes paused. Old unstamped attention
+is retained for inspection/narration but cannot acquire new lane admission by
+inference from a source string. Once lane fields are persisted, retain a compatible
+native reader on rollback; an older strict Control reader cannot parse them.
+Receiving selection must preserve the current hold/workspace-compatible native
+composition and current web/voice changes, rather than deploy the entire older
+PR590 branch. The Core idle-admission dependency and real receiving model/action/
+response/common-pause acceptance remain separate unfinished steps. Source tests
+are not receiving activation, peer uptake or human audio acceptance.

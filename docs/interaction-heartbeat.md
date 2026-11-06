@@ -14,13 +14,13 @@ it. An open admission gate or a running execution is insufficient. Operational
 evidence expires after15seconds or tab hiding; failed reads clear it. Reduced
 motion replaces the pulse with a steady labeled heart.
 
-Current receiving status is paused generation1, with producer/resources
-`not_configured` and no executions. The selected backend offers global
-pause/resume but no lane control/status contract, no explicit operational proof,
-and no generation-conditional global pause. The UI therefore leaves all control
-rows disabled with explanations. Messaging is the initial intended lane; Issues,
-Sensory, Tasks and Bitácora remain unsupported. No write endpoint is introduced
-to simulate the missing backend behavior or silently activate resources.
+Selected per-body receiving state belongs in the owning current service record.
+An older backend without conditional capabilities leaves control rows disabled
+with explanations; a compatible selected backend enables the explicit controls
+below. Configuration never activates resources. Messaging is the initial lane;
+Issues, Sensory, Tasks and Bitácora remain unsupported/off until separately
+qualified. Missing operational proof keeps the pulse unavailable, independently
+of whether conditional controls are supported.
 
 Matrix owns the shared generation-aware global/lane control contract and receiving
 activation. Once selected, the App can bind those actual commands and observed
@@ -56,9 +56,8 @@ change providers or establish operation. Other lanes stay disabled even if the
 backend supports additional internal sources. Configuration is not exposed.
 
 This source preparation does not select native/Core code, restart services or
-activate heartbeat. Served release683 remains an observation-only release until
-an independently authorized receiving update. Native conditional source was
-inspected in the owning concurrent branch; source capability is not selection.
+activate heartbeat. Resolve actual served versions and per-body native support
+through the owning current service record; source capability is not selection.
 
 ### Operational evidence still required from the native owner
 
@@ -84,3 +83,31 @@ or mismatched generations cannot pulse the heart. This is a proposed contract,
 not a claim that the currently selected backend emits or proves it. The existing
 App state reader still waits for explicit owner-derived `operational=true` and
 rejects contradictory status; this preparation adds no synthetic positive proof.
+
+## Versioned native control successor
+
+The source successor adds `controls.schema=telecodex.heartbeat-controls/v1` with
+`conditional_global=true`, `conditional_lane=true` and explicit `actions` in
+status. These describe supported writes, not operational proof or receiving
+selection. The old selected reader may omit them. A UI must not infer support
+from a release label, `admission_paused=false` or a configured producer.
+
+The same scoped `heartbeat_control` handler accepts:
+
+```json
+{"action":"set_paused","paused":true,"generation":7}
+{"action":"set_lane_paused","lane":"messaging","paused":false,"generation":2,"global_generation":7}
+```
+
+Both global and lane revisions are checked atomically before any write or
+owned-execution cancellation. A stale page must refresh; it must not silently
+retry its intent with a newer revision. Unsupported lanes cannot be activated.
+Resources/cursors are conserved and no account or producer is created by these
+commands. Bare owner `pause` remains the unconditional emergency control.
+
+Owner console equivalents are `heartbeat pause GLOBAL_GENERATION`, and
+`heartbeat pause-lane LANE GLOBAL_GENERATION LANE_GENERATION` or
+`heartbeat resume-lane LANE GLOBAL_GENERATION LANE_GENERATION`.
+Existing explicit owner commands remain compatible. The source change does not
+add a web write endpoint, operational evidence, Core adoption or activation;
+those remain actual receiving integration work.

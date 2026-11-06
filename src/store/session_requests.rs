@@ -29,6 +29,21 @@ pub(super) fn author_on(conn: &Connection, input: &str) -> Result<Option<Value>>
     raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
 }
 
+pub(super) fn interview_target_allowed_on(
+    conn: &Connection,
+    human: i64,
+    caller_session: i64,
+    target: SessionKey,
+) -> Result<bool> {
+    let protected:bool=conn.query_row("SELECT EXISTS(
+        SELECT 1 FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id
+        JOIN json_each(c.doc,'$.context.sources') source
+        WHERE e.session_id=?1 AND e.human_id=?2 AND json_extract(c.doc,'$.context.purpose')='interview'
+        AND json_extract(source.value,'$.source_session')=(SELECT id FROM sessions WHERE chat_id=?3 AND thread_id=?4))",
+        params![caller_session,human,target.chat_id,target.thread_id],|r|r.get(0))?;
+    Ok(!protected)
+}
+
 fn instruction_on(conn: &Connection, id: &str, human: i64) -> Result<Instruction> {
     let (raw,phase):(String,String)=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let mut i: Instruction = serde_json::from_str(&raw)?;
@@ -118,13 +133,7 @@ impl Store {
         // An interview receives historical evidence, not authority to resume or
         // steer the work it is explaining. Enforce this at durable admission,
         // independently of the interview model's output or role prompt.
-        let source_protected:bool=tx.query_row("SELECT EXISTS(
-            SELECT 1 FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id
-            JOIN json_each(c.doc,'$.context.sources') source
-            WHERE e.session_id=?1 AND e.human_id=?2 AND json_extract(c.doc,'$.context.purpose')='interview'
-            AND json_extract(source.value,'$.source_session')=(SELECT id FROM sessions WHERE chat_id=?3 AND thread_id=?4))",
-            params![p.target_session,human,target.chat_id,target.thread_id],|r|r.get(0))?;
-        if source_protected {
+        if !interview_target_allowed_on(&tx, human, p.target_session, target)? {
             return Err(anyhow!(
                 "An interview cannot activate its pinned source work"
             ));

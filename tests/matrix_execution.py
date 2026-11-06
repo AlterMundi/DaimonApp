@@ -32,8 +32,10 @@ from matrix_execution import (
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
-from matrix_operator import send as operator_send
+from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
+from matrix_operator import respond as operator_respond
+from matrix_operator import send as operator_send
 from tests.test_execution_instruction import request
 
 from tests import test_dm025_client as client_fixtures
@@ -310,6 +312,82 @@ class AdapterTests(unittest.TestCase):
             sent["message_id"],
         )
 
+    def test_new_inbox_reads_actual_signed_original_without_human_or_work_claim(self):
+        sent = self.broker.submit(
+            self.scope, {"text": "Fresh peer question; no human instruction."}, 1
+        )
+        source = {
+            "being_ref": self.receiver.lane.being_ref,
+            "embodiment_id": self.receiver.lane.local_embodiment_id,
+        }
+        client = SignedGroupClient(self.fixture, self.receiver)
+        calls, deadlines = [], []
+        invoke = SignedGroupClient.invoke
+
+        def observe(selected, method, params):
+            calls.append((method, params))
+            deadlines.append(selected.deadline_ns)
+            return invoke(selected, method, params)
+
+        request = {"source": source, "channel_id": "tribe", "after": 0, "limit": 3}
+        with patch.object(SignedGroupClient, "invoke", observe):
+            page = operator_inbox(request, client, timeout=1)
+        self.assertEqual(
+            [method for method, _ in calls], ["runtime.status", "messaging.inbox"]
+        )
+        self.assertEqual(len(set(deadlines)), 1)
+        self.assertEqual(calls[-1][1], {"channel_id": "tribe", "after": 0, "limit": 3})
+        self.assertEqual(page["schema"], "daimon.matrix-inbox-page/v1")
+        self.assertEqual(page["items"][0]["message_id"], sent["message_id"])
+        self.assertEqual(page["items"][0]["message_hash"], sent["message_hash"])
+        self.assertEqual(
+            page["items"][0]["author"],
+            {
+                "being_ref": self.sender.lane.being_ref,
+                "embodiment_id": self.sender.lane.local_embodiment_id,
+            },
+        )
+        self.assertEqual(
+            page["items"][0]["text"],
+            self.receiver.message(sent["message_id"])["payload"]["body"]["text"]
+        )
+        self.assertNotIn("human", page["items"][0])
+        self.assertNotIn("execution_ref", page["items"][0])
+        self.assertEqual(operator_inbox(request, client, timeout=1), page)
+        self.assertEqual(
+            operator_inbox(
+                {**request, "after": page["next_cursor"]}, client, timeout=1
+            )["items"],
+            [],
+        )
+
+    def test_new_inbox_bounds_owner_and_failed_pages_do_not_supply_a_cursor(self):
+        source = {
+            "being_ref": self.receiver.lane.being_ref,
+            "embodiment_id": self.receiver.lane.local_embodiment_id,
+        }
+        client = SignedGroupClient(self.fixture, self.receiver)
+        request = {"source": source, "channel_id": "tribe", "after": 0, "limit": 3}
+        for change in (
+            {"after": True},
+            {"after": -1},
+            {"limit": 4},
+            {"limit": 0},
+            {"channel_id": ""},
+            {"source": {**source, "embodiment_id": "another"}},
+        ):
+            with (
+                self.subTest(change=change),
+                patch.object(SignedGroupClient, "invoke") as invoke,
+            ):
+                with self.assertRaises(MatrixExecutionError):
+                    operator_inbox({**request, **change}, client, timeout=1)
+                invoke.assert_not_called()
+        with patch.object(
+            SignedGroupClient, "invoke", return_value=({}, {"ok": False})
+        ), self.assertRaises(MatrixExecutionError):
+            operator_inbox(request, client, timeout=1)
+
     def test_selected_reply_read_is_one_signed_page_without_model_or_send(self):
         status, sent = self.acknowledged_status()
         message = self.receiver.message(sent["message_id"])
@@ -542,6 +620,24 @@ class AdapterTests(unittest.TestCase):
                     json.loads(received.stdout)["args"],
                     ["--binding", "/private/host.json", "--receive"],
                 )
+
+                inbox_command = receiving_command(
+                    path, Path("/private/host.json"), inbox_only=True
+                )
+                incoming = subprocess.run(inbox_command, input="selected page",
+                                          text=True, capture_output=True, check=True, timeout=5)
+                self.assertEqual(json.loads(incoming.stdout)["args"],
+                                 ["--binding", "/private/host.json", "--inbox"])
+                with self.assertRaises(MatrixExecutionError):
+                    receiving_command(path, Path("/private/host.json"),
+                                      inbox_only=True, receive_only=True)
+                for flag, expected in (("respond_only", "--respond"),
+                                       ("response_status_only", "--response-status")):
+                    selected = receiving_command(path, Path("/private/host.json"), **{flag: True})
+                    result = subprocess.run(selected, input="same retained intent", text=True,
+                                            capture_output=True, check=True, timeout=5)
+                    self.assertEqual(json.loads(result.stdout)["args"],
+                                     ["--binding", "/private/host.json", expected])
 
                 (package / "onboarding_sdk.py").write_text(
                     "def qualified_startup(*args,**kwargs):raise RuntimeError('private diagnostic must stay local')"
@@ -1212,21 +1308,35 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
         messaging = create_capability(
             b"m" * 32,
             client_id="messaging-test",
-            methods=["messaging.send", "messaging.delivery", "messaging.inbox"],
+            methods=["messaging.send", "messaging.delivery", "messaging.inbox", "messaging.reply"],
             not_before_ms=now - 1000,
             not_after_ms=now + 60000,
+        )
+        inbox_reader = create_capability(
+            b"r" * 32,
+            client_id="inbox-reader-test",
+            methods=["messaging.inbox"],
+            not_before_ms=now - 1000,
+            not_after_ms=now + 60000,
+        )
+        receipt_reader = create_capability(
+            b"d" * 32, client_id="messaging-test", methods=["messaging.delivery"],
+            not_before_ms=now - 1000, not_after_ms=now + 60000,
         )
         service = HostedWeave(
             ledger=group.ledger,
             signer=group.signer,
-            capabilities={c.capability_id: c for c in (observe, messaging)},
+            capabilities={c.capability_id: c for c in (observe, messaging, inbox_reader, receipt_reader)},
             clock=group.lane.clock,
             runtime_id="dm:runtime:v1:" + "T" * 43,
             runtime_label="matrix-host-test",
             messaging=MessagingServiceContext(
                 channels={"tribe": group},
                 deliveries={"tribe": group},
-                client_channels={messaging.client_id: frozenset({"tribe"})},
+                client_channels={
+                    messaging.client_id: frozenset({"tribe"}),
+                    inbox_reader.client_id: frozenset({"tribe"}),
+                },
             ),
         )
 
@@ -1325,9 +1435,95 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 self.assertEqual([r["message_id"] for r in read["results"]],
                                  [returned["message_id"]])
                 self.assertEqual(read["results"][0]["text"], "Authenticated owner read.")
+                incoming = operator_inbox({"source": source, "channel_id": "tribe",
+                                           "after": 0, "limit": 3}, host, timeout=1)
+                self.assertEqual(incoming["items"][0]["message_id"], returned["message_id"])
+                self.assertEqual(incoming["items"][0]["text"],
+                                 sdk.sender.message(returned["message_id"])["payload"]["body"]["text"])
                 self.assertEqual(operator_receive({"status": retained, "source": source,
                                                    "after": read["next_cursor"], "limit": 3},
                                                   host, timeout=1)["results"], [])
+
+                intent = {"source": source, "channel_id": "tribe",
+                          "parent": incoming["items"][0], "send_id": str(uuid.uuid4()),
+                          "text": "Same-being integrator responds to the exact native parent.",
+                          "effect_not_after_ms": now + 5000}
+                answer = operator_respond(intent, host, timeout=1)
+                self.assertEqual(answer["delivery"]["response_context"]["message_id"],
+                                 returned["message_id"])
+                self.assertEqual(answer["delivery"]["destination"]["kind"], "body")
+                self.assertEqual(operator_respond(intent, host, timeout=1, inspect_only=True)
+                                 ["delivery"]["message_id"], answer["delivery"]["message_id"])
+                changed = copy.deepcopy(intent)
+                changed["parent"]["message_hash"] = "0" * 64
+                with self.assertRaisesRegex(MatrixExecutionError, "differs from retained parent"):
+                    operator_respond(changed, host, timeout=1)
+                with self.assertRaisesRegex(MatrixExecutionError, "differs from retained intent"):
+                    operator_respond(changed, host, timeout=1, inspect_only=True)
+
+                # A genuinely group-authored original must stay a group reply;
+                # source text naming a person never silently narrows its audience.
+                public = sdk.fixture.send_and_settle(
+                    sdk.receiver, client_id="test", send_id=str(uuid.uuid4()),
+                    thread_id=str(uuid.uuid4()), text="A group question for the integrator.",
+                )
+                for endpoint in sdk.fixture.servers:
+                    endpoint._threads.join()
+                original = next(row for row in group.page(after=0, limit=100)
+                                if row["message"]["event_id"] == public["message_id"])
+                public_page = operator_inbox(
+                    {"source": source, "channel_id": "tribe",
+                     "after": original["inbox_sequence"] - 1, "limit": 1}, host, timeout=1)
+                group_intent = intent | {"parent": public_page["items"][0],
+                                         "send_id": str(uuid.uuid4()),
+                                         "text": "An attributed group response."}
+                group_reply = operator_respond(group_intent, host, timeout=1)
+                self.assertIsNone(group_reply["delivery"].get("destination"))
+                self.assertEqual(group_reply["delivery"]["thread_id"], public["thread_id"])
+                self.assertEqual(operator_respond(group_intent, host, timeout=1, inspect_only=True)
+                                 ["delivery"]["message_id"], group_reply["delivery"]["message_id"])
+
+                # Native delivery-only authority can inspect an already
+                # retained intent without inbox/reply/send permission.
+                config_path = Path(references["messaging"]["client_config"])
+                key_path = Path(references["messaging"]["client_key"])
+                receipt_config = json.loads(config_path.read_text())
+                receipt_config["capability"] = receipt_reader.descriptor
+                config_path.write_text(canonical(receipt_config))
+                key_path.write_bytes(receipt_reader.key)
+                loaded = configured_client(binding, source, required_methods=("messaging.delivery",))
+                inspector = replace(loaded,
+                    messaging=replace(loaded.messaging, clock=group.lane.clock),
+                    observation=replace(loaded.observation, clock=group.lane.clock))
+                self.assertEqual(operator_respond(group_intent, inspector, timeout=1, inspect_only=True)
+                                 ["delivery"]["message_id"], group_reply["delivery"]["message_id"])
+
+                # The new read-only mode consumes an actual inbox-only grant;
+                # it does not require or add native message-send permission.
+                config_path = Path(references["messaging"]["client_config"])
+                key_path = Path(references["messaging"]["client_key"])
+                read_config = json.loads(config_path.read_text())
+                read_config["capability"] = inbox_reader.descriptor
+                config_path.write_text(canonical(read_config))
+                key_path.write_bytes(inbox_reader.key)
+                loaded = configured_client(
+                    binding, source, required_methods=("messaging.inbox",)
+                )
+                reader = replace(
+                    loaded,
+                    messaging=replace(loaded.messaging, clock=group.lane.clock),
+                    observation=replace(loaded.observation, clock=group.lane.clock),
+                )
+                only_read = operator_inbox(
+                    {"source": source, "channel_id": "tribe", "after": 0, "limit": 3},
+                    reader,
+                    timeout=1,
+                )
+                self.assertEqual(
+                    only_read["items"][0]["message_id"], returned["message_id"]
+                )
+                with self.assertRaisesRegex(MatrixExecutionError, "messaging-only capability"):
+                    configured_client(binding, source)
 
             finally:
                 server.shutdown()

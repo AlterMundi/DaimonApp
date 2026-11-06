@@ -13,12 +13,47 @@ pub(super) async fn execute(
     if cfg.human_id != human || cfg.entry() != entry {
         bail!("Heartbeat control belongs to the configured integrating entry");
     }
-    let pause = matches!(&command, HeartbeatCommand::Pause);
+    if let HeartbeatCommand::ConfigureProducer { contract, .. } = &command {
+        if let Some(purpose) = &contract.purpose {
+            let purpose: &crate::store::HeartbeatPurpose = purpose;
+            if matches!(
+                purpose.input_ref,
+                crate::interaction::InputReference::Telegram(_)
+            ) {
+                anyhow::ensure!(
+                    purpose.channel == format!("telegram:{}", app.shared.bot_id),
+                    "Human purpose must use this receiver's actual Telegram original identity"
+                );
+            }
+        }
+        if let Some(source) = &contract.matrix_inbox {
+            super::matrix::inbox_matches(&cfg, source)?;
+        }
+    }
+    let lane = match &command {
+        HeartbeatCommand::PauseLane { lane }
+        | HeartbeatCommand::SetLanePaused {
+            lane, paused: true, ..
+        } => Some(*lane),
+        _ => None,
+    };
+    let pause = matches!(
+        &command,
+        HeartbeatCommand::Pause | HeartbeatCommand::SetPaused { paused: true, .. }
+    ) || lane.is_some();
     // Persist the fence before attempting cancellation or any native read.
     let mut value = app.shared.store.heartbeat_control(human, entry, command)?;
-    let records = app.shared.store.heartbeat_executions(human, entry, pause)?;
+    let records = app
+        .shared
+        .store
+        .heartbeat_executions_scoped(human, entry, pause, lane)?;
     let mut observations = Vec::new();
-    for r in records.iter().filter(|r| r["phase"] == "stopping" && pause) {
+    for r in records.iter().filter(|r| {
+        r["phase"] == "stopping"
+            && pause
+            && lane
+                .is_none_or(|lane| r["activation"]["lane"] == serde_json::to_value(lane).unwrap())
+    }) {
         let Some(physical) = r["physical"].as_str() else {
             observations.push(serde_json::json!({"local":r["local"],"state":"unconfirmed","reason":"physical_identity_not_yet_observed"}));
             continue;
@@ -62,14 +97,68 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("configure-producer ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected heartbeat configure-producer GENERATION CONTRACT_JSON")?;
+        return execute(
+            app,
+            human,
+            super::routing::profile(&app.shared)?.entry(),
+            HeartbeatCommand::ConfigureProducer {
+                generation: generation.parse()?,
+                contract: serde_json::from_str::<crate::store::HeartbeatProducerContract>(raw)?,
+            },
+        )
+        .await;
+    }
+    if let Some(rest) = args.strip_prefix("configure-resources ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected heartbeat configure-resources GENERATION CONTRACT_JSON")?;
+        return execute(
+            app,
+            human,
+            super::routing::profile(&app.shared)?.entry(),
+            HeartbeatCommand::ConfigureResources {
+                generation: generation.parse()?,
+                contract: serde_json::from_str::<crate::store::HeartbeatResources>(raw)?,
+            },
+        )
+        .await;
+    }
     let fields = args.split_whitespace().collect::<Vec<_>>();
     let command = match fields.as_slice() {
         ["status"] => HeartbeatCommand::Status,
         ["pause"] => HeartbeatCommand::Pause,
+        ["pause", generation] => HeartbeatCommand::SetPaused {
+            paused: true,
+            generation: generation.parse()?,
+        },
+        ["pause-lane", lane] => HeartbeatCommand::PauseLane {
+            lane: serde_json::from_value(serde_json::json!(lane))?,
+        },
+        ["resume-lane", lane, generation] => HeartbeatCommand::ResumeLane {
+            lane: serde_json::from_value(serde_json::json!(lane))?,
+            generation: generation.parse()?,
+        },
+        [
+            action @ ("pause-lane" | "resume-lane"),
+            lane,
+            global,
+            generation,
+        ] => HeartbeatCommand::SetLanePaused {
+            lane: serde_json::from_value(serde_json::json!(lane))?,
+            paused: *action == "pause-lane",
+            global_generation: global.parse()?,
+            generation: generation.parse()?,
+        },
         ["resume", generation] => HeartbeatCommand::Resume {
             generation: generation.parse()?,
         },
-        _ => bail!("Expected heartbeat status|pause|resume GENERATION"),
+        _ => bail!(
+            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+        ),
     };
     execute(
         app,
@@ -78,4 +167,88 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         command,
     )
     .await
+}
+
+/// Existing maintenance calls this; unconfigured/paused/no-news never starts a model.
+pub(super) async fn tick(app: &App) -> Result<()> {
+    if app.shared.shutdown.is_cancelled() {
+        return Ok(());
+    }
+    let Some(cfg) = app.shared.config.interaction.as_ref() else {
+        return Ok(());
+    };
+    let Some(session) = app.shared.store.get_session(cfg.entry())? else {
+        return Ok(());
+    };
+    if session.busy || session.codex_thread_id.is_none() {
+        return Ok(());
+    }
+    let Some(check): Option<crate::store::HeartbeatCheck> = app
+        .shared
+        .store
+        .heartbeat_begin_check(cfg.human_id, cfg.entry())?
+    else {
+        return Ok(());
+    };
+    let read = if let Some(source) = &check.matrix_inbox {
+        if !app.shared.store.heartbeat_check_current(&check)? {
+            return Ok(());
+        }
+        Some(tokio::select! {
+            biased;
+            _=app.shared.shutdown.cancelled()=>return Ok(()),
+            result=super::matrix::read_inbox(app,cfg.human_id,cfg.entry(),source)=>result,
+        })
+    } else {
+        None
+    };
+    if let Some(selected) = app.shared.store.heartbeat_finish_check(&check, read)? {
+        let id = selected.id.clone();
+        let attempt = selected.attempts;
+        if app.shared.shutdown.is_cancelled()
+            || super::workflows::deliver(app, selected).await.is_err()
+        {
+            app.shared.store.workflow_native_outcome_attempt(
+                &id,
+                attempt,
+                "retained_unsent",
+                None,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn recover_unsent(app: &App) -> Result<()> {
+    let Some(cfg) = app.shared.config.interaction.as_ref() else {
+        return Ok(());
+    };
+    if app.shared.shutdown.is_cancelled() {
+        return Ok(());
+    }
+    let Some(session) = app.shared.store.get_session(cfg.entry())? else {
+        return Ok(());
+    };
+    if session.busy || session.codex_thread_id.is_none() {
+        return Ok(());
+    }
+    for selected in app
+        .shared
+        .store
+        .heartbeat_returns_recover_unsent(cfg.human_id, cfg.entry())?
+    {
+        let id = selected.id.clone();
+        let attempt = selected.attempts;
+        if app.shared.shutdown.is_cancelled()
+            || super::workflows::deliver(app, selected).await.is_err()
+        {
+            app.shared.store.workflow_native_outcome_attempt(
+                &id,
+                attempt,
+                "retained_unsent",
+                None,
+            )?;
+        }
+    }
+    Ok(())
 }

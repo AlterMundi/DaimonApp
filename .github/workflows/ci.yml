@@ -127,6 +127,7 @@ jobs:
         run: |
           python -B tests/matrix_conversation_http_io.py target/release/telecodex
           python -B tests/matrix_conversation_http_io.py target/release/telecodex --funded
+          python -B tests/heartbeat_io.py target/release/telecodex --inbox
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
   routing-evaluation:
@@ -241,13 +242,16 @@ jobs:
       - name: Qualify live controller retirement and expression choices
         run: |
           python3 -B tests/goal_controls_io.py target/release/telecodex
+          python3 -B tests/scoped_maintenance_io.py target/release/telecodex
           python3 -B tests/goal_activation_io.py target/release/telecodex
           python3 -B tests/goal_delegation_io.py target/release/telecodex
           python3 -B tests/goal_recovery_io.py target/release/telecodex
           python3 -B tests/goal_recovery_alerts.py
+          python3 -B tests/native_package_handoff_unit.py -v
           python3 -B tests/goal_inspection_io.py target/release/telecodex
           python3 -B tests/live_tasks_io.py target/release/telecodex
           python3 -B tests/warm_controller_io.py target/release/telecodex
+          python3 -B tests/heartbeat_io.py target/release/telecodex
       # Native-question HTTP journeys also decode voice; provision after goals,
       # before the first voice-capable compatibility group.
       - name: Select voice dependency cache
@@ -332,6 +336,9 @@ jobs:
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
       - run: python3 -B tests/matrix_conversation_http_io.py target/release/telecodex --funded
+        env:
+          PYTHONPATH: .matrix-sdk/src:.matrix-sdk
+      - run: python3 -B tests/heartbeat_io.py target/release/telecodex --inbox
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
       - run: python3 -B tests/fixture_native_idle_io.py target/release/telecodex
@@ -434,6 +441,9 @@ jobs:
       - run: python -B tests/dashboard_codex_voice_api.py
       - run: python -B tests/dashboard_openai_live.py
       - run: python -B tests/dashboard_openai_live_context.py
+      - run: python -B tests/dashboard_openai_live_originals.py
+      - run: python -B tests/dashboard_openai_live_transcription.py
+      - run: python -B tests/dashboard_openai_live_native_commit.py
       - run: python -B tests/dashboard_openai_live_api.py
       - run: node tests/dashboard_openai_live_ui.js
       - run: node tests/dashboard_live_semantic_tail.js

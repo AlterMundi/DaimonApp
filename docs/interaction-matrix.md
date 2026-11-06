@@ -94,6 +94,216 @@ to repair observation. This installs no poller, hook, model turn, new inbox/stor
 or native session. Automatic return attachment, receiving native work and real
 human acceptance remain separate unfinished integration outcomes.
 
+## Bounded new-message page for the combined heartbeat candidate
+
+The same owner host now supports `matrix_operator.py --inbox` with closed
+`{source, channel_id, after, limit}` input. This reads one explicitly selected
+existing incoming channel, at most three events, under one absolute deadline.
+The current owner connection and its existing messaging/observation capabilities
+remain authoritative. Runtime identity is checked before the inbox call. Native
+Matrix verifies message signatures and current membership/audience; this adapter
+is a bounded reader/projection, not another signature verifier or inbox engine.
+
+The projection preserves immutable message ID/digest, signed author/body,
+thread, destination, response context, coordination metadata and raw native text.
+Even text containing an Interaction relay stays verbatim peer source; this
+reader never extracts embedded instructions or upgrades claims to human speech,
+work approval or completion. An unsupported text payload remains explicit with
+its native identity. Cursor order, owner/channel, page and64KiB output bounds
+are checked before a page is returned. Exact rereads have the same source
+identity; the consuming backend must retain accepted items before advancing its
+cursor. Failed reads return no successful cursor. This interface sends nothing,
+never retries a mutation, and creates no timer, execution or model call.
+
+The same candidate backend supports an optional owner configuration
+`interaction.matrix_inbox_channel = "tribe"` alongside the existing Matrix host.
+Incoming-only selection needs no per-recipient routing targets. With that
+configuration, the integrating `matrix_status` operation accepts
+`{"inbox_next":true}` alone. It reads at most three native events using the
+retained cursor; the model cannot change the channel, source body or cursor.
+
+One SQLite transaction retains immutable native originals and advances their
+cursor. Exact retries deduplicate, conflicting identities roll back, and a
+changed entry/native generation refuses a late read. The existing
+`conversation_part` reader provides `matrix-inbox:EVENT_UUID` sources with exact
+revision and bounded pagination; unsupported payloads stay explicit rather than
+becoming invented peer speech. Retention is capped at256events/4MiB per logical
+entry across generations. At capacity the whole page/cursor remains unchanged;
+no original or historical source is deleted to make room. Human consultation
+remains available during heartbeat pause; it starts no model or automatic work.
+
+This source component belongs to the single combined candidate. It is not
+selected or invoked by the deployed heartbeat. Existing selected-reply reads
+keep their exact thread/correlation behavior. The finite producer can additionally freeze
+`matrix_inbox = {source = {being_ref = "...", embodiment_id = "..."}, channel_id = "tribe"}`
+in its existing contract. It must exactly match the current owner channel/body;
+configuration or restart cannot silently widen that source. Each page spends the
+existing persisted check/cadence before I/O. The finish transaction verifies its
+same counter, binding, generation, expiry and remaining resources, then retains
+sources/cursor and uses the existing bounded batch/attention account. An admitted
+read may finish during pause, but cannot commit a late page or start attention.
+There is no second scheduler, queue, resource refill or producer.
+
+The optional `session_progress = true` source observes new worker commentary
+already visible to this integrating Conversation. It reuses the canonical
+presentation audience captured with the native item, exact source revision and
+`conversation_part` reader; a later session switch cannot widen that audience.
+The initial cursor starts at configuration's existing high-water mark, avoiding
+historical narration replay. Each check reads at most four new eligible rows,
+with a persisted bounded cursor and ordinary seen-revision deduplication across
+pause/restart. Integrator commentary and private/direct worker output are not
+new offers. This source shares the same four-offer batch and conserved execution
+account with inbox, workflows and reports. Commentary is evidence of an update,
+not task completion or permission to resume a paused/blocked goal. Existing
+canonical result/question callbacks and workflow milestones remain their owning
+paths; this adds no observer-model refresh or parallel task coordinator.
+
+The optional finite contract `purpose = {input_ref = "ACTUAL_ORIGINAL_UUID",
+channel = "conversation"}` selects an already accepted human operating request
+in this same native entry. Integer Telegram originals retain this receiver's
+actual `telegram:BOT_ID` provenance; Telegram is not required. Configuration
+looks up the actual retained original and freezes its source hash. Missing,
+foreign, unaccepted, changed or retired originals refuse; no replacement text is
+accepted. A changed purpose prevents further checks/admission and is explicit
+as `purpose_retired`, without erasing already committed history or refilling fuel.
+
+Each nonempty batch carries only its `operating_purpose` reference/revision and
+an exact `heartbeat_source` reader using `purpose:human`. That reader returns
+the earlier human text in bounded parts, including while admission is paused;
+it creates no new input or publication grant. The integrator can use that actual
+`input_ref` with ordinary `workflow_declare`, adding separately attributed peer
+evidence to the bounded step scope. Existing workflow ownership, idle-only child
+admission, conserved account, source/result correlation and scoped pause continue
+to apply. A peer message or metadata offer never becomes the human request.
+The optional purpose supplies context, not a model judgment that its text
+authorizes every proposed task. Existing separately authorized workflows retain
+their actual human originals; this adds no second task/authority engine.
+
+The purpose reader also supplies a bounded current `primary_routing` view for
+an original already dispatched to an existing owner. A genuinely additional
+scoped workflow must name that exact accepted human `parent_instruction`.
+Without it, the ordinary duplicate dispatch/creation refusal remains unchanged.
+At declaration the backend freezes the primary's source hash, current owner/
+native binding generation, epoch and original request coverage, and revalidates
+them before future steps and returns. This is not an acceptance-time generation
+record. Foreign originals, session-authored or withdrawn parents, mismatching
+current owners and creation plans cannot acquire this linkage. Interview
+restrictions use the same existing source-protection rule as session dependencies.
+
+The original owner/instruction is neither resent, rewritten, retired nor marked
+completed by that additional workflow. Child request IDs remain distinct; their
+attributed context and status retain the primary reference. A later withdrawal
+or rebind closes new admission while accepted/uncertain child effects remain
+history. This supports a real already-routed operating purpose without replacing
+it with a fabricated unclaimed human message.
+
+No-news reads are silent. Failed source reads consume checks and produce one
+revision-bound availability notice, with a separate recovery notice; unchanged
+failures do not repeatedly activate the integrator. Page retention uses a
+savepoint so capacity/identity failure cannot commit partial events before the
+failure state. Own-body echoes and already canonical correlated Matrix replies
+are excluded from new-original offers. Exact native sources use the existing
+reader; unsupported payload/status metadata is explicit inline evidence.
+
+### Original handling and correlated native responses
+
+The same integrator's `matrix_response` controller operation reads `pending`
+(at most eight descriptors per row cursor) or `status`, retains an explicit
+`defer` reason/next condition, or submits a selected `reply`. Deferral is still
+unresolved; it creates no timer, worker or new authority. Source revisions remain
+the immutable original's revisions, independent of handling state. Pending views
+exclude own-body echoes and already canonical correlated returns. Their paging
+is a bounded current view, not an immutable remote snapshot.
+
+Reply supplies the exact original UUID/revision and at most8000bytes of this
+integrator's own speech. One transaction freezes the response text, native parent,
+owner/channel, fresh send UUID and authoring deadline before calling the existing
+SDK. A later identical request returns retained state without another send;
+changed text refuses. The host re-reads the selected signed parent under the same
+absolute deadline and uses native `messaging.reply`, preserving a group parent's
+group audience or a direct parent's sender and recipient kind. It does not use
+the directed-only worker-relay parser or invent a human original. The native
+parent retains its immutable hash, author and thread.
+
+The existing authenticated physical caller selects attention ownership. An owned
+execution must still have its exact live generation; authoring expiry cannot
+exceed its reserved execution deadline. Pause closes further mutation. Already
+in-flight work may have an uncertain effect: the response intent remains
+`submitting`/`uncertain`, with no automatic retry. `inspect` calls only native
+`messaging.delivery`, including after the authoring deadline; it can retain a
+late observed result without admitting a new send. Native event/hash identity is
+immutable across later inspections. The API never resets a reservation or an
+intent to manufacture another attempt.
+
+`submitted` means a native authored outcome. It remains pending until native
+member receiving-copy receipts prove the distinct intended members' copies;
+`recipient_copy_proved` does not mean all-body uptake, model incorporation, task
+completion or human hearing. A weaker/failed later observation cannot erase the
+retained stronger proof. Complete native evidence stays in the SDK journal;
+controller status exposes bounded metadata and at most eight member summaries.
+
+Storage reuses one handling column per retained original. At most32response
+intents per logical entry are admitted, each at most128KiB including its receipt;
+the remaining original rows hold only bounded latest deferral metadata. These
+bounds are not reset by restart, pause/resume or source generations. Capacity
+leaves originals/intents inspectable rather than deleting history or resending.
+There is no new scheduler, reasoner, credential or model call in this adapter.
+
+Batch review alone is not a response or permission to reinterpret peer speech as
+human instructions. Selected task/DMK/editorial
+follow-through and actual combined receiving/model/spoken acceptance remain
+unfinished. The finite producer remains unconfigured in production.
+
+### Native package adoption under an existing start watcher
+
+`scripts/native_package_handoff.py` is a finite receiving operator, not part of
+the heartbeat or a new supervisor. Use the existing qualified native maintenance,
+stopped-only complete-package installer and stopped-only recovery commands. A
+generic watcher calling ordinary `daemon start` must not race this sequence:
+that command can discard saved maintenance recovery before installation.
+
+The owner supplies one bounded private `daimon.native-package-handoff/v1` plan:
+stable UUID `id`, `ready`, receiving `uid`/`cgroup`, `package`, complete relative
+`files` SHA256 map (including `bin/codex`), `codex_home`, and fresh `supervisor`/
+`receiver` process identities from this operator's `identity(pid)`. Configuration
+is not authorization. Keep `ready=false` until the complete selected stack is
+qualified. The explicit `--adopt` invocation takes `--plan` and `--receipt` paths;
+an existing receipt refuses rearming, including after uncertainty. A fixed sibling
+lock serializes this intent without holding the native lifecycle lock.
+
+Run the coordinator in the target's existing persistent service cgroup, for
+example through a dedicated named tmux server launched there. Inspect actual
+placement; detachment or a tmux name does not prove it. Do not stop that service
+or launch its replacement in a disposable build unit. The operator refuses a
+different cgroup, owner, package hash or process generation. Linux pidfds bind
+signals and exit observations to the selected processes rather than reused PIDs.
+
+Only the generic start watcher receives SIGSTOP; native execution/admission stays
+live. Its already launched start child must finish first (two-second observation,
+then deferral), because suspending its Python parent does not stop that child.
+The native receiver still decides its natural-idle handoff. A terminal deferral
+releases the same watcher. Only confirmed `handoffReady` plus observed old-process
+exit permits stopped installation and snapshot-preserving restoration in the
+same persistent cgroup. Compare all package files/resources and the installer's
+fixed `codex -> bin/codex` compatibility link; CLI equality alone is insufficient.
+Pin the complete previous tree and release path independently. A known old package can be restored after refused
+installation; this is software recovery, never a history restore or input replay.
+
+Uncertain maintenance/exit/restore is retained, never resent or converted into
+fresh start. The watcher remains held when releasing it could erase uncertain
+recovery. Inspect that receipt and actual native state before further action;
+there is no automatic rearm or forced stop. A successfully restored receiver is
+checked for code/placement before the exact watcher resumes. No host action,
+global Stop, goal mutation, archive or provider/model selection is performed.
+
+`tests/native_package_handoff.py OLD_CLI CANDIDATE_CLI --scratch /selected/data`
+qualifies the actual complete-package route with an isolated managed receiver,
+live competing start watcher and original loaded thread. It uses only unreachable
+loopback inference and preserves unfinished fixtures on failure. The smaller CI
+unit suite checks generation/cgroup refusal, terminal deferral and uncertainty
+without targeting a real daemon. These are operator proofs, not receiving/model/
+audio acceptance of the heartbeat.
+
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 
 A finite approved purpose and a later received original are separate inputs.
@@ -187,8 +397,10 @@ this example is not an enrollment or activation. The owner-only binding uses
 `observation`. Each reference has only absolute `socket`, `client_config` and
 `client_key` paths to existing owner-local SDK material. The SDK verifies their
 capabilities; the host requires matching runtime ID, expected server and socket.
-The messaging capability stays messaging-only and permits `messaging.send`;
-observation separately permits `runtime.status`. The adapter never loads the
+The messaging capability stays messaging-only and permits the selected operation:
+`messaging.inbox` for a new-message page, inbox/delivery for selected-reply
+inspection, or `messaging.send` for submission. An inbox-only grant can read
+without acquiring send authority. Observation separately permits `runtime.status`. The adapter never loads the
 runtime outside its daemon or creates credentials. Its two calls share one
 absolute deadline. Do not use a combined capability: the SDK rejects mixed
 messaging and observation profiles.

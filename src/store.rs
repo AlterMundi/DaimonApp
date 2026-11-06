@@ -23,13 +23,21 @@ mod creation;
 mod dialogue;
 mod goal_alerts;
 mod goal_controls;
+mod scoped_maintenance;
+pub(crate) use scoped_maintenance::MaintenancePlan;
 mod goal_delegations;
 mod goal_recovery;
 mod goal_retries;
 pub use goal_retries::GoalRecoveryPolicy;
 pub(crate) use goal_retries::GoalRetry;
 mod heartbeat;
-pub use heartbeat::HeartbeatCommand;
+#[cfg(test)]
+pub use heartbeat::HeartbeatReportSource;
+pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
+pub use heartbeat::{
+    HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
+    HeartbeatResources,
+};
 mod interaction;
 mod interactions;
 mod live_context;
@@ -40,6 +48,8 @@ pub(crate) use live_context::LiveContextCommand;
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
+pub(crate) use matrix::inbox::{Page as MatrixInboxPage, Selection as MatrixInboxSelection};
+pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routing;
 mod session_requests;

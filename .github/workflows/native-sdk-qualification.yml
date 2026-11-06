@@ -1,13 +1,13 @@
 name: Interaction native SDK qualification
 on:
-  pull_request:
-    paths:
-      - .github/workflows/native-sdk-qualification.yml
+  # Qualify each exact native pin once through the existing manual route.
+  # PR path filters compare the cumulative diff, causing App-only commits to
+  # cancel/rebuild the same immutable native source repeatedly.
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   native:
-    uses: compaii/codex/.github/workflows/interaction-goal-controls.yml@e9395ed9df30e186db90ebfbc037b6f781d49948
+    uses: compaii/codex/.github/workflows/interaction-goal-controls.yml@f7f163c6d9c0dd6d4300e5ca34bf3a458a4212b6
     with:
-      source_ref: e9395ed9df30e186db90ebfbc037b6f781d49948
+      source_ref: f7f163c6d9c0dd6d4300e5ca34bf3a458a4212b6

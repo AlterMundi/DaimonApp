@@ -1206,6 +1206,79 @@ impl Store {
         tx.commit()?;
         Ok(input)
     }
+    /// Commit a completed owner-attested public interpretation to its existing
+    /// held acoustic original. This transaction never prepares ASR or work.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_interpretation(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        dialogue: &str,
+        text: &str,
+        proof: crate::voice::TranscriptSource,
+    ) -> Result<(ConversationInput, bool)> {
+        if text.trim().is_empty()
+            || text.len() > 16000
+            || text.contains('\0')
+            || proof.actual_transcriber.as_deref() != Some("gpt-transcribe")
+            || proof.capture_id.as_deref() != Some(id)
+            || proof.telegram_file_id.is_some()
+            || proof.capture_stop.is_some()
+            || proof.audio_millis == 0
+            || proof.audio_millis > 120000
+        {
+            bail!("Invalid source-bound public voice interpretation");
+        }
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        if binding != super::presentation::entry_binding(&tx, human, entry, session)? {
+            bail!("Entry changed before public interpretation");
+        }
+        let mut input = read_on(&tx, id, human)?;
+        eligible_binding_on(&tx, &input)?;
+        let voice = input.voice.as_mut().context("Missing acoustic original")?;
+        if input.entry != entry
+            || input.session != session
+            || input.foreground_dialogue.as_deref() != Some(dialogue)
+            || voice.audio_sha256 != proof.audio_sha256
+            || voice.capture_stop.is_some()
+        {
+            bail!("Public interpretation belongs to another acoustic source");
+        }
+        if let Some(previous) = &voice.transcription {
+            if input.text == text
+                && previous.actual_transcriber == proof.actual_transcriber
+                && previous.capture_id == proof.capture_id
+                && previous.audio_millis == proof.audio_millis
+            {
+                return Ok((input, false));
+            }
+            bail!("A committed interpretation cannot be replaced");
+        }
+        if input.phase != "foreground_captured" || input.foreground_delegation.is_some() {
+            bail!("Public interpretation requires an unprepared held foreground original");
+        }
+        // A public interpretation is a derivative, not permission to discard
+        // its acoustic original. Reuse the existing bounded archive hold; a
+        // status/list read must not remove it without a matching archive receipt.
+        voice.preserve_original = Some(true);
+        voice.transcription = Some(proof);
+        input.text = text.into();
+        input.phase = "foreground".into();
+        let changed = tx.execute(
+            "UPDATE conversation_inputs SET doc=?1,phase='foreground',instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='foreground_captured'",
+            params![serde_json::to_string(&input)?, self.instance_id, id, human],
+        )?;
+        if changed != 1 {
+            bail!("Held acoustic original changed before interpretation commit");
+        }
+        tx.commit()?;
+        Ok((input, true))
+    }
+
     pub fn conversation_voice_fail(&self, human: i64, id: &str) -> Result<()> {
         self.conn.lock().expect("store mutex poisoned").execute("UPDATE conversation_inputs SET phase=CASE WHEN phase='preparing' THEN 'preparation_unconfirmed' ELSE 'retained_unsent' END WHERE id=?1 AND human_id=?2 AND phase IN ('preparing','retained','queued') AND instance_id=?3",params![id,human,self.instance_id])?;
         Ok(())
@@ -2170,6 +2243,96 @@ mod tests {
             .unwrap();
         assert_eq!(ready.phase, "foreground");
         assert!(ready.local_turn.is_none());
+    }
+
+    #[test]
+    fn public_interpretation_is_atomic_immutable_and_never_work() {
+        let (_file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let dialogue = Uuid::now_v7().to_string();
+        store
+            .conversation_foreground_voice_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                clip(),
+                false,
+                &dialogue,
+                None,
+            )
+            .unwrap();
+        let later = Uuid::now_v7().to_string();
+        store
+            .conversation_foreground_capture(
+                100,
+                key,
+                &binding,
+                &later,
+                "Keep the later correction",
+                &dialogue,
+                None,
+            )
+            .unwrap();
+        let mut proof = voice_proof(&id);
+        proof.actual_transcriber = Some("gpt-transcribe".into());
+        let commit =
+            |actor, selected_binding: &str, selected_dialogue: &str, text: &str, source| {
+                store.conversation_foreground_interpretation(
+                    actor,
+                    key,
+                    selected_binding,
+                    &id,
+                    selected_dialogue,
+                    text,
+                    source,
+                )
+            };
+        let mut wrong = proof.clone();
+        wrong.audio_sha256 = "b".repeat(64);
+        assert!(commit(100, &binding, &dialogue, "Source text", wrong).is_err());
+        assert!(commit(101, &binding, &dialogue, "Source text", proof.clone()).is_err());
+        assert!(commit(100, "stale", &dialogue, "Source text", proof.clone()).is_err());
+        assert!(
+            commit(
+                100,
+                &binding,
+                "other-dialogue",
+                "Source text",
+                proof.clone()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            store.conversation_input_read(100, key, &id).unwrap().phase,
+            "foreground_captured"
+        );
+        let (saved, fresh) =
+            commit(100, &binding, &dialogue, "Source text", proof.clone()).unwrap();
+        assert!(fresh);
+        assert_eq!(saved.phase, "foreground");
+        assert!(saved.local_turn.is_none());
+        assert_eq!(saved.voice.as_ref().unwrap().preserve_original, Some(true));
+        assert_eq!(
+            saved
+                .voice
+                .as_ref()
+                .unwrap()
+                .transcription
+                .as_ref()
+                .unwrap()
+                .actual_transcriber
+                .as_deref(),
+            Some("gpt-transcribe")
+        );
+        let (_, fresh) = commit(100, &binding, &dialogue, "Source text", proof.clone()).unwrap();
+        assert!(!fresh);
+        assert!(commit(100, &binding, &dialogue, "Replace committed words", proof).is_err());
+        let conn = store.conn.lock().unwrap();
+        let order = |id: &str| {
+            conn.query_row("SELECT id FROM original_ingress_order WHERE channel='conversation' AND event_id=?1", [id], |r| r.get::<_, i64>(0)).unwrap()
+        };
+        assert!(order(&id) < order(&later));
     }
 
     #[test]

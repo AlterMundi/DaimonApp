@@ -20,6 +20,7 @@ from .live_transcription import bind_voice_actor
 from .openai_live import OpenAILive, LiveUnavailable, session_spec
 from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
+from .openai_live_originals import enroll_original
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
 
@@ -29,7 +30,7 @@ def install(app, config, provider, authorize, origins):
     if selected.get('enabled') is not True:return False
     if (set(selected)-{'enabled','api_key_file','identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options',
-            'delegation_options','session_seconds','resume_mode','conversation_context'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in ('api_key_file','identity_file','backend_instructions_file'))
             or type(selected.get('session_seconds',600)) is not int
@@ -39,6 +40,8 @@ def install(app, config, provider, authorize, origins):
     backend=private_bytes(selected['backend_instructions_file'],8192).decode()
     context=selected.get('conversation_context',False)
     if type(context) is not bool:raise ValueError('Select owner conversation-context access')
+    native_originals=selected.get('native_originals',False)
+    if type(native_originals) is not bool:raise ValueError('Select explicit native original retention')
     tools=list(selected.get('backend_tools',()))
     if any(isinstance(tool,dict) and tool.get('name')==NAME for tool in tools):
         raise ValueError('Conversation reader name belongs to the owning adapter')
@@ -106,7 +109,11 @@ def install(app, config, provider, authorize, origins):
                 fresh,current=await http_owner(request,write=True)
                 if fresh['human']!=session['human'] or current!=binding:raise HTTPException(403,'Voice audience changed')
                 receipt=await asyncio.to_thread(history.recording,visit,session['human'],binding,ordinal,bytes(data),provider,capture_stop=capture_stop)
-                return {'visit':visit,'binding':binding,'recording':receipt}
+                result={'visit':visit,'binding':binding,'recording':receipt}
+                if native_originals:
+                    owner=await asyncio.to_thread(provider.public_live_binding,binding)
+                    result['native_original']=await asyncio.to_thread(enroll_original,history,visit,session['human'],owner,ordinal,provider)
+                return result
         except (OSError,ValueError,RenderError,ProviderUnavailable):
             raise HTTPException(409,'Original not confirmed; keep the same local audio') from None
 
