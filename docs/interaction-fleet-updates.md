@@ -43,3 +43,13 @@ observations, not full parity. Resolve the current receiving record before
 applying a release; app/native reader compatibility and owner overrides must be
 qualified for each of those existing profiles. Full fleet completion remains
 open until actual receiving adoption, not just this common-code preparation.
+
+
+The shared avatar workshop additionally requires Node20+ on the actual web
+service PATH. Qualify the pinned inert-design validator as that service user,
+including catalogue/custom save/reload/use in temporary synthetic-account storage,
+before selection. A root-only executable check or installed package alone is not
+consuming-process acceptance. Keep a required body-local PATH entry in the
+existing service configuration and its retained preimage; do not introduce a new
+login, change providers or activate an avatar during software delivery. See
+[workshop receiving](interaction-avatar-workshop.md#receiving-selection-6november2026).
