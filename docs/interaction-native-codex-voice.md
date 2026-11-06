@@ -1210,4 +1210,4 @@ owner brief and native default prompt. Do not add duplicated briefs, assume the
 field was applied, or replace native handoffs to hide this result. The public
 GPT-Live guide's automatic summarization/engine replacement is the preferred
 provider lifecycle when available; native parity remains unproven. See the
-[provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions--6november2026).
+[provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions-6november2026).

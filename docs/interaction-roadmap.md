@@ -56,7 +56,7 @@ selected663 keeps its qualified developer-initial brief. Schema acceptance alone
 does not prove application. Native instruction/pressure/hidden-rotation parity
 still needs evidence; do not add a custom summary/delegation loop or duplicate
 briefs to conceal that gap. See the
-[provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions--6november2026).
+[provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions-6november2026).
 
 The6November native lifecycle inspection separates the next requirement from
 those manual reconnect tests. Retained numeric usage reports audio duration,
@@ -67,7 +67,7 @@ state machine. The new candidate below adds reactive recovery inside the unchang
 600second admission; it does not yet qualify sustainable pressure-based renewal. Do not reinterpret several manual opens,
 an audio-duration counter or a compaction ACK as the two required automatic
 successor installations. See the
-[native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection--6november2026).
+[native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection-6november2026).
 
 The terminal-close candidate now retains the native lease through final work
 reconciliation/control closure and terminal metadata commit. Its close response
