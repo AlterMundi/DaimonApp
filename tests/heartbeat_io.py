@@ -81,6 +81,9 @@ def qualify(binary):
                     'purpose': {'input_ref': original['id'], 'channel': 'conversation'}}
         configured = j.read('heartbeat', 'configure-producer', str(paused['generation']), json.dumps(contract))['result']
         assert configured['attention_engine'] == 'finite_canonical_offer_producer'
+        assert all(lane['paused'] for lane in configured['lanes'].values())
+        j.read('heartbeat', 'resume-lane', 'workflow_returns',
+               str(configured['lanes']['workflow_returns']['generation']))
         j.read('heartbeat', 'resume', str(paused['generation']))
         # Release the ordinary human writer; maintenance must create a fresh root.
         j.broadcast(j.web_thread, 'turn/completed', {'turn': {'id': j.web_turn, 'status': 'completed'}})
@@ -343,6 +346,9 @@ def qualify_inbox(binary):
             json.dumps(contract),
         )
         j.answer_worker(8, "The original owner is still progressing.", finish=False, phase="commentary")
+        selected = j.read("heartbeat", "resume-lane", "messaging", "0")["result"]
+        assert not selected["lanes"]["messaging"]["paused"]
+        assert all(v["paused"] for k, v in selected["lanes"].items() if k != "messaging")
         j.read("heartbeat", "resume", str(paused["generation"]))
         j.wait(lambda: len(j.bounded) == 1, seconds=45)
         j.wait(
@@ -360,10 +366,12 @@ def qualify_inbox(binary):
             if o["evidence"]["reason"] == "matrix_original_available"
         )
         assert offered["source"] == "matrix-inbox:" + first["message_id"]
-        progress = next(o["evidence"] for o in packet["evidence"]["offers"]
-                        if o["evidence"]["reason"] == "worker_progress_available")
-        progress_source = j.call("route-periodic-worker-progress", progress["reader"]["operation"], progress["reader"]["arguments"])
-        assert progress_source["text"] == "The original owner is still progressing."
+        # A configured progress source remains silent while its lane is paused.
+        assert not any(o["evidence"]["reason"] == "worker_progress_available"
+                       for o in packet["evidence"]["offers"])
+        unrelated = j.read("heartbeat", "pause-lane", "reports")["result"]
+        assert not unrelated["admission_paused"]
+        assert not unrelated["lanes"]["messaging"]["paused"]
         read = offered["reader"]
         exact = j.call(
             "route-periodic-inbox-source", read["operation"], read["arguments"]
@@ -394,7 +402,8 @@ def qualify_inbox(binary):
         hold["enabled"] = True
         due()
         assert entered.wait(timeout=45), "Finite source read did not start"
-        paused = j.read("heartbeat", "pause")["result"]
+        paused = j.read("heartbeat", "pause-lane", "messaging")["result"]
+        assert not paused["admission_paused"] and paused["lanes"]["messaging"]["paused"]
         assert (
             paused["producer"]["checks"] == 3
             and paused["resources"]["reserved_provider_attempts"] == 3
@@ -405,11 +414,13 @@ def qualify_inbox(binary):
         j.start()
         j.wait_control_socket(j.socket)
         status = j.read("heartbeat", "status")["result"]
-        assert status["admission_paused"] and status["producer"]["checks"] == 3
+        assert not status["admission_paused"] and status["producer"]["checks"] == 3
+        assert status["lanes"]["messaging"]["paused"]
         assert j.row("SELECT count(*) FROM interaction_matrix_inbox") == [(1,)]
         assert len(j.bounded) == 1
         due()
-        j.read("heartbeat", "resume", str(status["generation"]))
+        j.read("heartbeat", "resume-lane", "messaging",
+               str(status["lanes"]["messaging"]["generation"]))
         j.wait(lambda: len(j.bounded) == 2, seconds=45)
         j.wait(
             lambda: (
@@ -492,7 +503,7 @@ def qualify_inbox(binary):
             for i in presentation["items"]
         )
         print(
-            "PASS signed Matrix original -> finite shared producer -> bounded idle integrator -> exact source and actual human-purpose read -> durable defer -> ordinary workflow with reserved child -> exact result -> correlated native reply -> canonical Conversation report; no-news quiet; held read pause/restart rejects late cursor; lost reply ACK stays uncertain, duplicate does not resend, delivery-only inspection recovers same intent; checks/account9of12 conserved; Telegram disabled, one actual synthetic human-purpose original with no fabricated peer/human input or real provider/model call. Synthetic native; live receiving/model/device acceptance remains separate."
+            "PASS signed Matrix original -> finite shared producer -> bounded idle integrator -> exact source and actual human-purpose read -> durable defer -> ordinary workflow with reserved child -> exact result -> correlated native reply -> canonical Conversation report; no-news quiet; messaging-only lane persists; unrelated lane pause leaves source reads active; held read lane-pause/restart rejects late cursor; lost reply ACK stays uncertain, duplicate does not resend, delivery-only inspection recovers same intent; checks/account9of12 conserved; Telegram disabled, one actual synthetic human-purpose original with no fabricated peer/human input or real provider/model call. Synthetic native; live receiving/model/device acceptance remains separate."
         )
     except Exception:
         print("INBOX_FIXTURE_DIAGNOSTICS", {"calls":calls,"errors":errors,"bounded":len(j.bounded)},file=sys.stderr)
