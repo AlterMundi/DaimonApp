@@ -1,6 +1,6 @@
 """Source-bound client delegation to the existing native execution owner.
 
-Server component only, not mounted. The caller must first seal the intended
+Mounted by the optional native backend. The caller must first seal the intended
 acoustic sources and supply a separately attributed formulation. A provider
 delegation contains no task text; transcript deltas are never work authority.
 """

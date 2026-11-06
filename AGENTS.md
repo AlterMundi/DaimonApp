@@ -56,9 +56,12 @@ Synthetic checks are not public access or full CompAII acceptance.
 The prepared public client-delegation bridge uses existing native foreground
 originals/formulations, not transcript fragments or raw durability chunks as
 completed human turns. The owner-only backend_mode=native prototype now connects
-sealed audio, interpretation, native work and same-turn results. Default Responses
+sealed audio, interpretation, native work, same-turn results and exact current
+trace-associated worker deliveries. Missing trace revisions never authorize an
+excerpt-based speech fallback. Default Responses
 and other providers remain unchanged. It is not receiving/real voice acceptance;
-cross-turn returns, continuation and physical qualification remain unfinished.
+returns across voice visits, complete older-trace pagination, native callbacks,
+continuation and physical qualification remain unfinished.
 A retained work intent only permits same-root status
 reads after unknown outcomes; never resubmit it to repair an observation.
 Prepared native result returns use exact current canonical revisions and native

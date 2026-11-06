@@ -105,7 +105,15 @@ def qualify(binary):
         assert len(answers)==2,answers
         beta_answer=next(item for item in answers if item['target']['thread_id']==8)
         assert len(beta_answer['request_ids'])==2,beta_answer
+        for original_id in (beta['id'],unknown['id']):
+            shared=client.get('/api/interaction/inputs/'+original_id+'/trace',headers=headers)
+            assert shared.status_code==200,shared.text
+            covered=shared.json()['routes'][0]['results'][0]
+            assert covered['instruction_covered']
+            assert covered['source']==beta_answer['id'] and covered['revision']==beta_answer['revision']
         source=next(item for item in sources.json()['items'] if item['kind']=='worker_result' and item['target']['thread_id']==7)
+        assert result_trace[0]['source']==source['id']
+        assert result_trace[0]['revision']==source['revision']
         _,followup=submit('Continue this completed result.',{'source':source['id'],'revision':source['revision']})
         j.wait(lambda:len(j.instructions(7))==3 and j.instructions(7)[2][1]=='accepted')
         assert json.loads(j.instructions(7)[2][2])['relation']=={'kind':'amends','requests':first['requests']}
