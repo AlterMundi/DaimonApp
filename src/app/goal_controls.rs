@@ -41,6 +41,9 @@ pub(super) fn capabilities(value: &mut Value) {
 /// The existing owner socket supplies authentication and the human scope.
 /// Client JSON cannot name another human or act as a live daimon execution.
 pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(args) = args.strip_prefix("maintenance ") {
+        return super::scoped_maintenance::command(app, human, args).await;
+    }
     if let Some(json) = args.strip_prefix("recovery set ") {
         let update: crate::store::GoalRecoveryPolicy = serde_json::from_str(json)?;
         return app.shared.store.goal_recovery_policy(human, &update);

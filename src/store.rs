@@ -23,6 +23,8 @@ mod creation;
 mod dialogue;
 mod goal_alerts;
 mod goal_controls;
+mod scoped_maintenance;
+pub(crate) use scoped_maintenance::MaintenancePlan;
 mod goal_delegations;
 mod goal_recovery;
 mod goal_retries;

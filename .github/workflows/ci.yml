@@ -242,6 +242,7 @@ jobs:
       - name: Qualify live controller retirement and expression choices
         run: |
           python3 -B tests/goal_controls_io.py target/release/telecodex
+          python3 -B tests/scoped_maintenance_io.py target/release/telecodex
           python3 -B tests/goal_activation_io.py target/release/telecodex
           python3 -B tests/goal_delegation_io.py target/release/telecodex
           python3 -B tests/goal_recovery_io.py target/release/telecodex
