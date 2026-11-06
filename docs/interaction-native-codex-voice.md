@@ -1192,6 +1192,18 @@ This observation is browser-reported evidence, not proof of a provider failure.
 An older empty visit with `native_start: not_attempted` cannot establish which
 browser operation failed. Do not infer context exhaustion or replay its inputs.
 
+The logical first visit waits for microphone permission inside the existing
+whole-setup bound (`session_seconds + 60`), rather than the20second SDP-offer
+timeout. Permission has not admitted audio: the original capture deadline and
+PCM allowance begin only after the explicit `capture` marker. The subsequent
+offer still has its20second bound; automatic successors never reopen permission.
+A mounted regression reproduced premature review while permission outlasted the
+offer timeout. The corrected path reaches native start with its full original
+capture allowance. A separate expiry test proves that an unanswered dialog still
+closes/relinquishes the lease without capture, native start or new work. These
+tests establish a setup race, not the cause of the older phone incident, whose
+empty visits lack the necessary browser observation.
+
 ### Original-instructions placement probe —6November2026
 
 A distinct finite native trial moved the unchanged owner brief from its developer
@@ -1211,3 +1223,21 @@ field was applied, or replace native handoffs to hide this result. The public
 GPT-Live guide's automatic summarization/engine replacement is the preferred
 provider lifecycle when available; native parity remains unproven. See the
 [provider lifecycle decision](interaction-gpt-live-practices.md#provider-managed-lifecycle-and-durable-voice-instructions-6november2026).
+
+### Native frontend model request —6November2026
+
+A separate isolated native trial requested `gpt-live-1` through the loaded
+per-session model field, preserving663's developer-initial owner brief and native
+handoffs. The existing ChatGPT/Core WebRTC route connected and supplied nonzero
+output audio, but the canonical identity answer was Soy ChatGPT. The corrected
+test-label question was also transcribed with a different first word. The
+two-replacement phase was not reached. Two original files match their retained
+receipts; no accepted utterance/work was replayed. Exact spoken spelling and
+human hearing were not verified. The requested alias is not model attestation:
+neither this trial nor a separate silent default observation returned a model
+name/instructions. The default event exposed session id/status/expiry keys and
+audio duration, not token headroom or provider-managed rotation. Inspected native
+source chooses `gpt-live-1-codex` forV3 without an override; actual serving-model
+identity remains unavailable. Do not activate the tested alias or claim public
+GPT-Live lifecycle parity from connection success. No runtime, default, API key,
+endpoint, native configuration or ordinary backing model changed in these probes.
