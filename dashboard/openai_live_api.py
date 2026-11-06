@@ -19,6 +19,7 @@ from .codex_voice import AvatarVoiceLease, CodexVoiceUnavailable
 from .live_transcription import bind_voice_actor
 from .openai_live import OpenAILive, LiveUnavailable, session_spec
 from .openai_live_visits import LiveCreations
+from .openai_live_context import TOOL, NAME, serve_context
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
 
@@ -28,7 +29,7 @@ def install(app, config, provider, authorize, origins):
     if selected.get('enabled') is not True:return False
     if (set(selected)-{'enabled','api_key_file','identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options',
-            'delegation_options','session_seconds','resume_mode'}
+            'delegation_options','session_seconds','resume_mode','conversation_context'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in ('api_key_file','identity_file','backend_instructions_file'))
             or type(selected.get('session_seconds',600)) is not int
@@ -36,8 +37,14 @@ def install(app, config, provider, authorize, origins):
         raise ValueError('Select owner-configured public GPT-Live and bounded capture')
     instructions=private_bytes(selected['identity_file'],8192).decode()
     backend=private_bytes(selected['backend_instructions_file'],8192).decode()
+    context=selected.get('conversation_context',False)
+    if type(context) is not bool:raise ValueError('Select owner conversation-context access')
+    tools=list(selected.get('backend_tools',()))
+    if any(isinstance(tool,dict) and tool.get('name')==NAME for tool in tools):
+        raise ValueError('Conversation reader name belongs to the owning adapter')
+    if context:tools.append(TOOL)
     spec=session_spec(instructions, backend_model=selected.get('backend_model'),
-        backend_instructions=backend, backend_tools=selected.get('backend_tools',()),
+        backend_instructions=backend, backend_tools=tools,
         session_options=selected.get('session_options'), backend_options=selected.get('backend_options'),
         delegation_options=selected.get('delegation_options'))
     if 'format' in spec.get('audio',{}):raise ValueError('WebRTC negotiates its audio format')
@@ -166,6 +173,12 @@ def install(app, config, provider, authorize, origins):
                                 break
                             if await asyncio.to_thread(history.event,visit,human,owner,event):
                                 await send({'type':'provider_event','event':event})
+                            if (context and event['type']=='response.event'
+                                    and event.get('event',{}).get('type')=='response.completed'):
+                                # Only completed trusted function items can select a
+                                # read. Provider data never grants work execution.
+                                await asyncio.to_thread(serve_context,history,visit,human,
+                                    owner,provider,sideband,event.get('delegation_id'))
                         read_provider=asyncio.create_task(asyncio.to_thread(sideband.receive))
                     if read_browser in done:
                         action=read_browser.result()

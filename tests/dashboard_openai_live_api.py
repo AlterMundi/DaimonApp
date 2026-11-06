@@ -47,7 +47,7 @@ class Client:
         self.instances.append(self)
     def _project_key(self):return 'test-only-project-key'
     def create(self,sdp,spec):
-        self.creations+=1
+        self.creations+=1;self.spec=spec
         if self.failure:raise LiveUnavailable(self.failure)
         return LiveCall('live_opaque:provider/42','v=0 answer')
     def fork(self,source,sdp):
@@ -101,6 +101,37 @@ class Mounted(unittest.TestCase):
     def close(self,socket):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
+    def test_owner_opt_in_context_tool_returns_result_then_resumes_managed_backend(self):
+        from dashboard.openai_live_context import NAME
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'conversation_context':True}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        self.owner.presentation_list=lambda *a,**k:{'binding':'a'*64,'items':[],
+            'cursor':{'delivery':0,'native':0,'matrix':0},'more':False}
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                self.assertEqual(native.spec['delegation']['responses']['tools'][0]['name'],NAME)
+                for event in [
+                    {'type':'session.delegation.created','event_id':'work','delegation':{
+                        'id':'work','target':'responses','response_id':'r1'}},
+                    {'type':'response.event','event_id':'call','delegation_id':'work','event':{
+                        'type':'response.output_item.done','item':{'type':'function_call','call_id':'call',
+                        'name':NAME,'arguments':json.dumps({'operation':'page','delivery':0,'native':0,
+                            'matrix':0,'source':'','revision':'','offset':0})}}},
+                    {'type':'response.event','event_id':'done','delegation_id':'work','event':{
+                        'type':'response.completed','response':{'id':'r1'}}}]:
+                    native.events.put(event);self.assertEqual(socket.receive_json()['event'],event)
+                deadline=time.monotonic()+2
+                while len(native.sent)<2 and time.monotonic()<deadline:time.sleep(.01)
+                self.assertEqual([v['type'] for v in native.sent],['response.item.create','response.create'])
+                self.assertTrue(json.loads(native.sent[0]['item']['output'])['source_data'])
+                for n,kind in enumerate(['response.created','response.completed']):
+                    native.events.put({'type':'response.event','event_id':'next'+str(n),'delegation_id':'work',
+                        'event':{'type':kind,'response':{'id':'r2'}}})
+                    socket.receive_json()
+                self.close(socket)
     def test_actual_mounted_lifecycle_keeps_opaque_id_and_source_before_forward(self):
         with self.socket() as socket:
             native=self.start(socket)

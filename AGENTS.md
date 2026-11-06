@@ -53,6 +53,10 @@ not the native Codex protocol or manual PCM turn loop. Follow
 original-only retry, graceful close and unfinished integration/reconciliation.
 Engine selection belongs in Under the hood; preserve current-provider defaults.
 Synthetic checks are not public access or full CompAII acceptance.
+The optional managed Responses conversation reader follows the documented
+function-result/continuation lifecycle. Keep owner reads distinct from full DMK
+memory and native work execution. Never replay a retained result/continuation
+intent after an uncertain write, or infer completion from a socket send.
 
 The current MVP is one web conversation supporting routed text and two-way voice. Telegram work topics use ordinary Telecodex. The Telegram entry adapter defaults off; enabling it requires an explicit human-selected entry and never authorizes interception of work topics. When explicitly selected with telegram_entry_projection, the entry topic is another text surface of the same integrating conversation, including app originals, integrator output and correlated worker returns. Preserve the existing native/source identities and Telegram uncertainty; do not backfill/replay work or silently enable it as a deployment/test convenience.
 
