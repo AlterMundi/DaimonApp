@@ -58,6 +58,11 @@ not the native Codex protocol or manual PCM turn loop. Follow
 `docs/interaction-public-gpt-live.md` for configuration, bounded trusted sources,
 original-only retry, graceful close and unfinished integration/reconciliation.
 Engine selection belongs in Under the hood; preserve current-provider defaults.
+The optional native_backend_enabled flag exposes an ADDITIONAL explicit
+GPT-Live+CompAII choice. Do not implement its rollout by replacing the configured
+Responses backend/default. Native admission is server-checked before paid voice
+or microphone permission and frozen for the visit; no managed-tool mixing or
+silent fallback. Its backend_mode stays in the existing visit journal.
 Synthetic checks are not public access or full CompAII acceptance.
 The prepared public client-delegation bridge uses existing native foreground
 originals/formulations, not transcript fragments or raw durability chunks as

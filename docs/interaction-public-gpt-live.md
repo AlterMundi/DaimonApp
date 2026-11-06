@@ -495,6 +495,26 @@ model peers remain synthetic; no paid inference or device acceptance is claimed.
 
 #### Optional native client backend prototype
 
+For a separately selectable comparison, the owner enables
+`openai_live.native_backend_enabled=true`. Keep `backend_mode` and the existing
+Responses settings unchanged. Under the hood then offers **OpenAI · GPT-Live +
+CompAII** in addition to the current modes; the additional option is disabled
+when the server does not advertise it. Selecting it sends only the bounded
+`backend="native"` admission choice, authenticated through the existing
+grant/CSRF. The server checks its configured availability and actual native
+reader before paid creation or microphone permission. The browser requires the
+matching native prepared-mode acknowledgment, freezing its choice before any
+asynchronous setup; there is no switch/fallback during capture.
+
+This additional choice requires the current fresh-visit/no-upload-enrollment
+profile. It uses exact source seals and client delegation without managed
+Responses tools, even when the unchanged Responses mode has its conversation
+reader enabled. The admitted `backend_mode` is retained in the existing visit
+journal and status response. No additional account, key, history store or
+automatic provider activation is created. Qwen/current voice, Codex voice and
+the original GPT-Live mode/default remain unchanged. Operator enabling an option
+is not human microphone activation or real identity/memory/hearing acceptance.
+
 The owner may explicitly select `openai_live.backend_mode="native"` for the
 public GPT-Live comparison. The default remains `"responses"`; existing provider,
 native Codex login and deliberately chosen integrator settings are unchanged.
