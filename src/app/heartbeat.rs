@@ -31,10 +31,16 @@ pub(super) async fn execute(
         }
     }
     let lane = match &command {
-        HeartbeatCommand::PauseLane { lane } => Some(*lane),
+        HeartbeatCommand::PauseLane { lane }
+        | HeartbeatCommand::SetLanePaused {
+            lane, paused: true, ..
+        } => Some(*lane),
         _ => None,
     };
-    let pause = matches!(&command, HeartbeatCommand::Pause) || lane.is_some();
+    let pause = matches!(
+        &command,
+        HeartbeatCommand::Pause | HeartbeatCommand::SetPaused { paused: true, .. }
+    ) || lane.is_some();
     // Persist the fence before attempting cancellation or any native read.
     let mut value = app.shared.store.heartbeat_control(human, entry, command)?;
     let records = app
@@ -125,6 +131,10 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     let command = match fields.as_slice() {
         ["status"] => HeartbeatCommand::Status,
         ["pause"] => HeartbeatCommand::Pause,
+        ["pause", generation] => HeartbeatCommand::SetPaused {
+            paused: true,
+            generation: generation.parse()?,
+        },
         ["pause-lane", lane] => HeartbeatCommand::PauseLane {
             lane: serde_json::from_value(serde_json::json!(lane))?,
         },
@@ -132,11 +142,22 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             lane: serde_json::from_value(serde_json::json!(lane))?,
             generation: generation.parse()?,
         },
+        [
+            action @ ("pause-lane" | "resume-lane"),
+            lane,
+            global,
+            generation,
+        ] => HeartbeatCommand::SetLanePaused {
+            lane: serde_json::from_value(serde_json::json!(lane))?,
+            paused: *action == "pause-lane",
+            global_generation: global.parse()?,
+            generation: generation.parse()?,
+        },
         ["resume", generation] => HeartbeatCommand::Resume {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause|resume GENERATION|pause-lane LANE|resume-lane LANE GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(

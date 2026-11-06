@@ -24,6 +24,17 @@ use serde_json::{Value, json};
 pub enum HeartbeatCommand {
     Status,
     Pause,
+    /// Versioned app control; bare Pause remains the owner emergency action.
+    SetPaused {
+        paused: bool,
+        generation: u64,
+    },
+    SetLanePaused {
+        lane: HeartbeatLane,
+        paused: bool,
+        generation: u64,
+        global_generation: u64,
+    },
     Resume {
         generation: u64,
     },
@@ -103,6 +114,43 @@ impl Store {
                 changed_at: String::new(),
                 lanes: Default::default(),
             });
+        // Normalize only after both revisions have been checked under the same
+        // write transaction. A stale app must not persist a fence or cancel work.
+        let command = match command {
+            HeartbeatCommand::SetPaused { paused, generation } => {
+                anyhow::ensure!(
+                    generation == control.generation,
+                    "Heartbeat generation changed; refresh before changing its state"
+                );
+                if paused {
+                    HeartbeatCommand::Pause
+                } else {
+                    HeartbeatCommand::Resume { generation }
+                }
+            }
+            HeartbeatCommand::SetLanePaused {
+                lane,
+                paused,
+                generation,
+                global_generation,
+            } => {
+                anyhow::ensure!(
+                    global_generation == control.generation,
+                    "Heartbeat generation changed; refresh before changing a lane"
+                );
+                let current = control.lanes.get(&lane).map_or(0, |c| c.generation);
+                anyhow::ensure!(
+                    generation == current,
+                    "Lane generation changed; refresh before changing its state"
+                );
+                if paused {
+                    HeartbeatCommand::PauseLane { lane }
+                } else {
+                    HeartbeatCommand::ResumeLane { lane, generation }
+                }
+            }
+            other => other,
+        };
         let lane_change = match &command {
             HeartbeatCommand::PauseLane { lane } => Some((*lane, true, None)),
             HeartbeatCommand::ResumeLane { lane, generation } => {
@@ -142,6 +190,9 @@ impl Store {
             }
         }
         let selected = match command {
+            HeartbeatCommand::SetPaused { .. } | HeartbeatCommand::SetLanePaused { .. } => {
+                unreachable!("normalized above")
+            }
             HeartbeatCommand::ConfigureResources {
                 generation,
                 contract,
@@ -218,6 +269,7 @@ impl Store {
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
         Ok(
             json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,"lanes":lanes::status(&control),
+            "controls":{"schema":"telecodex.heartbeat-controls/v1","conditional_global":true,"conditional_lane":true,"actions":["set_paused","set_lane_paused"],"configuration_activates":false},
             "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
         )
     }
@@ -252,6 +304,80 @@ pub(in crate::store) fn enable_test_lanes(store: &Store, human: i64, entry: Sess
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn versioned_app_controls_reject_stale_global_and_lane_changes_atomically() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let entry = SessionKey::new(100, Some(1));
+        store
+            .ensure_session(entry, 100, &super::super::tests::defaults())
+            .unwrap();
+        store
+            .set_session_codex_thread(entry, "same-native")
+            .unwrap();
+        let apply =
+            |value| store.heartbeat_control(100, entry, serde_json::from_value(value).unwrap());
+        let status = || {
+            store
+                .heartbeat_control(100, entry, HeartbeatCommand::Status)
+                .unwrap()
+        };
+        apply(json!({"action":"set_lane_paused","lane":"messaging","paused":false,"generation":0,"global_generation":0})).unwrap();
+        apply(json!({"action":"set_paused","paused":false,"generation":0})).unwrap();
+        let current = status();
+        assert_eq!(current["generation"], 1);
+        assert_eq!(current["lanes"]["messaging"]["generation"], 1);
+        for stale in [
+            json!({"action":"set_paused","paused":true,"generation":0}),
+            json!({"action":"set_lane_paused","lane":"messaging","paused":true,"generation":1,"global_generation":0}),
+            json!({"action":"set_lane_paused","lane":"messaging","paused":true,"generation":0,"global_generation":1}),
+        ] {
+            assert!(apply(stale).is_err());
+            assert_eq!(status(), current, "a stale app changed persisted state");
+        }
+        let paused = apply(json!({"action":"set_lane_paused","lane":"messaging","paused":true,"generation":1,"global_generation":1})).unwrap();
+        assert_eq!(paused["generation"], 1);
+        assert_eq!(paused["lanes"]["messaging"]["generation"], 2);
+        assert!(apply(json!({"action":"set_lane_paused","lane":"messaging","paused":false,"generation":1,"global_generation":1})).is_err());
+        assert_eq!(status(), paused);
+        apply(json!({"action":"set_paused","paused":true,"generation":1})).unwrap();
+        drop(store);
+        let reopened = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let saved = reopened
+            .heartbeat_control(100, entry, HeartbeatCommand::Status)
+            .unwrap();
+        assert_eq!(saved["admission_paused"], true);
+        assert_eq!(saved["generation"], 2);
+        assert_eq!(saved["lanes"]["messaging"]["generation"], 2);
+        assert_eq!(saved["resources"]["state"], "not_configured");
+        assert_eq!(saved["producer"]["state"], "not_configured");
+        assert_eq!(saved["controls"]["conditional_global"], true);
+    }
+
+    #[test]
+    fn versioned_lane_control_cannot_activate_unsupported_lanes() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let entry = SessionKey::new(100, Some(1));
+        store
+            .ensure_session(entry, 100, &super::super::tests::defaults())
+            .unwrap();
+        store
+            .set_session_codex_thread(entry, "same-native")
+            .unwrap();
+        let before = store
+            .heartbeat_control(100, entry, HeartbeatCommand::Status)
+            .unwrap();
+        let command = serde_json::from_value(json!({"action":"set_lane_paused","lane":"sensory","paused":false,"generation":0,"global_generation":0})).unwrap();
+        assert!(store.heartbeat_control(100, entry, command).is_err());
+        assert_eq!(
+            store
+                .heartbeat_control(100, entry, HeartbeatCommand::Status)
+                .unwrap(),
+            before
+        );
+    }
+
     #[test]
     fn pause_is_durable_idempotent_and_stale_resume_cannot_reopen_a_generation() {
         let file = tempfile::NamedTempFile::new().unwrap();
