@@ -178,6 +178,17 @@ class DurableCreation(unittest.TestCase):
             event['usage'] = {'seconds': usage}
         return self.visits.observe_closed(ident or self.ident, 100, self.owner, event)
 
+    def test_raw_sideband_audio_without_event_ids_is_not_a_journal_source(self):
+        self.create()
+        before={p.name:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        for event in ({'type':'session.input_audio.append','audio':'synthetic'},
+                      {'type':'session.output_audio.delta','delta':'synthetic','start_ms':0,'end_ms':20}):
+            self.assertFalse(self.visits.event(self.ident,100,self.owner,event))
+        after={p.name:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(before,after,'Raw audio must not grow the durable journal')
+        with self.assertRaises(ValueError):
+            self.visits.event(self.ident,100,self.owner,{'type':'session.output_transcript.delta','delta':'no identity'})
+
     def test_exact_offer_retry_in_a_new_process_only_reads_the_receipt(self):
         first = self.create()
         reordered = {key: self.spec[key] for key in reversed(self.spec)}

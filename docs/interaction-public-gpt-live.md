@@ -139,3 +139,14 @@ and sustainable renewal remain open. Retained transcript presentation is
 implemented separately from provider reconnection and memory hydration. Follow the
 [practice comparison](interaction-gpt-live-practices.md) before enabling a
 person-facing trial; this is not full-stack adoption.
+
+## Receiving sideband media observation
+
+Actual project WebRTC qualification observed raw `session.input_audio.append` and
+`session.output_audio.delta` frames on the attached sideband without event IDs.
+They belong to media transport and are discarded before source-ID validation;
+they are never journaled or forwarded as conversation text. Transcript, backend
+and close events retain strict source identities. A synthetic spoken backend
+question returned its backend-only fact, completed Responses and trusted close
+with24seconds usage; this is digital qualification, not physical hearing or full
+being/memory/native-tool acceptance.

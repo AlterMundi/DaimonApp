@@ -243,6 +243,11 @@ class LiveCreations:
 
     def event(self, ident, human, frozen, event):
         """Fsync ordered source deltas before forwarding; no inferred utterances."""
+        if isinstance(event,dict) and event.get('type') in (
+                'session.input_audio.append','session.output_audio.delta'):
+            # The trusted sideband also carries raw media without event IDs.
+            # WebRTC owns audio; never journal or forward these frame payloads.
+            return False
         if (not isinstance(event,dict) or not _text(event.get('event_id'),1024)
                 or not _text(event.get('type'),128)):
             raise ValueError('Public Live source identity is unavailable')
