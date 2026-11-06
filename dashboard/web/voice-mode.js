@@ -18,7 +18,8 @@ window.ConversationVoiceMode=(()=>{
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
     let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
     const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',foreground_saved:'Phrase saved · voice conversation',review:'Recording needs review'};
-    let audioPaused=false,audioEnabled=true;
+    let audioPaused=false,audioEnabled=true,reconnecting=false;
+    const reconnectNotice='Your recording is kept; anything said during the pause may need review.';
     const canResumeAudio=()=>continuous&&listening&&!preparing&&!directPending&&typeof onResumeAudio==='function'&&(audioPaused||!audioEnabled);
     function showDetection(value){
       if(!value||typeof value.id!=='string'||value.id.length>128||!Object.hasOwn(detectionLabels,value.gate))return;
@@ -65,7 +66,7 @@ window.ConversationVoiceMode=(()=>{
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
-      opened=true;audioPaused=false;audioEnabled=true;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
+      opened=true;audioPaused=false;audioEnabled=true;reconnecting=false;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();attention(getAttention());
@@ -82,13 +83,14 @@ window.ConversationVoiceMode=(()=>{
       if(!opened)return;
       if(value.connected===false){close();return;}
       if(continuous&&value.handoff)showDetection(value.handoff);
-      const wasStopped=!listening&&!preparing&&!!directMessage;
+      const wasStopped=!listening&&!preparing&&!!directMessage,wasReconnecting=reconnecting;
       if(value.continuousState?.starting){detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;}
       if(value.continuousState){
         const state=value.continuousState;
         if(Object.hasOwn(state,'message'))directMessage=state.message;
         if(typeof state.active==='boolean')listening=state.active;
         if(typeof state.starting==='boolean')preparing=state.starting;
+        if(typeof state.reconnecting==='boolean')reconnecting=state.reconnecting;
         if(typeof state.pending==='boolean')directPending=state.pending;
         if(typeof state.working==='boolean')directWorking=state.working;
         if(Object.hasOwn(state,'remaining'))remaining=Number.isInteger(state.remaining)&&state.remaining>=0&&state.remaining<=120?state.remaining:undefined;
@@ -102,14 +104,16 @@ window.ConversationVoiceMode=(()=>{
       if(value.sent){waiting=true;heard=false;}
       if(continuous){
         const left=remaining===undefined?'':` · ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`;
-        status.textContent=preparing?'Preparing voice':directPending?'Recording needs review':directWorking?'Saving your voice':listening&&!audioEnabled?'Audio off · listening'+left:listening&&audioPaused?'Audio paused · listening'+left:playing&&listening?'Speaking · listening'+left:playing?'Reply playback · microphone off':listening?'Listening'+left:'Voice paused';
+        status.textContent=reconnecting?'Reconnecting voice':preparing?'Preparing voice':directPending?'Recording needs review':directWorking?'Saving your voice':listening&&!audioEnabled?'Audio off · listening'+left:listening&&audioPaused?'Audio paused · listening'+left:playing&&listening?'Speaking · listening'+left:playing?'Reply playback · microphone off':listening?'Listening'+left:'Voice paused';
         status.dataset.nearLimit=String(listening&&remaining!==undefined&&remaining<=15);
         status.setAttribute('aria-label',status.textContent+(listening&&remaining!==undefined?`. ${remaining} seconds of recording remaining`:''));
         if(Object.hasOwn(value,'caption'))caption.textContent=value.caption;
-        if(directPending)caption.textContent=(directMessage?directMessage+' ':'')+(typeof onReconnect==='function'&&canReconnect()?'Reconnect to keep talking; your recordings stay available for review.':'Return to the conversation to review your recordings.');
+        if(wasReconnecting&&!reconnecting&&caption.textContent===reconnectNotice)caption.textContent='';
+        if(reconnecting&&!Object.hasOwn(value,'caption'))caption.textContent=reconnectNotice;
+        else if(directPending)caption.textContent=(directMessage?directMessage+' ':'')+(typeof onReconnect==='function'&&canReconnect()?'Reconnect to keep talking; your recordings stay available for review.':'Return to the conversation to review your recordings.');
         else if(!listening&&!preparing&&directMessage)caption.textContent=directMessage;
         else if(value.continuousState&&wasStopped&&!Object.hasOwn(value,'caption'))caption.textContent='';
-        const resume=canResumeAudio(),reconnect=!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect();
+        const resume=!reconnecting&&canResumeAudio(),reconnect=!reconnecting&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect();
         speak.hidden=reconnect?false:!resume&&(preparing||listening||directPending);speak.disabled=directWorking||preparing||!resume&&!reconnect&&!canStart();speak.title=reconnect?'Reconnect voice and save a connection diagnostic':'';speak.textContent=reconnect?'Reconnect voice':resume?(audioEnabled?'Resume audio':'Enable audio'):'Start voice';
         dialog.dataset.phase=phase==='recording'?'listening':playing?'speaking':'waiting';return;
       }

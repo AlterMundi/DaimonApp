@@ -708,6 +708,69 @@ an open interaction defect, not qualified factual waiting or full long-term
 continuity. Phone/hearing, repeated physical renewal and useful latency remain
 separate unfinished acceptance. Do not infer completion from catalog readback.
 
+## Logical microphone admission and automatic recovery candidate
+
+This development candidate separates one explicitly opened microphone admission
+from up to eight physical native voice generations. It is not yet selected on
+receiving clients. The finite reactive recovery case below qualifies useful
+native audio; proactive context-pressure renewal remains separate.
+The existing300–600second configured duration and PCM allowance are unchanged.
+
+The browser requests `logical_visit: true`. Before its first recorder/WebRTC
+sender starts, it receives `capture_ready` from the server with the original
+admission, remaining time and PCM allowance. One recorder, Web Lock, original
+owner, ordinal sequence and deadline survive physical replacement. All original
+bytes, including connection setup gaps, remain under the initial admission;
+successor records link to that root and have zero new original-audio allowance.
+These recordings do not prove delivery or interpretation of speech during a gap.
+The view explains that anything said during reconnection may need review.
+
+For an observed native `transport_closed`, or failed media with a still-working
+control connection, recovery uses the native lifecycle. Media failure gets one
+three-second reconnection grace; then one `renew` request closes only that owned
+voice generation. It waits at most15seconds for the terminal source/control
+barrier, within the original visit deadline. No timeout itself authorizes a new
+connection. A successor is reserved by its exact UUID before native opening;
+lost responses or failed child commits cannot be replaced by another start.
+Native/user-requested Stop, unknown/error closure, changed scope, incomplete
+sources, ended/expired admission or exhausted generation capacity pauses voice
+instead. Backend work is not cancelled. There is no model turn-control loop,
+engine fallback, repeated execution or automatic ASR of retained gap audio.
+
+The server uses one process-local monotonic admission deadline. Restart invalidates
+automatic continuation, preserving sources for a later explicit reconnect instead
+of resetting the clock. Explicit microphone end is idempotent and independent
+of accepted work. Prefix recovery cannot mistake a closed first provider for an
+ended logical capture. Existing512visit/32MiB metadata and local20MiB/128record
+capacity bounds still apply; records are not automatically retired.
+
+Synthetic tests cover two physical replacements, uninterrupted exact capture bytes
+through setup, one permission/recorder/deadline/PCM owner, native source carry,
+playback pause, cancelled setup, stale callbacks, changed admission and failed
+readiness. An actual receiving-native journey then used the existing isolated
+thread/receiver/binding/history and synthetic microphone through three physical
+WebRTC generations and two automatic replacements. No Reconnect click occurred.
+One microphone permission/recorder/root600second deadline and19,200,000byte PCM
+allowance survived. Three original segments totaling2,558,636PCMbytes matched
+retained receipts and file hashes; all generations closed with complete sources,
+and explicit Back ended the root admission.
+
+Three native spoken answers retained the corrected synthetic label Sendero Norte
+and code Calandria. Independent configured Whisper recognition on source-linked
+output PCM derivatives corroborated those words after both replacements. One
+backing turn used no source/tool/command calls; accepted prior work and ACKed
+speech were not replayed. This qualifies reactive transport/media recovery only.
+
+Retain the negative predecessor: its original corrected-label statement was
+recognized and saved, but produced no audible response before bounded closure.
+The follow-up used distinct short recall questions referencing that retained
+statement; it did not replay it or change the timeout. The third output contains
+an anticipatory/repeated answer as well as the complete answer. Those actual
+speech-quality limitations remain unresolved; do not erase them behind the
+successful recovery case. Provider-pressure renewal, output-drain/hearing,
+semantic checkpoint compression, concurrent long work, full memory and physical
+phone/noise/background acceptance remain open with the full roadmap.
+
 ## Terminal close and successor readiness
 
 The native close response distinguishes `confirmed` (the native voice closure
@@ -718,9 +781,9 @@ voice lease until that cleanup finishes; a competing start during cleanup is
 refused before opening another native connection. A collector, transcript,
 control-close or terminal-write failure never returns successor readiness.
 
-This is a preparation barrier for automatic renewal, not automatic renewal or
-proof that output was heard. The browser still uses explicit reconnect and its
-existing bounded close wait. A timeout does not stop protected server cleanup,
+This is a preparation barrier for automatic renewal, not proof that output was
+heard. Selected661 still uses explicit reconnect; the logical-admission candidate
+above adds recovery after a known terminal barrier. A timeout does not stop protected server cleanup,
 prove readiness or authorize replay. A future automatic successor must also
 preserve the original microphone admission/expiry/PCM budget, select a safe
 media boundary and demonstrate useful audio after repeated replacements.
