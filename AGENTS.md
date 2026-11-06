@@ -1,5 +1,17 @@
 # Interaction development boundaries
 
+Shared avatar workshop integration continues under the SAME full App goal.
+Read docs/interaction-avatar-workshop.md and the pinned module provenance before
+changing the adapter. Existing App authentication/CSRF own the account scope;
+imports never select a human or grant. Edit/save and explicit active-avatar use
+have separate generation-fenced pointers. Preserve previous versions and exact
+lost-ACK outcomes. The original MIT validator/renderer is reused; Node runs only
+on bounded save/import, never per frame. This source has authenticated storage
+routes but no editor/renderer integration or receiving acceptance yet. Do not
+activate peer avatars, voice/provider/default/heartbeat flags or publish school
+media as a side effect. Fixed workshop cues are artistic choices, not emotion or
+agent/microphone measurements. Full original voice/client/UX scope remains open.
+
 Current Avatar planning is the4November slice in docs/interaction-roadmap.md;
 GPT-Live adaptation follows docs/interaction-gpt-live-practices.md. Keep the
 diagnostic context/visit limits unchanged. Qwen as integrator was a rejected,

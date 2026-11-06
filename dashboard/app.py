@@ -183,7 +183,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     return JSONResponse({'detail':exc.detail}, status_code=exc.status_code)
                 bound = 2*1024*1024 if request.url.path.endswith('/visual') else 20*1024*1024
             else:
-                bound = 262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384
+                bound = (1048576 if request.url.path=='/api/interaction/avatars' else
+                    262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
             # Native capture-only uploads own their fresh-auth/CSRF checks,
             # two upload slots,30s deadline and bounded streaming body. Do not
             # buffer them before that admission in the general JSON middleware.
@@ -274,6 +275,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
     from .openai_live_api import install as install_openai_live
     can_public_live=install_openai_live(app,config,provider,authorize_async,[origin,*additional_origins])
+    from .avatar_workshop_api import install as install_avatar_workshop
+    install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins])
 
     public = Path(__file__).parent / 'web'
 

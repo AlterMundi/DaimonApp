@@ -9,9 +9,10 @@ example are included. School media, viewer state, private histories and credenti
 are not part of this source selection.
 
 `avatar_workshop.py` prepares durable per-account versions in the configured
-App state root, which belongs to one receiving being. It is not mounted yet.
-The HTTP adapter must use the existing shared login/Companion grants and CSRF,
-derive the actor from that authenticated session, and refuse monitor writes.
+App state root, which belongs to one receiving being. Its HTTP adapter is now
+mounted in source through the existing App shared login/Companion grants and
+CSRF. It derives the actor from that session and refuses monitor access to the
+version library. This has not been selected on a receiver.
 An actor ID in an imported design or browser request is never authoritative.
 This adapter creates no account, grant, provider session or peer activation.
 
@@ -43,9 +44,12 @@ unfinished; no historical avatar is removed by this component.
 Seven actual-Node/storage tests cover a catalogue design and custom firefly,
 save/reload/edit/use, prior-avatar preservation, account isolation, immutable
 lost-ACK readback, generation conflicts, parent identity, quota refusal and unsafe
-file rejection. They do not establish browser/account-route or receiving delivery.
-Still implement the authenticated routes and shared grant allowlist, the existing
-workshop editor/storage bridge, large/compact/colour renderer use, preview/use/
+file rejection. Five additional mounted tests cover grants/CSRF, save/reload/use,
+foreign account refusal, access revocation after commit and oversized input.
+They use a test authorizer with the actual grant allowlist and storage validator;
+real Home-cookie/device and receiving delivery acceptance remain separate.
+Still implement the existing workshop editor/storage bridge,
+large/compact/colour renderer use, preview/use/
 cancel, image fallback, simultaneous object/detail controls, import/export and
 touch/keyboard/reduced-motion acceptance. Artistic cues must remain authored
 choices rather than agent/microphone/emotion measurements. Native designPack

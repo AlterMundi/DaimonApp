@@ -23,6 +23,10 @@ _validators=threading.BoundedSemaphore(2)
 _validator=Path(__file__).parent/'web/avatar-workshop/validate-design.mjs'
 
 
+class WorkshopConflict(ValueError):
+    pass
+
+
 def validate_design(design):
     """Reuse the original inert-model/design validator with finite CPU/heap."""
     raw=json.dumps(design,ensure_ascii=False,allow_nan=False).encode()
@@ -118,7 +122,7 @@ class AvatarWorkshop:
     @staticmethod
     def _expected(value,expected):
         if type(expected) is not int or expected!=value['generation']:
-            raise ValueError('Avatar selection changed; refresh without replaying the action')
+            raise WorkshopConflict('Avatar selection changed; refresh without replaying the action')
 
     def save(self,human,ident,design,parent,expected):
         self._path(human);self._ident(ident)
@@ -129,7 +133,7 @@ class AvatarWorkshop:
             value=self._read(human)
             old=next((r for r in value['versions'] if r['id']==ident),None)
             if old is not None:
-                if old['sha256']!=digest or old['parentId']!=parent:raise ValueError('A saved avatar revision is immutable')
+                if old['sha256']!=digest or old['parentId']!=parent:raise WorkshopConflict('A saved avatar revision is immutable')
                 return self._summary(value)  # Exact lost-ACK readback, no pointer mutation.
             self._expected(value,expected)
             if parent is not None and not any(r['id']==parent for r in value['versions']):
