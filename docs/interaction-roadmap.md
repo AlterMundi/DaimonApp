@@ -37,6 +37,16 @@ for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
 ## Current provider priority —5November2026
 
+The6November instruction-delivery controls still fail native frontend semantic
+readback; one public instruction event was explicitly rejected on that native
+route. A separate public GPT-Live WebRTC creation primitive is prepared with
+owner instructions/Responses or explicit client delegation and no retries. It
+is not mounted, selected or account-qualified. Continue authenticated durable
+creation, original-media/history, sideband/backend and graceful-close integration
+before its real public comparison; preserve665/Qwen as separate modes. Exact
+controls, bounds and missing receiving work are recorded in the
+[public transport boundary](interaction-gpt-live-practices.md#instruction-delivery-and-the-public-transport-boundary--6november2026).
+
 Historical659 qualification covers ordered native final sources and completion-before-close
 carry, with a short source-backed availability notice followed by corrected recall
 through three visits/two explicit reconnects. The same original receiver and

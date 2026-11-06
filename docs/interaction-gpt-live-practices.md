@@ -76,6 +76,61 @@ while redesigning their transport-specific implementation where necessary.
 
 ## Decisions from inspected sources
 
+### Instruction delivery and the public transport boundary —6November2026
+
+Two additional native controls used the same isolated owner/thread, not human
+captures or production defaults. Moving the sole owner brief to `prompt` while
+omitting automatic startup context still produced the canonical identity answer
+Soy ChatGPT. A distinct prompt-only control word was unavailable when asked by
+voice. Effective-cwd native config read exposed no nonempty realtime model,
+backend-prompt or startup-context override. These results do not identify which
+layer drops/overrides the instructions or prove an immutable model restriction.
+
+A separate test sent one documented `session.instructions.append` event over
+the existing native media data channel. It received `invalid_request_error` /
+`invalid_value`, without the matching acknowledgement. No synthetic question was
+then submitted and no uncertain append was retried. This is one rejected event
+shape on the native route, not a claim that the entire public API is unsupported.
+Terminal originals/receipts and negative outcomes remain retained. No tested
+identity/model/context change was selected. Keep the665 runtime and full roadmap.
+
+The [official prompting split](https://developers.openai.com/api/docs/guides/live-migration#review-both-prompts)
+puts conversational identity in frontend instructions and procedures/tools in
+the backend. The [public WebRTC connection](https://developers.openai.com/api/docs/guides/voice-webrtc?api=live)
+starts with JSON at `POST /v1/live/sessions`, not the Realtime calls endpoint or
+the native Codex payload. `dashboard/openai_live.py` prepares that separate
+transport: owner-only instructions, explicit Responses backend/model/tools or
+client delegation, negotiated media, opaque session ID and SDP answer. Responses
+remains the first public comparison; client delegation is explicit when existing
+native execution ownership requires it. The old `OpenAIDialogue` Realtime adapter
+is not this implementation and is not silently promoted.
+
+Owner-selected provider options remain intact: startup voice/custom voice,
+role-bearing initial input, frontend event permissions, acknowledgement pacing
+and Responses reasoning/output/tool choices are not reduced to the old adapter's
+feature set. They remain inside the bounded owner-only JSON configuration; the
+browser cannot supply or override that specification.
+
+This transport is **not mounted or selected**. It uses a separately configured
+private project-key file, never discovers/reuses Codex login files, and refuses
+login-token/JSON material. One POST has no automatic retry, redirect or endpoint
+fallback. Lost, malformed, oversized,5xx or timeout results remain unconfirmed;
+numeric HTTP rejection and unknown creation are distinct. The creation owner
+must persist its intent before calling; an in-process attempt guard is not a
+durable admission journal. Response storage is at most128KiB; offer64KiB,
+owner instructions8KiB and complete session configuration32KiB. Synthetic HTTP
+tests cover these boundaries without asserting account access or model behavior.
+
+Remaining public integration: existing authenticated/frozen input and durable
+creation ownership, original-media/history recovery, sideband/transcript events,
+graceful close/final usage, existing result/question presentation and preservation
+of native work when voice ends. Establish actual project access through its
+supported credential route only when that integration is ready; none is currently
+configured. Then qualify instruction readback, a grounded task/backend return,
+provider-managed long-session behavior and useful speech through replacements.
+No token export, API-key request, provider call or receiving change follows from
+this prepared transport. Do not count it as a working public Avatar.
+
 ### Provider-managed lifecycle and durable voice instructions —6November2026
 
 The current [GPT-Live session guide](https://developers.openai.com/api/docs/guides/live-conversations#manage-longer-conversations)
