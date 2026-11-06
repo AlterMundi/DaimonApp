@@ -12,8 +12,28 @@ from dashboard.provider import Provider, ProviderUnavailable
 from stopping_io import Stopping
 
 
+class LongHistory(Stopping):
+    status_override=None
+    wrong_thread=False
+
+    def handle_extra_rpc(self,request,send):
+        p=request.get('params',{});method=request.get('method')
+        if method=='thread/read' and (self.status_override or self.wrong_thread):
+            send({'id':request['id'],'result':{'thread':{
+                'id':'another-thread' if self.wrong_thread else p['threadId'],
+                'status':{'type':self.status_override or 'idle'}}}});return True
+        if method=='thread/turns/list' and not self.holding.get(p['threadId']):
+            # The production integrator has more than six pages of completed
+            # turns. No finite recent window can establish its current idleness.
+            offset=int(p.get('cursor') or 0)
+            send({'id':request['id'],'result':{'data':[
+                {'id':f'historical-{offset+i}','status':'completed'} for i in range(20)],
+                'nextCursor':str(offset+20)}});return True
+        return super().handle_extra_rpc(request,send)
+
+
 def qualify(binary):
-    j=Stopping(str(Path(binary).resolve()))
+    j=LongHistory(str(Path(binary).resolve()))
     try:
         with j.config.open('a')as f:
             f.write('\n[interaction]\nhuman_id=100\nchat_id=100\ntopic_id=7\n')
@@ -71,9 +91,25 @@ def qualify(binary):
         j.finish(frozen['native_thread'],physical)
         j.wait(lambda:j.has('Initial goal turn delivered.',7))
         assert provider.codex_voice_collect(frozen,physical)['state']=='not_current'
+        checkpoint=len(j.rpc)
         assert provider.codex_voice_current(frozen)is None
+        observed=j.rpc[checkpoint:]
+        assert any(r.get('method')=='thread/read' for r in observed)
+        assert not any(r.get('method')=='thread/turns/list' for r in observed)
+        # Unknown/active observations and a foreign idle response must never
+        # turn an incomplete bounded scan into a claim that no work exists.
+        for status in ('active','notLoaded'):
+            j.status_override=status
+            try:provider.codex_voice_current(frozen)
+            except ProviderUnavailable:pass
+            else:raise AssertionError('Incomplete active/unknown history was treated as idle')
+        j.status_override=None;j.wrong_thread=True
+        try:provider.codex_voice_current(frozen)
+        except ProviderUnavailable:pass
+        else:raise AssertionError('Foreign idle observation was accepted')
+        j.wrong_thread=False
         assert j.row('SELECT count(*) FROM stop_operations')==[(0,)]
-        print('PASS native voice owner binding and exact collector restart without input replay, duplicate worker, goal mutation or Stop')
+        print('PASS native voice owner binding, long idle history and exact collector restart without input replay, duplicate worker, goal mutation or Stop')
     finally:j.close()
 
 

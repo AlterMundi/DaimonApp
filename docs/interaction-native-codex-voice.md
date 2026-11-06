@@ -4,6 +4,22 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Startup with a long idle integrating history
+
+The receiving owner reproduced `Native active turn selection incomplete` during
+the pre-microphone work observation. Core reported the exact integrating thread
+as `idle`, but its completed history exceeded the six-page recent-turn bound.
+This error pauses startup before native voice starts. The historical phone visits
+have the same unstarted shape but did not retain their exact failure reason.
+
+Current-work discovery first reads the exact thread's current owner status with
+`includeTurns:false`. An authenticated `idle` result establishes no active writer
+without reading historical turns. Active/unknown states retain the existing
+bounded search and refuse incomplete observations; a foreign thread is rejected.
+This neither cancels work nor resumes a goal. Do not raise history/context limits
+or turn a failed observation into an empty-work claim. Source qualification and
+actual receiving/device acceptance remain separate.
+
 ## Recall existing native results without repeating their work
 
 ### Completed work and shortened speech excerpts
