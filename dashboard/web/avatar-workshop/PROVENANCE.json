@@ -4,7 +4,7 @@
   "handoff_revision": "990dce9",
   "author": "Oliva for Ani",
   "license": "MIT; included LICENSE",
-  "selection": "Rendering/model/design validation modules and original firefly example only; no school/user media, viewer state, history, auth or activation settings.",
+  "selection": "Original wardrobe editor, inert model/design validator, rendering closure and authored firefly example; no school/user media, viewer state, histories, credentials or activation settings.",
   "files": {
     "experiments/school-avatar-quest/gallery.mjs": "9a0ee1fafdb1e47e3e654f6147b9258f58ae7d7eb2b0172556098c9faea84566",
     "experiments/school-avatar-quest/color.mjs": "3befc2a3a7e64be3be65fabde96f23447206623ffeb3819e89841d9cfbb30c69",
@@ -34,6 +34,37 @@
   "receiving_adaptations": [
     "app.mjs: authenticated lazy revision storage, explicit use/cancel and account copy",
     "index.html: account copy and explicit use/cancel; no unvendored laboratory",
-    "storage.mjs: parent-owned authenticated API bridge; no IndexedDB authority"
-  ]
+    "storage.mjs: parent-owned authenticated API bridge; no IndexedDB authority",
+    "style.css: existing local Space Grotesk font face",
+    "wardrobe.css: receiving appearance roles, contrast and narrow layout; authored art palette preserved"
+  ],
+  "receiving_hashes": {
+    "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
+    "experiments/avatar-studio/abstract.mjs": "ebf4e5ca24a3a3c1ecdb51682f8e90f328e584fc7c51345ebecc53763d2cdbcd",
+    "experiments/avatar-studio/characters.mjs": "aad43a83e27bd64f6874438e732d089e9375740b4c29a259ba634e693978eea9",
+    "experiments/avatar-studio/engine.mjs": "3629d3ea944d61a8c7acf5ea8862bf76bad1de788bbe83fdf6c758f50fa6dfb8",
+    "experiments/avatar-studio/geometry.mjs": "e37586c691e4a028d48738fb9d7b9adff01d6ae0c032c44d22e1334dc201e03a",
+    "experiments/avatar-studio/motion.mjs": "0541a3643aa8a0d6fef62b5a50dd05ea8fc1fb035e566c312fc134a0a429e79f",
+    "experiments/avatar-studio/rig.mjs": "d0b0dc08f5bf7356b6bc1a6a24e52bdedc54846f7ebabebcfdeba74034b99ccd",
+    "experiments/avatar-studio/scenes.mjs": "01af916bd28ed6cbbcbb0c1bc2fdf876a3b68d51ef92ab02f614c6d1c99e6155",
+    "experiments/school-avatar-quest/app.mjs": "133d366e718f96fdc9180e6c6f99e991d685847c014a8b1a96bd6a215cb9a60e",
+    "experiments/school-avatar-quest/color.mjs": "3befc2a3a7e64be3be65fabde96f23447206623ffeb3819e89841d9cfbb30c69",
+    "experiments/school-avatar-quest/gallery.mjs": "9a0ee1fafdb1e47e3e654f6147b9258f58ae7d7eb2b0172556098c9faea84566",
+    "experiments/school-avatar-quest/image-avatar.mjs": "e4bbba0b606f4fd1d483467fee1608d13f95399a23155afe82b0d4e502a6e8d8",
+    "experiments/school-avatar-quest/index.html": "09ddadcdf853e5684731da1cc9e397f34f4227cdd8941a3184392076fe1360d6",
+    "experiments/school-avatar-quest/model.mjs": "ad38da25188a6cf13e58f1a04c05fb205bdaab73da565f7cd0a435ee296f8924",
+    "experiments/school-avatar-quest/precision-renderer.mjs": "8b56bc1c7d40cce2d11ec062b37c473bd03052b5d9047718da969710987ce3f6",
+    "experiments/school-avatar-quest/props.mjs": "c4f1c00aa79839fda4fa8d40684aec64f6be358859cc592a42703117f4cebbb7",
+    "experiments/school-avatar-quest/storage.mjs": "e57a346a49a698d49b758537a7b160c4a81372aded79dc0d6c22cd0424697a49",
+    "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
+    "experiments/school-avatar-quest/surface-classic-masters.mjs": "cd0d37eb9f557fe868c3837e2cf80e93912eb6ce0ce3f144af6cbc19facbda69",
+    "experiments/school-avatar-quest/surface-organic-masters.mjs": "7db2813db71a341883fa46e5f25f0c195d0cf3c8d75e283470553068519608d5",
+    "experiments/school-avatar-quest/surface-renderer.mjs": "8ea6d9a24c23ae1c9f9902e666c3141d1d87feb6bdb46dba30424eacbac15ab0",
+    "experiments/school-avatar-quest/wardrobe.css": "9c432d8ffaee892cfa19f350fe4a562effbd7d8aaca0dd3cc12580a02848b5da",
+    "experiments/school-avatar-quest/wardrobe.mjs": "bccefeb741f6f7d837ded3762f3008b6606f01f66d279787ef6613301e5585bb",
+    "renderer.mjs": "041d542b4b3002edae3afcb7035476d8d44661203c5f38f68ac924d8a35fbd0f",
+    "skills/ascii-avatar-author/assets/example.avatar.json": "f8aae8c3186762828994c16ed5e2bb04f6698c2a68c9cfd75098a74f3a1a36d6",
+    "skills/ascii-avatar-author/scripts/model-runtime.mjs": "f895c7be40dceea5283b2999842fbb8a8283f35971c5805297d6c2905beea73d",
+    "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa"
+  }
 }
