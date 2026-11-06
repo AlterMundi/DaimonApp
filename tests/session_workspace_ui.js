@@ -18,7 +18,7 @@ function boot(){
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
-  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false;
+  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,now=Date.now();
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
@@ -27,10 +27,11 @@ function boot(){
     if(route==='interaction/sessions')return {schema:'daimon.session-workspace/v1',sessions,truncated};
     const url=new URL(route,'https://fixture.invalid');
     if(held){const hold=held;held=undefined;return hold;}
-    if(failHistory)throw Error('Synthetic history connection lost');
-    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,has_earlier:false,more:false};
+    if(historyFailures.length)throw Object.assign(Error('Synthetic replaced history'),{status:historyFailures.shift()});
+    if(failHistory)throw Object.assign(Error('Synthetic history connection lost'),{status:typeof failHistory==='number'?failHistory:undefined});
+    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
   }
-  vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error});
+  vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:{now:()=>now}});
   const control=window.SessionWorkspace.mount({timeline,api,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
     onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
@@ -39,7 +40,7 @@ function boot(){
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
   return {root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
-    failHistory:value=>{failHistory=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
+    failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
@@ -105,6 +106,24 @@ function boot(){
   assert(broken.root.textContent.includes('Retained answer'));
   assert.equal(broken.byLabel('Retry reading this conversation').hidden,true);
   assert.equal(broken.control.capture().reference.source,'session:7','Reading retry preserves the selected destination');
+  const automatic=boot();await automatic.control.refresh('binding');automatic.failHistory(true);
+  automatic.byText('Busy work').click();await tick();automatic.failHistory(false);
+  automatic.advance(5001);await automatic.control.refresh('binding');await tick();
+  assert(automatic.root.textContent.includes('Retained answer'),'An existing metadata event recovers a failed initial read without a timer or click');
+  assert.equal(automatic.control.capture().reference.source,'session:7');
+  const replaced=boot();await replaced.control.refresh('binding');replaced.failOnce(409);
+  replaced.byText('Busy work').click();await tick();await tick();
+  assert(replaced.root.textContent.includes('Retained answer'),'A changed file gets one fresh read automatically');
+  assert.equal(replaced.reads.filter(route=>route.startsWith('interaction/sessions/b?')).length,2);
+  replaced.failHistory(409);await replaced.control.refresh('binding');await tick();await tick();
+  const bounded=replaced.reads.length;await replaced.control.refresh('binding');await tick();
+  assert.equal(replaced.reads.length,bounded+1,'A persistent conflict cannot cause a tight retry loop');
+  assert.equal(replaced.control.capture().reference.source,'session:7','File recovery never changes the frozen input target');
+  const scanning=boot();await scanning.control.refresh('binding');scanning.scanPage(true);
+  scanning.byText('Busy work').click();await tick();await scanning.control.refresh('binding');await tick();
+  assert(scanning.reads.at(-1).includes('after=150')&&scanning.reads.at(-1).includes('scan=true'));
+  scanning.byLabel('Read earlier messages').click();await tick();
+  assert(scanning.reads.at(-1).includes('before=50')&&scanning.reads.at(-1).includes('scan=true'));
   // Late selected-history reads cannot appear under another session's heading.
   const release=f.holdHistory();f.byText('Busy work').click();f.byText('Earlier work').click();await tick();
   release({schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{text:'Stale other session',kind:'message',role:'assistant',id:'stale',position:1,next_position:2}],before:1,after:2});await tick();

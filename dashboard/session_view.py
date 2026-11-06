@@ -55,8 +55,10 @@ def _event(record,technical):
     return None
 
 
-def read(path,native,*,technical=False,revision=None,before=None,after=None,event=None,text_offset=0,expected_file=None):
-    if type(technical) is not bool or sum(v is not None for v in (before,after,event))>1:
+def read(path,native,*,technical=False,revision=None,before=None,after=None,event=None,text_offset=0,expected_file=None,scan=False):
+    if (type(technical) is not bool or type(scan)is not bool
+            or scan and before is None and after is None
+            or sum(v is not None for v in (before,after,event))>1):
         raise ValueError('Select one native conversation window')
     for offset in (before,after,event,text_offset):
         if offset is not None and (type(offset) is not int or not 0<=offset<=2**63-1):
@@ -94,6 +96,7 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
                 if boundary<0 and tail>start_of_events:
                     raise ValueError('Incomplete native record exceeds the read bound')
                 end=tail+boundary+1 if boundary>=0 else start_of_events
+        skipped=0;before_scan=False;after_scan=False;scan_before=None
         if event is not None:
             if not start_of_events<=event<end:raise ValueError('Selected event is outside native history')
             if event>start_of_events:
@@ -103,13 +106,13 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
         elif after is not None:
             if not start_of_events<=after<=end:raise ValueError('Native history cursor is unavailable')
             start=after
-            if start>start_of_events:
+            if start>start_of_events and not scan:
                 stream.seek(start-1)
                 if stream.read(1)!=b'\n':raise ValueError('Select an exact native record boundary')
         else:
             limit=end if before is None else before
             if not start_of_events<=limit<=end:raise ValueError('Earlier native history cursor is unavailable')
-            if limit>start_of_events:
+            if limit>start_of_events and not scan:
                 stream.seek(limit-1)
                 if stream.read(1)!=b'\n':raise ValueError('Select an exact native record boundary')
             end=limit;start=max(start_of_events,end-WINDOW)
@@ -120,15 +123,41 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
                 stream.seek(preceding);prefix=stream.read(start-preceding)
                 boundary=prefix.rfind(b'\n')
                 if boundary<0 and preceding>start_of_events:
-                    raise ValueError('Native record exceeds the read bound')
-                start=preceding+boundary+1 if boundary>=0 else start_of_events
+                    # The latest window starts inside a huge record (for
+                    # example an inline image). Skip only its fragment, not
+                    # the readable messages after it. Earlier scans progress
+                    # through that record without loading it into memory.
+                    scan_before=preceding;before_scan=True;skipped+=1
+                    stream.seek(start);fragment=stream.read(end-start)
+                    boundary=fragment.find(b'\n')
+                    start=start+boundary+1 if boundary>=0 else end
+                else:start=preceding+boundary+1 if boundary>=0 else start_of_events
         latest=after is None and event is None
-        stream.seek(start);items=deque();sizes=deque();consumed=0;response_bytes=0;skipped=0
+        stream.seek(start);items=deque();sizes=deque();consumed=0;response_bytes=0
         scan_bound=WINDOW+MAX_LINE if latest else WINDOW
+        if after is not None and scan and start>start_of_events:
+            stream.seek(start-1);boundary=stream.read(1)==b'\n';stream.seek(start)
+            if not boundary:
+                fragment=stream.read(min(WINDOW,end-start));consumed+=len(fragment)
+                following=fragment.find(b'\n');skipped+=1
+                if following>=0:stream.seek(start+following+1);consumed=following+1
+                else:after_scan=True
         while stream.tell()<end and consumed<scan_bound and (latest or len(items)<MAX_ITEMS):
             position=stream.tell();line=stream.readline(min(MAX_LINE+1,end-position))
             if len(line)>MAX_LINE or not line.endswith(b'\n'):
-                raise ValueError('Native record exceeds the read bound or changed while reading')
+                if event is not None:raise ValueError('Selected native record exceeds the read bound')
+                skipped+=1;consumed+=len(line)
+                # Continue past a complete oversized record if its newline is
+                # within this page's remaining byte allowance. Otherwise return
+                # a scan cursor, never reinterpret its JSON fragment as a row.
+                if not line.endswith(b'\n') and stream.tell()<end:
+                    at=stream.tell();tail=stream.read(min(end-at,max(0,scan_bound-consumed)))
+                    boundary=tail.find(b'\n')
+                    if boundary>=0:stream.seek(at+boundary+1);consumed+=boundary+1
+                    else:consumed+=len(tail);after_scan=True
+                elif not line.endswith(b'\n'):after_scan=True
+                if latest and not items and scan_before is None:scan_before=position
+                continue
             consumed+=len(line)
             try:record=json.loads(line)
             except (ValueError,UnicodeError):skipped+=1;continue
@@ -151,11 +180,13 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
             if event is not None:break
         following=stream.tell()
         if latest and items:start=items[0]['position']
+        if scan_before is not None:start=scan_before
         fresh=os.fstat(stream.fileno())
         if (fresh.st_dev,fresh.st_ino)!=(info.st_dev,info.st_ino) or fresh.st_size<info.st_size:
             raise ValueError('Native history changed while reading')
     return {'schema':'daimon.session-view/v1','revision':identity,'technical':technical,'items':list(items),
-        'before':start,'after':following,'has_earlier':start>start_of_events,
+        'before':start,'after':following,'before_scan':before_scan,'after_scan':after_scan,
+        'has_earlier':start>start_of_events,
         'more':following<end,'skipped_records':skipped,
         'role_meaning':'Harness message roles; input can include attributed context, not verified human speech.',
         'source_meaning':'Read-only selected native history; no work, routing, hearing or hidden reasoning is established.'}

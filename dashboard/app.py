@@ -902,14 +902,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     @app.get('/api/interaction/sessions/{ident}')
     async def conversation_selected_session(request: Request,ident: str,technical: bool=False,
             revision: str|None=None,before: int|None=None,after: int|None=None,
-            event: int|None=None,text_offset: int=0):
+            event: int|None=None,text_offset: int=0,scan: bool=False):
         session=await authorize_async(request)
         if not workspace_granted(session):
             raise HTTPException(403,'This device has no complete session workspace grant')
         try:
             from starlette.concurrency import run_in_threadpool
             result=await run_in_threadpool(provider.session_view,ident,technical=technical,
-                revision=revision,before=before,after=after,event=event,text_offset=text_offset)
+                revision=revision,before=before,after=after,event=event,text_offset=text_offset,scan=scan)
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(409,'Selected conversation changed or is unavailable; select it again') from None
         session=await authorize_async(request)
