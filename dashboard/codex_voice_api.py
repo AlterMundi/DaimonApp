@@ -233,7 +233,10 @@ def install(app,config,provider,authorize,origins):
                 if logical and admission is None:
                     # Permission may be granted first, but capture/WebRTC input
                     # must not begin before this one server-owned deadline.
-                    raw=await asyncio.wait_for(socket.receive_text(),20)
+                    # A human microphone permission dialog is not an SDP
+                    # request. Keep it inside the existing whole-setup bound,
+                    # without starting capture's deadline or the offer timer.
+                    raw=await socket.receive_text()
                     if len(raw)>512:raise ValueError('Microphone readiness exceeds bound')
                     marker=json.loads(raw);await startup_observation(marker)
                     if marker!={'type':'capture'}:

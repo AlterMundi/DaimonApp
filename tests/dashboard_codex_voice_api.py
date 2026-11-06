@@ -207,6 +207,45 @@ class Mounted(unittest.TestCase):
         self.assertFalse(Native.opened[0].started)
         self.assertEqual(self.owner.collected,[])
 
+    def test_microphone_permission_wait_does_not_consume_offer_timeout(self):
+        # Accelerate only the SDP timeout; the permission dialog has not yet
+        # admitted capture or sent an offer and can legitimately outlast it.
+        wait_for=asyncio.wait_for
+        async def accelerated(awaitable,timeout):
+            return await wait_for(awaitable,.02 if timeout==20 else timeout)
+        with patch('dashboard.codex_voice_api.asyncio.wait_for',accelerated),self.socket()as socket:
+            socket.send_json({**self.meta,'logical_visit':True})
+            self.assertEqual(socket.receive_json()['type'],'prepared')
+            time.sleep(.06)
+            history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+            value=history.read(self.visit,100,'a'*64)
+            self.assertNotIn('native_start',value)
+            self.assertNotIn('admission',value)
+            self.assertFalse(Native.opened[0].started)
+            socket.send_json({'type':'capture'})
+            ready=socket.receive_json();self.assertEqual(ready['type'],'capture_ready')
+            self.assertGreater(ready['admission']['remaining_seconds'],299)
+            socket.send_json({'type':'offer','sdp':'v=0 delayed-permission-offer'})
+            self.assertEqual(socket.receive_json()['type'],'answer')
+            self.assertEqual(socket.receive_json()['type'],'transcript')
+            self.assertTrue(self.native_closed(socket)['successor_ready'])
+
+    def test_microphone_permission_wait_retains_whole_setup_bound(self):
+        timeout=asyncio.timeout
+        def accelerated(delay):
+            return timeout(.06 if delay==360 else delay)
+        with patch('dashboard.codex_voice_api.asyncio.timeout',accelerated),self.socket()as socket:
+            socket.send_json({**self.meta,'logical_visit':True})
+            self.assertEqual(socket.receive_json()['type'],'prepared')
+            self.assertEqual(socket.receive_json()['type'],'review')
+            self.assertEqual(socket.receive_json()['type'],'closed')
+        value=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits').read(self.visit,100,'a'*64)
+        self.assertEqual(value['native_start'],'not_attempted')
+        self.assertEqual(value['recordings'],[])
+        self.assertNotIn('admission',value)
+        self.assertFalse(Native.opened[0].started)
+        self.assertEqual(self.app.state.voice_active,set())
+
     def test_browser_startup_failure_is_bounded_owned_and_never_starts_native_voice(self):
         with self.socket()as socket:
             socket.send_json({**self.meta,'logical_visit':True});self.assertEqual(socket.receive_json()['type'],'prepared')
