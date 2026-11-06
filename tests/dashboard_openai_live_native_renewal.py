@@ -49,6 +49,23 @@ class Renewal(unittest.TestCase):
         self.assertEqual(seen['state'],'already_forwarded');self.assertEqual(seen['forwarded_visit'],target)
         self.assertEqual(len(self.f.updates),1,'A third connection must not replay the second connection append')
 
+    def test_explicit_disconnected_replacement_keeps_late_work_without_claiming_finalization(self):
+        f=self.f
+        value=f.visits.read(self.current,100,f.owner);value['backend_mode']='native';f.visits._write(value)
+        f.visits.end_capture(self.current,100,f.owner['binding'])
+        offer=f.visits.replacement_offer(100,f.owner)
+        self.current=str(uuid.uuid4())
+        f.visits.prepare(self.current,100,f.owner,backend_mode='native',replacement=offer)
+        f.create(ident=self.current)
+        self.assertEqual(f.visits.native_return_origin(self.current,100,f.owner),
+            {'visit':self.origin,'delegation':f.delegation})
+        self.assertEqual(self.emit()['state'],'sent');self.ack()
+        self.replacement()
+        self.assertEqual(self.emit()['state'],'already_forwarded')
+        self.assertEqual(len(f.writes),1);self.assertEqual(len(f.updates),1)
+        old=f.visits.read(self.origin,100,f.owner)
+        self.assertEqual(old['state'],'created');self.assertNotIn('finalization',old)
+
     def test_long_result_continues_exact_cursor_across_repeated_replacements(self):
         f=self.f;f.text='Río Cobre es el resultado; seguimos por el siguiente tramo. '*35
         first=f.emit();f.acknowledge();self.replacement()

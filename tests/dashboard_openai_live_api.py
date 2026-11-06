@@ -136,6 +136,34 @@ class Mounted(unittest.TestCase):
         install(app,config,self.owner,authorize,['https://example.test'])
         return TestClient(app,base_url='https://example.test')
 
+    def test_disconnected_native_visit_requires_review_then_fresh_authenticated_action_before_mic(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        history=LiveCreations(self.state/'public-live-visits');owner=self.owner.public_live_binding('a'*64)
+        old=str(uuid.uuid4());history.prepare(old,100,owner,backend_mode='native')
+        history.create(old,100,owner,'v=0 offer',session_spec('Synthetic owner',client_delegation=True),Client('synthetic'))
+        history.end_capture(old,100,owner['binding'])
+        with self.choice_client() as client:
+            def socket():return client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
+            self.meta['backend']='native'
+            with socket() as ws:
+                ws.send_json(self.meta);review=ws.receive_json()
+                self.assertEqual(review['type'],'unconfirmed');self.assertIn('Reconnect voice',review['message'])
+                self.assertEqual(review['replacement']['id'],old)
+            self.assertFalse((history.root/(self.ident+'.json')).exists())
+            self.assertEqual(sum(c.creations for c in Client.instances),1)
+            self.meta={**self.meta,'id':str(uuid.uuid4()),'replacement':review['replacement']};self.ident=self.meta['id']
+            with socket() as ws:
+                ws.send_json(self.meta);ready=ws.receive_json()
+                self.assertEqual(ready['type'],'prepared')
+                self.assertEqual(sum(c.creations for c in Client.instances),1,'Review never performs a billable POST')
+                ws.send_json({'type':'offer','sdp':'v=0 new offer'})
+                self.assertEqual(ws.receive_json()['type'],'answer');self.assertEqual(ws.receive_json()['event']['type'],'session.started')
+                self.close(ws)
+            before=history.read(old,100,owner)
+            self.assertEqual(before['state'],'created');self.assertNotIn('finalization',before)
+            self.assertEqual(before['replacement_review']['target'],self.ident)
+            self.assertEqual(sum(c.creations for c in Client.instances),2)
+
     def test_explicit_native_choice_does_not_replace_the_existing_responses_mode(self):
         self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
         with self.choice_client() as client:

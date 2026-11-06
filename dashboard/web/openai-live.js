@@ -12,6 +12,7 @@ window.PublicLiveConversation=(()=>{
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
+    let replacementReview;
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(message?{message}:{})});
@@ -173,13 +174,14 @@ window.PublicLiveConversation=(()=>{
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
           ...(backend===undefined?{}:{backend}),
+          ...(replacementReview?.binding===binding&&replacementReview?.backend===backend?{replacement:replacementReview.value}:{}),
           ...(headers().Authorization?{authorization:headers().Authorization}:{})}));};
         transport.onmessage=event=>{
           if(owned!==epoch)return;
           try{
             if(typeof event.data!=='string'||event.data.length>1024*1024)throw Error('Voice event exceeds bound');
             const value=JSON.parse(event.data);
-            if(value.type==='prepared')preparedResolve(value);
+            if(value.type==='prepared'){replacementReview=undefined;preparedResolve(value);}
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event')onItem({visit,item:value.event,public_live:true});
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
@@ -187,6 +189,9 @@ window.PublicLiveConversation=(()=>{
             });
             else if(value.type==='finishing'){if(!closing)void hold(value.message||'Finishing voice; checking pending work.');}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
+              if(backend==='native'&&value.replacement&&/^[a-f0-9-]{36}$/.test(value.replacement.id||'')
+                  &&/^[a-f0-9]{64}$/.test(value.replacement.revision||''))
+                replacementReview={binding,backend,value:value.replacement};
               completionMessage=value.message||(value.type==='closed'?'Voice ended.':undefined);
               closedAck?.(value.type==='closed');abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
               if(!closing){socket=undefined;transport.close();void hold(value.message||'Voice paused. Your original audio is kept.');}

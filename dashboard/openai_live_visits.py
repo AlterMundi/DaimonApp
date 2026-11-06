@@ -71,6 +71,18 @@ class LiveCreations:
             if (not isinstance(call, dict) or not _text(call.get('session_id'), 1024)
                     or not _text(call.get('sdp'), 65536) or not call['sdp'].startswith('v=0')):
                 raise ValueError('Public Live creation receipt is unavailable')
+        if 'replacement_review' in value:
+            review=value['replacement_review']
+            if (not isinstance(review,dict) or set(review)!={'target','revision','reviewed_at','final_usage'}
+                    or not isinstance(review.get('revision'),str) or len(review['revision'])!=64
+                    or any(c not in '0123456789abcdef' for c in review['revision'])
+                    or type(review.get('reviewed_at')) not in (int,float)
+                    or not math.isfinite(review['reviewed_at']) or review['final_usage']!='unconfirmed'
+                    or value.get('backend_mode')!='native' or value['state'] not in ('created','closed')
+                    or value.get('admission',{}).get('ended') is not True):
+                raise ValueError('Public Live replacement review is unavailable')
+            self._ident(review['target'])
+        if 'replaces' in value:self._ident(value['replaces'])
         return value
 
     @staticmethod
@@ -135,7 +147,49 @@ class LiveCreations:
             raise ValueError('Public Live receipt belongs to another conversation')
         return value
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None):
+    def _revision(self, value):
+        path=self.root/(value['id']+'.events')
+        source=hashlib.sha256(private_bytes(path,value.get('source_bound',0))).hexdigest() if path.exists() else None
+        return hashlib.sha256(json.dumps([value,source], sort_keys=True, allow_nan=False,
+            ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+    def _active(self, records):
+        by_id = {v['id']:v for v, _ in records}
+        active = []
+        for value, _ in records:
+            if value['state'] not in self.unsettled:continue
+            replacement = value.get('replacement_review')
+            if replacement:
+                target = by_id.get(replacement['target'])
+                if (target is None or target.get('replaces') != value['id']
+                        or target['owner'] != value['owner']):
+                    raise ValueError('Replacement admission is unconfirmed; preserve its exact intent')
+                continue
+            active.append(value)
+        return active
+
+    def return_origin_eligible(self, value):
+        """Retired transport is distinct from trusted provider finalization."""
+        if value['state']=='closed':return True
+        review=value.get('replacement_review')
+        if value['state']!='created' or not review:return False
+        target=self._read(review['target'])
+        return target.get('replaces')==value['id'] and target['owner']==value['owner']
+
+    def replacement_offer(self, human, frozen):
+        """Read-only review; never opens voice, ends capture or dispatches work."""
+        owner=self._owner(human,frozen)
+        with history_lock(self.root / '.lock'):
+            records,_=self._records()
+            active=[v for v in self._active(records) if v['owner']['human']==human]
+            if len(active)!=1:return None
+            value=active[0]
+            if (value['owner']!=owner or value['state']!='created'
+                    or value.get('backend_mode')!='native'
+                    or value.get('admission',{}).get('ended') is not True):return None
+            return {'id':value['id'],'revision':self._revision(value)}
+
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
@@ -149,7 +203,20 @@ class LiveCreations:
             if self._path(ident).exists():
                 raise ValueError('An existing microphone admission cannot be restarted')
             records, other = self._records()
-            active = [v for v, _ in records if v['state'] in self.unsettled]
+            active = self._active(records)
+            reviewed=None
+            if replacement is not None:
+                if (backend_mode!='native' or resume_spec is not None
+                        or not isinstance(replacement,dict) or set(replacement)!={'id','revision'}):
+                    raise ValueError('Select an explicit fresh native replacement')
+                reviewed=self._read(replacement['id'])
+                self._matches(reviewed,owner)
+                if (reviewed['id']==ident or reviewed not in active or reviewed['state']!='created'
+                        or reviewed.get('backend_mode')!='native'
+                        or reviewed.get('admission',{}).get('ended') is not True
+                        or self._revision(reviewed)!=replacement['revision']):
+                    raise ValueError('The disconnected visit changed; review its current state')
+                active=[v for v in active if v['id']!=reviewed['id']]
             if any(v['owner']['human'] == human for v in active) or len(active) >= self.max_active:
                 raise LiveUnavailable('prior_creation_needs_review')
             charged = other + sum(self._reserved(v,size) for v,size in records)
@@ -161,8 +228,9 @@ class LiveCreations:
                 'admission':{'epoch':self.epoch, 'expires':time.monotonic()+seconds, 'ended':False}}
             if backend_mode is not None:value['backend_mode']=backend_mode
             if backend_mode=='native':
-                previous=[v for v,_ in records if v['owner']==owner and v['state']=='closed'
+                previous=[v for v,_ in records if v['owner']==owner and self.return_origin_eligible(v)
                           and v.get('backend_mode')=='native']
+                if reviewed is not None:previous.append(reviewed)
                 if previous:
                     parent=max(previous,key=lambda v:(v['created_at'],v['id']))
                     value['native_continuation_from']=parent['id']
@@ -179,6 +247,13 @@ class LiveCreations:
                     parent=tips[0]
                     value['source_session_id']=self._fork_source(parent,owner,value['configuration_sha256'])
                     value['continuation_from']=parent['id']
+            if reviewed is not None:
+                # Claim before destination admission. A partial two-file write
+                # remains held; neither creation nor native work is replayable.
+                value['replaces']=reviewed['id']
+                reviewed['replacement_review']={'target':ident,'revision':replacement['revision'],
+                    'reviewed_at':time.time(),'final_usage':'unconfirmed'}
+                self._write(reviewed)
             self._write(value)
             return {'id':ident, 'remaining_seconds':seconds, 'max_input_pcm_bytes':seconds*32000,
                 'continuity':value.get('continuity','fresh'),'continued':value.get('continuation_from') is not None}
@@ -452,7 +527,7 @@ class LiveCreations:
             records,_=self._records()
             # Closure/owner/work proofs establish eligibility. Wall-clock
             # ordering is presentation, not authority to lose a retained job.
-            records=[v for v,_ in records if v['owner']==owner and v['state']=='closed' and v['id']!=ident]
+            records=[v for v,_ in records if v['owner']==owner and self.return_origin_eligible(v) and v['id']!=ident]
             records.sort(key=lambda v:(v['created_at'],v['id']))
             origins=[{'visit':v['id'],'delegation':key} for v in records
                      for key,work in sorted(v['delegations'].items())
@@ -556,7 +631,7 @@ class LiveCreations:
                 value.update(request_sha256=digest, state='creating',configuration_sha256=configuration,store_requested=spec.get('store') is True)
             else:
                 records, other_bytes = self._records()
-                active = [v for v, _ in records if v['state'] in self.unsettled]
+                active = self._active(records)
                 if any(v['owner']['human'] == human for v in active):
                     raise LiveUnavailable('prior_creation_needs_review')
                 if len(active) >= self.max_active:
@@ -608,6 +683,8 @@ class LiveCreations:
 
     @staticmethod
     def _result(value):
+        if value.get('replacement_review'):
+            raise LiveUnavailable('session_retired')
         if value['state'] == 'created':
             return LiveCall(value['call']['session_id'], value['call']['sdp'])
         if value['state'] == 'closed':

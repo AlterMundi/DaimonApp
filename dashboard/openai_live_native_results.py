@@ -38,8 +38,8 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
     authorize()
     with history_lock(history.root / '.lock'):
         value = history.read(origin, human, owner)
-        if origin!=ident and value['state']!='closed':
-            raise ValueError('A previous voice origin must have a trusted closure')
+        if origin!=ident and not history.return_origin_eligible(value):
+            raise ValueError('A previous voice origin needs trusted closure or explicit replacement review')
         work = value['delegations'].get(delegation, {})
         intent = work.get('native_work', {})
         if work.get('target') != 'client' or intent.get('state') != 'observed':
@@ -120,7 +120,7 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
             # Keep one flat reference at the work origin before the destination
             # intent. Any interrupted cross-file commit stays held, never replayed.
             original=history.read(origin,human,owner)
-            if original['state']!='closed':raise ValueError('Voice origin changed')
+            if not history.return_origin_eligible(original):raise ValueError('Voice origin changed')
             inherited=_origin_returns(history,original,human,owner,delegation)
             for target,row in inherited:
                 if (row['source'],row['revision'],row['offset'])==(source,revision,offset):
