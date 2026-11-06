@@ -21,6 +21,7 @@ from .openai_live import OpenAILive, LiveUnavailable, session_spec
 from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
+from .openai_live_seals import request_seal, accept_seal
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
 
@@ -30,7 +31,7 @@ def install(app, config, provider, authorize, origins):
     if selected.get('enabled') is not True:return False
     if (set(selected)-{'enabled','api_key_file','identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in ('api_key_file','identity_file','backend_instructions_file'))
             or type(selected.get('session_seconds',600)) is not int
@@ -42,6 +43,9 @@ def install(app, config, provider, authorize, origins):
     if type(context) is not bool:raise ValueError('Select owner conversation-context access')
     native_originals=selected.get('native_originals',False)
     if type(native_originals) is not bool:raise ValueError('Select explicit native original retention')
+    source_seals=selected.get('source_seals',False)
+    if type(source_seals) is not bool or source_seals and native_originals:
+        raise ValueError('Select explicit source sealing before native enrollment, never both upload paths')
     tools=list(selected.get('backend_tools',()))
     if any(isinstance(tool,dict) and tool.get('name')==NAME for tool in tools):
         raise ValueError('Conversation reader name belongs to the owning adapter')
@@ -189,10 +193,14 @@ def install(app, config, provider, authorize, origins):
                         read_provider=asyncio.create_task(asyncio.to_thread(sideband.receive))
                     if read_browser in done:
                         action=read_browser.result()
-                        if action!={'type':'close'} or closing:raise ValueError('Public voice only accepts one explicit close')
-                        closing=True;close_deadline=asyncio.get_running_loop().time()+30
-                        await asyncio.to_thread(history.end_capture,visit,human,binding)
-                        await send({'type':'finishing','id':visit})
+                        if source_seals and action.get('type')=='source_sealed' and not closing:
+                            receipt=await asyncio.to_thread(accept_seal,history,visit,human,owner,action,provider)
+                            await send({'type':'source_seal_recorded','visit':visit,'seal':receipt})
+                        else:
+                            if action!={'type':'close'} or closing:raise ValueError('Select a matching source acknowledgment or one explicit close')
+                            closing=True;close_deadline=asyncio.get_running_loop().time()+30
+                            await asyncio.to_thread(history.end_capture,visit,human,binding)
+                            await send({'type':'finishing','id':visit})
                         read_browser=asyncio.create_task(message(1024))
                     if not closing:
                         value=await asyncio.to_thread(history.read,visit,human,owner)
@@ -201,6 +209,14 @@ def install(app, config, provider, authorize, origins):
                             closing=True;close_deadline=asyncio.get_running_loop().time()+30
                             await asyncio.to_thread(history.end_capture,visit,human,binding)
                             await send({'type':'finishing','id':visit})
+                        else:
+                            if source_seals and not any(row.get('source_seal',{}).get('state')=='requested'
+                                    for row in value['delegations'].values()):
+                                pending=next((key for key,row in value['delegations'].items()
+                                    if row.get('target')=='client' and 'source_seal' not in row),None)
+                                if pending is not None:
+                                    command=await asyncio.to_thread(request_seal,history,visit,human,owner,pending,provider)
+                                    if command is not None:await send(command)
                     if closing:
                         command=await asyncio.to_thread(history.close_intent,visit,human,owner)
                         if command is not None:await asyncio.to_thread(sideband.send,command)

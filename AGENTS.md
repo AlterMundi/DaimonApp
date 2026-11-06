@@ -62,6 +62,11 @@ Prepared native result returns use exact current canonical revisions and native
 turn/original-request association. Append intent, socket send, context-injection
 ACK, task completion and human hearing are separate observations. Unknown
 appends cannot be resent or skipped to repair speech; preserve their source cursor.
+Prepared source-seal controls are a default-off raw PCM-prefix contract, not an
+utterance-end signal. They reference confirmed existing originals and do not
+choose a backend or start inference. When a work intent has a seal, use only its
+exact acknowledged nonempty source window. Keep first-marker questions narrowed
+until integrated, and never equate provider transcript offsets with local samples.
 The optional managed Responses conversation reader follows the documented
 function-result/continuation lifecycle. Keep owner reads distinct from full DMK
 memory and native work execution. Never replay a retained result/continuation

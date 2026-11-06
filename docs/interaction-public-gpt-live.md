@@ -434,3 +434,54 @@ real model/memory/device acceptance. Automatic result discovery, actual source
 sealing, native late-return/renewal integration and mounted lifecycle completion
 remain unfinished; do not bypass pending-work closure fences merely because a
 source exists.
+
+#### Prepared raw source-seal control
+
+`openai_live.source_seals=true` explicitly opts into recorded-prefix controls;
+the default is off. This flag does not choose a client backend, start ASR/native
+work or change providers. It cannot be combined with upload-time
+`native_originals=true`: the sealed path must select its exact source window
+before native enrollment, rather than enrolling later raw durability chunks as
+new corrections while an earlier request is being prepared.
+
+Within the existing authenticated/CSRF-protected voice visit, only a trusted
+client-delegation source may request a boundary. The server persists a unique
+request and12KiB of receipt space first. The browser synchronously fixes the
+current PCM prefix and flushes it into the existing original-upload pipeline;
+new microphone frames continue in another segment. It acknowledges only after
+all ordinals through that boundary have matching server upload receipts. A
+duplicate request echoes its cached acknowledgment without flushing or uploading
+new audio. Failed originals or changed conversation ownership cannot produce a
+successful acknowledgment and retain ordinary recovery behavior.
+
+The server validates a closed acknowledgment containing only the request ID,
+exclusive recording ordinal and cumulative PCM byte count. It requires every
+server-recorded original in that prefix, exact contiguous ordinals/bytes and no
+interrupted-prefix flag. The resulting receipt references existing original IDs,
+hashes and sizes; it does not copy media. The next task starts after the previous
+boundary. Empty windows are explicit and cannot become native work. Multiple
+trusted client tasks serialize only their short capture boundaries, not native
+execution. The existing32delegation/32recording,600second, local two-store
+20MiB/128record and server storage limits stay unchanged. No background poller,
+provider call or new timeout coordinator is installed.
+
+An unconfirmed request is never re-authored or resent by the server. After reader
+restart, a retained completed receipt is readable, but pending capture cannot be
+silently restarted or declared complete. When a native work intent has a seal,
+it must use that exact acknowledged nonempty ordinal/hash window. Sealing cannot
+retroactively attach another source to a previously admitted native intent.
+
+This establishes a raw capture boundary, **not** a human utterance end. Durability
+chunks can straddle words and several exchanges; provider transcript fragments
+may arrive late. GPT-Live offsets must not be equated with local PCM sample
+positions: recording/connection startup and transport timing differ. Semantic
+formulation, first-acoustic-marker question scope, full source assembly/correlation
+and actual native-mode mounting remain unfinished. Existing pending-work/closure
+fences remain; source acknowledgment is neither task completion nor hearing.
+
+Qualification: eight server seal tests, ten native-work tests including its seal
+fence,27mounted API tests, and browser scenarios covering continued frames,
+duplicate requests, missing uploads, empty capture and changed ownership. The
+actual prepared native owner/SQLite/WAV journey also checks the sealed original
+hash before the one native admission and sourced result return. Provider/media/
+model peers remain synthetic; no paid inference or device acceptance is claimed.

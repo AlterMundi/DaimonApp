@@ -333,6 +333,12 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         active.event(active_visit,provider.human,owner,{'type':'session.delegation.created',
             'event_id':'synthetic-native-work-event','offset_ms':200,
             'delegation':{'id':'synthetic-native-work','target':'client'}})
+        from dashboard.openai_live_seals import request_seal, accept_seal
+        boundary=request_seal(active,active_visit,provider.human,owner,'synthetic-native-work',provider)
+        sealed=accept_seal(active,active_visit,provider.human,owner,{'type':'source_sealed',
+            'request':boundary['request'],'through_ordinal':1,'capture_bytes':len(sample)-44},provider)
+        assert sealed['recordings'][0]['audio_sha256']==acoustic['audio_sha256']
+        assert sealed['work_admitted'] is False
         native_delegate=provider.conversation_foreground_delegate;native_work_calls=[]
         def lost_work_ack(body):
             native_work_calls.append(dict(body));native_delegate(body)

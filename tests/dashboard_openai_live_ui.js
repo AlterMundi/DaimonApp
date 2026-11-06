@@ -6,7 +6,7 @@ async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
 function fixture(){
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
- const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false;
+ const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{};
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
  const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;order.push('permission');return media;}}};
  class Socket{
@@ -41,6 +41,7 @@ function fixture(){
  async function fetch(url,options){
   if(!options.body)return readHistory(String(url),options);
   requests.push({url:String(url),sha:await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer()),bytes:options.body.size});
+  await beforeUpload();
   if(failUpload)return {ok:false};
   const original=records.find(v=>v.engine==='gpt-live'&&!v.native_fragment&&String(url).endsWith('/recordings/'+v.ordinal));assert(original);
   return {ok:true,json:async()=>({visit:original.voice_visit,binding,recording:{ordinal:original.ordinal,
@@ -55,7 +56,7 @@ function fixture(){
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
  return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,
-  history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},
+  history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>listener({pcm:new Uint8Array(32000).buffer}),recovered:()=>recovered,fail:value=>{failUpload=value;},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
@@ -77,6 +78,46 @@ function fixture(){
  assert.equal(f.records.length,1);assert.equal(f.records[0].id,'native-original','Public recovery never consumes native originals');
  assert(!f.sockets.flatMap(s=>s.sent).some(v=>['session.start','response.create'].includes(v.type)));
  const oldSocket=f.sockets[0];await f.start();oldSocket.onclose();assert(f.engine.active,'Retired socket cannot close the current visit');await f.engine.hold();
+
+ // The first seal fixes exact frames before awaiting uploads. Later microphone
+ // frames keep recording; duplicate control cannot move the boundary or upload
+ // another original. This is a raw prefix, never a completed speech/work claim.
+ const sealed=fixture();await sealed.start();let releaseUpload;
+ sealed.uploads(()=>new Promise(resolve=>{releaseUpload=resolve;}));sealed.pcm();
+ const firstSeal=crypto.randomUUID(),sealSocket=sealed.sockets[0];
+ const sealEvent=request=>sealSocket.onmessage({data:JSON.stringify({type:'source_seal_requested',
+  visit:sealSocket.id,binding:'a'.repeat(64),request,delegation:'trusted-client-task'})});
+ const acknowledgments=()=>sealSocket.sent.filter(row=>row.type==='source_sealed');
+ sealEvent(firstSeal);await until(()=>releaseUpload);sealed.pcm();releaseUpload();
+ await until(()=>acknowledgments().length===1);
+ assert.deepEqual(acknowledgments()[0],{type:'source_sealed',request:firstSeal,through_ordinal:1,capture_bytes:32000});
+ assert(sealed.engine.active);assert.equal(sealed.requests.length,1);assert.equal(sealed.requests[0].bytes,32044);
+ sealEvent(firstSeal);await until(()=>acknowledgments().length===2);
+ assert.deepEqual(acknowledgments()[1],acknowledgments()[0]);assert.equal(sealed.requests.length,1);
+ sealed.uploads(async()=>{});sealEvent(crypto.randomUUID());await until(()=>acknowledgments().length===3);
+ assert.equal(acknowledgments()[2].through_ordinal,2);assert.equal(acknowledgments()[2].capture_bytes,64000);
+ assert.equal(sealed.requests.length,2);await sealed.engine.hold();
+
+ const missing=fixture();await missing.start();missing.fail(true);missing.pcm();
+ missing.sockets[0].onmessage({data:JSON.stringify({type:'source_seal_requested',visit:missing.sockets[0].id,
+  binding:'a'.repeat(64),request:crypto.randomUUID(),delegation:'trusted-client-task'})});
+ await until(()=>!missing.engine.active);
+ assert(!missing.sockets[0].sent.some(row=>row.type==='source_sealed'));
+ assert.equal(missing.recovered().length,1);assert.equal(missing.requests.length,1,'Failed originals are never uploaded again by source sealing');
+
+ const changedSource=fixture();await changedSource.start();let releaseChanged;
+ changedSource.uploads(()=>new Promise(resolve=>{releaseChanged=resolve;}));changedSource.pcm();
+ changedSource.sockets[0].onmessage({data:JSON.stringify({type:'source_seal_requested',
+  visit:changedSource.sockets[0].id,binding:'a'.repeat(64),request:crypto.randomUUID()})});
+ await until(()=>releaseChanged);changedSource.binding('b'.repeat(64));releaseChanged();
+ await until(()=>!changedSource.engine.active);
+ assert(!changedSource.sockets[0].sent.some(row=>row.type==='source_sealed'),'A late upload cannot acknowledge another conversation');
+
+ const empty=fixture();await empty.start();empty.sockets[0].onmessage({data:JSON.stringify({
+  type:'source_seal_requested',visit:empty.sockets[0].id,binding:'a'.repeat(64),request:crypto.randomUUID()})});
+ await until(()=>empty.sockets[0].sent.some(row=>row.type==='source_sealed'));
+ assert.equal(empty.sockets[0].sent.find(row=>row.type==='source_sealed').capture_bytes,0);
+ assert.equal(empty.requests.length,0);await empty.engine.hold();
 
  const permission=fixture();let resolvePermission;
  permission.navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{resolvePermission=resolve;});
@@ -116,5 +157,5 @@ function fixture(){
  history.history(()=>new Promise(resolve=>{finish=resolve;}));const pending=history.engine.restoreHistory();await until(()=>finish);
  history.binding('b'.repeat(64));finish({ok:true,json:async()=>({visits:[{id,created_at:1}],more:false})});
  await assert.rejects(pending);assert.equal(history.items.length,2,'Changed binding cannot publish stale history');
- console.log('Public Live: admission/ICE/started ordering, exact original retry, shared-store engine isolation retired permission/recorder/socket/ICE fences, and source-paged history retry/dedupe/binding fences passed.');
+ console.log('Public Live: admission/ICE/started ordering, exact original recovery, source sealing with later frames/duplicate control/missing uploads/empty prefix/changed owner, engine isolation/retirement fences and paged history passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

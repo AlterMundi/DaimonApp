@@ -101,6 +101,47 @@ class Mounted(unittest.TestCase):
     def close(self,socket):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
+    def test_optional_source_seals_use_trusted_delegations_and_confirmed_uploads_only(self):
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'source_seals':True}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                self.assertEqual(native.spec['delegation']['type'],'responses','Source control does not switch backend mode')
+                audio=wav_bytes(b'\1\0'*800)
+                path='/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0'
+                self.assertEqual(client.post(path,headers=self.headers,content=audio).status_code,200)
+                def delegate(ident):
+                    native.events.put({'type':'session.delegation.created','event_id':'source-'+ident,
+                        'delegation':{'id':ident,'target':'client'},'offset_ms':50})
+                    self.assertEqual(socket.receive_json()['event']['type'],'session.delegation.created')
+                delegate('first');request=socket.receive_json()
+                self.assertEqual(request['type'],'source_seal_requested')
+                delegate('second')
+                self.assertNotIn('source_seal',self.read()['delegations']['second'])
+                socket.send_json({'type':'source_sealed','request':request['request'],
+                    'through_ordinal':1,'capture_bytes':len(audio)-44})
+                recorded=socket.receive_json()
+                self.assertEqual(recorded['type'],'source_seal_recorded')
+                self.assertEqual(recorded['seal']['state'],'sealed');self.assertFalse(recorded['seal']['work_admitted'])
+                self.assertEqual(recorded['seal']['recordings'][0]['ordinal'],0)
+                second=socket.receive_json();self.assertEqual(second['type'],'source_seal_requested')
+                socket.send_json({'type':'source_sealed','request':second['request'],
+                    'through_ordinal':1,'capture_bytes':len(audio)-44})
+                self.assertEqual(socket.receive_json()['seal']['state'],'empty')
+                native.events.put({'type':'session.closed','event_id':'expired','reason':'expired',
+                    'session':{'id':native.session_id},'usage':{'seconds':1}})
+                self.assertEqual(socket.receive_json()['type'],'closed')
+        self.assertNotIn('native_originals',self.read());self.assertEqual(native.sent,[])
+        self.assertEqual(self.read()['delegations']['first']['state'],'pending','Capture is not task completion')
+
+    def test_source_seals_cannot_mix_upload_time_native_enrollment(self):
+        for flags in ({'source_seals':'yes'},{'source_seals':True,'native_originals':True}):
+            app=FastAPI();app.state.voice_active=set()
+            config={**self.config,'openai_live':{**self.config['openai_live'],**flags}}
+            with self.assertRaises(ValueError):install(app,config,self.owner,lambda _:None,['https://example.test'])
     def test_native_original_opt_in_uses_exact_owner_and_never_repeats_lost_ack(self):
         app=FastAPI();app.state.voice_active=set()
         async def authorize(request):return {'human':100,'csrf':'fresh'}

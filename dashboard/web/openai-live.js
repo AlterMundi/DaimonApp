@@ -6,7 +6,7 @@ window.PublicLiveConversation=(()=>{
   function create({headers,getBinding,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
-    const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map();
+    const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
     let binding,visit,socket,peer,channel,media,capture,audio,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
     let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
@@ -31,6 +31,7 @@ window.PublicLiveConversation=(()=>{
           ||receipt.audio_sha256!==value.audio_sha256||receipt.audio_bytes!==value.blob.size||receipt.work_replay!=='never'
           ||value.captureStop&&receipt.capture_stop!=='interrupted_prefix')throw Error('Original receipt changed');
       if(value.native_fragments)await recovery.sealNative(value,value.native_fragments);
+      if(value.voice_visit===visit&&value.binding===binding)confirmed.add(value.ordinal);
       await recovery.remove(value);originals.delete(value.id);notify();return receipt;
     }
     async function review(expectedEpoch=epoch){
@@ -88,6 +89,33 @@ window.PublicLiveConversation=(()=>{
       durable=sealed.catch(()=>{void hold('Local audio storage needs review. Save the retained original.');});
       uploads=uploads.then(async()=>{const value=await sealed;try{await upload(value);}catch{if(owned===epoch)state('Original audio is kept for recovery.');}}).catch(()=>{if(owned===epoch)state('Original audio is kept for review.');});
     }
+    async function sealSource(value){
+      const owned=epoch;
+      if(!active||closing||value.visit!==visit||value.binding!==binding||binding!==getBinding()
+          ||typeof value.request!=='string'||!/^([a-f0-9]{8}-)([a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value.request))
+        throw Error('Source boundary does not belong to this active recording');
+      let pending=seals.get(value.request);
+      if(!pending){
+        if(seals.size>=32)throw Error('Voice source boundary limit reached');
+        // Freeze the current exact frame prefix synchronously. Later microphone
+        // frames continue in another segment and cannot move this boundary.
+        const captureBytes=total;
+        flush();
+        const through=ordinal,priorUploads=uploads;
+        pending=(async()=>{
+          await priorUploads;
+          for(let n=0;n<through;n++)if(!confirmed.has(n))throw Error('A source original still needs review');
+          return {type:'source_sealed',request:value.request,through_ordinal:through,capture_bytes:captureBytes};
+        })();
+        seals.set(value.request,pending);
+      }
+      const receipt=await pending;
+      if(owned!==epoch||!active||closing||binding!==getBinding()||socket?.readyState!==WebSocket.OPEN)
+        throw Error('Source boundary finished after recording changed');
+      // This reports confirmed raw bytes, never transcript text, utterance end,
+      // question authority, a provider command or permission to run native work.
+      socket.send(JSON.stringify(receipt));
+    }
     async function hold(message='Voice paused. Your original audio is kept.'){
       if(closing)return;closing=true;active=starting=false;clearTimeout(timer);state(message);
       abortOpen?.(Error('Voice activation ended'));abortOpen=undefined;
@@ -114,6 +142,7 @@ window.PublicLiveConversation=(()=>{
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
+      confirmed.clear();seals.clear();
       segment={id:crypto.randomUUID(),binding,visit,ordinal,started:Date.now(),offset:0,fragments:[]};
       const aborted=new Promise((_,reject)=>{abortOpen=reject;});aborted.catch(()=>{});
       async function wait(promise,ms){let timeout;try{return await Promise.race([promise,aborted,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('Voice connection was not confirmed.')),ms);})]);}finally{clearTimeout(timeout);}}
@@ -139,6 +168,9 @@ window.PublicLiveConversation=(()=>{
             if(value.type==='prepared')preparedResolve(value);
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event')onItem({visit,item:value.event,public_live:true});
+            else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
+              if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.');
+            });
             else if(value.type==='finishing'){if(!closing)void hold('Finishing voice; checking pending work.');}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
               closedAck?.(value.type==='closed');abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
