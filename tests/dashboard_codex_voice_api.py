@@ -113,6 +113,100 @@ class Mounted(unittest.TestCase):
         self.assertEqual(result['type'],'closed')
         with self.assertRaises(WebSocketDisconnect):socket.receive_json()
         return result
+    def native_closed(self,socket):
+        Native.opened[-1].events.put([{'method':'thread/realtime/closed','params':{'reason':'transport_closed'}}])
+        value=socket.receive_json();self.assertEqual(value['type'],'closed')
+        self.assertEqual(value['reason'],'native_transport_closed')
+        with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        return value
+    def start_logical(self,socket,meta):
+        socket.send_json({**meta,'logical_visit':True})
+        prepared=socket.receive_json();self.assertEqual(prepared['type'],'prepared')
+        self.assertEqual(prepared['logical_visit'],'v1')
+        admission=prepared['admission']
+        if admission is None:
+            socket.send_json({'type':'capture'})
+            ready=socket.receive_json();self.assertEqual(ready['type'],'capture_ready')
+            admission=ready['admission']
+        socket.send_json({'type':'offer','sdp':'v=0 synthetic-logical-offer'})
+        self.assertEqual(socket.receive_json()['type'],'answer')
+        self.assertEqual(socket.receive_json()['type'],'transcript')
+        return admission
+    def test_logical_successor_keeps_deadline_sources_and_root_original_budget(self):
+        with self.socket()as socket:
+            first=self.start_logical(socket,self.meta);closed=self.native_closed(socket)
+        self.assertTrue(closed['successor_ready'])
+        second=str(uuid.uuid4())
+        with self.socket()as socket:
+            admission=self.start_logical(socket,{**self.meta,'id':second,'predecessor':self.visit})
+            self.assertEqual(admission['id'],self.visit);self.assertEqual(admission['generation'],1)
+            self.assertEqual(admission['expires'],first['expires'])
+            self.assertLessEqual(admission['remaining_seconds'],first['remaining_seconds'])
+            self.assertEqual(Native.opened[-1].continuation['sources'][0]['visit'],self.visit)
+            audio=wav_bytes(b'\x01\x00'*8000)
+            child=f'/api/interaction/voice/codex/visits/{second}/recordings/0'
+            root=f'/api/interaction/voice/codex/visits/{self.visit}'
+            self.assertEqual(self.client.post(child,content=audio,headers=self.headers).status_code,409)
+            self.assertEqual(self.client.post(root+'/recordings/0',content=audio,headers=self.headers).status_code,200)
+            prefix={**self.headers,'x-voice-capture-stop':'interrupted_prefix'}
+            self.assertEqual(self.client.post(root+'/recordings/1',content=audio,headers=prefix).status_code,409)
+            self.close(socket)
+        # Root already reserved the second generation, so an uncertain caller
+        # cannot substitute another successor for that same predecessor.
+        with self.socket()as socket:
+            socket.send_json({**self.meta,'id':str(uuid.uuid4()),'logical_visit':True,'predecessor':self.visit})
+            self.assertEqual(socket.receive_json()['type'],'review')
+        self.assertEqual(len(Native.opened),2)
+    def test_owned_media_replacement_closes_voice_without_new_admission_or_work(self):
+        with self.socket()as socket:
+            first=self.start_logical(socket,self.meta)
+            socket.send_json({'type':'renew'})
+            closed=socket.receive_json();self.assertTrue(closed['successor_ready'])
+            self.assertEqual(closed['reason'],'media_replacement')
+            with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        self.assertEqual(Native.opened[0].stops,1)
+        next_visit=str(uuid.uuid4())
+        with self.socket()as socket:
+            admission=self.start_logical(socket,{**self.meta,'id':next_visit,'predecessor':self.visit})
+            self.assertEqual(admission['expires'],first['expires']);self.assertEqual(admission['id'],self.visit)
+            self.close(socket)
+        self.assertEqual(self.owner.collected,[])
+    def test_native_requested_close_is_not_an_automatic_replacement(self):
+        with self.socket()as socket:
+            self.start_logical(socket,self.meta)
+            Native.opened[-1].events.put([{'method':'thread/realtime/closed','params':{'reason':'requested'}}])
+            closed=socket.receive_json();self.assertTrue(closed['successor_ready'])
+            self.assertEqual(closed['reason'],'native_requested')
+            with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        with self.socket()as socket:
+            socket.send_json({**self.meta,'id':str(uuid.uuid4()),'logical_visit':True,'predecessor':self.visit})
+            self.assertEqual(socket.receive_json()['type'],'review')
+        self.assertEqual(len(Native.opened),1)
+    def test_explicit_capture_end_preserves_work_and_requires_fresh_action(self):
+        self.owner.current='ongoing-work'
+        with self.socket()as socket:
+            self.start_logical(socket,self.meta)
+            route=f'/api/interaction/voice/codex/visits/{self.visit}/capture/ended'
+            stale={**self.headers,'x-dashboard-csrf':'stale'}
+            self.assertEqual(self.client.post(route,headers=stale).status_code,403)
+            for _ in range(2):self.assertEqual(self.client.post(route,headers=self.headers).json()['capture'],'ended')
+            self.assertEqual(Native.opened[0].stops,0,'Capture bookkeeping must not stop accepted work or native voice')
+            self.close(socket)
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        self.assertEqual(history.pending_work(100,self.owner.codex_voice_binding('a'*64)),['ongoing-work'])
+        with self.socket()as socket:
+            socket.send_json({**self.meta,'id':str(uuid.uuid4()),'logical_visit':True,'predecessor':self.visit})
+            self.assertEqual(socket.receive_json()['type'],'review')
+        self.assertEqual(len(Native.opened),1)
+    def test_logical_capture_marker_is_required_before_native_media_start(self):
+        with self.socket()as socket:
+            socket.send_json({**self.meta,'logical_visit':True})
+            self.assertEqual(socket.receive_json()['type'],'prepared')
+            socket.send_json({'type':'offer','sdp':'v=0 premature-offer'})
+            self.assertEqual(socket.receive_json()['type'],'review')
+        self.assertFalse(Native.opened[0].started)
+        self.assertEqual(self.owner.collected,[])
+
     def test_history_pages_survive_new_visits_and_refuse_foreign_cursors_without_work(self):
         history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
         owner=self.owner.codex_voice_binding('a'*64);ids=[]
@@ -316,9 +410,9 @@ class Mounted(unittest.TestCase):
         self.assertEqual(value['state'],'review')
     def test_terminal_metadata_failure_never_authorizes_successor(self):
         original=CodexVoiceHistory.state
-        def state(history,ident,human,binding,value):
+        def state(history,ident,human,binding,value,**kwargs):
             if value=='closed':raise OSError('Synthetic terminal commit failure')
-            return original(history,ident,human,binding,value)
+            return original(history,ident,human,binding,value,**kwargs)
         with patch.object(CodexVoiceHistory,'state',state):
             with self.socket()as socket:self.start(socket);closed=self.close(socket)
         self.assertTrue(closed['confirmed']);self.assertFalse(closed['successor_ready'])

@@ -66,6 +66,16 @@ microphone admission; the logical-visit lifecycle and useful audio through two
 automatic replacements remain pending. See the native guide's
 [terminal close contract](interaction-native-codex-voice.md#terminal-close-and-successor-readiness).
 
+The next development candidate now implements a single finite microphone
+admission across bounded physical native generations. Exact successor reservation,
+one original deadline/PCM owner/recorder, retained setup-gap bytes and reactive
+media/native-transport recovery have synthetic server/browser coverage. Requested
+Stop is not automatically undone. It is not receiving-selected or actual useful-
+audio acceptance; proactive provider-pressure/semantic checkpoint/output-drain
+work remains open. Qualify two automatic native replacements inside the unchanged
+admission, preserving corrections, originals and late work before selecting it.
+See the [candidate contract](interaction-native-codex-voice.md#logical-microphone-admission-and-automatic-recovery-candidate).
+
 Native Codex page-reload durability now retains bounded local audio fragments
 before final original sealing. Recovered prefixes explicitly disclose a possibly
 missing tail; only explicit saving against a closed capable visit is allowed.

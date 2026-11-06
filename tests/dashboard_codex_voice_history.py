@@ -457,4 +457,104 @@ class History(unittest.TestCase):
             self.assertEqual(self.history.continuation(human,frozen)['items'],[])
 
 
+class MicrophoneAdmission(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name);self.now=100.
+        self.history=CodexVoiceHistory(self.root/'visits',clock=lambda:self.now)
+        self.owner={'binding':'a'*64,'entry_binding':[100,100,7,'native'],'native_thread':'native'}
+        self.ident=str(uuid.uuid4())
+        self.history.open(self.ident,100,self.owner,str(uuid.uuid4()),300)
+    def ready(self,ident):
+        self.history.complete_transcript(ident,100,'a'*64)
+        self.history.state(ident,100,'a'*64,'closed',successor_ready=True,closure_reason='native_transport_closed')
+    def successor(self,previous):
+        ident=str(uuid.uuid4());claim=self.history.claim_successor(previous,ident,100,self.owner)
+        self.history.open(ident,100,self.owner,str(uuid.uuid4()),300,admission_root=claim['id'])
+        return ident,claim
+    def test_one_original_deadline_and_pcm_allowance_across_generations(self):
+        first=self.history.begin_admission(self.ident,100,self.owner)
+        self.assertEqual(first['remaining_seconds'],300)
+        self.now+=10
+        self.assertEqual(self.history.begin_admission(self.ident,100,self.owner)['expires'],first['expires'])
+        self.ready(self.ident)
+        second,claim=self.successor(self.ident)
+        self.assertEqual(claim['id'],self.ident);self.assertEqual(claim['remaining_seconds'],290)
+        self.assertEqual(claim['max_input_pcm_bytes'],300*32000)
+        child=self.history.read(second,100,'a'*64)
+        self.assertEqual(child['max_input_pcm_bytes'],0)
+        self.assertEqual(child['admission_root'],self.ident)
+        self.now+=15;self.ready(second)
+        third,claim=self.successor(second)
+        self.assertEqual(claim['generation'],2);self.assertEqual(claim['remaining_seconds'],275)
+        self.assertEqual(claim['expires'],first['expires'])
+        self.assertEqual(self.history.read(self.ident,100,'a'*64)['microphone_admission']['generations'],[self.ident,second,third])
+    def test_no_successor_before_settled_sources_or_twice_after_claim(self):
+        self.history.begin_admission(self.ident,100,self.owner)
+        with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),100,self.owner)
+        with self.assertRaises(ValueError):self.history.state(self.ident,100,'a'*64,'closed',successor_ready=True,closure_reason='native_transport_closed')
+        self.history.complete_transcript(self.ident,100,'a'*64)
+        self.history.state(self.ident,100,'a'*64,'closed')
+        with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),100,self.owner)
+        self.ready(self.ident)
+        ident=str(uuid.uuid4());self.history.claim_successor(self.ident,ident,100,self.owner)
+        for duplicate in (ident,str(uuid.uuid4())):
+            with self.assertRaises(ValueError):self.history.claim_successor(self.ident,duplicate,100,self.owner)
+        # Simulate a failed child commit after the exact durable claim. It may
+        # not be replaced by a different UUID or a second native start.
+        from unittest.mock import patch
+        with patch.object(self.history,'_write',side_effect=OSError('Synthetic child commit failure')):
+            with self.assertRaises(OSError):self.history.open(ident,100,self.owner,str(uuid.uuid4()),admission_root=self.ident)
+        with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),100,self.owner)
+    def test_expiry_restart_and_clock_regression_never_reset_admission(self):
+        self.history.begin_admission(self.ident,100,self.owner);self.ready(self.ident)
+        for instant in (99.,400.,500.):
+            self.now=instant
+            with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),100,self.owner)
+        self.now=110.
+        restarted=CodexVoiceHistory(self.root/'visits',clock=lambda:self.now)
+        with self.assertRaises(ValueError):restarted.claim_successor(self.ident,str(uuid.uuid4()),100,self.owner)
+        self.assertTrue(restarted.read(self.ident,100,'a'*64)['transcript_complete'])
+        self.assertEqual(restarted.continuation(100,self.owner)['items'],[])
+    def test_frozen_owner_and_finite_generation_bound(self):
+        self.history.begin_admission(self.ident,100,self.owner);self.ready(self.ident)
+        for owner in ({**self.owner,'native_thread':'foreign'},
+                {**self.owner,'entry_binding':[100,100,8,'native']},
+                {**self.owner,'binding':'b'*64}):
+            with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),100,owner)
+        with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),101,self.owner)
+        previous=self.ident
+        for n in range(7):
+            previous,claim=self.successor(previous);self.assertEqual(claim['generation'],n+1);self.ready(previous)
+        with self.assertRaises(ValueError):self.history.claim_successor(previous,str(uuid.uuid4()),100,self.owner)
+        self.assertEqual(len(list((self.root/'visits').glob('*.json'))),8)
+    def test_end_admission_does_not_complete_or_replay_work(self):
+        self.history.begin_admission(self.ident,100,self.owner)
+        self.history.retain_work(self.ident,100,'a'*64,['ongoing-work'])
+        self.history.end_admission(self.ident,100,self.owner)
+        self.history.end_admission(self.ident,100,self.owner)
+        self.ready(self.ident)
+        with self.assertRaises(ValueError):self.history.claim_successor(self.ident,str(uuid.uuid4()),100,self.owner)
+        self.assertEqual(self.history.pending_work(100,self.owner),['ongoing-work'])
+    def test_original_root_owns_whole_pcm_allowance_and_prefix_guard(self):
+        from dashboard.provider import Provider
+        ident=str(uuid.uuid4());self.history.open(ident,100,self.owner,str(uuid.uuid4()),1)
+        self.history.begin_admission(ident,100,self.owner);self.ready(ident)
+        child,claim=self.successor(ident)
+        provider=Mock(spec=['receiver','retain_voice_capture','media_retention'])
+        provider.receiver={'db_path':str(self.root/'receiver.sqlite')}
+        provider.retain_voice_capture=Mock(side_effect=Provider.retain_voice_capture);provider.media_retention=None
+        audio=wav_bytes(b'\x01\x00'*8000)
+        with self.assertRaises(ValueError):self.history.recording(child,100,'a'*64,0,audio,provider)
+        with self.assertRaises(ValueError):self.history.recording(ident,100,'a'*64,0,audio,provider,capture_stop='interrupted_prefix')
+        provider.retain_voice_capture.assert_not_called()
+        self.history.recording(ident,100,'a'*64,0,audio,provider)
+        self.history.recording(ident,100,'a'*64,1,audio,provider)
+        with self.assertRaises(ValueError):self.history.recording(ident,100,'a'*64,2,audio,provider)
+        self.history.end_admission(ident,100,self.owner)
+        # Ended capture permits exact prefix recovery; it never grants more PCM.
+        with self.assertRaises(ValueError):self.history.recording(ident,100,'a'*64,2,audio,provider,capture_stop='interrupted_prefix')
+        self.assertEqual(provider.retain_voice_capture.call_count,2)
+
+
 if __name__=='__main__':unittest.main()

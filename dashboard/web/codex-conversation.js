@@ -8,9 +8,10 @@ window.CodexConversation=(()=>{
     let socket,peer,channel,media,capture,unsubscribe,audio,visit,binding,active=false,starting=false,closing=false;
     let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),durable=Promise.resolve(),timer,fragmentParts=[],fragmentBytes=0,segment,persistingFragments=0;
     let audible=true,paused=false,connected=false,restored,restoring,historyBefore,historyGeneration=0,openingCount=0,unlockCapture;
+    let admission,admissionDeadline,mediaVisit,captureEpoch=0,renewing=false,failureTimer,rejectOpening,replacementRequested=false,terminalClose=false;
     const originals=new Map();
-    const state=message=>onState({active,starting,floor:false,pending:originals.size>0,working:closing,
-      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',message});
+    const state=(message,preserveMessage=false)=>onState({active,starting:starting||renewing,reconnecting:renewing||replacementRequested||failureTimer!==undefined,floor:false,pending:originals.size>0,working:closing,
+      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(preserveMessage?{}:{message})});
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     async function request(path,options={}){
       const response=await fetch(new URL('api/interaction/voice/codex/'+path,window.location.href),{
@@ -75,9 +76,9 @@ window.CodexConversation=(()=>{
     }
     function flush(captureStop){
       if(!bytes)return;
-      const blob=window.StreamingVoice.wav(parts),index=ordinal++,selected=segment,id=selected.id,selectedVisit=visit,selectedBinding=binding;
+      const blob=window.StreamingVoice.wav(parts),index=ordinal++,selected=segment,id=selected.id,selectedVisit=mediaVisit,selectedBinding=binding;
       parts=[];bytes=0;fragmentParts=[];fragmentBytes=0;
-      segment={id:crypto.randomUUID(),binding,visit,ordinal,started:Date.now(),offset:0,fragments:[]};
+      segment={id:crypto.randomUUID(),binding,visit:mediaVisit,ordinal,started:Date.now(),offset:0,fragments:[]};
       const sealed=durable.then(async()=>{
         const value={id,binding:selectedBinding,codex_visit:selectedVisit,ordinal:index,blob,
           mime:'audio/wav',capture_started:Date.now(),native_review:true,captureStop,
@@ -90,37 +91,73 @@ window.CodexConversation=(()=>{
       chain=chain.then(async()=>{const value=await sealed;try{await upload(value);}catch{state('Original recording kept for recovery.');}}).catch(()=>{void hold('Local recording storage needs review. Save the retained original.');});
     }
     async function hold(message='Voice paused. Accepted work continues.'){
-      if(closing)return;closing=true;active=starting=connected=false;clearTimeout(timer);state(message);
+      if(closing)return;closing=true;active=starting=connected=false;clearTimeout(timer);clearTimeout(failureTimer);failureTimer=undefined;state(message);
+      const reject=rejectOpening;rejectOpening=undefined;reject?.(Error('Voice activation ended'));
+      replacementRequested=false;
+      const endedAdmission=admission?mediaVisit:undefined;admission=undefined;
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
       if(capture){
         const finished=new Promise(resolve=>{finishAck=resolve;});capture.finish();
         const complete=await Promise.race([finished,new Promise(resolve=>setTimeout(()=>resolve(false),1000))]);
         flush(complete?undefined:'audio_flush_unconfirmed');unsubscribe?.();unsubscribe=undefined;capture.close();capture=undefined;
       }else flush();
+      captureEpoch++;
       channel?.close();channel=undefined;peer?.close();peer=undefined;if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
-      if(socket?.readyState===WebSocket.OPEN){
+      if(socket?.readyState===WebSocket.OPEN&&!terminalClose){
         const ended=new Promise(resolve=>{closeAck=resolve;});
         try{socket.send(JSON.stringify({type:'close'}));}catch{closeAck(false);}
         let deadline;await Promise.race([ended,new Promise(resolve=>{deadline=setTimeout(resolve,3000);})]);clearTimeout(deadline);
       }
       socket?.close();socket=undefined;closeAck=undefined;
+      if(endedAdmission){try{await request(`visits/${endedAdmission}/capture/ended`,{method:'POST'});}catch{/* Exact originals remain recoverable; no capture or work retry. */}}
       await chain;unlockCapture?.();unlockCapture=undefined;closing=false;state(message);onRecovery([...originals.values()]);
     }
-    async function start(){
+    function acceptAdmission(value,continuing){
+      if(!value||value.id!==mediaVisit||!Number.isFinite(value.remaining_seconds)||value.remaining_seconds<=0||value.remaining_seconds>seconds
+          ||!Number.isFinite(value.expires)||value.max_input_pcm_bytes!==seconds*32000
+          ||value.generation!==(continuing?admission?.generation+1:0)
+          ||continuing&&value.expires!==admission?.expires)throw Error('Microphone admission changed');
+      if(!continuing)admissionDeadline=Date.now()+value.remaining_seconds*1000;
+      admission=value;
+    }
+    async function renew(){
+      if(renewing||closing||!active||starting||openingCount||!admission||admission.generation>=7||Date.now()>=admissionDeadline-2000){
+        if(!closing)void hold('Voice paused. Your originals and accepted work are kept.');return;
+      }
+      renewing=true;const predecessor=visit;++epoch;active=starting=connected=false;clearTimeout(failureTimer);failureTimer=undefined;
+      channel?.close();channel=undefined;peer?.close();peer=undefined;
+      if(audio){audio.pause();audio.srcObject=null;audio=undefined;}socket?.close();socket=undefined;
+      // Capture, its Web Lock, ordinals, PCM allowance and original deadline
+      // survive. Audio during setup remains original evidence, never replayed
+      // as new speech or silently submitted to ASR/backend work.
+      state('Reconnecting voice; microphone recording is kept.');
+      try{
+        const resumed=await start(predecessor);
+        if(!resumed&&(capture||media)&&!closing)await hold('Voice paused. Your originals and accepted work are kept.');
+      }finally{renewing=false;state(connected?'Listening':undefined,!connected);}
+    }
+    async function start(predecessor){
+      const continuing=typeof predecessor==='string'&&renewing;
       if(active||starting||closing||document.hidden||!supported())return false;
       if(openingCount>=2){state('Finish the pending microphone permission before starting again.');return false;}
       openingCount++;
-      binding=getBinding();const owned=++epoch;visit=crypto.randomUUID();parts=[];bytes=total=ordinal=0;
-      fragmentParts=[];fragmentBytes=0;segment={id:crypto.randomUUID(),binding,visit,ordinal:0,started:Date.now(),offset:0,fragments:[]};
-      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio,ownedUnlock;
+      if(!continuing){
+        binding=getBinding();mediaVisit=crypto.randomUUID();admission=undefined;captureEpoch++;
+        parts=[];bytes=total=ordinal=0;fragmentParts=[];fragmentBytes=0;
+        segment={id:crypto.randomUUID(),binding,visit:mediaVisit,ordinal:0,started:Date.now(),offset:0,fragments:[]};
+      }
+      const owned=++epoch,logicalCapture=captureEpoch;visit=continuing?crypto.randomUUID():mediaVisit;
+      replacementRequested=false;terminalClose=false;
+      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio,ownedUnlock,ownedReject;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&selectedBinding===getBinding();
       function closeRetired(){
-        ownedCapture?.close();ownedChannel?.close();ownedPeer?.close();ownedAudio?.pause();
-        ownedUnlock?.();
-        for(const track of ownedMedia?.getTracks()||[])track.stop();
+        if(ownedCapture!==capture)ownedCapture?.close();ownedChannel?.close();ownedPeer?.close();ownedAudio?.pause();
+        if(ownedUnlock!==unlockCapture)ownedUnlock?.();
+        if(!continuing&&(!closing||logicalCapture!==captureEpoch))for(const track of ownedMedia?.getTracks()||[])track.stop();
       }
-      starting=true;paused=false;connected=false;state('Preparing voice');
+      starting=true;if(!continuing)paused=false;connected=false;state(continuing?'Reconnecting voice; microphone recording is kept.':'Preparing voice');
       try{
+        if(!continuing){
         const pending=await review();
         if(!current())throw Error('Voice recovery read retired');
         if(pending.some(v=>v.binding!==binding)||pending.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024-600*32000)
@@ -129,58 +166,95 @@ window.CodexConversation=(()=>{
           withVisitLock(visit,()=>new Promise(done=>{let released=false;ownedUnlock=()=>{if(!released){released=true;done();}};resolve();})).catch(reject);
         });
         if(!current()){ownedUnlock?.();throw Error('Voice storage ownership retired');}unlockCapture=ownedUnlock;
+        }
         const target=new URL('api/interaction/voice/codex',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
         socket=new WebSocket(target);
         const transport=socket;
-        let preparedResolve,preparedReject,answerResolve,answerReject;
+        let preparedResolve,preparedReject,answerResolve,answerReject,captureResolve,captureReject;
         const prepared=new Promise((yes,no)=>{preparedResolve=yes;preparedReject=no;});
         const answer=new Promise((yes,no)=>{answerResolve=yes;answerReject=no;});answer.catch(()=>{});
+        const captureReady=new Promise((yes,no)=>{captureResolve=yes;captureReject=no;});captureReady.catch(()=>{});
+        rejectOpening=ownedReject=error=>{preparedReject(error);answerReject(error);captureReject(error);};
         socket.onopen=()=>{if(!current()||socket!==transport)return;const h=headers(),authorization=h.Authorization||h.authorization;
-          transport.send(JSON.stringify({id:visit,binding,csrf:h['X-Dashboard-CSRF']||h['x-dashboard-csrf'],...(authorization?{authorization}:{})}));};
+          transport.send(JSON.stringify({id:visit,binding,logical_visit:true,...(continuing?{predecessor}:{}),csrf:h['X-Dashboard-CSRF']||h['x-dashboard-csrf'],...(authorization?{authorization}:{})}));};
         socket.onmessage=event=>{
           if(owned!==epoch||socket!==transport)return;
           try{
             if(typeof event.data!=='string'||event.data.length>70000)throw Error('Voice control exceeds bound');
             const value=JSON.parse(event.data);
             if(value.id!==visit)throw Error('Voice visit changed');
-            if(value.type==='closed'){closeAck?.(value.confirmed===true);return;}
+            if(value.type==='closed'){
+              terminalClose=true;
+              closeAck?.(value.confirmed===true);
+              if(!closing){
+                if(value.confirmed===true&&value.successor_ready===true&&(value.reason==='native_transport_closed'
+                    ||value.reason==='media_replacement'&&replacementRequested))void renew();
+                else void hold('Voice paused. Your originals and accepted work are kept.');
+              }return;
+            }
             if(closing)return;
             if(value.type==='prepared'){
               if(!Number.isInteger(value.session_seconds)||value.session_seconds<300||value.session_seconds>600)throw Error('Voice duration changed');
-              seconds=value.session_seconds;preparedResolve();
+              if(value.logical_visit!=='v1'||continuing&&value.session_seconds!==seconds)throw Error('Logical voice continuation is unavailable');
+              seconds=value.session_seconds;
+              if(continuing)acceptAdmission(value.admission,true);
+              else if(value.admission!==null)throw Error('Microphone admission already exists');
+              preparedResolve();
+            }else if(value.type==='capture_ready'){
+              if(continuing||admission)throw Error('Microphone admission was repeated');
+              acceptAdmission(value.admission,false);captureResolve();
             }else if(value.type==='answer')answerResolve(value.sdp);
             else if(value.type==='transcript'){
               onCaption(value.item.text);onItem({visit,item:value.item,observed_at:Date.now()/1000});
             }else if(value.type==='review')throw Error(value.message);
-          }catch(error){preparedReject(error);answerReject(error);void hold(error.message);}
+          }catch(error){preparedReject(error);answerReject(error);captureReject(error);void hold(error.message);}
         };
-        socket.onclose=()=>{if(owned!==epoch||socket!==transport)return;closeAck?.(false);preparedReject(Error('Voice connection ended'));answerReject(Error('Voice connection ended'));if(!closing)void hold('Voice connection ended. Original recordings are kept.');};
+        socket.onclose=()=>{if(owned!==epoch||socket!==transport)return;closeAck?.(false);preparedReject(Error('Voice connection ended'));answerReject(Error('Voice connection ended'));captureReject(Error('Voice connection ended'));if(!closing)void hold('Voice connection ended. Original recordings are kept.');};
         const wait=async(promise,millis)=>{let id;try{return await Promise.race([promise,new Promise((_,no)=>{id=setTimeout(()=>no(Error('Voice connection timed out')),millis);})]);}finally{clearTimeout(id);}};
         await wait(prepared,45000);
         if(!current())throw Error('Voice conversation changed');
-        ownedMedia=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+        ownedMedia=continuing?media:await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
         if(!current()||document.hidden)throw Error('Microphone activation ended');
         media=ownedMedia;peer=ownedPeer=new RTCPeerConnection();
         // Native WebRTC SDP includes the provider's events channel. Native Core
         // owns its handoffs; this client sends no response/turn control on it.
         channel=ownedChannel=ownedPeer.createDataChannel('oai-events');ownedChannel.onmessage=()=>{};
-        audio=ownedAudio=new Audio();audio.autoplay=true;audio.muted=!audible;
-        ownedPeer.ontrack=event=>{if(!current()||audio!==ownedAudio)return;ownedAudio.srcObject=event.streams[0]||new MediaStream([event.track]);ownedAudio.play().catch(()=>{if(current()){paused=true;state('Tap Resume audio to listen.');}});};
+        audio=ownedAudio=new Audio();audio.autoplay=!paused;audio.muted=!audible;
+        ownedPeer.ontrack=event=>{if(!current()||audio!==ownedAudio)return;ownedAudio.srcObject=event.streams[0]||new MediaStream([event.track]);if(!paused)ownedAudio.play().catch(()=>{if(current()){paused=true;state('Tap Resume audio to listen.');}});};
         ownedPeer.onconnectionstatechange=()=>{
           if(!current()||peer!==ownedPeer)return;
           if(ownedPeer.connectionState==='connected'){
+            if(replacementRequested){state('Reconnecting voice; microphone recording is kept.');return;}
+            clearTimeout(failureTimer);failureTimer=undefined;
             const first=!connected;connected=true;starting=false;active=true;state('Listening');
             if(first&&transport.readyState===WebSocket.OPEN)transport.send(JSON.stringify({type:'ready'}));
           }
-          else if(['failed','closed','disconnected'].includes(ownedPeer.connectionState))void hold('Voice connection paused. Your originals are kept.');
+          else if(['failed','closed','disconnected'].includes(ownedPeer.connectionState)){
+            connected=false;
+            // Wait once for the exact native terminal barrier, never infer it
+            // from a failed peer or a timeout. The original visit timer binds.
+            if(!failureTimer)failureTimer=setTimeout(()=>{
+              failureTimer=undefined;
+              if(!current()||closing)return;
+              if(!admission||transport.readyState!==WebSocket.OPEN){void hold('Voice connection paused. Your originals are kept.');return;}
+              replacementRequested=true;
+              try{transport.send(JSON.stringify({type:'renew'}));}
+              catch{void hold('Voice connection paused. Your originals are kept.');return;}
+              failureTimer=setTimeout(()=>void hold('Voice replacement was not confirmed. Your originals are kept.'),15000);
+            },3000);
+            state('Voice connection paused; microphone recording is kept.');
+          }
         };
         // Preserve microphone PCM before enabling its WebRTC sender. No manual
         // activity commits or acoustic turn loop is imposed on native voice.
+        if(!continuing){
+        transport.send(JSON.stringify({type:'capture'}));await wait(captureReady,10000);
+        if(!current())throw Error('Microphone admission retired');
         ownedCapture=await window.StreamingVoice.openCapture(ownedMedia,{sessionSeconds:seconds});
         if(!current())throw Error('Voice capture activation ended');
         capture=ownedCapture;
         unsubscribe=capture.subscribe(value=>{
-          if(owned!==epoch)return;
+          if(logicalCapture!==captureEpoch)return;
           if(value.finished){finishAck?.(true);return;}
           if(value.captureError){if(!closing)void hold('Voice capture paused. Your originals are kept.');return;}
           if(!value.pcm)return;
@@ -192,8 +266,10 @@ window.CodexConversation=(()=>{
         });
         // The visit budget starts with capture, not after SDP negotiation. Leave
         // the existing finish-ACK window time before the recorder hard limit.
-        timer=setTimeout(()=>void hold('Voice visit reached its time limit.'),Math.max(0,seconds*1000-2000));
-        capture.start();for(const track of ownedMedia.getAudioTracks())ownedPeer.addTrack(track,ownedMedia);
+        timer=setTimeout(()=>void hold('Voice visit reached its time limit.'),Math.max(0,admissionDeadline-Date.now()-2000));
+        capture.start();
+        }
+        for(const track of ownedMedia.getAudioTracks())ownedPeer.addTrack(track,ownedMedia);
         const offer=await ownedPeer.createOffer();if(!current())throw Error('Voice offer retired');
         await ownedPeer.setLocalDescription(offer);if(!current())throw Error('Voice offer retired');
         transport.send(JSON.stringify({type:'offer',sdp:ownedPeer.localDescription.sdp}));
@@ -201,7 +277,7 @@ window.CodexConversation=(()=>{
         await ownedPeer.setRemoteDescription({type:'answer',sdp});if(!current())throw Error('Voice connection retired');
         return true;
       }catch(error){if(owned===epoch&&(active||starting))await hold(error.message||'Voice unavailable.');closeRetired();return false;}
-      finally{openingCount--;}
+      finally{if(rejectOpening===ownedReject)rejectOpening=undefined;openingCount--;}
     }
     async function restoreHistory(older=false){
       const selected=getBinding(),generation=historyGeneration;
@@ -224,7 +300,7 @@ window.CodexConversation=(()=>{
       catch(error){if(getBinding()===selected&&historyGeneration===generation)onHistory({loading:false,more:!!historyBefore,error:true,older});throw error;}
       finally{restoring=undefined;}
     }
-    return {start,reconnect:start,hold,restoreHistory,
+    return {start:()=>start(),reconnect:()=>start(),hold,restoreHistory,
       resetHistory:()=>{historyGeneration++;restored=historyBefore=undefined;onHistory({loading:false,more:false});},
       retry:async original=>{if(original.binding!==getBinding())throw Error('Recording belongs to a different conversation');binding=original.binding;
         if(original.captureStop==='interrupted_prefix')return withVisitLock(original.codex_visit,async()=>{
@@ -250,7 +326,7 @@ window.CodexConversation=(()=>{
       setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},
       pause:()=>{paused=true;audio?.pause();state();},resume:()=>{paused=false;audio?.play().catch(()=>{paused=true;state('Tap Resume audio to listen.');});state();},
       release:()=>false,get originals(){return [];}, // Never feed native originals to ordinary Send recovery.
-      get active(){return active||starting||closing;},get hasAudio(){return connected;},get paused(){return paused;},get floor(){return false;}};
+      get active(){return active||starting||closing||renewing;},get hasAudio(){return connected;},get paused(){return paused;},get floor(){return false;}};
   }
   return {supported,create};
 })();

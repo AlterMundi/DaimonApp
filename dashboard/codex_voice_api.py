@@ -63,6 +63,17 @@ def install(app,config,provider,authorize,origins):
         try:return await asyncio.to_thread(read)
         except ValueError:raise HTTPException(404,'Voice history page unavailable')from None
 
+    @app.post('/api/interaction/voice/codex/visits/{visit}/capture/ended')
+    async def end_capture(visit:str,request:Request):
+        binding=request.headers.get('x-voice-binding','')
+        session=await http_owner(request,binding,write=True)
+        try:
+            owner=await frozen(binding)
+            await asyncio.to_thread(history.end_admission,visit,session['human'],owner)
+            return {'visit':visit,'binding':binding,'capture':'ended'}
+        except (OSError,ValueError,ProviderUnavailable):
+            raise HTTPException(409,'Microphone admission could not be confirmed ended')from None
+
     @app.post('/api/interaction/voice/codex/visits/{visit}/recordings/{ordinal}')
     async def original(visit:str,ordinal:int,request:Request):
         binding=request.headers.get('x-voice-binding','')
@@ -94,6 +105,7 @@ def install(app,config,provider,authorize,origins):
         await socket.accept()
         lease=voice=opening=remembering=starting=incoming=events=noticing=None
         visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
+        logical=False;admission=None;close_reason='review'
         pending=[];anchors={};unpresented=set();failed_notices=set();playback_ready=False
         async def send(value):
             await recheck()
@@ -164,13 +176,21 @@ def install(app,config,provider,authorize,origins):
                 raw=await asyncio.wait_for(socket.receive_text(),5)
                 if len(raw.encode())>8192:raise ValueError('Voice metadata exceeds bound')
                 meta=json.loads(raw)
-                if (not isinstance(meta,dict)or set(meta)-{'id','binding','csrf','authorization'}
+                if (not isinstance(meta,dict)or set(meta)-{'id','binding','csrf','authorization','logical_visit','predecessor'}
+                        or 'logical_visit'in meta and meta['logical_visit']is not True
+                        or 'predecessor'in meta and meta.get('logical_visit')is not True
                         or not all(isinstance(meta.get(k),str)for k in ('id','binding','csrf'))):
                     raise ValueError('Select one native voice visit')
                 visit=history.ident(meta['id']);binding=meta['binding']
                 session,recheck,actor=await bind_voice_actor(provider,authorize,socket,meta,require_voice=False)
                 human=session['human'];owner=await frozen(binding)
                 lease=AvatarVoiceLease(app.state.voice_active,human,binding,owner['native_thread'])
+                logical=meta.get('logical_visit')is True
+                if logical and 'predecessor'in meta:
+                    # Reserve before opening any native control/start. A lost
+                    # response cannot be retried with another visit UUID.
+                    admission=await asyncio.to_thread(history.claim_successor,
+                        meta['predecessor'],visit,human,owner)
                 # Supported owner-selected developer item; never browser text.
                 from .native_voice import being_identity
                 identity=being_identity({'native_identity_file':selected['identity_file']})
@@ -193,7 +213,8 @@ def install(app,config,provider,authorize,origins):
                     remembering=asyncio.create_task(asyncio.to_thread(history.remember,human,owner,memory,voice,provider))
                     await asyncio.shield(remembering)
                 await asyncio.to_thread(history.open,visit,human,owner,voice.session_id,seconds,
-                    identity_sha256=identity['sha256'],startup=startup)
+                    identity_sha256=identity['sha256'],startup=startup,
+                    admission_root=None if admission is None else admission['id'])
                 retained_visit=True
                 pending=await asyncio.to_thread(history.pending_work,human,owner)
                 current=await asyncio.to_thread(provider.codex_voice_current,owner)
@@ -201,7 +222,18 @@ def install(app,config,provider,authorize,origins):
                 await asyncio.to_thread(history.retain_work,visit,human,binding,pending)
                 anchors=await asyncio.to_thread(history.work_anchors,human,owner,pending)
                 if current is not None:await remember_anchor(current)
-                await send({'type':'prepared','id':visit,'session_seconds':seconds,'mode':'codex_webrtc'})
+                await send({'type':'prepared','id':visit,'session_seconds':seconds,'mode':'codex_webrtc',
+                    **({'logical_visit':'v1','admission':admission}if logical else{})})
+                if logical and admission is None:
+                    # Permission may be granted first, but capture/WebRTC input
+                    # must not begin before this one server-owned deadline.
+                    raw=await asyncio.wait_for(socket.receive_text(),20)
+                    if len(raw)>128 or json.loads(raw)!={'type':'capture'}:
+                        raise ValueError('Begin one logical microphone admission')
+                    await recheck()
+                    if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
+                    admission=await asyncio.to_thread(history.begin_admission,visit,human,owner)
+                    await send({'type':'capture_ready','id':visit,'admission':admission})
                 raw=await asyncio.wait_for(socket.receive_text(),20)
                 if len(raw.encode())>70000:raise ValueError('Voice offer exceeds bound')
                 offer=json.loads(raw)
@@ -209,12 +241,15 @@ def install(app,config,provider,authorize,origins):
                     raise ValueError('Select one WebRTC offer')
                 await recheck()
                 if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
+                if logical:admission=await asyncio.to_thread(history.admission_status,visit,human,owner)
                 starting=asyncio.create_task(asyncio.to_thread(voice.start,offer['sdp'],
                     voice=selected.get('voice','cove'),context=context,continuation=startup,memory=memory))
                 await asyncio.shield(starting)
+                if logical:admission=await asyncio.to_thread(history.admission_status,visit,human,owner)
                 incoming=asyncio.create_task(socket.receive_text())
                 events=asyncio.create_task(asyncio.to_thread(voice.receive,.25))
-                deadline=asyncio.get_running_loop().time()+seconds
+                deadline=asyncio.get_running_loop().time()+(seconds if admission is None else admission['remaining_seconds'])
+                close_reason='time_limit'
                 while asyncio.get_running_loop().time()<deadline:
                     done,_=await asyncio.wait([incoming,events,*collectors],timeout=.5,
                         return_when=asyncio.FIRST_COMPLETED)
@@ -226,7 +261,14 @@ def install(app,config,provider,authorize,origins):
                     if incoming in done:
                         raw=incoming.result()
                         message=json.loads(raw)if len(raw)<=128 else None
-                        if message=={'type':'close'}:break
+                        if message=={'type':'close'}:close_reason='requested';break
+                        if message=={'type':'renew'}and logical:
+                            # Owned recovery of failed media, not a new turn,
+                            # microphone permission or cancellation of work.
+                            await recheck()
+                            if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
+                            await asyncio.to_thread(history.admission_status,visit,human,owner)
+                            close_reason='media_replacement';break
                         if message!={'type':'ready'}:
                             raise ValueError('Native voice accepts media through WebRTC only')
                         playback_ready=True
@@ -265,12 +307,17 @@ def install(app,config,provider,authorize,origins):
                                 # Completion is not a presentation receipt. Keep
                                 # newly observed work eligible after closure.
                                 if turn in pending:await offer_pending()
-                            elif method=='thread/realtime/closed':closed=True;break
+                            elif method=='thread/realtime/closed':
+                                closed=True
+                                close_reason={'transport_closed':'native_transport_closed',
+                                    'requested':'native_requested','error':'native_error'}.get(p.get('reason'),'native_closed')
+                                break
                             elif method=='thread/realtime/error':raise ValueError('Native voice failed')
                         if closed:break
                         events=asyncio.create_task(asyncio.to_thread(voice.receive,.25))
                     await actor()
         except (Exception,asyncio.CancelledError)as error:
+            close_reason='review'
             # No native/provider payload, identity or credentials in diagnostics.
             with suppress(Exception):await asyncio.wait_for(socket.send_json({'type':'review','id':visit,
                 'message':('Previous voice history needs reconciliation before reconnecting. Recordings and accepted work are kept.'
@@ -354,7 +401,9 @@ def install(app,config,provider,authorize,origins):
                         with suppress(Exception):await asyncio.to_thread(history.abandon_unstarted,visit,human,binding)
                     with suppress(Exception):
                         terminal=await asyncio.to_thread(history.state,visit,human,binding,
-                            'closed'if closed and control_closed and not collection_failed and not transcript_failed else'review')
+                            'closed'if closed and control_closed and not collection_failed and not transcript_failed else'review',
+                            successor_ready=closed and control_closed and not collection_failed and not transcript_failed,
+                            closure_reason=close_reason)
                         successor_ready=(closed and control_closed and not collection_failed and not transcript_failed
                             and terminal['state']=='closed'and terminal['transcript_complete']is True)
                 # A native close notification is not yet a successor barrier:
@@ -366,6 +415,6 @@ def install(app,config,provider,authorize,origins):
                 if voice is not None:
                     with suppress(Exception):await asyncio.wait_for(socket.send_json({
                         'type':'closed','id':visit,'confirmed':closed,
-                        'successor_ready':successor_ready}),1)
+                        'successor_ready':successor_ready,'reason':close_reason}),1)
                 with suppress(Exception):await asyncio.wait_for(socket.close(),1)
     return True

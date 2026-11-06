@@ -8,6 +8,7 @@ V3 initialItems; previous startup envelopes are never included recursively.
 from contextlib import contextmanager, ExitStack
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -46,8 +47,14 @@ class CodexVoiceHistory:
     max_total_bytes=32*1024*1024
     max_record_bytes=65536
 
-    def __init__(self, directory):
+    def __init__(self, directory, *, clock=None):
         self.root=private_directory(directory)
+        self._clock=time.monotonic if clock is None else clock
+        # An automatic continuation belongs to this serving process. Restarting
+        # the server must not reinterpret a persisted monotonic deadline or
+        # silently reopen a microphone admission. Explicit reconnect remains
+        # independent and can still read the retained canonical sources.
+        self._admission_epoch=str(uuid.uuid4())
 
     @staticmethod
     def ident(value):
@@ -65,7 +72,7 @@ class CodexVoiceHistory:
             raise ValueError('Native voice history reached its retention bound')
         write_json(path,value)
 
-    def open(self,ident,human,frozen,native_session,session_seconds=600,*,identity_sha256=None,startup=None):
+    def open(self,ident,human,frozen,native_session,session_seconds=600,*,identity_sha256=None,startup=None,admission_root=None):
         self.ident(ident);self.ident(native_session)
         if type(session_seconds)is not int or not 1<=session_seconds<=600:
             raise ValueError('Select a bounded native voice duration')
@@ -84,8 +91,114 @@ class CodexVoiceHistory:
                 'startup_more':False if startup is None else startup['more'],
                 'created_at':time.time(),'state':'opening','transcript_complete':False,'items':[],'recordings':[],
                 'max_input_pcm_bytes':session_seconds*32000}
+            if admission_root is not None:
+                root,admission=self._admission(admission_root,human,frozen)
+                if admission['generations'][-1]!=ident or ident==root['id']:
+                    raise ValueError('Native successor has no exact admission claim')
+                value.update(admission_root=root['id'],
+                    admission_generation=len(admission['generations'])-1,
+                    max_input_pcm_bytes=0)
             self._write(value)
             return value
+
+    @staticmethod
+    def _owner(value,human,frozen):
+        if (value.get('human')!=human or value.get('binding')!=frozen['binding']
+                or value.get('entry_binding')!=frozen['entry_binding']
+                or value.get('native_thread')!=frozen['native_thread']):
+            raise ValueError('Native microphone admission belongs to another owner')
+
+    def _admission(self,ident,human,frozen):
+        """Read under history_lock; never extend the original admission."""
+        value=self.read(ident,human,frozen['binding']);self._owner(value,human,frozen)
+        root=self.read(value.get('admission_root',ident),human,frozen['binding'])
+        self._owner(root,human,frozen)
+        admission=root.get('microphone_admission')
+        if (not isinstance(admission,dict) or admission.get('epoch')!=self._admission_epoch
+                or admission.get('ended')is True
+                or not isinstance(admission.get('generations'),list)
+                or not 1<=len(admission['generations'])<=8
+                or admission['generations'][0]!=root['id']
+                or len(set(admission['generations']))!=len(admission['generations'])
+                or any(self.ident(v)!=v for v in admission['generations'])
+                or type(admission.get('started'))not in (int,float)
+                or type(admission.get('expires'))not in (int,float)
+                or not math.isfinite(admission['started']) or not math.isfinite(admission['expires'])
+                or not 0<admission['expires']-admission['started']<=600
+                or admission.get('max_input_pcm_bytes')!=root['max_input_pcm_bytes']
+                or ident not in admission['generations']):
+            raise ValueError('Native microphone admission is unavailable')
+        now=self._clock()
+        if not admission['started']<=now<admission['expires']:
+            raise ValueError('Native microphone admission expired or its clock changed')
+        return root,admission
+
+    def begin_admission(self,ident,human,frozen):
+        """Before capture: one finite permission lifetime, not a provider turn.
+
+        Only the original visit can own microphone originals. Physical
+        successors link back to it; they never receive a fresh PCM allowance.
+        Repeated observation returns the same deadline, not another600seconds.
+        """
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,frozen['binding']);self._owner(value,human,frozen)
+            if 'microphone_admission'in value:
+                root,admission=self._admission(ident,human,frozen)
+                return self._admission_view(root,admission)
+            if (value['state']!='opening' or 'admission_root'in value
+                    or value['items'] or value['recordings']):
+                raise ValueError('Begin microphone admission before the first capture')
+            now=self._clock();seconds=value['max_input_pcm_bytes']/32000
+            if not math.isfinite(now)or not 0<seconds<=600:
+                raise ValueError('Select one bounded microphone admission')
+            admission={'epoch':self._admission_epoch,'started':now,'expires':now+seconds,
+                'max_input_pcm_bytes':value['max_input_pcm_bytes'],'generations':[ident]}
+            value['microphone_admission']=admission
+            self._write(value)
+            return self._admission_view(value,admission)
+
+    def _admission_view(self,root,admission):
+        return {'id':root['id'],'expires':admission['expires'],
+            'remaining_seconds':max(0,admission['expires']-self._clock()),
+            'max_input_pcm_bytes':admission['max_input_pcm_bytes'],
+            'generation':len(admission['generations'])-1}
+
+    def admission_status(self,ident,human,frozen):
+        with history_lock(self.root/'.lock'):
+            root,admission=self._admission(ident,human,frozen)
+            return self._admission_view(root,admission)
+
+    def claim_successor(self,predecessor,ident,human,frozen):
+        """Reserve one exact successor before native open, never retry a start.
+
+        The root's bounded generation list is both provenance and durable intent.
+        A failed later child write/open does not make that intent reusable.
+        """
+        self.ident(ident)
+        with history_lock(self.root/'.lock'):
+            previous=self.read(predecessor,human,frozen['binding']);self._owner(previous,human,frozen)
+            root,admission=self._admission(predecessor,human,frozen)
+            if (previous['state']!='closed' or previous.get('successor_ready')is not True
+                    or previous.get('closure_reason')not in ('native_transport_closed','media_replacement')
+                    or previous['transcript_complete']is not True
+                    or admission['generations'][-1]!=predecessor
+                    or len(admission['generations'])>=8
+                    or ident in admission['generations'] or (self.root/(ident+'.json')).exists()):
+                raise ValueError('Native successor barrier is not ready or already claimed')
+            admission['generations'].append(ident)
+            self._write(root)
+            return self._admission_view(root,admission)
+
+    def end_admission(self,ident,human,frozen):
+        """End only the microphone admission; accepted native work continues."""
+        with history_lock(self.root/'.lock'):
+            root=self.read(ident,human,frozen['binding']);self._owner(root,human,frozen)
+            admission=root.get('microphone_admission')
+            if not isinstance(admission,dict)or'admission_root'in root:
+                raise ValueError('Select the original microphone admission')
+            if admission.get('ended')is not True:
+                admission['ended']=True
+                self._write(root)
 
     def continuation(self,human,frozen,*,reserve=0):
         """Flat immutable source window, never another visit's startup envelope."""
@@ -388,11 +501,21 @@ class CodexVoiceHistory:
             raise ValueError('Native voice history belongs to another binding')
         return value
 
-    def state(self,ident,human,binding,state):
+    def state(self,ident,human,binding,state,*,successor_ready=None,closure_reason=None):
         if state not in ('active','closed','review'):raise ValueError('Unknown native voice state')
+        if successor_ready is not None and type(successor_ready)is not bool:
+            raise ValueError('Select observed native successor readiness')
+        if closure_reason is not None and closure_reason not in (
+                'native_transport_closed','media_replacement','native_requested','native_error','native_closed','requested','time_limit','review'):
+            raise ValueError('Select one bounded native closure reason')
         with history_lock(self.root/'.lock'):
             value=self.read(ident,human,binding)
             if value['state']=='closed' and state!='closed':return value
+            if successor_ready is not None:
+                if successor_ready and (state!='closed' or value['transcript_complete']is not True):
+                    raise ValueError('Native successor needs complete closed sources')
+                value['successor_ready']=successor_ready
+            if closure_reason is not None:value['closure_reason']=closure_reason
             value['state']=state
             self._write(value);return value
 
@@ -430,6 +553,16 @@ class CodexVoiceHistory:
             value=self.read(ident,human,binding)
             if capture_stop and value['state']!='closed':
                 raise ValueError('Recovered prefixes require a closed voice visit')
+            admission=value.get('microphone_admission')
+            if capture_stop and admission is not None and admission.get('ended')is not True:
+                # The first provider generation can be closed while the same
+                # microphone is recording through a successor or setup gap.
+                # A closed physical generation is no longer enough to seal a
+                # recovered logical prefix. An unobserved server restart also
+                # cannot reinterpret a stored monotonic expiry.
+                if (admission.get('epoch')!=self._admission_epoch
+                        or self._clock()<admission.get('expires',float('inf'))):
+                    raise ValueError('Original microphone admission is still open')
             old=next((r for r in value['recordings']if r['ordinal']==ordinal),None)
             if old is not None:
                 if old['audio_sha256']!=digest:raise ValueError('Original recording cannot be replaced')
@@ -466,6 +599,9 @@ class CodexVoiceHistory:
             receipt={'id':original,'ordinal':ordinal,'audio_sha256':digest,'audio_bytes':len(data),
                 'mime':'audio/wav','archive':archive,'native_replay':'never',
                 'meaning':'App microphone recording for this visit; no inferred word timing or new work admission'}
+            if admission is not None:
+                receipt.update(capture_admission=ident,
+                    meaning='Original app microphone recording for one finite admission, including possible provider replacement gaps. No inferred delivery, word timing or new work admission')
             if capture_stop:
                 receipt.update(capture_stop=capture_stop,meaning='Client-reported recovered audio prefix; the unsaved tail may be missing. No inferred word timing or new work admission')
             if old is None:value['recordings'].append(receipt)
