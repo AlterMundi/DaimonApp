@@ -37,6 +37,26 @@ for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
 ## Current provider priority —5November2026
 
+Selected659 now qualifies ordered native final sources and completion-before-close
+carry, with a short source-backed availability notice followed by corrected recall
+through three visits/two explicit reconnects. The same original receiver and
+accepted source work were retained; no source/acknowledged-offer replay. See the
+[native guide](interaction-native-codex-voice.md#completed-work-and-shortened-speech-excerpts)
+for all negative cases, exact media/ASR evidence and limitations. Deployment truth
+remains with the current receiving record; this is not full being-memory or phone
+acceptance.
+
+The6November native lifecycle inspection separates the next requirement from
+those manual reconnect tests. Retained numeric usage reports audio duration,
+not observed context-token headroom. Native backend compaction is not physical
+voice renewal; start/end mode instructions are context transitions, not checkpoint
+execution. The browser currently has no logical-visit/automatic-successor state
+machine. Implement that lifecycle inside the unchanged600second admission before
+claiming sustainable automatic renewal. Do not reinterpret several manual opens,
+an audio-duration counter or a compaction ACK as the two required automatic
+successor installations. See the
+[native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection--6november2026).
+
 Native Codex page-reload durability now retains bounded local audio fragments
 before final original sealing. Recovered prefixes explicitly disclose a possibly
 missing tail; only explicit saving against a closed capable visit is allowed.

@@ -76,6 +76,60 @@ while redesigning their transport-specific implementation where necessary.
 
 ## Decisions from inspected sources
 
+### Native lifecycle boundary inspection —6November2026
+
+Reuse retained measurements before opening another provider session. Three
+existing actual-native cases already contain bounded numeric projections of
+`session.usage.updated`. The sustained case retained24samples from14600ms to
+360000ms of audio; its24sample collector saturated, so it does not cover the
+whole540second case. The later availability/recall cases retain three more
+samples. Their observed numeric usage field is `audio_duration_ms`, with no
+numeric limit fields. This is audio accounting, not established context-token
+headroom. The projection deliberately excludes nonnumeric content; an empty
+numeric limit object does not prove an unlimited account or absent server limit.
+No new model, capture or provider call was needed for this inspection.
+
+The [official App Server API overview](https://learn.chatgpt.com/docs/app-server#api-overview)
+documents backend compaction as an asynchronous operation with progress events;
+it does not establish native realtime renewal semantics. Inspection of Codex
+sourcef7f163c6, separately from receiving binary acceptance, found:
+
+- `protocol_frameless_bidi.rs` does not forward usage updates, and Core's
+  `RealtimeEvent` has no usage-pressure variant. The app also ignores browser
+  native data-channel payloads. Do not invent a token threshold from elapsed audio
+  or carry Qwen's accounting into native Codex as if the protocols were identical.
+- `RealtimeConversationManager::start` drains a previous connection before a new
+  one starts. Stop is thread-scoped; it has no generation comparison. A stale app
+  cleanup must never stop its successor. Existing lease/epoch/closure fences stay.
+- `realtimeStartInstructions` and `realtimeEndInstructions` render developer
+  context when the native mode changes. They are not a checkpoint request, task
+  admission, durable semantic-summary receipt or proof of compressed voice state.
+- The current app starts a new capture clock and native visit for an explicit
+  reconnect. It has no separate logical microphone admission with replaceable
+  physical generations. Its source/restoration/result ledgers qualify manual
+  recovery; they do not implement automatic pressure-driven renewal.
+
+The next implementation must preserve one explicit logical microphone admission
+and its original expiry/PCM allowance across physical successors. It must stop
+admitting audio at a supported quiet boundary, retain the last originals and
+canonical transcript, verify the source-linked semantic checkpoint, retire old
+control callbacks and await closure before installing the next native generation.
+Waiting for every accepted background task is not a renewal barrier: retain its
+exact source references and independent return intent instead. No new executor,
+provider fallback, fresh microphone permission or renewed600second allowance is
+implied. A late result remains owned by the existing native conversation.
+
+Obtain pressure/commit evidence from the native provider boundary; unknown
+headroom stays unknown. Budget the successor packet against native initial-item
+limits, keeping identity, human corrections, unresolved questions and work-source
+references without embedding old envelopes or full result bodies. A compacted
+backing thread and a physically replaced voice connection need separate observed
+outcomes. Qualify two automatic switches, useful audio after each, a corrected
+fact, an unresolved question and a delayed native result inside the same original
+admission. Hard-expiry, stale generation, new input, incomplete originals and
+uncertain checkpoint/source writes must preserve recoverable state. Current
+64k/48k diagnostics,600second visits and storage bounds remain unchanged.
+
 ### Receiving native WebRTC qualification —5November2026
 
 The existing loaded Codex0.163 owner accepted two WebRTC connections using its
