@@ -158,6 +158,7 @@ class Mounted(unittest.TestCase):
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
         app=FastAPI();app.state.voice_active=set();saved={};calls={'asr':0,'work':0}
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
+        owner.conversation_input_trace=lambda root:{'id':root,'entry_binding':frozen['entry_binding'],'routes':[]}
         owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
         def capture(metadata,data,**options):
             saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],

@@ -45,6 +45,8 @@ class Backend(unittest.TestCase):
             return copy.deepcopy(native)
         self.provider.conversation_foreground_interpret=interpret
         self.provider.conversation_foreground_delegate=delegate
+        self.provider.conversation_input_trace=lambda root:{'id':root,
+            'entry_binding':self.owner['entry_binding'],'routes':[]}
         self.provider.presentation_part=lambda source,revision,offset:{'id':source,'revision':revision,
             'offset':offset,'next_offset':None,'text':'Respuesta nativa verificada.',
             'entry_binding':self.owner['entry_binding'][:3]+[self.owner['binding']],
@@ -163,6 +165,64 @@ class Backend(unittest.TestCase):
         self.assertEqual(result['state'],'held');self.assertEqual(self.asr,[])
         self.assertEqual(self.provider.submissions,0)
         self.assertEqual(self.visits.close_intent(self.ident,100,self.owner)['type'],'session.close')
+
+    def worker_result(self):
+        self.ready();self.run_pipeline()
+        source='delivery:00000000-0000-4000-8000-000000000001'
+        result={'source':source,'revision':'b'*64,'instruction_covered':True,
+                'current':True,'correction_pending':False}
+        route={'target_available':True,'results':[result]}
+        self.provider.conversation_input_trace=lambda root:{'id':root,
+            'entry_binding':self.owner['entry_binding'],'routes':[route]}
+        part=self.provider.presentation_part
+        self.provider.presentation_part=lambda source,revision,offset:{
+            **part(source,revision,offset),'kind':'worker_result','current':True}
+        test=self
+        class Sideband:
+            def send(self,command):test.updates.append(command)
+        return route,result,Sideband()
+
+    def test_late_worker_uses_exact_trace_without_scanning_unrelated_history(self):
+        route,result,channel=self.worker_result()
+        self.provider.presentation_list=lambda *args:self.fail('Exact trace must locate an older worker result')
+        returned=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(returned['source'],result['source']);self.assertEqual(returned['revision'],result['revision'])
+        self.assertEqual(len(self.writes),1);self.assertEqual(len(self.asr),1)
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        self.assertEqual(len(self.updates),1,'An unknown injection cannot be retried or skipped')
+
+    def test_unavailable_or_uncovered_worker_can_be_observed_later_without_new_work(self):
+        route,result,channel=self.worker_result()
+        self.provider.presentation_list=lambda *args:{'binding':self.owner['binding'],
+            'items':[],'cursor':{'native':0,'delivery':1000},'more':False}
+        route['target_available']=False
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        route['target_available']=True
+        for field,value in [('instruction_covered',False),('current',False),('correction_pending',True),('revision',None)]:
+            before=result[field];result[field]=value
+            self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+            result[field]=before
+        returned=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(returned['source'],result['source']);self.assertEqual(len(self.writes),1)
+
+    def test_worker_association_is_rechecked_before_context_write(self):
+        route,result,channel=self.worker_result();reads=[]
+        def trace(root):
+            reads.append(root)
+            return {'id':root,'entry_binding':self.owner['entry_binding'],
+                'routes':[route] if len(reads)==1 else []}
+        self.provider.conversation_input_trace=trace
+        with self.assertRaises(ValueError):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(self.updates,[]);self.assertEqual(len(self.writes),1)
+
+    def test_foreign_trace_cannot_select_a_worker_result(self):
+        route,result,channel=self.worker_result()
+        self.provider.conversation_input_trace=lambda root:{'id':root,'entry_binding':[1,2,3,4],'routes':[route]}
+        from dashboard.provider import ProviderUnavailable
+        with self.assertRaises(ProviderUnavailable):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(self.updates,[])
 
 
 if __name__=='__main__':unittest.main()
