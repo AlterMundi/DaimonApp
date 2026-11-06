@@ -9,7 +9,7 @@ from .codex_voice_history import history_lock
 from .openai_live_originals import enroll_original
 from .openai_live_transcription import OriginalTranscription, interpret_original, commit_interpretation
 from .openai_live_native_work import delegate_native
-from .openai_live_native_results import return_native_part
+from .openai_live_native_results import return_native_part, _origin_returns
 from .provider import ProviderUnavailable
 
 
@@ -110,29 +110,38 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
     return dict(result)
 
 
-def return_one_native_part(history, ident, human, owner, delegation, provider, sideband, *, stopped=None):
+def return_one_native_part(history, ident, human, owner, delegation, provider, sideband, *, stopped=None, source_visit=None):
     """Read at most eight source pages and append one fragment per foreground poll.
 
     Current trace-associated worker deliveries use exact canonical revisions,
     even after the native turn ends or the conversation page moves on. Older
     readers without revision-bearing traces keep same-turn progress/answers;
-    excerpts are never substituted. Renewal remains a separate integration.
+    excerpts are never substituted. A renewed voice reads the original work
+    proof and flat forwarding references without issuing that work again.
     """
     def current():
         if stopped is not None and stopped.is_set():raise ValueError('Voice result read ended')
     current()
     if not provider.authorized(human) or provider.public_live_binding(owner['binding'])!=owner:
         raise ProviderUnavailable('Native result owner changed')
-    value=history.read(ident,human,owner)
+    origin=ident if source_visit is None else history._ident(source_visit)
+    value=history.read(origin,human,owner)
     work=value['delegations'].get(delegation,{})
     if work.get('native_work',{}).get('state')!='observed': return None
-    updates=[row for row in value.get('native_result_updates',{}).values() if row['delegation']==delegation]
+    if origin==ident:
+        updates=[row for row in value.get('native_result_updates',{}).values()
+                 if row['delegation']==delegation and row.get('origin_visit',ident)==ident]
+    else:
+        with history_lock(history.root / '.lock'):
+            updates=[row for _,row in _origin_returns(history,history.read(origin,human,owner),human,owner,delegation)]
+    def emit(source,revision,offset):
+        return return_native_part(history,ident,human,owner,delegation,source,revision,
+                                  offset,provider,sideband,stopped=stopped,source_visit=source_visit)
     for row in updates:
         if row['state']!='context_injected': return None
         if row['next_offset'] is not None and not any(other['source']==row['source']
                 and other['revision']==row['revision'] and other['offset']==row['next_offset'] for other in updates):
-            return return_native_part(history,ident,human,owner,delegation,row['source'],row['revision'],
-                row['next_offset'],provider,sideband,stopped=stopped)
+            return emit(row['source'],row['revision'],row['next_offset'])
     trace=provider.conversation_input_trace(work['native_work']['root'])
     current()
     if (trace.get('id')!=work['native_work']['root']
@@ -151,14 +160,14 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     and isinstance(source,str) and re.fullmatch(r'delivery:[a-f0-9-]{36}',source)
                     and isinstance(revision,str) and re.fullmatch('[a-f0-9]{64}',revision)
                     and not any(row['source']==source and row['revision']==revision for row in updates)):
-                return return_native_part(history,ident,human,owner,delegation,source,revision,0,provider,sideband,stopped=stopped)
+                return emit(source,revision,0)
     native=provider.conversation_input_status(work['native_work']['root'])
     current()
     if type(native.get('local_turn')) is not int: return None
     def scanned(after):
         if type(after) is not int or after<0:raise ValueError('Invalid native result cursor')
         with history_lock(history.root / '.lock'):
-            latest=history.read(ident,human,owner)
+            latest=history.read(origin,human,owner)
             pipeline=latest['delegations'][delegation]['native_pipeline']
             pipeline['return_after']=max(pipeline.get('return_after',0),after)
             history._write(latest)
@@ -174,11 +183,37 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     and source.get('current') is not False and source.get('correction_pending') is not True
                     and source.get('native_binding_current') is not False
                     and not any(row['source']==source['id'] and row['revision']==source['revision'] for row in updates)):
-                result=return_native_part(history,ident,human,owner,delegation,source['id'],source['revision'],0,provider,sideband,stopped=stopped)
+                result=emit(source['id'],source['revision'],0)
                 scanned(int(source['id'].split(':')[1]))
                 return result
         scanned(page.get('cursor',cursor)['native'])
         if not page.get('more'): break
         if page.get('cursor')==cursor:raise ValueError('Native result cursor did not advance')
         cursor=page['cursor']
+    return None
+
+
+def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,stopped=None):
+    """One owned foreground task alternates current work and historical origins.
+
+    Discovery and native reads stay outside the browser-control loop. The
+    persisted flat cursor survives another voice replacement, not a model lease.
+    """
+    if type(cycle) is not int or cycle<0:raise ValueError('Select a bounded return cycle')
+    if stopped is not None and stopped.is_set():return None
+    if not provider.authorized(human) or provider.public_live_binding(owner['binding'])!=owner:
+        raise ProviderUnavailable('Native result owner changed')
+    value=history.read(ident,human,owner)
+    ready=[key for key,work in value['delegations'].items()
+           if work.get('native_work',{}).get('state')=='observed']
+    previous=None
+    if not ready or cycle%2:
+        previous=history.native_return_origin(ident,human,owner)
+    if stopped is not None and stopped.is_set():return None
+    if previous:
+        return return_one_native_part(history,ident,human,owner,previous['delegation'],provider,
+                                      sideband,stopped=stopped,source_visit=previous['visit'])
+    if ready:
+        return return_one_native_part(history,ident,human,owner,ready[(cycle//2)%len(ready)],
+                                      provider,sideband,stopped=stopped)
     return None

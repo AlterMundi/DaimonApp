@@ -23,7 +23,7 @@ from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
-from .openai_live_native_backend import prepare_native, return_one_native_part
+from .openai_live_native_backend import prepare_native, return_next_native_part
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
 
@@ -142,7 +142,7 @@ def install(app, config, provider, authorize, origins):
             await socket.close(code=1008);return
         await socket.accept()
         lease=sideband=creating=read_browser=read_provider=preparing=returning=None
-        result_index=0
+        result_index=0;result_poll=0
         preparation_stopped=threading.Event()
         visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
         async def message(limit):
@@ -271,14 +271,11 @@ def install(app, config, provider, authorize, origins):
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
                                         stopped=preparation_stopped))
-                            if native_backend and returning is None:
-                                ready=[key for key,row in value['delegations'].items()
-                                    if row.get('native_work',{}).get('state')=='observed']
-                                if ready:
-                                    result_index%=len(ready)
-                                    returning=asyncio.create_task(asyncio.to_thread(return_one_native_part,history,visit,human,owner,
-                                        ready[result_index],provider,sideband,stopped=preparation_stopped))
-                                    result_index+=1
+                            if native_backend and returning is None and asyncio.get_running_loop().time()>=result_poll:
+                                result_poll=asyncio.get_running_loop().time()+.5
+                                returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
+                                    result_index,provider,sideband,stopped=preparation_stopped))
+                                result_index+=1
                     if closing:
                         command=await asyncio.to_thread(history.close_intent,visit,human,owner)
                         if command is not None:await asyncio.to_thread(sideband.send,command)
