@@ -28,7 +28,7 @@ def install(app, config, provider, authorize, origins):
     if selected.get('enabled') is not True:return False
     if (set(selected)-{'enabled','api_key_file','identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options',
-            'delegation_options','session_seconds'}
+            'delegation_options','session_seconds','resume_mode'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in ('api_key_file','identity_file','backend_instructions_file'))
             or type(selected.get('session_seconds',600)) is not int
@@ -41,6 +41,9 @@ def install(app, config, provider, authorize, origins):
         session_options=selected.get('session_options'), backend_options=selected.get('backend_options'),
         delegation_options=selected.get('delegation_options'))
     if 'format' in spec.get('audio',{}):raise ValueError('WebRTC negotiates its audio format')
+    resume=selected.get('resume_mode','fresh')
+    if resume not in ('fresh','stored_fork') or resume=='stored_fork' and spec.get('store') is not True:
+        raise ValueError('Stored continuation requires explicit storage configuration')
     seconds=selected.get('session_seconds',600)
     history=LiveCreations(Path(config['state_dir'])/'public-live-visits')
     uploads=asyncio.Semaphore(2)
@@ -133,7 +136,7 @@ def install(app, config, provider, authorize, origins):
                 # Validate this explicitly configured project file before mic
                 # permission; never discover or reinterpret Codex credentials.
                 await asyncio.to_thread(client._project_key)
-                admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds)
+                admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,resume_spec=spec if resume=='stored_fork' else None)
                 admitted=True
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_responses_comparison','source_coverage':'sideband_before_media_answer'})
@@ -185,10 +188,16 @@ def install(app, config, provider, authorize, origins):
                             await send({'type':'finalization_unconfirmed','id':visit,'message':'Voice paused; pending work and final usage need review.'})
                             break
         except (OSError,ValueError,RenderError,LiveUnavailable,CodexVoiceUnavailable,
-                ProviderUnavailable,HTTPException,TimeoutError,WebSocketDisconnect):
+                ProviderUnavailable,HTTPException,TimeoutError,WebSocketDisconnect) as error:
+            messages={
+                'stored_continuation_needs_review':'The previous conversation needs review before continuing. No new voice call was created.',
+                'prior_creation_needs_review':'The previous voice connection is not confirmed closed. Your recordings and work are kept for review.',
+                'creation_storage_full':'Voice history storage is full. Your recordings and work are kept; review storage before starting another call.',
+                'project_key_unavailable':'This voice comparison needs its configured OpenAI project access. Your recordings and work are unchanged.'}
+            message=messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None
             with suppress(Exception):
                 await asyncio.wait_for(socket.send_json({'type':'unconfirmed','id':visit,
-                    'message':'Voice paused. Keep your original audio; the connection and pending work need review.'}),2)
+                    'message':message or 'Voice paused. Keep your original audio; the connection and pending work need review.'}),2)
         finally:
             with CancelScope(shield=True):
                 try:

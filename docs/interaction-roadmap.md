@@ -181,6 +181,10 @@ not establish public project access or complete integrating identity/memory,
 work/tools/questions, semantic renewal or sustained device acceptance. Native
 Codex and current-provider modes stay available; development selection lives in
 Under the hood. Keep those remaining obligations active.
+Provider-stored continuation is an optional prepared path with explicit project
+storage, trusted closed-source/configuration/task fences and flat predecessor
+references. Synthetic repeated-fork fixtures do not establish real semantic
+renewal, useful speech, memory/task parity or project eligibility.
 
 Merged [#632](https://github.com/AlterMundi/DaimonApp/pull/632) now contains the
 separate, default-off native Codex WebRTC application route and explicit engine

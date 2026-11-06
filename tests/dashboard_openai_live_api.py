@@ -43,14 +43,19 @@ class Owner:
 class Client:
     instances=[];failure=None
     def __init__(self,key):
-        self.events=queue.Queue();self.sent=[];self.creations=0;self.detached=False
+        self.events=queue.Queue();self.sent=[];self.creations=0;self.detached=False;self.forks=[]
         self.instances.append(self)
     def _project_key(self):return 'test-only-project-key'
     def create(self,sdp,spec):
         self.creations+=1
         if self.failure:raise LiveUnavailable(self.failure)
         return LiveCall('live_opaque:provider/42','v=0 answer')
+    def fork(self,source,sdp):
+        self.forks.append((source,sdp))
+        if self.failure:raise LiveUnavailable(self.failure)
+        return LiveCall('live_opaque:provider/fork-'+str(len(Client.instances)),'v=0 fork answer')
     def attach(self,call):
+        self.session_id=call.session_id
         self.events.put({'type':'session.started','event_id':'start','session':{'id':call.session_id}})
         return self
     def receive(self):
@@ -60,7 +65,7 @@ class Client:
         self.sent.append(event)
         if event['type']=='session.close':
             self.events.put({'type':'session.closed','event_id':'closed','reason':'close_requested',
-                'session':{'id':'live_opaque:provider/42'},'usage':{'seconds':12}})
+                'session':{'id':self.session_id},'usage':{'seconds':12}})
     def detach(self):self.detached=True
 
 
@@ -107,6 +112,29 @@ class Mounted(unittest.TestCase):
             result=self.close(socket);self.assertEqual(result['finalization']['usage_seconds'],12)
         self.assertEqual(self.read()['state'],'closed');self.assertTrue(native.detached)
         self.assertEqual([v['type']for v in native.sent],['session.close'])
+    def test_mounted_stored_reconnect_inherits_one_closed_call_without_resubmission(self):
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'resume_mode':'stored_fork','session_options':{'store':True}}}
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        with TestClient(app,base_url='https://example.test') as client:
+            for n in range(2):
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    ident=str(uuid.uuid4());socket.send_json({**self.meta,'id':ident})
+                    admission=socket.receive_json();self.assertEqual(admission['type'],'prepared')
+                    self.assertEqual(admission['admission']['continued'],n==1)
+                    socket.send_json({'type':'offer','sdp':'v=0 offer'})
+                    answer=socket.receive_json();self.assertEqual(answer['type'],'answer')
+                    self.assertEqual(answer['session'],'live_opaque:provider/42') if n==0 else self.assertTrue(answer['session'].startswith('live_opaque:provider/fork-'))
+                    self.assertEqual(socket.receive_json()['event']['type'],'session.started')
+                    socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
+                    self.assertEqual(socket.receive_json()['type'],'closed')
+        self.assertEqual(sum(v.creations for v in Client.instances),1)
+        self.assertEqual([fork for v in Client.instances for fork in v.forks],[('live_opaque:provider/42','v=0 offer')])
+        self.assertEqual(app.state.voice_active,set())
+        invalid=FastAPI();invalid.state.voice_active=set()
+        with self.assertRaises(ValueError):install(invalid,{**config,'openai_live':{**config['openai_live'],'session_options':{'store':False}}},self.owner,authorize,['https://example.test'])
     def test_history_listing_is_authenticated_read_only_and_uses_current_binding(self):
         path='/api/interaction/voice/gpt-live/visits'
         with self.socket() as socket:
@@ -246,6 +274,75 @@ class Journal(unittest.TestCase):
         self.assertEqual(self.history.visits(101,'a'*64)['visits'],[])
         with self.assertRaises(ValueError):self.history.visits(101,'a'*64,before=second)
         with self.assertRaises(ValueError):self.history.visits(100,'b'*64,before=second)
+    def test_stored_continuation_keeps_flat_references_and_exact_call_outcomes(self):
+        # Start an isolated explicit-storage chain, not the legacy nonstored visit.
+        history=LiveCreations(self.root/'stored')
+        spec={**self.spec,'store':True};parent=None;provider_ids=set()
+        for n in range(3):
+            ident=str(uuid.uuid4());client=Client('test')
+            admission=history.prepare(ident,100,self.frozen,300,resume_spec=spec)
+            self.assertEqual(admission['continued'],parent is not None)
+            call=history.create(ident,100,self.frozen,'v=0 offer',spec,client)
+            self.assertNotIn(call.session_id,provider_ids);provider_ids.add(call.session_id)
+            record=history.read(ident,100,self.frozen)
+            self.assertEqual(record.get('continuation_from'),parent)
+            self.assertEqual(history.create(ident,100,self.frozen,'v=0 offer',spec,Client('test')),call)
+            self.assertEqual(client.creations,1 if parent is None else 0)
+            self.assertEqual(len(client.forks),0 if parent is None else 1)
+            self.assertNotIn('input',record);self.assertNotIn('instructions',record)
+            # Wall-clock order is not the continuation chain's authority.
+            record['created_at']=10-n;history._write(record)
+            history.observe_closed(ident,100,self.frozen,{'type':'session.closed','event_id':'closed-'+str(n),
+                'reason':'close_requested','session':{'id':call.session_id},'usage':{'seconds':1}})
+            parent=ident
+        with self.assertRaises(LiveUnavailable):history.prepare(str(uuid.uuid4()),100,self.frozen,300,resume_spec={**spec,'instructions':'changed'})
+    def test_lost_fork_and_restart_never_create_fresh_fallback_or_repeat_fork(self):
+        history=LiveCreations(self.root/'lost-fork');spec={**self.spec,'store':True}
+        parent=str(uuid.uuid4());history.prepare(parent,100,self.frozen,300,resume_spec=spec)
+        call=history.create(parent,100,self.frozen,'v=0 parent',spec,Client('test'))
+        history.observe_closed(parent,100,self.frozen,{'type':'session.closed','event_id':'closed-parent',
+            'reason':'close_requested','session':{'id':call.session_id}})
+        child=str(uuid.uuid4());history.prepare(child,100,self.frozen,300,resume_spec=spec)
+        failed=Client('test');failed.failure='creation_unconfirmed'
+        with self.assertRaises(LiveUnavailable):history.create(child,100,self.frozen,'v=0 child',spec,failed)
+        self.assertEqual(failed.creations,0);self.assertEqual(failed.forks,[(call.session_id,'v=0 child')])
+        restarted=LiveCreations(history.root);unused=Client('test')
+        with self.assertRaises(LiveUnavailable):restarted.create(child,100,self.frozen,'v=0 child',spec,unused)
+        with self.assertRaises(LiveUnavailable):restarted.prepare(str(uuid.uuid4()),100,self.frozen,300,resume_spec=spec)
+        self.assertEqual(unused.creations,0);self.assertEqual(unused.forks,[])
+        self.assertEqual(restarted.read(child,100,self.frozen)['state'],'creation_unconfirmed')
+    def test_known_child_retry_reads_its_receipt_even_if_closed_parent_is_unavailable(self):
+        history=LiveCreations(self.root/'known-child');spec={**self.spec,'store':True}
+        parent=str(uuid.uuid4());history.prepare(parent,100,self.frozen,300,resume_spec=spec)
+        source=history.create(parent,100,self.frozen,'v=0 parent',spec,Client('test'))
+        history.observe_closed(parent,100,self.frozen,{'type':'session.closed','event_id':'closed-parent',
+            'reason':'close_requested','session':{'id':source.session_id}})
+        child=str(uuid.uuid4());history.prepare(child,100,self.frozen,300,resume_spec=spec)
+        result=history.create(child,100,self.frozen,'v=0 child',spec,Client('test'))
+        history._path(parent).unlink() # Synthetic retirement; not a live-store cleanup.
+        unused=Client('test')
+        self.assertEqual(LiveCreations(history.root).create(child,100,self.frozen,'v=0 child',spec,unused),result)
+        self.assertEqual(unused.creations,0);self.assertEqual(unused.forks,[])
+    def test_published_fresh_receipt_digest_remains_readable_without_new_fields(self):
+        import hashlib
+        request={'session':self.spec,'transport':{'type':'webrtc','sdp':'v=0 offer'}}
+        old=self.history.read(self.ident,100,self.frozen)
+        old.pop('configuration_sha256');old.pop('store_requested')
+        old['request_sha256']=hashlib.sha256(json.dumps(request,sort_keys=True,allow_nan=False,
+            ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+        self.history._write(old);unused=Client('test')
+        self.assertEqual(LiveCreations(self.root).create(self.ident,100,self.frozen,'v=0 offer',self.spec,unused).session_id,'live_opaque:provider/42')
+        self.assertEqual(unused.creations,0);self.assertEqual(unused.forks,[])
+    def test_stored_continuation_refuses_nonstored_or_unsettled_backend(self):
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,300,resume_spec=self.spec)
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'expired','session':{'id':'live_opaque:provider/42'}})
+        with self.assertRaises(LiveUnavailable):self.history.prepare(str(uuid.uuid4()),100,self.frozen,300,resume_spec={**self.spec,'store':True})
+        value=self.history.read(self.ident,100,self.frozen)
+        value.update(store_requested=True,configuration_sha256=self.history._configuration({**self.spec,'store':True}),
+            delegations={'work':{'state':'pending'}});self.history._write(value)
+        with self.assertRaises(LiveUnavailable):self.history.prepare(str(uuid.uuid4()),100,self.frozen,300,resume_spec={**self.spec,'store':True})
+        self.assertEqual(len(self.history._records()[0]),1,'Refusals occur before microphone admission or provider creation')
     def test_prepared_capture_is_not_restarted_by_a_new_process(self):
         other=LiveCreations(self.root)
         with self.assertRaises(ValueError):other.prepare(self.ident,100,self.frozen,300)

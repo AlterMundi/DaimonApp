@@ -13,7 +13,7 @@ import time
 import uuid
 
 from .codex_voice_history import history_lock
-from .openai_live import LiveCall, LiveUnavailable, creation_request, _text
+from .openai_live import LiveCall, LiveUnavailable, creation_request, fork_request, _text
 from .private_state import private_directory
 from scripts.speech_render import atomic, private_bytes, sync_directory, RenderError
 
@@ -135,9 +135,12 @@ class LiveCreations:
             raise ValueError('Public Live receipt belongs to another conversation')
         return value
 
-    def prepare(self, ident, human, frozen, seconds=600):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
+        if resume_spec is not None:
+            creation_request('v=0 validation only',resume_spec)
+            if resume_spec.get('store') is not True:raise ValueError('Stored continuation requires explicit project storage selection')
         if type(seconds) is not int or not 300 <= seconds <= 600:
             raise ValueError('Keep the diagnostic capture deadline')
         with history_lock(self.root / '.lock'):
@@ -154,8 +157,21 @@ class LiveCreations:
                 'state':'prepared', 'created_at':time.time(), 'source_bound':2*1024*1024, 'recordings':[],
                 'delegations':{}, 'max_input_pcm_bytes':seconds*32000,
                 'admission':{'epoch':self.epoch, 'expires':time.monotonic()+seconds, 'ended':False}}
+            if resume_spec is not None:
+                value['continuity']='stored_fork'
+                value['configuration_sha256']=self._configuration(resume_spec)
+                previous=[v for v,_ in records if v['owner']==owner and v['state']=='closed']
+                if previous:
+                    ancestors={v.get('continuation_from') for v in previous}
+                    tips=[v for v in previous if v['id'] not in ancestors]
+                    if len(tips)!=1:raise LiveUnavailable('stored_continuation_needs_review')
+                    parent=tips[0]
+                    value['source_session_id']=self._fork_source(parent,owner,value['configuration_sha256'])
+                    value['continuation_from']=parent['id']
             self._write(value)
-            return {'id':ident, 'remaining_seconds':seconds, 'max_input_pcm_bytes':seconds*32000}
+            return {'id':ident, 'remaining_seconds':seconds, 'max_input_pcm_bytes':seconds*32000,
+                'continuity':value.get('continuity','fresh'),'continued':value.get('continuation_from') is not None}
+
 
     def end_capture(self, ident, human, binding):
         with history_lock(self.root / '.lock'):
@@ -371,6 +387,21 @@ class LiveCreations:
             raise LiveUnavailable('session_not_attachable')
         return client.attach(self._result(value), connect=connect)
 
+    @staticmethod
+    def _configuration(spec):
+        return hashlib.sha256(json.dumps(spec,sort_keys=True,ensure_ascii=False,
+            allow_nan=False,separators=(',',':')).encode()).hexdigest()
+
+    @staticmethod
+    def _fork_source(parent,owner,configuration):
+        if (parent['owner']!=owner or parent['state']!='closed'
+                or parent.get('store_requested') is not True
+                or parent.get('configuration_sha256')!=configuration
+                or any(v.get('state')!='response.completed' or v.get('needs_client')
+                    for v in parent.get('delegations',{}).values())):
+            raise LiveUnavailable('stored_continuation_needs_review')
+        return parent['call']['session_id']
+
     def create(self, ident, human, frozen, sdp, spec, client):
         """Retain intent before one POST; exact retries only read its outcome.
 
@@ -382,17 +413,34 @@ class LiveCreations:
         owner = self._owner(human, frozen)
         path = self._path(ident)
         request = creation_request(sdp, spec)
-        digest = hashlib.sha256(json.dumps(request, sort_keys=True, allow_nan=False, ensure_ascii=False,
-            separators=(',', ':')).encode()).hexdigest()
+        configuration=self._configuration(spec)
+        source=None
         with history_lock(self.root / '.lock'):
-            if path.exists() or path.is_symlink():
-                value = self._read(ident)
+            retained=self._read(ident) if path.exists() or path.is_symlink() else None
+            if retained is not None:
+                self._matches(retained,owner)
+                if retained.get('continuity')=='stored_fork' and retained.get('configuration_sha256')!=configuration:
+                    raise ValueError('Stored continuation configuration changed')
+                if retained.get('continuation_from'):
+                    source=retained.get('source_session_id')
+                    if retained['state']=='prepared':
+                        parent=self._read(retained['continuation_from'])
+                        if source!=self._fork_source(parent,owner,configuration):
+                            raise ValueError('Stored source changed before creation')
+                    request=fork_request(source,sdp)
+            # Include the operation target in the durable request identity; a
+            # fork can never be retried as fresh creation or another parent.
+            identity={'request':request,'source_session':source} if source is not None else request
+            digest = hashlib.sha256(json.dumps(identity,
+                sort_keys=True,allow_nan=False,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+            if retained is not None:
+                value = retained
                 self._matches(value, owner)
                 if value['state'] != 'prepared':
                     self._matches(value, owner, digest)
                     return self._result(value)
                 self.check_capture(value)
-                value.update(request_sha256=digest, state='creating')
+                value.update(request_sha256=digest, state='creating',configuration_sha256=configuration,store_requested=spec.get('store') is True)
             else:
                 records, other_bytes = self._records()
                 active = [v for v, _ in records if v['state'] in self.unsettled]
@@ -404,12 +452,14 @@ class LiveCreations:
                 if len(records) >= self.max_records or charged + 2*self.max_record_bytes > self.max_total_bytes:
                     raise LiveUnavailable('creation_storage_full')
                 value = {'schema': 'daimon.live-creation/v1', 'id': ident, 'owner': owner,
-                    'request_sha256': digest, 'created_at': time.time(), 'state': 'creating'}
+                    'request_sha256': digest, 'created_at': time.time(), 'state': 'creating',
+                    'configuration_sha256':configuration,'store_requested':spec.get('store') is True}
             self._write(value)
         # No filesystem lock spans network I/O. The durable intent owns this
         # call across process loss; another writer cannot create or replace it.
         try:
-            call = client.create(request['transport']['sdp'], request['session'])
+            call = (client.fork(source,request['transport']['sdp']) if source is not None
+                else client.create(request['transport']['sdp'], request['session']))
         except Exception as error:
             outcome = error.outcome if isinstance(error, LiveUnavailable) else 'creation_unconfirmed'
             if outcome not in ('creation_rejected', 'project_key_unavailable'):
@@ -434,6 +484,7 @@ class LiveCreations:
                 if current['state'] != 'creating':
                     raise LiveUnavailable('creation_unconfirmed')
                 if (not isinstance(call, LiveCall) or not _text(call.session_id, 1024)
+                        or source is not None and call.session_id==source
                         or not _text(call.sdp, 65536) or not call.sdp.startswith('v=0')):
                     raise LiveUnavailable('creation_unconfirmed')
                 current.update(state='created', call={'session_id': call.session_id, 'sdp': call.sdp})

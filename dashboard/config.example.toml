@@ -127,7 +127,12 @@ Development = "/your-development-mount"
 # backend_instructions_file = "/private/selected-responses-instructions.txt"
 # backend_model = "OWNER_SELECTED_RESPONSES_MODEL"
 # session_seconds = 600
+# resume_mode = "fresh" # or "stored_fork", only with explicit permitted storage
 # backend_tools = []
 # session_options = {}
 # backend_options = {}
 # delegation_options = {}
+# For stored continuation, select resume_mode="stored_fork" AND
+# session_options={store=true}. Project storage must be enabled/permitted.
+# This uploads/stores the voice conversation with the provider; never enable
+# it implicitly or interpret a closed-source fork as backend work completion.

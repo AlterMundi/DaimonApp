@@ -89,6 +89,46 @@ Do not delete records, change UUIDs or replay commands to clear uncertainty.
 Owner-led reconciliation of interrupted public calls remains unfinished and
 blocks another billed visit.
 
+## Optional provider-stored continuation
+
+The owner may select `resume_mode="stored_fork"` together with explicit
+`session_options={store=true}`. The default is `fresh`; neither remote storage nor
+continuation is enabled implicitly. This choice requires project storage to be
+enabled and permitted by its data policy. OpenAI documents30day availability of
+stored recordings; Zero Data Retention disables this feature. Actual account
+eligibility, recording readiness and useful behavior must be tested separately.
+See [OpenAI's stored-session workflow](https://developers.openai.com/api/docs/guides/live-conversations#prepare-a-session-for-forking).
+
+The first explicitly activated visit creates a stored source. On a later
+activation, the server selects the unique terminal source in that owner's
+continuation chain. Parent references determine this chain; wall-clock movement
+cannot select an earlier ancestor. Before microphone permission or a billed POST,
+the source must be trusted-closed, storage-requested, configured identically and
+free of known pending/failed/incomplete Responses or needed client results.
+Changed identity, voice, backend/tool policy, ambiguous source chains or missing
+storage require review rather than silently starting an unrelated conversation.
+Each activation retains the existing600second/PCM admission bound.
+
+The [documented WebRTC fork](https://developers.openai.com/api/docs/guides/live-conversations#start-a-webrtc-fork)
+uses the source's exact opaque ID and only a new SDP offer. Provider inheritance
+carries the original model, voice, instructions and conversation; no previous
+startup envelope, serialized prompt or transcript is nested into the new request.
+The application retains a flat predecessor reference and configuration/request
+digests. Controls and sideband attach to the new child ID. A response reusing the
+parent ID is unconfirmed, not a successful replacement.
+
+One durable intent owns each fork. Lost responses and process loss preserve
+uncertainty and prevent a second fork/fresh fallback; exact retries only read the
+retained outcome. Existing published fresh-call receipts keep their digest
+contract. A closed event, synthetic context construction or successful fork ACK
+is not proof that the next voice remembers a correction, preserves task semantics
+or speaks useful results. Within a call, GPT-Live's provider-owned compaction
+remains distinct from application task records and cross-call continuation.
+Unexpected disconnects without trusted closure and unavailable/expired stored
+recordings still require reconciliation; saved-text/semantic-checkpoint fallback
+and late-work routing remain unfinished. No timeout or diagnostic context bound
+is enlarged by this option.
+
 ## Qualification boundary
 
 Mounted authorization/upload/cancellation tests and Chromium synthetic desktop/
