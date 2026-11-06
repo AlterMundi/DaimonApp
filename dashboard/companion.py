@@ -20,6 +20,9 @@ def authority(config, provider):
 
 
 def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False):
+    if path=='/api/interaction/avatars' or path.startswith('/api/interaction/avatars/'):
+        return scope=='interaction_only' and (method=='POST' and path=='/api/interaction/avatars'
+            or method=='GET' and re.fullmatch(r'/api/interaction/avatars(?:/[a-f0-9-]{36})?',path) is not None)
     if path=='/api/interaction/heartbeat':
         return method=='GET' and scope in ('interaction_only','monitor_readonly') or method=='POST' and scope=='interaction_only'
     if path=='/api/interaction/voice/gpt-live' or path.startswith('/api/interaction/voice/gpt-live/'):
