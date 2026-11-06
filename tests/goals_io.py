@@ -69,6 +69,9 @@ class Goals(Journey):
                 if hasattr(self, 'handle_extra_rpc') and self.handle_extra_rpc(m, send):
                     continue
                 if method=='initialize':send({'id':ident,'result':{}})
+                elif method=='thread/read':
+                    send({'id':ident,'result':{'thread':{'id':p['threadId'],
+                        'status':{'type':'active' if self.holding.get(p['threadId']) else 'idle'}}}})
                 elif method in ('thread/start','thread/resume'):
                     if method=='thread/start':self.thread_sequence+=1;thread=f'native-topic-{self.thread_sequence+6}'
                     else:thread=p['threadId'];assert p['excludeTurns'] is True
