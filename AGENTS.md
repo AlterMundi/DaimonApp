@@ -1,5 +1,10 @@
 # Interaction development boundaries
 
+The two exact public Live voice-brief templates use the always-run dashboard and
+speech qualification. Their prompt changes do not repeat unchanged Rust/native
+fixtures. Unknown template paths, mixed native/dependency edits and changed owning
+jobs keep their existing broader checks. See tests/ci_matrix_host_scope.py.
+
 Native public-voice renewal keeps work on its original native thread. Historical
 returns need current original/result proofs and flat origin-to-destination claims;
 never reuse an old provider delegation ID as a new visit's delegation, copy nested
