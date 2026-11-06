@@ -6,6 +6,49 @@ replace the integrating Codex session or inherit its identity, memory, credentia
 tools or active work automatically. The [roadmap](interaction-roadmap.md) retains
 those requirements.
 
+## Voice and backend instructions
+
+Keep public Live instructions separate from the native Codex voice brief. Native
+handoff instructions cannot create native tools in managed Responses. Adapt the
+[public voice template](../templates/public-live-voice-brief.txt) with the actual
+owner's identity, paired human and dialect in an owner-only file, replacing all
+placeholders before selecting it through `identity_file`. Keep backend procedures
+and actual tool definitions in their existing backend configuration. Updating an
+owner-specific brief does not replace another being's identity or voice choices.
+
+The [official prompting structure](https://developers.openai.com/api/docs/guides/live-prompting)
+uses Backchannel/Interruption/Delegation policy, actual backend capabilities and
+the `<|SpawnThinking|>` trigger. Concise speech must still preserve all explicitly
+requested facts. A no-repeat/read-only clarification constrains a pending request;
+it does not replace the requested answer. Prior observed source qualification
+returned complete backend text but an incomplete spoken transcript; prompt
+alignment is a correction to evaluate, not proof of a unique cause or completion.
+Original audio, automatic captions, backend output, playback and human hearing
+remain distinct evidence. Preserve existing accepted results and uncertain writes.
+
+Synthetic qualification must not close a call using an old acknowledgment as
+the final spoken response. Wait for the known synthetic input to end, all known
+backend work to settle, a spoken transcript update after the backend result,
+the scenario's required spoken facts, then the quiet tail. A pause after only
+half the requested answer cannot establish success. `tests/dashboard_live_semantic_tail.js` covers this collector
+condition; it is not a production utterance detector or audio-done event. A
+deadline remains a failed/unconfirmed observation, never permission to replay.
+The earlier page/part trial's collector could close immediately after backend
+completion even if only its earlier acknowledgment had been heard. Its incomplete
+spoken transcript therefore does not by itself establish a provider omission.
+
+Native work integration must reuse the existing source-bound foreground delegate
+and native execution owner. Public `LiveCreations.recording` currently retains
+raw audio and a receipt only; it deliberately does not enroll a native conversation
+input or authorize work. Automatic transcript deltas and backend function arguments
+cannot be submitted as fabricated human text to bypass that missing admission.
+The next integration needs a sealed, retained original prefix, its exact owner/
+source/provenance admitted by the native writer, one durable delegation intent,
+and exact native results returned through the managed tool continuation. Reuse
+the existing capture flush/hold and foreground-original/delegate contracts rather
+than adding another task store, model owner or retry loop. Hearing, late returns,
+interruption and successor continuity remain required after that seam is joined.
+
 ## Configuration and selection
 
 Use the existing authenticated dashboard and owner configuration. Never export
@@ -98,6 +141,12 @@ browser supplies no tool calls, authority, source text or provider commands.
 Pages retain their exact cursors and bounded previews; part reads retain offsets
 and revisions. Ownership and paired-actor access are checked before and after
 the read. Returned text is source data, not new instructions or execution proof.
+The selected operation determines which arguments are used. Page cursors are
+ignored for exact-part reads, and part references are ignored for page reads;
+unused fields cannot override the selected source or cursor. Actual managed
+Responses supplied a nonzero unused delivery cursor with a valid source/revision;
+rejecting that irrelevant field falsely reported an unavailable source. Exact
+part identity, revision, offset and current owner checks remain unchanged.
 This covers the current conversation, not DMK, arbitrary private sessions, native
 task execution or full being memory. Those roadmap requirements remain open.
 

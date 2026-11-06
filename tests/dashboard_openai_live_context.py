@@ -63,6 +63,17 @@ class Context(unittest.TestCase):
         part = json.loads(read_context(provider, self.owner, self.args(operation='part',
             source=source['id'], revision=source['revision'])))
         self.assertIn('Copper River', part['text']); self.assertTrue(part['source_data'])
+        # Actual managed Responses supplied delivery=1636 alongside an exact
+        # source/revision part read. Unused fields do not select that source.
+        selected=[]
+        original=provider.presentation_part
+        provider.presentation_part=lambda *args:(selected.append(args),original(*args))[1]
+        again=json.loads(read_context(provider,self.owner,self.args(operation='part',
+            delivery=1636,native=999,matrix=37,source=source['id'],revision=source['revision'])))
+        self.assertEqual(selected,[(source['id'],source['revision'],0)])
+        self.assertEqual(again['text'],part['text'])
+        page_again=json.loads(read_context(provider,self.owner,self.args(source='ignored',revision='ignored',offset=52)))
+        self.assertEqual(page_again['items'],page['items'])
         provider.authorized = lambda _: False
         with self.assertRaises(ProviderUnavailable): read_context(provider, self.owner, self.args())
 
