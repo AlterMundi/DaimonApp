@@ -201,6 +201,18 @@ impl Store {
         {
             bail!("Maintenance changed; inspect its retained outcome");
         }
+        if phase == "restore_submitted" {
+            if doc["targets"][index]["phase"] != "paused" {
+                bail!("Only an acknowledged owned pause can reserve restoration");
+            }
+            eligible(&tx, human, &doc, index)?;
+            let target: SessionKey =
+                serde_json::from_value(doc["targets"][index]["target"].clone())?;
+            doc["targets"][index]["pre_restore_command_generation"] =
+                doc["targets"][index]["command_generation"].clone();
+            doc["targets"][index]["command_generation"] = json!(id);
+            tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("goal_intent:{}:{}",target.chat_id,target.thread_id),id])?;
+        }
         doc["targets"][index]["phase"] = json!(phase);
         doc["targets"][index][format!("{phase}_receipt")] = receipt;
         if doc.to_string().len() > 131072 {
@@ -391,12 +403,22 @@ mod tests {
         let store = Store::open(file.path(), &[100], &defaults()).unwrap();
         let plan = fixture(&store, "active");
         let doc = store.maintenance_prepare(100, &plan).unwrap();
-        let submitted = store
+        let paused = store
             .maintenance_transition(
                 100,
                 &plan.request_id,
                 0,
                 &doc,
+                "paused",
+                json!({"synthetic_matched_receipt":true}),
+            )
+            .unwrap();
+        let submitted = store
+            .maintenance_transition(
+                100,
+                &plan.request_id,
+                0,
+                &paused,
                 "restore_submitted",
                 json!({"admit_until":Utc::now().timestamp()-1}),
             )
