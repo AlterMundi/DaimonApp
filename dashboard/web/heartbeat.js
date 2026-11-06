@@ -47,7 +47,7 @@
       writing=true;notice='';const selected=++epoch;render(current);
       try{await api('interaction/heartbeat',command);if(selected===epoch)notice='Action acknowledged. Status refreshed.';}
       catch{if(selected===epoch)notice='Action refused or unconfirmed. Check status before choosing again.';}
-      finally{writing=false;if(selected===epoch){render(null);await refresh(true);}}
+      finally{writing=false;if(selected===epoch){render(null);await refresh(true);if(!menu.hidden)root.querySelector('#heartbeat-refresh').focus();}}
     }
     function open(){menu.hidden=false;button.setAttribute('aria-expanded','true');void refresh(true);root.querySelector('#heartbeat-refresh').focus();}
     function close(){menu.hidden=true;button.setAttribute('aria-expanded','false');button.focus();}
