@@ -273,3 +273,10 @@ originals and compatible readers. Keep exact per-receiver installed/served recei
 and pending failures; publication or one author-body deployment is not completion.
 A software update does not enable experimental Avatar/provider billing elsewhere.
 Use docs/interaction-fleet-updates.md; no new model attention or global Stop.
+
+Native package-operator Python changes use the always-run process-boundary unit
+suite in matrix-execution. Only its three exact script/test paths are excluded
+from unchanged Rust/audio builds; source/dependency/unknown-file changes keep
+normal qualification. The embedded scope program is regression-tested. Actual
+isolated old-to-new package qualification remains required separately; mocks do
+not prove receiving adoption. This moves an existing check, never skips it.
