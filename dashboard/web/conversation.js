@@ -19,7 +19,7 @@ window.Conversation = (() => {
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
-    let canFiles=false,filesConnected=true;
+    let canFiles=false,filesConnected=true,selectedFilesCard;
     const files=new Map(),fileDownloads=new Map(),fileStatus=new Map();let fileJobs=[];
     const fileCredential=()=>JSON.stringify(Object.entries(headers()).filter(([key])=>key.toLowerCase()==="authorization"));
     function clearFiles(){for(const work of fileDownloads.values())work.abort();fileDownloads.clear();files.clear();fileStatus.clear();fileJobs=[];canFiles=false;}
@@ -39,7 +39,7 @@ window.Conversation = (() => {
         button.addEventListener("click",()=>downloadFile(file));row.append(button,status);card.files.append(row);
       }
     }
-    function refreshFiles(){for(const card of cards.values())renderFiles(card);}
+    function refreshFiles(){for(const card of cards.values())renderFiles(card);if(selectedFilesCard)renderFiles(selectedFilesCard);}
     async function downloadFile(file){
       if(!canFiles || fileDownloads.has(file.id) || fileDownloads.size>=2 || !file.available)return;
       if(!/^[a-f0-9-]{36}$/.test(file.id) || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes<0 || file.bytes>256*1024*1024)return;
@@ -718,6 +718,7 @@ window.Conversation = (() => {
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
     const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,
+      onFiles:(files,box)=>{selectedFilesCard?.files?.remove();selectedFilesCard={box,source:{id:'selected-session',artifacts:files}};renderFiles(selectedFilesCard);},
       onTarget:()=>{clearFocus();syncTitleControls();},onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
       onAudio:(action,row)=>{

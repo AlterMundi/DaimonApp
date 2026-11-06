@@ -878,11 +878,20 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return result
 
     def workspace_granted(session):
-        return dict(session).get('scope') is None or (dict(session).get('scope')=='interaction_only' and dict(session).get('workspace_access') is True)
+        return dict(session).get('scope') is None or (dict(session).get('scope')=='interaction_only' and
+            (dict(session).get('workspace_access') is True or bool(dict(session).get('workspace_topics'))))
+
+    def workspace_topics(session):
+        value=dict(session)
+        if value.get('scope') is None:return None
+        if value.get('workspace_topics'):return tuple(value['workspace_topics'])
+        return None if value.get('workspace_access') is True else ()
 
     def require_pin_grant(session,reply):
-        if isinstance(reply,dict) and str(reply.get('source','')).startswith('session:') and not workspace_granted(session):
-            raise HTTPException(403,'This device has no session destination permission')
+        if isinstance(reply,dict) and str(reply.get('source','')).startswith('session:'):
+            if (not workspace_granted(session) or (workspace_topics(session) is not None and
+                    not provider.workspace_destination_allowed(reply,workspace_topics(session)))):
+                raise HTTPException(403,'This device has no permission for that session destination')
 
     @app.get('/api/interaction/sessions')
     async def conversation_session_workspace(request: Request):
@@ -891,12 +900,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise HTTPException(403,'This device has no complete session workspace grant')
         try:
             from starlette.concurrency import run_in_threadpool
-            result=await run_in_threadpool(provider.session_workspace)
+            topics=workspace_topics(session)
+            result=await run_in_threadpool(provider.session_workspace,topic_ids=topics) if topics is not None else await run_in_threadpool(provider.session_workspace)
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(503,'Session list unavailable; no work was started') from None
         session=await authorize_async(request)
-        if not workspace_granted(session):
+        if not workspace_granted(session) or workspace_topics(session)!=topics:
             raise HTTPException(403,'Session workspace grant changed')
+        follow=dict(session).get('workspace_follow_topic')
+        if follow is not None:
+            key=f"{provider.receiver['interaction']['chat_id']}:{follow}"
+            result['preferred_session']=next((r['id'] for r in result['sessions'] if r.get('audio_key')==key),None)
         return result
 
     @app.get('/api/interaction/sessions/{ident}')
@@ -908,13 +922,20 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise HTTPException(403,'This device has no complete session workspace grant')
         try:
             from starlette.concurrency import run_in_threadpool
-            result=await run_in_threadpool(provider.session_view,ident,technical=technical,
-                revision=revision,before=before,after=after,event=event,text_offset=text_offset)
+            topics=workspace_topics(session)
+            window=dict(technical=technical,revision=revision,before=before,after=after,event=event,text_offset=text_offset)
+            if topics is not None:window['topic_ids']=topics
+            result=await run_in_threadpool(provider.session_view,ident,**window)
+            if dict(session).get('artifact_access') is True or dict(session).get('scope') is None:
+                try:result['artifacts']=await run_in_threadpool(provider.session_artifacts,ident,topic_ids=topics)
+                except (AttributeError,ValueError,ProviderUnavailable,OSError,sqlite3.Error):result['artifacts']=[]
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(409,'Selected conversation changed or is unavailable; select it again') from None
         session=await authorize_async(request)
-        if not workspace_granted(session):
+        if not workspace_granted(session) or workspace_topics(session)!=topics:
             raise HTTPException(403,'Session workspace grant changed')
+        if dict(session).get('scope') is not None and dict(session).get('artifact_access') is not True:
+            result.pop('artifacts',None)
         return result
 
     @app.get('/api/interaction/sonic')

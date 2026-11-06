@@ -233,7 +233,7 @@ class Provider:
         suffix='' if matrix is None else f' {matrix}'
         return self.presentation(f'presentation {operation} {delivery} {native}'+suffix)
 
-    def session_workspace(self):
+    def session_workspace(self, topic_ids=None):
         """All owned session metadata, without opening native/model processes."""
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
@@ -266,7 +266,8 @@ class Provider:
         directory=self.config.get('activity_state_dir')
         with closing(readonly(self.receiver['db_path'])) as db:
             inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
-            owned=[v for v in inventory['items'] if v['human']==self.human]
+            owned=[v for v in inventory['items'] if v['human']==self.human
+                and (topic_ids is None or self.workspace_topic(v['key'], topic_ids))]
             if len(owned)>128 or inventory['truncated']:
                 raise ProviderUnavailable('Session inventory exceeds qualified bound')
             items=[]
@@ -289,7 +290,21 @@ class Provider:
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
 
-    def session_view(self,ident,**window):
+    def workspace_topic(self, key, topic_ids):
+        chat, topic = map(int, key.split(':'))
+        return chat == self.receiver['interaction']['chat_id'] and topic in topic_ids
+
+    def workspace_destination_allowed(self, reply, topic_ids):
+        """Narrow native-issued references before text/ASR admission; no content read."""
+        self.assert_binding()
+        match = re.fullmatch(r'session:([1-9][0-9]{0,18})(?:/[1-9][0-9]{0,18})?', str(reply.get('source', '')))
+        if not match or not self.authorized(self.human):return False
+        with closing(readonly(self.receiver['db_path'])) as db:
+            row = db.execute('SELECT chat_id,thread_id FROM sessions WHERE id=? AND creator_user_id=?',
+                (int(match[1]), self.human)).fetchone()
+        return bool(row and self.workspace_topic(f'{row[0]}:{row[1]}', topic_ids))
+
+    def session_view(self,ident,topic_ids=None,**window):
         """One explicitly selected owned root; never discover or open a model."""
         if not isinstance(ident,str) or not re.fullmatch('[a-f0-9]{24}',ident):
             raise ValueError('Select one owned session')
@@ -298,6 +313,8 @@ class Provider:
         selected=next((r for r in self.bindings() if self.identity(r)==ident),None)
         if selected is None or not selected.get('codex_thread_id'):
             raise ProviderUnavailable('Selected session binding is unavailable')
+        if topic_ids is not None and not self.workspace_topic(f"{selected['chat_id']}:{selected['thread_id']}", topic_ids):
+            raise ProviderUnavailable('Selected session is outside this workspace scope')
         with closing(readonly(self.native_home/'state_5.sqlite')) as db:
             row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
                 (selected['codex_thread_id'],)).fetchone()
@@ -318,6 +335,21 @@ class Provider:
         if current_path is None or Path(current_path['rollout_path']).resolve()!=path:
             raise ProviderUnavailable('Selected native history binding changed')
         return {**value,'session':ident,'title':current.get('session_title') or 'Untitled session'}
+
+    def session_artifacts(self, ident, topic_ids=None):
+        """Intersect selected-session metadata with existing canonical file audiences."""
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
+        selected=next((r for r in self.bindings() if self.identity(r)==ident),None)
+        if selected is None or (topic_ids is not None and not self.workspace_topic(
+                f"{selected['chat_id']}:{selected['thread_id']}",topic_ids)):
+            raise ProviderUnavailable('Selected session is outside this workspace scope')
+        with closing(readonly(self.receiver['db_path'])) as db:
+            ids={r[0] for r in db.execute('SELECT id FROM interaction_artifacts WHERE source_session=? AND human_id=? AND native_thread=? ORDER BY rowid DESC LIMIT 128',
+                (selected['id'],self.human,selected['codex_thread_id']))}
+        # No new audience, file registration, storage read or arbitrary-path authority.
+        canonical=self.artifacts()
+        return [item for item in canonical.get('items',[]) if item.get('id') in ids]
 
     def sonic_activity(self):
         """Finite read of the existing database-bound observer, never native work.

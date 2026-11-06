@@ -9,7 +9,7 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{},onFiles=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
@@ -20,7 +20,7 @@
     toggle.setAttribute('aria-controls',rail.id);toggle.setAttribute('aria-expanded','false');
     const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
     reset.className='session-workspace-reset';
-    const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;expanded=undefined;leave();changed();});
+    const unpin=button('⌖','Send to the conversation',()=>{remember(null);pin=undefined;expanded=undefined;leave();changed();});
     unpin.innerHTML=pinIcon;
     const status=el('p','','session-workspace-status');status.setAttribute('role','status');
     const retryStatus=button('Retry status','Retry session status',()=>refresh(binding));retryStatus.hidden=true;retryStatus.className='session-workspace-retry';
@@ -41,7 +41,20 @@
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
     rail.append(railHeader,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
     timeline.before(shell);content.append(timeline,view);
-    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false;
+    let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
+    const followKey='interaction.followed-session.v1';
+    function saved(){
+      try{
+        const raw=window.localStorage?.getItem(followKey);if(!raw||raw.length>1024)return;
+        const value=JSON.parse(raw);
+        if(value?.version===1&&value.binding===binding&&(value.id===null||/^[a-f0-9]{24}$/.test(value.id)))return value;
+      }catch{}
+    }
+    function remember(id){
+      if(!binding||id!==null&&!/^[a-f0-9]{24}$/.test(id))return;
+      try{window.localStorage?.setItem(followKey,JSON.stringify({version:1,binding,id}));}catch{}
+    }
+    function forget(){try{window.localStorage?.removeItem(followKey);}catch{}}
     let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
@@ -68,11 +81,11 @@
       if(row.is_entry)pin=undefined;
       else pin=pin?.id===row.id?undefined:{id:row.id,title:row.title,destination:copy(row.destination)};
       if(expanded&&expanded.id!==row.id){expanded=undefined;leave();}
-      changed();showRail(false);toggle.focus?.();return true;
+      remember(pin?.id||null);changed();showRail(false);toggle.focus?.();return true;
     }
     function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
-    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';retryHistory.hidden=true;}
+    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();onFiles([],view);earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row){
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();toggle.focus?.();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
@@ -135,7 +148,7 @@
       renderSelection();syncAudio();
     }
     function resetBinding(next){
-      epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;inventory.clear();rows.clear();list.replaceChildren();leave();
+      epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;restoreChecked=false;inventory.clear();rows.clear();list.replaceChildren();leave();
       allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';retryStatus.hidden=true;onReady(false);onTarget();
     }
     async function refresh(nextBinding){
@@ -150,10 +163,18 @@
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
-          if(!row?.destination || row.destination.source!==selection.destination.source || row.destination.revision!==selection.destination.revision)
+          if(!selection.destination || !row?.destination || row.destination.source!==selection.destination.source || row.destination.revision!==selection.destination.revision)
             status.textContent='Your selected session changed. Select it again before sending; the current destination has not been replaced.';
         }
         render();onReady(true);
+        if(!restoreChecked){
+          restoreChecked=true;const previous=saved(),id=previous?previous.id:value.preferred_session,row=inventory.get(id);
+          if(row?.destination&&!row.is_entry){
+            // Restore intent only, using this actor's fresh native-issued reference.
+            pin={id:row.id,title:row.title,destination:copy(row.destination)};remember(row.id);open(row);
+          }else if(id){pin={id,title:'Unavailable followed session'};renderSelection();status.textContent='Your followed session is unavailable. Select it again before sending.';}
+        }
+
         if(expanded&&!expanded.is_entry&&activeHistory)void history('after');
       }catch(error){
         if(owned!==epoch)return;
@@ -163,6 +184,7 @@
       }finally{if(owned===epoch)loading=false;}
     }
     function revoke(){
+      forget();
       retryStatus.hidden=true;allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
       shell.hidden=false;rail.hidden=true;toolbar.hidden=!selected();
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
@@ -220,6 +242,7 @@
         // Keep only a bounded DOM window. Removed messages remain in native
         // history and can be read again with its existing cursors.
         trimHistory(direction==='before');
+        onFiles(Array.isArray(result.artifacts)?result.artifacts:[],view);
         earlier.hidden=!activeHistory.hasEarlier;newer.hidden=!activeHistory.moreAfter;historyStatus.textContent=result.skipped_records?'Some retained records are unavailable.':'Live conversation';
         if(direction==='before')entries.scrollTop=previousTop+entries.scrollHeight-previousHeight;
         else if(!direction || direction==='after'&&nearEnd)entries.scrollTop=entries.scrollHeight;
@@ -237,8 +260,8 @@
       }
       finally{if(owned===historyEpoch)historyBusy=false;}
     }
-    return {refresh,capture,syncAudio,pinState,pinSource,reset:()=>resetBinding(undefined),get active(){return allowed;},
-      canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return allowed&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision;}};
+    return {refresh,capture,syncAudio,pinState,pinSource,reset:()=>{forget();resetBinding(undefined);},get active(){return allowed;},
+      canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};
 })();
