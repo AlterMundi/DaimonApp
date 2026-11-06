@@ -191,7 +191,7 @@ class Mounted(unittest.TestCase):
                 socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'unconfirmed')
         self.assertEqual(Client.instances,[]);self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def _native_backend_flow(self,slow_result=False):
+    def _native_backend_flow(self,slow_result=False,renew=False):
         app=FastAPI();app.state.voice_active=set();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
@@ -266,17 +266,43 @@ class Mounted(unittest.TestCase):
                         self.assertIn('Soy CompAII',next(row['content'] for row in native.sent if row['type']=='session.commentary.append'))
                         self.close(socket)
                     self.assertEqual(calls,{'asr':1,'work':1})
-        self.assertEqual(self.read()['state'],'closed')
-        self.assertEqual(self.read()['delegations']['native-task']['native_pipeline']['state'],'admitted')
-        updates=list(self.read().get('native_result_updates',{}).values())
+                first_value=self.read()
+                if renew:
+                    original=self.ident;self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+                    source='delivery:11111111-1111-4111-8111-111111111111'
+                    owner.conversation_input_trace=lambda root:{'id':root,'entry_binding':frozen['entry_binding'],
+                        'routes':[{'target_available':True,'results':[{'source':source,'revision':'c'*64,
+                            'instruction_covered':True,'current':True,'correction_pending':False}]}]}
+                    owner.presentation_part=lambda selected,revision,offset:{'id':selected,'revision':revision,
+                        'offset':offset,'next_offset':None,'text':'Resultado tardío del trabajo original.',
+                        'entry_binding':frozen['entry_binding'][:3]+[owner.binding],
+                        'kind':'worker_result','current':True,'correction_pending':False,'native_binding_current':True}
+                    with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as second:
+                        continued=self.start(second)
+                        self.assertEqual(second.receive_json()['event']['type'],'session.commentary.appended')
+                        delivered=next(row for row in continued.sent if row['type']=='session.commentary.append')
+                        self.assertIsNone(delivered['delegation_id'])
+                        self.assertIn('Resultado tardío',delivered['content'])
+                        self.close(second)
+                    renewed=self.read()
+                    self.assertEqual(renewed['native_continuation_from'],original)
+                    self.assertEqual(renewed['delegations'],{},'No new provider delegation or original was needed')
+                    self.assertEqual(calls,{'asr':1,'work':1},'Renewal never interprets or dispatches the old work again')
+                    self.assertEqual(next(iter(renewed['native_result_updates'].values()))['origin_visit'],original)
+        self.assertEqual(first_value['state'],'closed')
+        self.assertEqual(first_value['delegations']['native-task']['native_pipeline']['state'],'admitted')
+        updates=list(first_value.get('native_result_updates',{}).values())
         self.assertEqual(len(updates),0 if slow_result else 1)
         if not slow_result:
             self.assertEqual(updates[0]['state'],'context_injected');self.assertNotIn('heard',updates[0])
         else:self.assertEqual([row['type'] for row in native.sent],['session.close'])
-        self.assertFalse(self.read()['delegations']['native-task']['native_pipeline']['work_completed'])
+        self.assertFalse(first_value['delegations']['native-task']['native_pipeline']['work_completed'])
 
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
         self._native_backend_flow()
+
+    def test_closed_native_work_returns_to_fresh_voice_without_new_original_or_dispatch(self):
+        self._native_backend_flow(renew=True)
 
     def test_slow_native_result_read_keeps_close_responsive_without_canceling_work(self):
         self._native_backend_flow(slow_result=True)

@@ -1,5 +1,15 @@
 # Interaction development boundaries
 
+Native public-voice renewal keeps work on its original native thread. Historical
+returns need current original/result proofs and flat origin-to-destination claims;
+never reuse an old provider delegation ID as a new visit's delegation, copy nested
+transcript archives, or replay uncertain appends/ASR/work. Claim-before-intent
+partial commits stay held. Historical discovery and return reads belong in the
+owned result task, with the existing finite journal bounds and foreground cadence;
+they must not block browser Close or install attention. Source/synthetic continuity
+is separate from real semantic/physical renewal acceptance. See the native-results
+renewal section in docs/interaction-public-gpt-live.md.
+
 The native text CI job keeps its30minute bound. Its isolated native-return and
 goal-control fixtures share the existing four-worker ceiling, with independent
 temporary stores/peers, all original invocations/flags and every exit/log retained.

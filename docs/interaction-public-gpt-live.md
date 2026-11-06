@@ -599,3 +599,49 @@ dependencies on Python3.11 and3.13; no provider/device acceptance follows.
 The result scan retains its native cursor across bounded catch-up batches; a
 tested64-item unrelated backlog does not permanently hide the later matching
 answer. Source cursors/unknown append guards still apply before any new send.
+# Native results across fresh voice connections
+
+The native client-delegation mode now has a source-prepared return path for work
+that outlives a voice connection. This is not provider stored-session forking or
+proof of semantic/physical continuity. The existing persistent native thread owns
+identity, memory and work. A fresh native voice visit carries only the previous
+native visit ID and a flat historical-work scan cursor, never a copied transcript
+tree, another work submission, old audio or a new Responses reasoner.
+
+The live return task alternates current work with one previous work origin. It
+runs outside browser-control handling, at most once per500ms, only while the
+authorized finite native visit is open. Discovery stays within the existing
+512-record/32MiB journal limit and rotates through all eligible owner-matched
+closed visits; a large retained backlog therefore increases scan latency rather
+than creating unbounded concurrent readers. No periodic/background attention is
+installed. The existing native route/result/page limits remain unchanged, including
+the outstanding older-worker-result pagination gap.
+
+Before a historical result can return, its exact retained original/delegation,
+native acknowledgment, current canonical revision and character offset are
+rechecked. A flat origin claim records the destination visit/key before the
+destination append intent. Trusted append acknowledgments remain in that
+destination; subsequent replacements resolve the reference rather than repeat
+the fragment. A partial two-file commit, missing destination, unknown write or
+known stopped append stays held. No inference, old wire command, media or work
+is automatically replayed. Claims are at most128 per origin inside the unchanged
+256KiB record/32MiB journal bounds; capacity refuses before another append.
+
+Historical returns use a new event ID with `delegation_id: null`, preserving the
+old client delegation only in the local source association. OpenAI documents null
+delegation commentary for application-provided context in its
+[language/greeting guidance](https://developers.openai.com/api/docs/guides/live-prompting#language-and-pronunciation),
+and coherent bounded commentary/thinking chunks in
+[client delegation](https://developers.openai.com/api/docs/guides/live-delegation#client-delegation).
+Using this unscoped context channel for an earlier native result is an application
+integration choice; the documentation and synthetic ACKs do not prove actual
+semantic incorporation, correct spoken continuation or hearing.
+
+Seven renewal-component tests cover three successive connections, exact long-result
+cursors, restart/new admission, flat scan persistence, unknown append and partial
+commit preservation, current-source and actor refusal. The mounted API journey
+also closes the original native voice, introduces a late worker result and returns
+it to a fresh connection without another original, ASR or native dispatch. These
+checks use synthetic native/provider peers. Real first-use identity/memory/work,
+speech/interruption, repeated physical renewal and semantic checkpoints remain
+unfinished; this source extension has not been selected on a receiver.
