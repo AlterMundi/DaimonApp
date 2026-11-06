@@ -52,6 +52,20 @@ def qualify(binary):
         assert not any(m.get('method') in ('turn/start','turn/steer','turn/interrupt') for m in j.rpc[before:])
         activation=[m for m in j.rpc[before:] if m.get('method')=='thread/goal/conditionalActivate']
         assert len(activation)==1 and activation[0]['params']['additionalContext'],activation
+        def notice(packet,identity):
+            value=packet['params']['additionalContext']['telecodex.maintenance']
+            assert value['kind']=='application' and identity in value['value']
+            assert 'not human speech' in value['value'] and 'synthetic retained human scoped-maintenance approval' in value['value']
+            assert 'telecodex.goal.followup' not in packet['params']['additionalContext']
+        notice(activation[0],i)
+        assert status(i)['targets'][0]['restored_receipt']['notification_admitted'] is True
+        # Reuse the now-attached collector: notify with the same CAS, no extra input.
+        attached=prepare();j.owner('goal','maintenance','pause',attached)
+        j.owner('goal','maintenance','restore',attached)
+        j.wait(lambda:status(attached)['targets'][0]['phase']=='restored')
+        packet=[m for m in j.rpc if m.get('method')=='thread/goal/conditionalActivate'][-1]
+        notice(packet,attached)
+        assert status(attached)['targets'][0]['restored_receipt']['notification_admitted'] is True
         # A later native human decision invalidates exact restoration authority.
         i=prepare();j.owner('goal','maintenance','pause',i)
         j.revisions[native]+=1

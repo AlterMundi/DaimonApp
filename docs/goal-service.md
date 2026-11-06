@@ -352,10 +352,15 @@ outage.
 
 `restore UUID` also closes never-paused targets, allowing the owner to defer or
 finish adoption early. Later native decisions are `superseded`; prior paused or
-blocked targets remain `preserved`. The journal does not send messages. Its
-result explicitly leaves notification delivery false: the integrating owner
-must tell each affected session the observed outcome using the existing
-attributed session route, without pretending that a journal receipt is delivery.
+blocked targets remain `preserved`. The journal sends no separate message or model turn. Restoration carries an
+owner-service resumption notice in the SAME native conditionalActivate
+application context, for attached and dormant collectors. It identifies the
+retained source and maintenance operation, preserves original goal scope, and
+never uses the exact-human-follow-up channel. A matched native activation records
+notification_admitted=true; known-unsent is false and uncertainty stays null.
+notification_delivered remains false: native context admission does not establish
+model incorporation, useful work or human hearing. The integrator reports the
+observed outcome to the human without creating another notification workflow.
 Core maintenance, actual resume/continuation and those notifications are outside
 this dependency's source-only qualification.
 

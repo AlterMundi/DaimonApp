@@ -269,7 +269,7 @@ async fn restore_collector(
             } else {
                 "restore_unconfirmed"
             },
-            json!({"phase":phase,"receipt":receipt,"notification_delivered":false}),
+            json!({"phase":phase,"receipt":receipt,"notification_admitted":if phase=="acknowledged" {json!(true)} else if phase=="known_unsent" {json!(false)} else {Value::Null},"notification_delivered":false}),
         )?;
         Ok(())
     });
@@ -285,7 +285,10 @@ async fn restore_collector(
         },
         admission,
         receipt: receipt.clone(),
-        context: None,
+        context: Some(json!({"telecodex.maintenance":{
+            "kind":"application",
+            "value":format!("Owner-service maintenance notice, not human speech or new authority. This context accompanies conditional restoration of your same unchanged goal after scoped maintenance {id}, under retained owner-attributed source {}. Continue the original work with its existing objective, budget, accounting and restrictions. Later human decisions still win. Native context admission does not prove that you incorporated this notice, completed the work or delivered an answer.",doc["plan"]["source"].as_str().context("Maintenance source missing")?)
+        }})),
         scope: None,
         settled: Some(settled.clone()),
     };
@@ -306,8 +309,11 @@ async fn restore_collector(
     };
     if let Some(attached) = attached {
         if let Some(hint) = attached.controller_hint {
-            control.context =
-                Some(json!({"telecodex.controller":{"kind":"application","value":hint}}));
+            control
+                .context
+                .as_mut()
+                .context("Maintenance notice missing")?["telecodex.controller"] =
+                json!({"kind":"application","value":hint});
             let (response, ack) = oneshot::channel();
             if attached
                 .sender

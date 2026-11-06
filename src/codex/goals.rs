@@ -614,6 +614,14 @@ pub(super) async fn conditional_activation(
         if context.as_object().is_none_or(|v| v.is_empty()) {
             bail!("Fresh invocation context required before native activation");
         }
+        // Preserve the owner-authored resumption notice on both attached and
+        // newly constructed collectors, in the same native conditional CAS.
+        if let Some(notice)=control.context.as_ref().and_then(|v|v.get("telecodex.maintenance")) {
+            if let Some(prior)=context.get("telecodex.maintenance") {
+                anyhow::ensure!(prior==notice,"Conflicting maintenance notice");
+            }
+            context["telecodex.maintenance"]=notice.clone();
+        }
         if let Some(followup)=&control.plan.followup {
             let scope=control.scope.as_ref().context("Attributed follow-up control scope required")?;
             let (human,entry,id)=(&scope.human,&scope.entry,&scope.id);
