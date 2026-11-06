@@ -105,6 +105,12 @@ remains the first public comparison; client delegation is explicit when existing
 native execution ownership requires it. The old `OpenAIDialogue` Realtime adapter
 is not this implementation and is not silently promoted.
 
+Owner-selected provider options remain intact: startup voice/custom voice,
+role-bearing initial input, frontend event permissions, acknowledgement pacing
+and Responses reasoning/output/tool choices are not reduced to the old adapter's
+feature set. They remain inside the bounded owner-only JSON configuration; the
+browser cannot supply or override that specification.
+
 This transport is **not mounted or selected**. It uses a separately configured
 private project-key file, never discovers/reuses Codex login files, and refuses
 login-token/JSON material. One POST has no automatic retry, redirect or endpoint

@@ -59,7 +59,7 @@ class Creation(unittest.TestCase):
         for offer, spec in [('not SDP', self.spec), ('v=0 offer', {**self.spec, 'model': 'gpt-realtime-2.1'})]:
             with self.assertRaises(ValueError):
                 client.create(offer, spec)
-        for tools in [[{'type': 'web_search'}] * 9, [{'type': 'function', 'value': float('nan')}]]:
+        for tools in [[{'type': 'web_search'}] * 129, [{'type': 'function', 'value': float('nan')}]]:
             with self.assertRaises(ValueError):
                 session_spec('Owner', backend_model='explicit-backend', backend_instructions='Owner', backend_tools=tools)
         self.assertEqual(self.calls, [])
@@ -71,6 +71,27 @@ class Creation(unittest.TestCase):
         self.assertEqual(spec['delegation']['responses']['tools'][0]['type'], 'web_search')
         with self.assertRaises(ValueError):
             session_spec('x' * 8193, client_delegation=True)
+
+    def test_provider_voice_context_permissions_and_backend_options_are_preserved(self):
+        options = {'audio': {'output': {'voice': {'id': 'owner-custom-voice'}}},
+            'input': [{'role': 'developer', 'content': [{'type': 'input_text', 'text': 'Owner startup context'}]}],
+            'client': {'data_channel': {'allowed_client_events': ['session.close']}}}
+        backend = {'reasoning': {'effort': 'low'}, 'max_output_tokens': 128,
+                   'parallel_tool_calls': False}
+        spec = session_spec('Owner', backend_model='explicit-backend', backend_instructions='Owner',
+                            session_options=options, backend_options=backend,
+                            delegation_options={'acknowledgement_delay_ms': 400})
+        options['audio']['output']['voice']['id'] = 'changed'
+        self.client(self.success()).create('v=0 offer', spec)
+        sent = json.loads(self.calls[0].content)['session']
+        self.assertEqual(sent['audio']['output']['voice']['id'], 'owner-custom-voice')
+        self.assertEqual(sent['input'][0]['content'][0]['text'], 'Owner startup context')
+        self.assertEqual(sent['client']['data_channel']['allowed_client_events'], ['session.close'])
+        self.assertEqual(sent['delegation']['responses']['reasoning'], {'effort': 'low'})
+        self.assertEqual(sent['delegation']['acknowledgement_delay_ms'], 400)
+        for field in ['model', 'instructions', 'delegation']:
+            with self.assertRaises(ValueError):
+                session_spec('Owner', client_delegation=True, session_options={field: 'override'})
 
     def test_no_codex_json_or_login_token_is_used_as_api_key(self):
         for value in ['{"tokens":{"access_token":"synthetic"}}', 'ey-synthetic-login-token']:

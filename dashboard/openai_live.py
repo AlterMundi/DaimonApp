@@ -29,33 +29,43 @@ def _text(value, limit):
 
 
 def session_spec(instructions, *, backend_model=None, backend_instructions=None,
-                 backend_tools=(), client_delegation=False):
+                 backend_tools=(), client_delegation=False,
+                 session_options=None, backend_options=None, delegation_options=None):
     """Owner-selected session configuration; never accept this from a browser.
 
     Responses is the initial public comparison. Client delegation is explicit
     for existing execution owners; it does not create an application turn loop.
     Backend tools remain backend tools, independent of the voice frontend.
     """
-    if not _text(instructions, 8192) or type(client_delegation) is not bool:
+    session_options = {} if session_options is None else session_options
+    backend_options = {} if backend_options is None else backend_options
+    delegation_options = {} if delegation_options is None else delegation_options
+    if (not _text(instructions, 8192) or type(client_delegation) is not bool
+            or not isinstance(session_options, dict) or not isinstance(backend_options, dict)
+            or not isinstance(delegation_options, dict)
+            or {'model', 'instructions', 'delegation'} & session_options.keys()
+            or {'model', 'instructions', 'tools'} & backend_options.keys()
+            or {'type', 'responses'} & delegation_options.keys()):
         raise ValueError('Select bounded owner voice instructions')
     if client_delegation:
-        if backend_model is not None or backend_instructions is not None or backend_tools:
+        if backend_model is not None or backend_instructions is not None or backend_tools or backend_options:
             raise ValueError('Client delegation retains its existing backend configuration')
         delegation = {'type': 'client'}
     else:
         if (not isinstance(backend_model, str)
                 or not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', backend_model)
                 or not _text(backend_instructions, 8192)
-                or not isinstance(backend_tools, (list, tuple)) or len(backend_tools) > 8
+                or not isinstance(backend_tools, (list, tuple)) or len(backend_tools) > 128
                 or any(not isinstance(tool, dict) or not isinstance(tool.get('type'), str)
                        for tool in backend_tools)):
             raise ValueError('Select the owner Responses backend and tools')
         delegation = {'type': 'responses', 'responses': {
             'model': backend_model, 'instructions': backend_instructions,
-            'tools': list(backend_tools)}}
+            'tools': list(backend_tools), **backend_options}}
+    delegation.update(delegation_options)
     # Freeze the owner's input, reject non-JSON/nonfinite values and bound tools.
     raw = json.dumps({'model': 'gpt-live-1', 'instructions': instructions,
-                      'delegation': delegation}, allow_nan=False, ensure_ascii=False)
+                      'delegation': delegation, **session_options}, allow_nan=False, ensure_ascii=False)
     if len(raw.encode()) > 32768:
         raise ValueError('Public Live session configuration exceeds its bound')
     return json.loads(raw)
@@ -87,19 +97,26 @@ class OpenAILive:
     def create(self, sdp, spec):
         if not _text(sdp, 65536) or not sdp.startswith('v=0'):
             raise ValueError('Select a bounded WebRTC offer')
-        if not isinstance(spec, dict) or set(spec) != {'model', 'instructions', 'delegation'}:
+        if not isinstance(spec, dict) or not {'model', 'instructions', 'delegation'} <= spec.keys():
             raise ValueError('Select an owner Live session specification')
+        options = {key: value for key, value in spec.items()
+                   if key not in ('model', 'instructions', 'delegation')}
         delegation = spec['delegation']
         if not isinstance(delegation, dict):
             raise ValueError('Select a Live delegation mode')
-        if delegation.get('type') == 'client' and set(delegation) == {'type'}:
-            frozen = session_spec(spec['instructions'], client_delegation=True)
-        elif delegation.get('type') == 'responses' and set(delegation) == {'type', 'responses'}:
-            backend = delegation['responses']
-            if not isinstance(backend, dict) or set(backend) != {'model', 'instructions', 'tools'}:
+        delegation_options = {key: value for key, value in delegation.items() if key not in ('type', 'responses')}
+        if delegation.get('type') == 'client' and 'responses' not in delegation:
+            frozen = session_spec(spec['instructions'], client_delegation=True,
+                session_options=options, delegation_options=delegation_options)
+        elif delegation.get('type') == 'responses':
+            backend = delegation.get('responses')
+            if not isinstance(backend, dict) or not {'model', 'instructions', 'tools'} <= backend.keys():
                 raise ValueError('Select a Responses delegation specification')
             frozen = session_spec(spec['instructions'], backend_model=backend['model'],
-                backend_instructions=backend['instructions'], backend_tools=backend['tools'])
+                backend_instructions=backend['instructions'], backend_tools=backend['tools'],
+                session_options=options, delegation_options=delegation_options,
+                backend_options={key: value for key, value in backend.items()
+                    if key not in ('model', 'instructions', 'tools')})
         else:
             raise ValueError('Select a Live delegation mode')
         if frozen != spec:
