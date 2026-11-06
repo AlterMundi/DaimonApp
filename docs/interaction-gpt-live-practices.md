@@ -115,6 +115,8 @@ credential handoff or model-attention mechanism follows from this investigation.
 
 ### Native lifecycle boundary inspection —6November2026
 
+This retains the pre663 inspection;663 subsequently added qualified reactive
+transport recovery, without establishing provider-internal pressure/rotation parity.
 Reuse retained measurements before opening another provider session. Three
 existing actual-native cases already contain bounded numeric projections of
 `session.usage.updated`. The sustained case retained24samples from14600ms to
@@ -146,11 +148,12 @@ sourcef7f163c6, separately from receiving binary acceptance, found:
   physical generations. Its source/restoration/result ledgers qualify manual
   recovery; they do not implement automatic pressure-driven renewal.
 
-The lifecycle work must preserve one explicit logical microphone admission
-and its original expiry/PCM allowance across physical successors. It must stop
-admitting audio at a supported quiet boundary, retain the last originals and
-canonical transcript, verify the source-linked semantic checkpoint, retire old
-control callbacks and await closure before installing the next native generation.
+For application-owned transport replacement, preserve the original microphone
+admission/expiry/PCM allowance, retained originals and canonical transcript. Use
+supported quiet/closure evidence before retiring old callbacks and installing a
+successor; source-linked continuation and backend task ownership remain separate.
+Provider-managed internal engine replacement does not invoke these client steps
+or require the app to pause its ongoing audio stream.
 Waiting for every accepted background task is not a renewal barrier: retain its
 exact source references and independent return intent instead. No new executor,
 provider fallback, fresh microphone permission or renewed600second allowance is
