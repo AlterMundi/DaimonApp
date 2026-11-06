@@ -31,6 +31,7 @@ const server=http.createServer(async(req,res)=>{
     {id:`retained-source-${i}`,role:i%2?'assistant':'user',text:`${older?'Earlier retained':'Recent retained'} voice source ${i}`,observed_at:1704067100-i*10}]})),more:!older,before:older?null:cursor});
   }
   if(reloadCase&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='GET')return json({state:'closed',...(prefixSupport?{capture_prefix_retention:'v1'}:{})});
+  if(route.endsWith('/capture/ended')&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST')return json({capture:'ended'});
   if(route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST'){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks);
    const parts=route.split('/'),visit=parts[4],ordinal=Number(parts[6]);
