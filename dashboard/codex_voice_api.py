@@ -205,6 +205,11 @@ def install(app,config,provider,authorize,origins):
                 raw=await asyncio.wait_for(socket.receive_text(),20)
                 if len(raw.encode())>70000:raise ValueError('Voice offer exceeds bound')
                 offer=json.loads(raw)
+                if isinstance(offer,dict)and set(offer)=={'type','stage','reason'}and offer['type']=='startup_failed':
+                    await recheck()
+                    if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
+                    await asyncio.to_thread(history.startup_failure,visit,human,binding,offer['stage'],offer['reason'])
+                    raise ValueError('Browser voice setup failed before native start')
                 if not isinstance(offer,dict)or set(offer)!={'type','sdp'}or offer['type']!='offer':
                     raise ValueError('Select one WebRTC offer')
                 await recheck()
