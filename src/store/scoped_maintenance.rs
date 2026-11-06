@@ -183,8 +183,8 @@ impl Store {
         Ok(q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
-    /// Durable exact transition BEFORE native submission. The expected full document
-    /// also serializes concurrent owner commands and the one-shot deadline continuation.
+    /// Durable exact target transition BEFORE native submission. Disjoint target
+    /// callbacks may settle concurrently; the same target and immutable plan remain CAS-bound.
     pub(crate) fn maintenance_transition(
         &self,
         human: i64,
@@ -197,7 +197,10 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut doc = read(&tx, human, id)?;
-        if &doc != expected || index >= doc["targets"].as_array().context("Targets missing")?.len()
+        if index >= doc["targets"].as_array().context("Targets missing")?.len()
+            || doc["plan"] != expected["plan"]
+            || doc["armed"] != expected["armed"]
+            || doc["targets"][index] != expected["targets"][index]
         {
             bail!("Maintenance changed; inspect its retained outcome");
         }
@@ -300,6 +303,38 @@ mod tests {
             }],
         }
     }
+    #[test]
+    fn scoped_maintenance_disjoint_settlement_preserves_target_cas() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &defaults()).unwrap();
+        let mut plan = fixture(&store, "active");
+        let second = SessionKey::new(100, Some(8));
+        store.ensure_session(second, 100, &defaults()).unwrap();
+        store
+            .set_session_codex_thread(second, "second-native")
+            .unwrap();
+        let mut target = plan.targets[0].clone();
+        target.target = second;
+        target.binding = store.conversation_request_binding(100, second).unwrap();
+        target.snapshot.goal.as_mut().unwrap().thread_id = "second-native".into();
+        plan.targets.push(target);
+        let observed = store.maintenance_prepare(100, &plan).unwrap();
+        store
+            .maintenance_transition(100, &plan.request_id, 0, &observed, "not_paused", json!({}))
+            .unwrap();
+        store
+            .maintenance_transition(100, &plan.request_id, 1, &observed, "not_paused", json!({}))
+            .unwrap();
+        assert!(
+            store
+                .maintenance_transition(100, &plan.request_id, 0, &observed, "paused", json!({}))
+                .is_err()
+        );
+        let current = store.maintenance_read(100, &plan.request_id).unwrap();
+        assert_eq!(current["targets"][0]["phase"], "not_paused");
+        assert_eq!(current["targets"][1]["phase"], "not_paused");
+    }
+
     #[test]
     fn scoped_maintenance_durable_identity_and_single_arm() {
         let file = tempfile::NamedTempFile::new().unwrap();

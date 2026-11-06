@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
+import threading
 import uuid
 from goal_activation_io import Activation
 
@@ -66,6 +67,44 @@ def qualify(binary):
         packet=[m for m in j.rpc if m.get('method')=='thread/goal/conditionalActivate'][-1]
         notice(packet,attached)
         assert status(attached)['targets'][0]['restored_receipt']['notification_admitted'] is True
+        # Four independent native acknowledgments must not serialize restoration.
+        # Copy fictional enrollment only; production sessions are never touched.
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.row_factory=sqlite3.Row
+            template=dict(db.execute('SELECT * FROM sessions WHERE thread_id=7').fetchone())
+            for topic in (17,18):
+                row={k:v for k,v in template.items() if k!='id'}
+                row.update(thread_id=topic,codex_thread_id=f'native-topic-{topic}',session_title=f'Maintenance {topic}',busy=0)
+                db.execute('INSERT INTO sessions ('+','.join(row)+') VALUES ('+','.join('?' for _ in row)+')',list(row.values()))
+        targets=[]
+        for topic in (7,8,17,18):
+            thread=f'native-topic-{topic}'
+            j.goals[thread]={**copy.deepcopy(j.goals[native]),'threadId':thread,'status':'active'}
+            selected=j.owner('goal','inspect','100',str(topic))
+            targets.append({'target':{'chat_id':100,'thread_id':topic},'binding':selected['target_binding'],'snapshot':selected['snapshot']})
+        four={'request_id':str(uuid.uuid4()),'source':'synthetic retained human scoped-maintenance approval',
+              'entry':{'chat_id':100,'thread_id':1},'deadline':int(time.time())+300,'targets':targets}
+        j.owner('goal','maintenance','prepare',json.dumps(four))
+        j.owner('goal','maintenance','pause',four['request_id'])
+        assert all(t['phase']=='paused' for t in status(four['request_id'])['targets'])
+        held=[];release=threading.Event();original_handle=j.handle_extra_rpc
+        def hold_restore(message,send):
+            if message.get('method')=='thread/goal/conditionalActivate':
+                held.append(copy.deepcopy(message))
+                assert release.wait(8),'Restoration waited serially for a native acknowledgment'
+            return original_handle(message,send)
+        j.handle_extra_rpc=hold_restore
+        try:
+            doc=j.owner('goal','maintenance','restore',four['request_id'])
+            j.wait(lambda:len(held)==4)
+            assert all(t['phase']=='restore_submitted' for t in doc['targets'])
+            assert all(j.goals[f'native-topic-{topic}']['status']=='paused' for topic in (7,8,17,18))
+        finally:
+            release.set()
+        j.wait(lambda:all(t['phase']=='restored' for t in status(four['request_id'])['targets']))
+        j.handle_extra_rpc=original_handle
+        assert all(t['restored_receipt']['notification_admitted'] is True for t in status(four['request_id'])['targets'])
+        for packet in held:notice(packet,four['request_id'])
         # A later native human decision invalidates exact restoration authority.
         i=prepare();j.owner('goal','maintenance','pause',i)
         j.revisions[native]+=1

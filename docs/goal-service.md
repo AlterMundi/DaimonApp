@@ -314,7 +314,7 @@ The caller must retain the actual approval and observation evidence.
 The deadline must be at least `60 + 40 * target_count` seconds ahead and at most
 300 seconds ahead. One finite backend continuation is armed durably before
 pausing; repeated commands cannot arm another. It begins restoration early,
-reserving `40 * target_count + 10` seconds of the selected window. The existing conditional metadata RPC and context-aware continuation collector
+reserving `10 * target_count + 40` seconds of the selected window. Restoration submits each independent collector without waiting for another target's native ACK. The per-target journal CAS allows disjoint settlement while refusing duplicate/stale writes on the same target. Serial metadata observations retain their10second timeout; native admission retains its20second deadline. The existing conditional metadata RPC and context-aware continuation collector
 retain their native deadlines, and admission checks leave additional time
 for restoring acknowledged pauses. The whole transaction is journaled in the
 existing database, at most 64 records of 256 KiB; capacity refuses further plans

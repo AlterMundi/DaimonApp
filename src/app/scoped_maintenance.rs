@@ -54,7 +54,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 .context("Deadline missing")?;
             let count = doc["targets"].as_array().map_or(4, |v| v.len()) as i64;
             tokio::spawn(async move {
-                let wait = (deadline - (40 * count + 10) - Utc::now().timestamp()).max(0) as u64;
+                let wait = (deadline - (10 * count + 40) - Utc::now().timestamp()).max(0) as u64;
                 tokio::select! {_=sleep(Duration::from_secs(wait))=>{},_=owned.shared.shutdown.cancelled()=>return}
                 if restore(&owned, human, &selected).await.is_err() {
                     tracing::warn!(
@@ -314,7 +314,7 @@ async fn restore_collector(
                 .as_mut()
                 .context("Maintenance notice missing")?["telecodex.controller"] =
                 json!({"kind":"application","value":hint});
-            let (response, ack) = oneshot::channel();
+            let (response, _ack) = oneshot::channel();
             if attached
                 .sender
                 .send(crate::codex::CodexSteerRequest {
@@ -335,10 +335,9 @@ async fn restore_collector(
                     "known_unsent",
                     &json!({"error":"Collector closed before restoration admission","automatic_retry":false}),
                 )?;
-            } else {
-                // Settlement belongs to the selected collector, not this wait.
-                let _ = tokio::time::timeout(Duration::from_secs(18), ack).await;
             }
+            // The durable settlement callback owns the result. Do not serialize
+            // other targets behind this collector's native acknowledgment.
         } else {
             settled(
                 "known_unsent",
@@ -360,10 +359,8 @@ async fn restore_collector(
         // The existing collector constructs fresh invocation context and sends
         // conditionalActivate. This bookkeeping prompt is never a human input.
         app.enqueue_goal_turn(TurnRequest{session_key:target,from_user_id:human,prompt:"Restore the same explicitly authorized native goal after scoped maintenance; preserve its history and accounting.".into(),runtime_instructions:None,attachments:vec![],review_mode:None,override_search_mode:None},if target.chat_id<0{"supergroup"}else{"private"},Some(activation(control))).await?;
-        let until = Instant::now() + Duration::from_secs(22);
-        while Instant::now() < until && receipt.lock().expect("receipt mutex poisoned").is_none() {
-            tokio::select! {_=sleep(Duration::from_millis(50))=>{},_=app.shared.shutdown.cancelled()=>break}
-        }
+        // Queue admission is not restoration. The collector persists settlement;
+        // owner status retains restore_submitted until that exact callback.
     }
     Ok(())
 }
