@@ -36,6 +36,12 @@ class Interpretation(unittest.TestCase):
     def run_original(self,recognizer=None,history=None):
         return interpret_original(history or self.visits,self.ident,100,self.owner,0,self.provider,recognizer or self.recognizer())
 
+    def test_ended_capture_cannot_start_a_new_paid_interpretation(self):
+        self.ready();self.visits.end_capture(self.ident,100,self.owner['binding'])
+        with self.assertRaises(ValueError):self.run_original()
+        self.assertEqual(self.sent,[])
+        self.assertNotIn('interpretation',self.visits.read(self.ident,100,self.owner)['native_originals']['0'])
+
     def test_one_actual_http_shape_exact_bytes_and_retained_result(self):
         self.ready();result=self.run_original()
         self.assertEqual(result['state'],'completed');self.assertIn('Río Cobre',result['text'])

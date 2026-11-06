@@ -77,6 +77,13 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
     # documented500token bound without guessing a tokenizer. Preserve Unicode
     # and use canonical character offsets; nothing is silently discarded.
     text = part['text'].encode()[:384].decode('utf-8', errors='ignore')
+    if len(text) < len(part['text']):
+        # Ordinary speech should not receive half a word merely because a
+        # context-append byte budget ends there. Exact cursors retain the rest.
+        sentences=[m.end() for m in re.finditer(r'[.!?…]\s+',text) if m.end()>=96]
+        whitespace=[m.end() for m in re.finditer(r'\s+',text)]
+        boundary=max(sentences or whitespace,default=len(text))
+        text=text[:boundary]
     next_offset = offset + len(text) if len(text) < len(part['text']) else part.get('next_offset')
     label = ('Native progress data' if kind == 'integrator_progress' else 'Native result data')
     content = label + (' (partial; more remains):\n' if next_offset is not None else ':\n') + text

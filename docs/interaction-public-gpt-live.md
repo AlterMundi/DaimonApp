@@ -330,10 +330,12 @@ acoustic-enrollment tests, native store/WAV tests and an actual owner/SQLite/WAV
 journey with synthetic recognizer/transport: one source row, exact machine proof,
 protected original still present after status reads, lost-ACK read reconciliation,
 no extra ASR/work, and later human correction ordering. No paid transcription or
-physical hearing is claimed. These components remain unmounted/unselected.
+physical hearing is claimed. These components are connected by the optional native
+backend below; receiving selection/real voice acceptance remain unproven.
 
 The existing native foreground delegate owns explicit work; its sourced result
-must still reach continuing Live speech. Native context/memory, late returns,
+can reach continuing Live speech through the optional same-turn return. Real
+native context/memory, late returns,
 interruption, physical renewal, hearing and the other full-goal obligations remain
 unfinished; this import is preparation, not an end-to-end acceptance claim.
 
@@ -356,7 +358,7 @@ does not prove an utterance ended. The existing30second durability chunks must
 not be treated as complete instructions or used to bypass the native latest
 captured-correction fence. Exact acoustic sealing/correlation remains unfinished.
 
-The unmounted server component `openai_live_native_work.delegate_native` accepts
+The server component `openai_live_native_work.delegate_native` accepts
 only a retained client delegation, one to eight ordered acoustic originals whose
 OpenAI interpretations were already committed to native storage, and a separately
 attributed assistant formulation. It uses the existing native foreground delegate
@@ -381,9 +383,9 @@ formulation and acoustic proof. Its recognizer, public creation and native model
 are synthetic: no paid call or real model execution was made. Native admission is
 not a completed task, successful memory lookup or heard answer.
 
-The bridge is not mounted or selected. Remaining integration must seal the intended
-speech sources and qualify the real native turn/result through the mounted
-sideband. For client tasks, official results use
+The bridge is mounted only behind the owner-selected native backend below, with
+source seals required. Receiving selection and real native turn/result acceptance
+remain unfinished. For client tasks, official results use
 `session.commentary.append` with the original delegation ID; quiet progress uses
 `session.thinking.append`. These500token appends and their context-injection ACKs
 do not establish spoken delivery. Preserve long outputs in native storage and
@@ -481,7 +483,7 @@ chunks can straddle words and several exchanges; provider transcript fragments
 may arrive late. GPT-Live offsets must not be equated with local PCM sample
 positions: recording/connection startup and transport timing differ. Semantic
 formulation, first-acoustic-marker question scope, full source assembly/correlation
-and actual native-mode mounting remain unfinished. Existing pending-work/closure
+and real native-mode qualification remain unfinished. Existing pending-work/closure
 fences remain; source acknowledgment is neither task completion nor hearing.
 
 Qualification: eight server seal tests, ten native-work tests including its seal
@@ -490,3 +492,61 @@ duplicate requests, missing uploads, empty capture and changed ownership. The
 actual prepared native owner/SQLite/WAV journey also checks the sealed original
 hash before the one native admission and sourced result return. Provider/media/
 model peers remain synthetic; no paid inference or device acceptance is claimed.
+
+#### Optional native client backend prototype
+
+The owner may explicitly select `openai_live.backend_mode="native"` for the
+public GPT-Live comparison. The default remains `"responses"`; existing provider,
+native Codex login and deliberately chosen integrator settings are unchanged.
+Native mode creates the documented `delegation.type="client"` session and uses
+the existing native integrator for reasoning, memory and execution. It does not
+start a second Responses backend. Keep the existing approved voice API custody
+and select an appropriate bounded voice brief through `identity_file`; retained
+Responses-only backend settings are not used in native mode.
+
+Native mode requires source seals (enabled for that explicit mode), forbids
+upload-time native enrollment and managed-Responses conversation tools, and checks
+the selected native reader's `foreground_interpretation="gpt-transcribe/v1"`
+capability before microphone admission or public voice creation. Unsupported
+readers report that the prepared server update is missing; retrying does not
+create a paid call. No alternate engine or credentials are discovered.
+
+After a confirmed nonempty window, one owned foreground task sequentially enrolls
+the exact originals, interprets each once through the configured public project,
+commits its machine proof, and delegates an attributed formulation to the native
+integrator. Existing per-original/per-visit attempt/context/storage bounds apply.
+Repeated pipeline calls read their retained outcome; they do not retry uncertain
+ASR or native writes. The voice/control loop remains available while preparation
+runs. A per-visit stop fence is set before durable-close cleanup, and is checked
+again at the interpretation/dispatch boundary. Closing during an in-flight
+interpretation retains its eventual result without admitting new native work,
+including when the durable capture-end marker has not yet been written.
+
+Same-turn canonical native progress/results are polled through bounded existing
+presentation pages and returned with the source/revision/append safeguards above.
+Ordinary speech fragments prefer sentence/whitespace boundaries within the byte
+cap instead of splitting a word. Injection ACKs remain separate from hearing.
+Native handoff observation is not a completed task: admitted native work remains
+owned by Codex after voice closes. Preparation failures, while current authority
+remains valid, use the single close-intent/finalization path and retain their
+receipts. A duplicate browser close observes that same intent. Confirmed closure
+updates the UI to the ended/review state instead of leaving “Finishing” visible.
+
+This prototype deliberately accepts only `resume_mode="fresh"`. Native stored
+fork/semantic continuation, older and cross-turn worker returns, first-marker
+question scope, long/concurrent semantic incorporation and actual memory/device/
+hearing acceptance still require integration. They remain part of the full goal;
+do not report this source prototype as a completed voice circuit or silently
+fall back to Responses to conceal the gap.
+
+Qualification includes eight pipeline tests,32mounted API tests, nine interpretation
+tests and eleven result tests, using the locked Python3.11 dependencies, plus
+browser closure/state regressions. The mounted route exercises the complete
+source→interpretation→native handoff→canonical result→context ACK path, a missing
+reader before paid creation, failed interpretation with one voice close, and a
+slow interpretation where Close stays responsive and the late derivative is
+retained without native dispatch. All provider/model peers are synthetic. These
+checks do not establish real CompAII identity, memory, speech, billing or hearing.
+The result scan retains its native cursor across bounded catch-up batches; a
+tested64-item unrelated backlog does not permanently hide the later matching
+answer. Source cursors/unknown append guards still apply before any new send.

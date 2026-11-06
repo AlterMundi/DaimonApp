@@ -55,8 +55,11 @@ Engine selection belongs in Under the hood; preserve current-provider defaults.
 Synthetic checks are not public access or full CompAII acceptance.
 The prepared public client-delegation bridge uses existing native foreground
 originals/formulations, not transcript fragments or raw durability chunks as
-completed human turns. It remains unmounted pending exact acoustic sealing and
-sourced native returns. A retained work intent only permits same-root status
+completed human turns. The owner-only backend_mode=native prototype now connects
+sealed audio, interpretation, native work and same-turn results. Default Responses
+and other providers remain unchanged. It is not receiving/real voice acceptance;
+cross-turn returns, continuation and physical qualification remain unfinished.
+A retained work intent only permits same-root status
 reads after unknown outcomes; never resubmit it to repair an observation.
 Prepared native result returns use exact current canonical revisions and native
 turn/original-request association. Append intent, socket send, context-injection
@@ -67,6 +70,10 @@ utterance-end signal. They reference confirmed existing originals and do not
 choose a backend or start inference. When a work intent has a seal, use only its
 exact acknowledged nonempty source window. Keep first-marker questions narrowed
 until integrated, and never equate provider transcript offsets with local samples.
+Native preparation has one finite owned task per visit. End/close fences new
+interpretation/dispatch before cleanup waits for any in-flight outcome; it never
+cancels independent native work. Reader capability is checked before paid voice
+creation. Keep native client renewal explicit until qualified; no fallback.
 The optional managed Responses conversation reader follows the documented
 function-result/continuation lifecycle. Keep owner reads distinct from full DMK
 memory and native work execution. Never replay a retained result/continuation
