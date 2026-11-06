@@ -53,6 +53,11 @@ not the native Codex protocol or manual PCM turn loop. Follow
 original-only retry, graceful close and unfinished integration/reconciliation.
 Engine selection belongs in Under the hood; preserve current-provider defaults.
 Synthetic checks are not public access or full CompAII acceptance.
+The prepared public client-delegation bridge uses existing native foreground
+originals/formulations, not transcript fragments or raw durability chunks as
+completed human turns. It remains unmounted pending exact acoustic sealing and
+sourced native returns. A retained work intent only permits same-root status
+reads after unknown outcomes; never resubmit it to repair an observation.
 The optional managed Responses conversation reader follows the documented
 function-result/continuation lifecycle. Keep owner reads distinct from full DMK
 memory and native work execution. Never replay a retained result/continuation
