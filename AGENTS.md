@@ -1,5 +1,10 @@
 # Interaction development boundaries
 
+The two exact public Live voice-brief templates use the always-run dashboard and
+speech qualification. Their prompt changes do not repeat unchanged Rust/native
+fixtures. Unknown template paths, mixed native/dependency edits and changed owning
+jobs keep their existing broader checks. See tests/ci_matrix_host_scope.py.
+
 Shared avatar workshop integration continues under the SAME full App goal.
 Read docs/interaction-avatar-workshop.md and the pinned module provenance before
 changing the adapter. Existing App authentication/CSRF own the account scope;

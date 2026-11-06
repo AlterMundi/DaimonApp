@@ -29,6 +29,7 @@ def selected(paths, previous=None):
                 and target.id
                 in {
                     "native_handoff",
+                    "voice_templates",
                     "common",
                     "header_changed",
                     "text_ci_changed",
@@ -53,6 +54,22 @@ def selected(paths, previous=None):
 
 
 class MatrixHostScope(unittest.TestCase):
+    def test_public_voice_briefs_use_web_gates_without_repeating_native_fixtures(self):
+        templates = ['templates/public-live-voice-brief.txt',
+                     'templates/public-live-native-voice-brief.txt']
+        for path in templates:
+            self.assertEqual(selected([path, 'dashboard/openai_live_api.py',
+                                       'tests/dashboard_openai_live_api.py']), set())
+            self.assertEqual(selected([path, 'Cargo.toml']), {'text', 'audio', 'activity'})
+        for unknown in ('templates/new-voice-engine.py', templates[0] + '.extra'):
+            self.assertEqual(selected([unknown]), {'text', 'audio', 'activity'})
+        workflow = WORKFLOW.read_text()
+        self.assertIn('tests/dashboard_openai_live_api.py', workflow)
+        for job in ('dashboard', 'speech-rendering'):
+            body = workflow.split('  ' + job + ':\n', 1)[1]
+            body = re.split(r'^  [a-zA-Z0-9_-]+:\n', body, maxsplit=1, flags=re.M)[0]
+            self.assertNotIn('needs.scope.outputs', body)
+
     def test_native_operator_uses_always_run_process_boundary_gate(self):
         paths = ['scripts/native_package_handoff.py', 'tests/native_package_handoff.py',
                  'tests/native_package_handoff_unit.py', 'docs/interaction-matrix.md']
