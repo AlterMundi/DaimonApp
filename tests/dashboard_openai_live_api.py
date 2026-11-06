@@ -543,11 +543,13 @@ class Mounted(unittest.TestCase):
             self.assertEqual(set(page.json()['visits'][0]),{'id','created_at','state'})
             self.assertFalse(page.json()['more']);self.assertEqual(native.creations,1)
             self.assertEqual(native.sent,[])
+            self.close(socket)
+            # Read-only history binding checks run after voice closes. Changing
+            # the live owner correctly revokes an active socket's admission.
             self.owner.binding='b'*64
             self.assertEqual(self.client.get(path,headers=self.headers).status_code,409)
             self.assertEqual(self.client.get(path,headers={**self.headers,'x-voice-binding':'b'*64}).json()['visits'],[])
             self.owner.binding='a'*64
-            self.close(socket)
         self.allowed=False;self.assertEqual(self.client.get(path,headers=self.headers).status_code,401)
     def test_known_pending_responses_drain_before_close_without_work_replay(self):
         with self.socket() as socket:
