@@ -37,7 +37,7 @@ for the app or the Matrix/heartbeat work. Its implementation remains pending.
 
 ## Current provider priority —5November2026
 
-Selected659 now qualifies ordered native final sources and completion-before-close
+Historical659 qualification covers ordered native final sources and completion-before-close
 carry, with a short source-backed availability notice followed by corrected recall
 through three visits/two explicit reconnects. The same original receiver and
 accepted source work were retained; no source/acknowledged-offer replay. See the
@@ -50,9 +50,9 @@ The6November native lifecycle inspection separates the next requirement from
 those manual reconnect tests. Retained numeric usage reports audio duration,
 not observed context-token headroom. Native backend compaction is not physical
 voice renewal; start/end mode instructions are context transitions, not checkpoint
-execution. The browser currently has no logical-visit/automatic-successor state
-machine. Implement that lifecycle inside the unchanged600second admission before
-claiming sustainable automatic renewal. Do not reinterpret several manual opens,
+execution. At that inspection the browser had no logical-visit/automatic-successor
+state machine. The new candidate below adds reactive recovery inside the unchanged
+600second admission; it does not yet qualify sustainable pressure-based renewal. Do not reinterpret several manual opens,
 an audio-duration counter or a compaction ACK as the two required automatic
 successor installations. See the
 [native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection--6november2026).
@@ -61,20 +61,24 @@ The terminal-close candidate now retains the native lease through final work
 reconciliation/control closure and terminal metadata commit. Its close response
 separates native `confirmed` from `successor_ready`; failures never authorize an
 automatic successor. Mounted delayed-cleanup/competing-start and failure tests
-cover this barrier. This does not install automatic renewal or change the600s
-microphone admission; the logical-visit lifecycle and useful audio through two
-automatic replacements remain pending. See the native guide's
+cover this barrier. Selected661 installed that preparation barrier without
+changing the600s admission. The subsequent candidate below adds the logical
+microphone lifecycle and qualifies two reactive automatic replacements. See the native guide's
 [terminal close contract](interaction-native-codex-voice.md#terminal-close-and-successor-readiness).
 
-The next development candidate now implements a single finite microphone
-admission across bounded physical native generations. Exact successor reservation,
-one original deadline/PCM owner/recorder, retained setup-gap bytes and reactive
-media/native-transport recovery have synthetic server/browser coverage. Requested
-Stop is not automatically undone. It is not receiving-selected or actual useful-
-audio acceptance; proactive provider-pressure/semantic checkpoint/output-drain
-work remains open. Qualify two automatic native replacements inside the unchanged
-admission, preserving corrections, originals and late work before selecting it.
-See the [candidate contract](interaction-native-codex-voice.md#logical-microphone-admission-and-automatic-recovery-candidate).
+The new development candidate implements one finite microphone admission across
+bounded physical native generations, retaining exact successor reservation,
+deadline/PCM owner/recorder and setup-gap originals. Actual native WebRTC now
+qualifies useful corrected-label/code audio through two automatic replacements,
+with one microphone admission and three hash-verified originals. The failed
+predecessor had recognized speech but no audible reply; its cause remains unknown.
+A distinct short recall follow-up continued from that source without replay.
+Independent output ASR corroborates the three later answers, including the
+anticipatory/repeated third answer. See the native guide's
+[logical microphone lifecycle](interaction-native-codex-voice.md#logical-microphone-admission-and-automatic-recovery-candidate).
+This is not yet receiving-selected. Requested Stop is not undone. Proactive
+provider-pressure/semantic checkpoint/output-drain, natural useful turn behavior,
+phone/hearing/concurrency/full-memory and the entire prior roadmap remain open.
 
 Native Codex page-reload durability now retains bounded local audio fragments
 before final original sealing. Recovered prefixes explicitly disclose a possibly

@@ -712,7 +712,8 @@ separate unfinished acceptance. Do not infer completion from catalog readback.
 
 This development candidate separates one explicitly opened microphone admission
 from up to eight physical native voice generations. It is not yet selected on
-receiving clients or qualified with useful native audio after automatic recovery.
+receiving clients. The finite reactive recovery case below qualifies useful
+native audio; proactive context-pressure renewal remains separate.
 The existing300–600second configured duration and PCM allowance are unchanged.
 
 The browser requests `logical_visit: true`. Before its first recorder/WebRTC
@@ -746,9 +747,29 @@ capacity bounds still apply; records are not automatically retired.
 Synthetic tests cover two physical replacements, uninterrupted exact capture bytes
 through setup, one permission/recorder/deadline/PCM owner, native source carry,
 playback pause, cancelled setup, stale callbacks, changed admission and failed
-readiness. These do not establish useful provider audio, proactive pressure-based
-renewal, output-drain/hearing semantics or semantic checkpoint compression. Those
-remain required next qualification/work, with the full roadmap active.
+readiness. An actual receiving-native journey then used the existing isolated
+thread/receiver/binding/history and synthetic microphone through three physical
+WebRTC generations and two automatic replacements. No Reconnect click occurred.
+One microphone permission/recorder/root600second deadline and19,200,000byte PCM
+allowance survived. Three original segments totaling2,558,636PCMbytes matched
+retained receipts and file hashes; all generations closed with complete sources,
+and explicit Back ended the root admission.
+
+Three native spoken answers retained the corrected synthetic label Sendero Norte
+and code Calandria. Independent configured Whisper recognition on source-linked
+output PCM derivatives corroborated those words after both replacements. One
+backing turn used no source/tool/command calls; accepted prior work and ACKed
+speech were not replayed. This qualifies reactive transport/media recovery only.
+
+Retain the negative predecessor: its original corrected-label statement was
+recognized and saved, but produced no audible response before bounded closure.
+The follow-up used distinct short recall questions referencing that retained
+statement; it did not replay it or change the timeout. The third output contains
+an anticipatory/repeated answer as well as the complete answer. Those actual
+speech-quality limitations remain unresolved; do not erase them behind the
+successful recovery case. Provider-pressure renewal, output-drain/hearing,
+semantic checkpoint compression, concurrent long work, full memory and physical
+phone/noise/background acceptance remain open with the full roadmap.
 
 ## Terminal close and successor readiness
 
