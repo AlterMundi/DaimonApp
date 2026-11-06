@@ -204,6 +204,65 @@ pub async fn transcribe_committed(
     Ok((text,TranscriptSource{audio_sha256:hash,telegram_file_id:telegram_file_id.map(str::to_owned),capture_id:capture_id.map(str::to_owned),capture_stop:None,configured_transcriber:config.transcriber_label.clone(),actual_transcriber,committed_at:chrono::Utc::now().to_rfc3339(),audio_millis:(pcm.len()/4) as u64*1000/16000,preparation_millis:preparation_started.elapsed().as_millis() as u64,transcription_millis,interpretation:"Machine transcription of the original human voice clip; not exact verified written speech".into()}))
 }
 
+/// Verify the exact private canonical WAV before importing an owner-attested
+/// OpenAI result. This reads no provider configuration and never runs ASR.
+#[cfg(unix)]
+pub fn public_interpretation_source(
+    path: &Path,
+    id: &str,
+    expected_sha256: &str,
+    audio_millis: u64,
+    transcription_millis: u64,
+) -> Result<TranscriptSource> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let started = std::time::Instant::now();
+    let parent = std::fs::symlink_metadata(path.parent().context("Missing original directory")?)?;
+    if !parent.is_dir() || parent.uid() != unsafe { libc::geteuid() } || parent.mode() & 0o077 != 0
+    {
+        bail!("Public interpretation requires the private owner original directory");
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let info = file.metadata()?;
+    const MAX_WAV: u64 = 120 * 32000 + 44;
+    if !info.is_file()
+        || info.uid() != unsafe { libc::geteuid() }
+        || info.mode() & 0o077 != 0
+        || info.len() <= 44
+        || info.len() > MAX_WAV
+        || transcription_millis > 120000
+    {
+        bail!("Public interpretation requires a bounded private WAV");
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_WAV + 1).read_to_end(&mut bytes)?;
+    if bytes.len() <= 44
+        || bytes.len() as u64 > MAX_WAV
+        || (bytes.len() - 44) % 2 != 0
+        || format!("{:x}", Sha256::digest(&bytes)) != expected_sha256
+        || &bytes[0..4] != b"RIFF"
+        || &bytes[8..20] != b"WAVEfmt \x10\0\0\0"
+        || &bytes[20..36] != b"\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0"
+        || &bytes[36..40] != b"data"
+        || u32::from_le_bytes(bytes[4..8].try_into()?) as usize != bytes.len() - 8
+        || u32::from_le_bytes(bytes[40..44].try_into()?) as usize != bytes.len() - 44
+        || audio_millis == 0
+        || audio_millis != (bytes.len() as u64 - 44) * 1000 / 32000
+    {
+        bail!("Completed public interpretation does not match its exact PCM original");
+    }
+    Ok(TranscriptSource {
+        audio_sha256: expected_sha256.into(), telegram_file_id: None, capture_id: Some(id.into()),
+        capture_stop: None, configured_transcriber: "OpenAI public API file transcription".into(),
+        actual_transcriber: Some("gpt-transcribe".into()), committed_at: chrono::Utc::now().to_rfc3339(),
+        audio_millis, preparation_millis: started.elapsed().as_millis() as u64, transcription_millis,
+        interpretation: "Machine transcription of the original human voice clip; not exact verified written speech".into(),
+    })
+}
+
 async fn read_media(path: &Path) -> Result<Vec<u8>> {
     let mut file = tokio::fs::File::open(path)
         .await?
@@ -436,4 +495,40 @@ mod capacity_tests {
 #[cfg(not(unix))]
 pub fn reserve_telegram_download(_database: &Path) -> Result<DownloadReservation> {
     bail!("Voice download storage currently requires Unix ownership and locking");
+}
+
+#[cfg(all(test, unix))]
+mod public_interpretation_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn public_interpretation_requires_exact_private_canonical_wave() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("capture");
+        let mut data = Vec::new();
+        data.extend(b"RIFF");
+        data.extend(6436u32.to_le_bytes());
+        data.extend(b"WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data");
+        data.extend(6400u32.to_le_bytes());
+        data.resize(6444, 0);
+        std::fs::write(&path, &data).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let hash = format!("{:x}", Sha256::digest(&data));
+        let proof = public_interpretation_source(&path, "capture", &hash, 200, 30).unwrap();
+        assert_eq!(proof.actual_transcriber.as_deref(), Some("gpt-transcribe"));
+        assert_eq!(proof.audio_millis, 200);
+        assert!(public_interpretation_source(&path, "capture", &hash, 201, 30).is_err());
+        assert!(public_interpretation_source(&path, "capture", &"b".repeat(64), 200, 30).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(public_interpretation_source(&path, "capture", &hash, 200, 30).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(public_interpretation_source(&link, "capture", &hash, 200, 30).is_err());
+        data[24] = 0;
+        std::fs::write(&path, &data).unwrap();
+        let changed = format!("{:x}", Sha256::digest(&data));
+        assert!(public_interpretation_source(&path, "capture", &changed, 200, 30).is_err());
+    }
 }
