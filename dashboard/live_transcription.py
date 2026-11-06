@@ -17,6 +17,7 @@ from fastapi import HTTPException, WebSocket
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
+from .voice_admission import admit_voice, admission_failure
 from .private_state import private_directory, read_json, write_json
 from .transcription import TranscriptionStream, TranscriptionUnavailable
 from .turn_detection import Detector, DetectionUnavailable, analyze_capture, command as detection_command
@@ -234,6 +235,7 @@ async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=T
         if value['binding'] != meta['binding']:
             raise ValueError('Conversation binding changed')
     await recheck()
+    admit_voice(socket.scope)
     return session, recheck, actor
 
 
@@ -373,7 +375,7 @@ def install(app, config, provider, authorize, origins):
                             await send({'type':'turn_detection_unavailable'})
                     detector_reader = asyncio.create_task(receive_detection())
                 candidate_index=0
-                def open_provider(start=0):
+                def open_provider_unfenced(start=0):
                     nonlocal candidate_index
                     for index in range(start,len(candidates)):
                         if abandoned.is_set():raise TranscriptionUnavailable('Capture closed during connection setup')
@@ -391,6 +393,11 @@ def install(app, config, provider, authorize, origins):
                         value.close()
                         raise TranscriptionUnavailable('Capture closed during connection setup')
                     raise TranscriptionUnavailable('No configured streaming provider')
+                def open_provider(start=0):
+                    from .voice_admission import retained_voice
+                    with retained_voice(socket.scope):
+                        return open_provider_unfenced(start)
+
                 diagnostic['stage'] = 'provider_open'
                 stream = await asyncio.to_thread(open_provider)
                 ready, finished = asyncio.Event(), asyncio.Event()
@@ -499,7 +506,7 @@ def install(app, config, provider, authorize, origins):
                 WebSocketDisconnect, TimeoutError, RenderError) as error:
             diagnostic['error_type'] = type(error).__name__
             with suppress(Exception):
-                await send({'type':'unavailable','message':'Live transcription unavailable. Your recording has not been submitted.'})
+                await send({'type':'unavailable','message':admission_failure(error) or 'Live transcription unavailable. Your recording has not been submitted.'})
         finally:
             # One metadata-only line under the existing bounded system journal.
             # Never include provider events, exception messages, speech or keys.
@@ -652,7 +659,7 @@ def install(app, config, provider, authorize, origins):
                 WebSocketDisconnect, TimeoutError) as error:
             diagnostic.update(outcome='unavailable', error_type=type(error).__name__)
             with suppress(Exception):
-                await send({'type': 'unavailable', 'message': 'Voice activity unavailable. No recording was submitted.'})
+                await send({'type': 'unavailable', 'message':admission_failure(error) or 'Voice activity unavailable. No recording was submitted.'})
         finally:
             try:
                 for task in (reader, incoming):

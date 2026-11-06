@@ -1,5 +1,14 @@
 # Interaction development boundaries
 
+Web-only maintenance must use the serving voice-admission fence through
+`scripts/interaction_web_maintenance.py` and its actual local health/config
+binding. Keep the existing finite scoped operator and all idle/unsettled outcome
+checks. Busy means no update, never interrupt the voice to force admission. An
+older reader without the matching header supports only the separately recorded
+observed-idle bootstrap, not exclusion. Do not replace the lock, replay an
+uncertain update, stop native work or infer global Stop authority. See
+`docs/interaction-fleet-updates.md#voice-admission-during-web-maintenance`.
+
 The two exact public Live voice-brief templates use the always-run dashboard and
 speech qualification. Their prompt changes do not repeat unchanged Rust/native
 fixtures. Unknown template paths, mixed native/dependency edits and changed owning

@@ -212,6 +212,8 @@ def install(app,config,provider,authorize,origins):
                     startup=await asyncio.to_thread(history.continuation,human,owner,reserve=len(memory.encode()))
                 opening=asyncio.create_task(asyncio.to_thread(CodexVoice,provider.native_home,
                     owner['native_thread'],lease=lease))
+                from .voice_admission import hold_voice_task
+                hold_voice_task(socket.scope,opening)
                 voice=await asyncio.shield(opening)
                 if memory is not None:
                     await recheck()
@@ -329,9 +331,10 @@ def install(app,config,provider,authorize,origins):
                     await actor()
         except (Exception,asyncio.CancelledError)as error:
             close_reason='review'
+            from .voice_admission import admission_failure
             # No native/provider payload, identity or credentials in diagnostics.
             with suppress(Exception):await asyncio.wait_for(socket.send_json({'type':'review','id':visit,
-                'message':('Previous voice history needs reconciliation before reconnecting. Recordings and accepted work are kept.'
+                'message':admission_failure(error) or ('Previous voice history needs reconciliation before reconnecting. Recordings and accepted work are kept.'
                     if isinstance(error,IncompleteTranscript)else
                     'Voice paused. Original recordings and accepted work remain available.')}),1)
         finally:

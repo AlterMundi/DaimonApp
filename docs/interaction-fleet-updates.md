@@ -53,3 +53,51 @@ consuming-process acceptance. Keep a required body-local PATH entry in the
 existing service configuration and its retained preimage; do not introduce a new
 login, change providers or activate an avatar during software delivery. See
 [workshop receiving](interaction-avatar-workshop.md#receiving-selection-6november2026).
+
+## Voice admission during web maintenance
+
+The current web reader uses one persistent empty owner-only lock at
+`<state_dir>/voice-admission/.lock`. After the existing actor/CSRF/binding checks,
+all five voice WebSocket modes take a shared OS lock before opening a provider,
+preparing microphone admission or submitting work. Unauthenticated transports
+cannot reserve it. The lock follows the connection and its owned late setup/
+cleanup; it is not a model lease, scheduler or native work cancellation.
+
+Use `scripts/interaction_web_maintenance.py` to run the existing scoped web
+operator. Supply the actual selected private config, the local health URL from
+that service unit, its OS service UID (not a Telegram/human ID), and the finite
+operator command. The helper acquires an exclusive nonblocking lock, matches the
+running server's `X-DaimonApp-Voice-Admission` header to that exact lock, rechecks
+config bytes, then transfers the lock through exec. Its existing Linux timeout
+bounds execution to180seconds by default, at most300, with5seconds to terminate
+owned children. No deployment target, service, source or provider is chosen here.
+
+```sh
+python scripts/interaction_web_maintenance.py \
+  --config SELECTED_PRIVATE_CONFIG \
+  --health-url SELECTED_LOCAL_HEALTH_URL \
+  --owner-uid SERVICE_UID --seconds 150 \
+  -- python EXISTING_SCOPED_WEB_OPERATOR
+```
+
+Exit75 means voice owned the lock and the operator was not started. Exit78 means
+reader/state/config qualification failed before execution; inspect that mismatch.
+A deadline/nonzero result after execution is the operator's actual outcome, not
+permission to retry. Keep its intent, phase and receipts and inspect selected
+state. Preserve the previous selectors/unit/config, goals, libraries, original
+media and unresolved work. Never unlink, replace or reset the lock file. It is
+constant-size; the kernel releases owned locks when their processes end.
+
+Hold the fence through the existing idle/unsettled-source checks, selection,
+web restart and final health/assets/owner verification. Those checks remain
+necessary: the fence is not proof that an earlier provider call or native write
+was settled. It does not exclude independent native CLI voice or turn the
+thread-scoped native Stop into a generation CAS. It changes no capture duration,
+provider/default, account/permission or resource-activation policy.
+
+An older running reader without the matching header does not support this
+exclusion, even if a newer candidate or leftover file exists. Qualify its initial
+bootstrap through the current observed-idle route and record that limitation;
+do not silently bypass or pretend it had atomic admission exclusion. Once the
+reader is selected, ordinary later updates must use the shared fence. Publication
+or source tests alone do not establish receiving/device acceptance.

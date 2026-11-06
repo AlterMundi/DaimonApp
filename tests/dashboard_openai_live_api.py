@@ -105,6 +105,21 @@ class Mounted(unittest.TestCase):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
 
+    def test_maintenance_refuses_before_provider_or_original_admission(self):
+        from dashboard.voice_admission import VoiceAdmission, VoiceAdmissionMiddleware, maintenance_guard
+        admission=VoiceAdmission(self.state)
+        self.app.add_middleware(VoiceAdmissionMiddleware,admission=admission)
+        with maintenance_guard(self.state):
+            with self.socket() as socket:
+                socket.send_json(self.meta)
+                value=socket.receive_json()
+                self.assertEqual(value['type'],'unconfirmed')
+                self.assertIn('server update',value['message'])
+        self.assertEqual(Client.instances,[])
+        self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
+        with self.socket() as socket:
+            self.start(socket);self.close(socket)
+
     def test_unenabled_native_choice_is_refused_before_paid_creation(self):
         with self.socket() as socket:
             socket.send_json({**self.meta,'backend':'native'})
