@@ -629,7 +629,7 @@ The live return task alternates current work with one previous work origin. It
 runs outside browser-control handling, at most once per500ms, only while the
 authorized finite native visit is open. Discovery stays within the existing
 512-record/32MiB journal limit and rotates through all eligible owner-matched
-closed visits; a large retained backlog therefore increases scan latency rather
+closed or explicitly reviewed disconnected visits; a large retained backlog therefore increases scan latency rather
 than creating unbounded concurrent readers. No periodic/background attention is
 installed. The existing native route/result/page limits remain unchanged, including
 the outstanding older-worker-result pagination gap.
@@ -662,3 +662,33 @@ it to a fresh connection without another original, ASR or native dispatch. These
 checks use synthetic native/provider peers. Real first-use identity/memory/work,
 speech/interruption, repeated physical renewal and semantic checkpoints remain
 unfinished; this source extension has not been selected on a receiver.
+
+### Explicit replacement after a disconnected native visit
+
+A known-created native voice whose local capture has ended can offer a manual
+replacement even if the trusted `session.closed` event was lost. This follows
+OpenAI's [failed-connection recovery guidance](https://developers.openai.com/api/docs/guides/live-conversations#recover-from-a-failed-connection).
+The existing authenticated socket acquires the app's human voice lease before
+offering review. No other app voice can be active. The offer contains only the
+old visit ID and a revision of its journal plus retained provider sources.
+The next explicit Reconnect action submits that review on a new admission;
+it never retries automatically or requests microphone access while offering review.
+A changed source, owner, binding, unknown creation POST, incomplete replacement
+claim or current capture refuses before another call. Responses/stored-fork
+behavior stays unchanged; this path is for the separately selected native mode.
+
+Review records a flat old-to-new reference before admitting its destination.
+An interrupted two-file commit stays held. The old record remains `created`,
+with unconfirmed final usage; it is not forged into `closed`, deleted or exempted
+from storage reservations. A later genuine provider finalization can still
+record actual usage. Retired transports cannot be attached/recreated through
+their old call receipt. Existing originals, ASR/work intents, canonical-source
+checks and unknown append holds remain unchanged. Observed independent native
+work may return through the existing flat late-result route without resubmission.
+The unchanged record/source/total bounds still limit retained disconnected visits.
+
+Synthetic journal, mounted authenticated socket, browser and native-result
+journeys cover review before permission/POST, stale/foreign/unknown refusal,
+partial admission, genuine later usage and once-only late results across another
+replacement. They do not establish semantic history restoration, real repeated
+speech, physical reconnect/hearing or settlement of an older provider bill.

@@ -4,7 +4,7 @@ const source=fs.readFileSync('dashboard/web/openai-live.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false}={}){
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
@@ -13,7 +13,10 @@ function fixture({nativeChoice=false,modeMismatch=false}={}){
   static OPEN=1;
   constructor(){this.readyState=1;this.sent=[];sockets.push(this);queueMicrotask(()=>this.onopen());}
   send(raw){const value=JSON.parse(raw);this.sent.push(value);const emit=value=>queueMicrotask(()=>this.onmessage({data:JSON.stringify(value)}));
-   if(value.binding){this.id=value.id;order.push('admission');emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000}});}
+   if(value.binding){this.id=value.id;order.push('admission');
+    if(reviewFirst&&sockets.length===1){emit({type:'unconfirmed',id:this.id,message:'Tap Reconnect voice. Final usage unconfirmed.',
+      replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
+    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
    if(value.type==='close')emit({type:this.offered?'closed':'unconfirmed',id:this.id});
   }
@@ -65,6 +68,14 @@ function fixture({nativeChoice=false,modeMismatch=false}={}){
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ const reconnect=fixture({nativeChoice:true,reviewFirst:true});
+ assert.equal(await reconnect.engine.start(),false);await until(()=>!reconnect.engine.active);
+ assert.equal(reconnect.permission(),0,'A review offer does not request microphone permission');
+ assert.equal(reconnect.sockets.length,1,'No automatic replacement or retry');
+ assert.match(reconnect.states.at(-1).message,/Final usage unconfirmed/);
+ await reconnect.start();
+ assert.deepEqual(reconnect.sockets[1].sent[0].replacement,{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)});
+ await reconnect.engine.hold();
  const native=fixture({nativeChoice:true}),nativeStart=native.engine.start();native.backend(undefined);
  await until(()=>native.peers[0]?.listeners.has('icegatheringstatechange'));
  assert.equal(native.sockets[0].sent[0].backend,'native','The native choice freezes before admission/permission');

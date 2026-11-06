@@ -176,7 +176,7 @@ def install(app, config, provider, authorize, origins):
         try:
             async with asyncio.timeout(seconds+60):
                 meta=await asyncio.wait_for(message(8192),5)
-                if set(meta)-{'id','binding','csrf','authorization','backend'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
+                if set(meta)-{'id','binding','csrf','authorization','backend','replacement'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
                     raise ValueError('Select one public voice admission')
                 if 'backend' in meta:
                     if meta['backend']!='native' or not (configured_native or native_enabled):
@@ -198,7 +198,7 @@ def install(app, config, provider, authorize, origins):
                 await asyncio.to_thread(client._project_key)
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
-                    backend_mode='native' if native_backend else 'responses')
+                    backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'))
                 admitted=True
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
@@ -309,8 +309,18 @@ def install(app, config, provider, authorize, origins):
                 'project_key_unavailable':'This voice comparison needs its configured OpenAI project access. Your recordings and work are unchanged.'}
             from .voice_admission import admission_failure
             message=admission_failure(error) or (messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None)
+            replacement=None
+            # A held app lease proves this human has no other app voice owner.
+            # Offer review only; the next explicit user action authorizes a new
+            # known-created, ended native transport. Unknown POSTs stay held.
+            if native_backend and lease is not None and not admitted:
+                with suppress(OSError,ValueError,RenderError):
+                    replacement=await asyncio.to_thread(history.replacement_offer,human,owner)
+                if replacement:
+                    message='The previous voice connection ended without confirmed final usage. Tap Reconnect voice to open a replacement. Recordings and pending work are kept.'
             with suppress(Exception):
                 await asyncio.wait_for(socket.send_json({'type':'unconfirmed','id':visit,
+                    **({'replacement':replacement} if replacement else {}),
                     'message':message or 'Voice paused. Keep your original audio; the connection and pending work need review.'}),2)
         finally:
             with CancelScope(shield=True):

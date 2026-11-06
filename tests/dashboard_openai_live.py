@@ -171,6 +171,63 @@ class DurableCreation(unittest.TestCase):
         return self.visits.create(ident or self.ident, human, owner or self.owner,
                                  'v=0 offer', self.spec, client or self.client(self.success()))
 
+    def disconnected_native(self):
+        self.visits.prepare(self.ident,100,self.owner,backend_mode='native')
+        self.create()
+        self.visits.end_capture(self.ident,100,self.owner['binding'])
+        return self.visits.replacement_offer(100,self.owner)
+
+    def test_explicit_replacement_preserves_unknown_final_usage_and_exact_original_receipt(self):
+        offer=self.disconnected_native();before=self.visits.read(self.ident,100,self.owner)
+        target=str(uuid.uuid4())
+        with self.assertRaises(LiveUnavailable):
+            self.visits.prepare(target,100,self.owner,backend_mode='native')
+        self.visits.prepare(target,100,self.owner,backend_mode='native',replacement=offer)
+        old=self.visits.read(self.ident,100,self.owner)
+        self.assertEqual(old['state'],'created');self.assertNotIn('finalization',old)
+        self.assertEqual(old['replacement_review']['final_usage'],'unconfirmed')
+        self.assertEqual({k:v for k,v in old.items() if k!='replacement_review'},before)
+        self.assertEqual(self.visits.read(target,100,self.owner)['replaces'],self.ident)
+        self.assertEqual(len(self.calls),1,'Review/admission never creates a provider call')
+        with self.assertRaises(LiveUnavailable):self.create()
+        self.closed(usage=17)
+        self.assertEqual(self.visits.read(self.ident,100,self.owner)['finalization']['usage_seconds'],17)
+        with self.assertRaises(ValueError):
+            self.visits.prepare(str(uuid.uuid4()),100,self.owner,backend_mode='native',replacement=offer)
+        self.assertEqual(len(self.calls),1)
+
+    def test_review_never_waives_live_capture_unknown_creation_other_owner_or_changed_snapshot(self):
+        self.visits.prepare(self.ident,100,self.owner,backend_mode='native');self.create()
+        self.assertIsNone(self.visits.replacement_offer(100,self.owner))
+        self.visits.end_capture(self.ident,100,self.owner['binding'])
+        offer=self.visits.replacement_offer(100,self.owner)
+        other={**self.owner,'native_thread':'other','entry_binding':self.owner['entry_binding'][:3]+['other']}
+        self.assertIsNone(self.visits.replacement_offer(100,other))
+        self.visits.event(self.ident,100,self.owner,{'type':'session.output_transcript.delta',
+            'event_id':'late-source','delta':'late output','start_ms':0,'end_ms':1})
+        with self.assertRaises(ValueError):
+            self.visits.prepare(str(uuid.uuid4()),100,self.owner,backend_mode='native',replacement=offer)
+        current=self.visits.replacement_offer(100,self.owner)
+        with self.assertRaises(ValueError):
+            self.visits.prepare(str(uuid.uuid4()),100,self.owner,backend_mode='responses',replacement=current)
+        value=self.visits.read(self.ident,100,self.owner);value['state']='creation_unconfirmed';self.visits._write(value)
+        self.assertIsNone(self.visits.replacement_offer(100,self.owner))
+        with self.assertRaises(ValueError):
+            self.visits.prepare(str(uuid.uuid4()),100,self.owner,backend_mode='native',replacement=current)
+
+    def test_partial_replacement_claim_is_held_without_another_creation(self):
+        offer=self.disconnected_native();target=str(uuid.uuid4());write=self.visits._write
+        def interrupted(value):
+            if value['id']==target:raise OSError('Synthetic interrupted destination admission')
+            return write(value)
+        with patch.object(self.visits,'_write',interrupted):
+            with self.assertRaises(OSError):
+                self.visits.prepare(target,100,self.owner,backend_mode='native',replacement=offer)
+        restarted=LiveCreations(self.root)
+        with self.assertRaises(ValueError):restarted.replacement_offer(100,self.owner)
+        with self.assertRaises(ValueError):restarted.prepare(str(uuid.uuid4()),100,self.owner,backend_mode='native')
+        self.assertEqual(len(self.calls),1)
+
     def closed(self, ident=None, usage=None):
         event = {'type': 'session.closed', 'session': {'id': 'opaque:live/example'},
                  'reason': 'connection_lost', 'event_id': 'provider-closed-1'}

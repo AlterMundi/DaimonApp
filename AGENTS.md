@@ -1,5 +1,15 @@
 # Interaction development boundaries
 
+Known-created disconnected native GPT-Live visits may use the authenticated
+explicit replacement review in the existing socket admission. Keep capture ended,
+app voice exclusion and exact source/journal revision checks before replacement;
+unknown creation POSTs remain held. Review retires only the local transport for
+admission/late-result routing, never confirms provider close/usage or replays
+originals, ASR, native work or unknown appends. Preserve the flat claim-before-
+admission intent and unchanged storage bounds. See the explicit replacement
+section of docs/interaction-public-gpt-live.md; real semantic/device acceptance
+is separate. Do not fake a human review to clear a diagnostic's uncertain bill.
+
 Web-only maintenance must use the serving voice-admission fence through
 `scripts/interaction_web_maintenance.py` and its actual local health/config
 binding. Keep the existing finite scoped operator and all idle/unsettled outcome
