@@ -185,7 +185,11 @@
       const label=item.kind==='message'?(item.role==='user'?'Input':expanded?.title||'Daimon'):item.kind==='tool_call'?`>_ ${item.name||'Tool'}`:item.kind==='tool_output'?'Tool output':'Reasoning summary';
       const caption=el('h4',label),text=el(item.kind==='message'?'div':'pre',item.text,'session-message-text');
       let sourceText=item.text;
-      const renderText=()=>item.kind==='message'&&window.ConversationMarkdown?window.ConversationMarkdown.render(text,sourceText):(text.textContent=sourceText);
+      const renderText=()=>{
+        box.dataset.characters=String(sourceText.length);
+        if(item.kind==='message'&&window.ConversationMarkdown)window.ConversationMarkdown.render(text,sourceText);
+        else text.textContent=sourceText;
+      };
       renderText();
       const time=el('time');time.textContent=item.timestamp||'';box.append(caption,text,time);
       let offset=item.next;
@@ -205,11 +209,12 @@
       if(prepend)entries.insertBefore(box,entries.children[0]||null);else entries.append(box);
     }
     function trimHistory(backward,keep){
-      let characters=[...entries.children].reduce((sum,box)=>sum+box.textContent.length,0);
+      const size=box=>Math.max(box.textContent.length,Number(box.dataset.characters)||0);
+      let characters=[...entries.children].reduce((sum,box)=>sum+size(box),0);
       while(entries.children.length>240 || characters>4*1024*1024){
         const box=backward?entries.children[entries.children.length-1]:entries.children[0];
         if(box===keep)break;
-        characters-=box.textContent.length;
+        characters-=size(box);
         if(backward){activeHistory.after=Number(box.dataset.position);activeHistory.moreAfter=true;}
         else {activeHistory.before=Number(box.dataset.end);activeHistory.hasEarlier=true;}
         box.remove();
