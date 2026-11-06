@@ -77,6 +77,11 @@ Native preparation has one finite owned task per visit. End/close fences new
 interpretation/dispatch before cleanup waits for any in-flight outcome; it never
 cancels independent native work. Reader capability is checked before paid voice
 creation. Keep native client renewal explicit until qualified; no fallback.
+Native result discovery likewise owns one task and checks that visit's stop
+fence between reads/before append admission. Close must stay responsive while
+that task is blocked. A recorded `not_sent` append is a known close-before-write
+outcome, not retry authority; a transport uncertainty remains distinct. Preserve
+the source and independent native work through finite cleanup.
 The optional managed Responses conversation reader follows the documented
 function-result/continuation lifecycle. Keep owner reads distinct from full DMK
 memory and native work execution. Never replay a retained result/continuation

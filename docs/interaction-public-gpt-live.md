@@ -542,6 +542,14 @@ owned by Codex after voice closes. Preparation failures, while current authority
 remains valid, use the single close-intent/finalization path and retain their
 receipts. A duplicate browser close observes that same intent. Confirmed closure
 updates the UI to the ended/review state instead of leaving “Finishing” visible.
+Result discovery also has one owned task per visit: a slow native trace or
+canonical read cannot occupy the browser-control loop. Close sets the existing
+visit stop fence before cleanup; reads check it between owner calls and before
+creating a new append intent. If Close is observed after intent persistence but
+before the transport call, the journal records `not_sent`, distinct from a lost
+send acknowledgment. Neither state permits replay. Already-started writes keep
+their actual outcome. Cleanup waits for the owned task with the existing finite
+50second bound; it never cancels the independent native work or reopens audio.
 
 This prototype deliberately accepts only `resume_mode="fresh"`. Native stored
 fork/semantic continuation, returns across voice visits, complete older-trace
@@ -563,6 +571,11 @@ Four additional pipeline tests cover trace-located late workers, unavailable and
 uncovered results becoming observable later, fresh association rechecks and
 foreign-owner refusal. The owner/SQLite/native HTTP journey checks canonical
 revision equality for both originals covered by a shared worker delivery.
+A further mounted race keeps a trace read blocked while Close reaches finishing
+and trusted closure; the work stays admitted and no late context append occurs.
+Two result tests distinguish closure during a canonical read from the known
+unsent post-intent outcome. These33mounted and13result tests pass with the locked
+dependencies on Python3.11 and3.13; no provider/device acceptance follows.
 The result scan retains its native cursor across bounded catch-up batches; a
 tested64-item unrelated backlog does not permanently hide the later matching
 answer. Source cursors/unknown append guards still apply before any new send.

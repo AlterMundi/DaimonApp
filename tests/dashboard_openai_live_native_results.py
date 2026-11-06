@@ -2,6 +2,7 @@
 import copy
 from pathlib import Path
 import sys
+import threading
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,9 +46,9 @@ class NativeResults(unittest.TestCase):
             def send(self, command): test.updates.append(copy.deepcopy(command))
         self.channel = Sideband()
 
-    def emit(self, offset=0, history=None):
+    def emit(self, offset=0, history=None, **options):
         return return_native_part(history or self.visits,self.ident,100,self.owner,
-            self.delegation,self.source,self.revision,offset,self.provider,self.channel)
+            self.delegation,self.source,self.revision,offset,self.provider,self.channel,**options)
 
     def acknowledge(self, index=-1, **changes):
         command = self.updates[index]
@@ -168,6 +169,27 @@ class NativeResults(unittest.TestCase):
         self.visits._write(value)
         with self.assertRaises(ValueError): self.emit()
         self.assertEqual(self.updates,[])
+
+    def test_close_during_canonical_read_refuses_a_new_append_intent(self):
+        self.ready_result();stopped=threading.Event();part=self.provider.presentation_part
+        def close(*args):
+            value=part(*args);stopped.set();return value
+        self.provider.presentation_part=close
+        with self.assertRaises(ValueError):self.emit(stopped=stopped)
+        self.assertEqual(self.updates,[])
+        self.assertEqual(self.visits.read(self.ident,100,self.owner).get('native_result_updates',{}),{})
+
+    def test_close_after_intent_records_known_unsent_without_retry(self):
+        self.ready_result();stopped=threading.Event();write=self.visits._write
+        def stop(value):
+            write(value)
+            if value.get('native_result_updates'):stopped.set()
+        self.visits._write=stop
+        self.assertEqual(self.emit(stopped=stopped)['state'],'not_sent')
+        self.assertEqual(self.updates,[])
+        stopped.clear()
+        self.assertEqual(self.emit()['state'],'not_sent')
+        self.assertEqual(self.updates,[],'A known unsent close outcome is not a new append permission')
 
 
 if __name__ == '__main__': unittest.main()
