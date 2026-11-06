@@ -375,6 +375,15 @@ class Mounted(unittest.TestCase):
 
     def test_native_interpretation_failure_finalizes_voice_once_without_work_or_retry(self):
         from dashboard.openai_live_transcription import InterpretationUnavailable
+        self._failed_native_preparation(InterpretationUnavailable('unconfirmed'),'unconfirmed')
+
+    def test_unexpected_preparation_error_keeps_sideband_until_confirmed_close_without_replay(self):
+        with self.assertLogs('dashboard.openai_live_api',level='WARNING') as logs:
+            self._failed_native_preparation(AttributeError('sensitive internal provider detail'),'intent')
+        self.assertTrue(any('AttributeError' in line for line in logs.output))
+        self.assertFalse(any('sensitive internal' in line for line in logs.output))
+
+    def _failed_native_preparation(self,error,interpretation_state):
         app=FastAPI();app.state.voice_active=set();saved={};attempts=[]
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
         owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
@@ -386,7 +395,7 @@ class Mounted(unittest.TestCase):
         owner.conversation_voice_submit=capture;owner.conversation_input_status=lambda ident:copy.deepcopy(saved[ident])
         class Recognizer:
             model='gpt-transcribe'
-            def transcribe(self,data):attempts.append(data);raise InterpretationUnavailable('unconfirmed')
+            def transcribe(self,data):attempts.append(data);raise error
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
         install(app,config,owner,authorize,['https://example.test'])
@@ -408,8 +417,9 @@ class Mounted(unittest.TestCase):
                     self.assertIn('needs review',final['message'])
         self.assertEqual(len(attempts),1);self.assertEqual([v['type'] for v in native.sent],['session.close'])
         value=self.read();self.assertEqual(value['state'],'closed')
+        self.assertTrue(value['finalization']['voice_usage_confirmed'])
         self.assertEqual(value['delegations']['failed-task']['native_pipeline']['state'],'held')
-        self.assertEqual(value['native_originals']['0']['interpretation']['state'],'unconfirmed')
+        self.assertEqual(value['native_originals']['0']['interpretation']['state'],interpretation_state)
         self.assertNotIn('native_work',value['delegations']['failed-task'])
 
     def test_slow_native_preparation_keeps_close_responsive_and_preserves_late_interpretation(self):

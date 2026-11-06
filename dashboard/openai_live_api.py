@@ -8,6 +8,7 @@ import asyncio
 from anyio import CancelScope
 from contextlib import suppress
 import json
+import logging
 from pathlib import Path
 import re
 import secrets
@@ -256,7 +257,13 @@ def install(app, config, provider, authorize, origins):
                     if preparing is not None and preparing.done():
                         completed=preparing;preparing=None
                         try:outcome=completed.result()
-                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable):
+                        except Exception as error:
+                            # A programming/adapter error must follow the same
+                            # owned close protocol, not tear down the sideband
+                            # before final usage can arrive. Cancellation still
+                            # propagates; independent native work is preserved.
+                            logging.getLogger(__name__).warning(
+                                'Public native preparation failed: %s',type(error).__name__)
                             if not closing:native_failure=True;await begin_close()
                         else:
                             if outcome['state']!='admitted' and not closing:
