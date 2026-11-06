@@ -109,8 +109,10 @@ class Mounted(unittest.TestCase):
         self.assertEqual(socket.receive_json()['type'],'transcript')
     def close(self,socket):
         socket.send_json({'type':'close'})
-        self.assertEqual(socket.receive_json()['type'],'closed')
+        result=socket.receive_json()
+        self.assertEqual(result['type'],'closed')
         with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        return result
     def test_history_pages_survive_new_visits_and_refuse_foreign_cursors_without_work(self):
         history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
         owner=self.owner.codex_voice_binding('a'*64);ids=[]
@@ -152,7 +154,8 @@ class Mounted(unittest.TestCase):
             return original_item(history,ident,human,binding,value)
         with patch.object(Native,'stop',stop),patch.object(CodexVoiceHistory,'item',item):
             with self.socket()as socket:
-                self.start(socket);self.close(socket)
+                self.start(socket);closed=self.close(socket)
+        self.assertTrue(closed['confirmed']);self.assertFalse(closed['successor_ready'])
         history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
         retained=history.read(self.visit,100,'a'*64)
         self.assertFalse(retained['transcript_complete'])
@@ -252,7 +255,8 @@ class Mounted(unittest.TestCase):
         self.assertFalse(other.routes[-1].path.startswith('/api/interaction'))
     def test_completed_visit_retains_original_without_asr_or_new_native_work(self):
         with self.socket()as socket:
-            self.start(socket);self.close(socket)
+            self.start(socket);closed=self.close(socket)
+        self.assertTrue(closed['confirmed']);self.assertTrue(closed['successor_ready'])
         history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
         self.assertEqual(history.read(self.visit,100,'a'*64)['state'],'closed')
         self.assertEqual(Native.opened[0].context,self.identity.read_text())
@@ -306,9 +310,27 @@ class Mounted(unittest.TestCase):
         self.assertEqual(value['items'],[])
     def test_missing_close_observation_stays_review_not_closed(self):
         Native.lose_closure=True
-        with self.socket()as socket:self.start(socket);self.close(socket)
+        with self.socket()as socket:self.start(socket);closed=self.close(socket)
+        self.assertFalse(closed['confirmed']);self.assertFalse(closed['successor_ready'])
         value=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits').read(self.visit,100,'a'*64)
         self.assertEqual(value['state'],'review')
+    def test_terminal_metadata_failure_never_authorizes_successor(self):
+        original=CodexVoiceHistory.state
+        def state(history,ident,human,binding,value):
+            if value=='closed':raise OSError('Synthetic terminal commit failure')
+            return original(history,ident,human,binding,value)
+        with patch.object(CodexVoiceHistory,'state',state):
+            with self.socket()as socket:self.start(socket);closed=self.close(socket)
+        self.assertTrue(closed['confirmed']);self.assertFalse(closed['successor_ready'])
+        self.assertTrue(Native.opened[0].closed)
+        self.assertEqual(self.app.state.voice_active,set())
+    def test_control_close_failure_never_authorizes_successor(self):
+        with patch.object(Native,'close',side_effect=OSError('Synthetic control close failure')):
+            with self.socket()as socket:self.start(socket);closed=self.close(socket)
+        self.assertTrue(closed['confirmed']);self.assertFalse(closed['successor_ready'])
+        retained=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits').read(self.visit,100,'a'*64)
+        self.assertEqual(retained['state'],'review')
+        self.assertEqual(self.app.state.voice_active,set())
     def test_native_turn_admitted_during_stop_gets_existing_collector(self):
         self.owner.current='late-native-work'
         with self.socket()as socket:self.start(socket);self.close(socket)
@@ -463,7 +485,8 @@ class Mounted(unittest.TestCase):
     def test_failed_collector_retains_review_without_restarting_input(self):
         self.owner.current='failed-attachment'
         with patch.object(self.owner,'codex_voice_collect',side_effect=ValueError('Synthetic held owner'))as collect:
-            with self.socket()as socket:self.start(socket);self.close(socket)
+            with self.socket()as socket:self.start(socket);closed=self.close(socket)
+        self.assertFalse(closed['successor_ready'])
         self.assertEqual(collect.call_count,1)
         value=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits').read(self.visit,100,'a'*64)
         self.assertEqual(value['state'],'review')
@@ -527,9 +550,24 @@ class Mounted(unittest.TestCase):
                 self.assertEqual(json.loads(socket.recv())['type'],'answer')
                 self.assertEqual(json.loads(socket.recv())['type'],'transcript')
                 socket.send(json.dumps({'type':'close'}))
-                self.assertTrue(json.loads(socket.recv())['confirmed'])
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(self.app.state.voice_active,{100},'Cleanup must retain its lease until late work is checked')
+                # Native closure alone cannot admit a successor while this
+                # generation is still reconciling its accepted work.
+                competing=websocket.create_connection('ws://127.0.0.1:'+str(listener.getsockname()[1])+
+                    '/api/interaction/voice/codex',origin='https://example.test',timeout=3)
+                try:
+                    competing.send(json.dumps({**self.meta,'id':str(uuid.uuid4())}))
+                    self.assertEqual(json.loads(competing.recv())['type'],'review')
+                    self.assertEqual(len(Native.opened),1)
+                finally:competing.close()
+                release.set()
+                result=json.loads(socket.recv())
+                self.assertTrue(result['confirmed']);self.assertTrue(result['successor_ready'])
+                history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+                self.assertEqual(history.read(self.visit,100,'a'*64)['state'],'closed')
+                self.assertTrue(Native.opened[0].closed)
             finally:socket.close()
-            self.assertTrue(entered.wait(2))
             successor=str(uuid.uuid4())
             socket=websocket.create_connection('ws://127.0.0.1:'+str(listener.getsockname()[1])+
                 '/api/interaction/voice/codex',origin='https://example.test',timeout=3)
