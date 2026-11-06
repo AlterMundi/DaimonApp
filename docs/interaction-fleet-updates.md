@@ -44,6 +44,15 @@ applying a release; app/native reader compatibility and owner overrides must be
 qualified for each of those existing profiles. Full fleet completion remains
 open until actual receiving adoption, not just this common-code preparation.
 
+Public native voice qualification must load the receiving `Provider` and verify
+its callable `conversation_foreground_interpret`, as well as the native writer's
+`gpt-transcribe/v1` capability. A6November real generated-audio trial reached
+completed ASR but found that method missing from the selected web composition;
+native capabilities and synthetic mounted providers had not exposed the omission.
+Preserve receiver-local adapter edits when composing the qualified method. Refuse
+before paid creation if either side is unavailable; do not replay held ASR/media
+or infer that a retained native-write intent was sent.
+
 
 The shared avatar workshop additionally requires Node20+ on the actual web
 service PATH. Qualify the pinned inert-design validator as that service user,

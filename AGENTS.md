@@ -349,3 +349,9 @@ Home-cookie, receiver, child or device acceptance.
 Read-only history fixtures must close an admitted voice socket before changing
 the synthetic owner binding. A live binding change correctly revokes the voice
 admission; accepting that race in a fixture would weaken the real ownership check.
+
+A composed public-native voice receiver must load the qualified Provider
+interpretation method as well as native gpt-transcribe/v1 capability. Constructor
+health and synthetic owner fixtures do not prove that this cross-file adapter
+was selected. Preserve local adapters when adding the exact qualified method;
+refuse before billing rather than creating a doomed interpretation intent.
