@@ -207,6 +207,21 @@ class Mounted(unittest.TestCase):
         self.assertFalse(Native.opened[0].started)
         self.assertEqual(self.owner.collected,[])
 
+    def test_browser_startup_failure_is_bounded_owned_and_never_starts_native_voice(self):
+        with self.socket()as socket:
+            socket.send_json({**self.meta,'logical_visit':True});self.assertEqual(socket.receive_json()['type'],'prepared')
+            socket.send_json({'type':'startup_failed','stage':'microphone','reason':'NotAllowedError'})
+            self.assertEqual(socket.receive_json()['type'],'review')
+            self.assertEqual(socket.receive_json()['type'],'closed')
+        history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
+        value=history.read(self.visit,100,'a'*64)
+        self.assertEqual(value['startup_failure'],{'source':'browser','stage':'microphone','reason':'NotAllowedError'})
+        self.assertEqual(value['native_start'],'not_attempted')
+        self.assertFalse(Native.opened[0].started);self.assertEqual(value['recordings'],[])
+        for stage,reason in [('microphone','secret payload'),('arbitrary','Error')]:
+            with self.assertRaises(ValueError):history.startup_failure(self.visit,100,'a'*64,stage,reason)
+        with self.assertRaises(ValueError):history.startup_failure(self.visit,200,'a'*64,'microphone','Error')
+
     def test_history_pages_survive_new_visits_and_refuse_foreign_cursors_without_work(self):
         history=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits')
         owner=self.owner.codex_voice_binding('a'*64);ids=[]

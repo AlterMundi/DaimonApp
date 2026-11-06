@@ -148,6 +148,7 @@ window.CodexConversation=(()=>{
       }
       const owned=++epoch,logicalCapture=captureEpoch;visit=continuing?crypto.randomUUID():mediaVisit;
       replacementRequested=false;terminalClose=false;
+      let startupStage='preparing';
       const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio,ownedUnlock,ownedReject;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&selectedBinding===getBinding();
       function closeRetired(){
@@ -213,8 +214,10 @@ window.CodexConversation=(()=>{
         const wait=async(promise,millis)=>{let id;try{return await Promise.race([promise,new Promise((_,no)=>{id=setTimeout(()=>no(Error('Voice connection timed out')),millis);})]);}finally{clearTimeout(id);}};
         await wait(prepared,45000);
         if(!current())throw Error('Voice conversation changed');
+        startupStage='microphone';
         ownedMedia=continuing?media:await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
         if(!current()||document.hidden)throw Error('Microphone activation ended');
+        startupStage='peer';
         media=ownedMedia;peer=ownedPeer=new RTCPeerConnection();
         // Native WebRTC SDP includes the provider's events channel. Native Core
         // owns its handoffs; this client sends no response/turn control on it.
@@ -250,6 +253,7 @@ window.CodexConversation=(()=>{
         if(!continuing){
         transport.send(JSON.stringify({type:'capture'}));await wait(captureReady,10000);
         if(!current())throw Error('Microphone admission retired');
+        startupStage='recorder';
         ownedCapture=await window.StreamingVoice.openCapture(ownedMedia,{sessionSeconds:seconds});
         if(!current())throw Error('Voice capture activation ended');
         capture=ownedCapture;
@@ -270,13 +274,27 @@ window.CodexConversation=(()=>{
         capture.start();
         }
         for(const track of ownedMedia.getAudioTracks())ownedPeer.addTrack(track,ownedMedia);
+        startupStage='offer';
         const offer=await ownedPeer.createOffer();if(!current())throw Error('Voice offer retired');
         await ownedPeer.setLocalDescription(offer);if(!current())throw Error('Voice offer retired');
-        transport.send(JSON.stringify({type:'offer',sdp:ownedPeer.localDescription.sdp}));
+        transport.send(JSON.stringify({type:'offer',sdp:ownedPeer.localDescription.sdp}));startupStage='answer';
         const sdp=await wait(answer,45000);if(!current())throw Error('Voice answer retired');
         await ownedPeer.setRemoteDescription({type:'answer',sdp});if(!current())throw Error('Voice connection retired');
         return true;
-      }catch(error){if(owned===epoch&&(active||starting))await hold(error.message||'Voice unavailable.');closeRetired();return false;}
+      }catch(error){
+        if(owned===epoch&&(active||starting)){
+          const known=['NotAllowedError','NotFoundError','NotReadableError','OverconstrainedError','SecurityError','AbortError','NotSupportedError','InvalidStateError','TimeoutError'];
+          const reason=known.includes(error.name)?error.name:'Error';
+          if(['microphone','peer','recorder','offer'].includes(startupStage)&&socket?.readyState===WebSocket.OPEN)
+            try{socket.send(JSON.stringify({type:'startup_failed',stage:startupStage,reason}));}catch{}
+          const message=startupStage==='microphone'&&reason==='NotAllowedError'?'Microphone access was denied. Allow microphone access, then reconnect.':
+            startupStage==='microphone'&&reason==='NotFoundError'?'No microphone is available. Connect one, then reconnect.':
+            startupStage==='microphone'&&reason==='NotReadableError'?'The microphone could not be opened. Check whether another app is using it, then reconnect.':
+            ['microphone','peer','recorder','offer'].includes(startupStage)?`Voice setup stopped at ${startupStage} (${reason}). Reconnect to try again.`:error.message||'Voice unavailable.';
+          await hold(message);
+        }
+        closeRetired();return false;
+      }
       finally{if(rejectOpening===ownedReject)rejectOpening=undefined;openingCount--;}
     }
     async function restoreHistory(older=false){

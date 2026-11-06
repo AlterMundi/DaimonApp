@@ -1158,3 +1158,15 @@ retains its scope. The project retained about45.4MB below its80MiB bound, preser
 all originals and terminal failures. Production remains selected652; no rollout,
 new provider call during deployment or human microphone capture was involved.
 The full roadmap and physical-device acceptance remain unfinished.
+
+### Browser startup failure observations
+
+Before the WebRTC offer, a browser setup failure sends one bounded stage/reason
+observation on the existing authenticated voice socket. The owning visit retains
+`startup_failure` with `source: browser`; it contains no error payload, device
+label, audio, SDP, credentials or transcript. Microphone permission, availability
+and device-open failures have actionable captions; other setup failures identify
+the peer, recorder or offer stage. The normal close barrier still owns cleanup.
+This observation is browser-reported evidence, not proof of a provider failure.
+An older empty visit with `native_start: not_attempted` cannot establish which
+browser operation failed. Do not infer context exhaustion or replay its inputs.

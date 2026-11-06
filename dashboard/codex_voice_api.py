@@ -107,6 +107,12 @@ def install(app,config,provider,authorize,origins):
         visit=human=binding=None;closed=False;collectors=set();turns=set();collection_failed=False;transcript_failed=False;retained_visit=False
         logical=False;admission=None;close_reason='review'
         pending=[];anchors={};unpresented=set();failed_notices=set();playback_ready=False
+        async def startup_observation(message):
+            if isinstance(message,dict)and set(message)=={'type','stage','reason'}and message['type']=='startup_failed':
+                await recheck()
+                if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
+                await asyncio.to_thread(history.startup_failure,visit,human,binding,message['stage'],message['reason'])
+                raise ValueError('Browser voice setup failed before native start')
         async def send(value):
             await recheck()
             await asyncio.wait_for(socket.send_json(value),3)
@@ -228,7 +234,9 @@ def install(app,config,provider,authorize,origins):
                     # Permission may be granted first, but capture/WebRTC input
                     # must not begin before this one server-owned deadline.
                     raw=await asyncio.wait_for(socket.receive_text(),20)
-                    if len(raw)>128 or json.loads(raw)!={'type':'capture'}:
+                    if len(raw)>512:raise ValueError('Microphone readiness exceeds bound')
+                    marker=json.loads(raw);await startup_observation(marker)
+                    if marker!={'type':'capture'}:
                         raise ValueError('Begin one logical microphone admission')
                     await recheck()
                     if await frozen(binding)!=owner:raise ValueError('Voice owner changed')
@@ -236,7 +244,7 @@ def install(app,config,provider,authorize,origins):
                     await send({'type':'capture_ready','id':visit,'admission':admission})
                 raw=await asyncio.wait_for(socket.receive_text(),20)
                 if len(raw.encode())>70000:raise ValueError('Voice offer exceeds bound')
-                offer=json.loads(raw)
+                offer=json.loads(raw);await startup_observation(offer)
                 if not isinstance(offer,dict)or set(offer)!={'type','sdp'}or offer['type']!='offer':
                     raise ValueError('Select one WebRTC offer')
                 await recheck()

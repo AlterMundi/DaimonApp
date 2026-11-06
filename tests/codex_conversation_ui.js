@@ -64,6 +64,17 @@ async function fixture(){
  records[0]=prefix;await engine.discard(stalePrefix);assert.equal(records.length,0,'Discard after an uncertain prefix save removes only the identical sealed original');
  assert(states.some(v=>v.pending));await sleep(0);
  assert.equal(engine.active,false,'Retired socket callback revived the visit');
+ const nativeMicrophone=navigator.mediaDevices.getUserMedia;
+ for(const name of ['NotAllowedError','NotReadableError','NotFoundError']){
+  navigator.mediaDevices.getUserMedia=async()=>{throw Object.assign(Error('private device payload'),{name});};
+  assert.equal(await engine.start(),false);
+  const failure=sockets.at(-1).sent.find(v=>v.type==='startup_failed');
+  assert.deepEqual(failure,{type:'startup_failed',stage:'microphone',reason:name});
+  assert(!sockets.at(-1).sent.some(v=>v.type==='offer'));
+  assert(!states.at(-1).message.includes('private device payload'));
+  assert.match(states.at(-1).message,/microphone/i);
+ }
+ navigator.mediaDevices.getUserMedia=nativeMicrophone;
  let resolvePermission,oldStops=0;
  navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{resolvePermission=resolve;});
  const retiredStart=engine.start();
