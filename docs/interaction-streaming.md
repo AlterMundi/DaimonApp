@@ -940,6 +940,10 @@ right aligned, with a warning color for the final fifteen seconds. The timer
 uses a monotonic clock and starts after microphone permission and capture setup.
 It measures the existing 120-second recording bound, not model tokens or an
 estimate of prompt capacity. The streaming PCM path retains its same bound.
+Short local sine cues sound once at10,5,3,2and1seconds remaining. Their
+WebAudio context unlocks with the recording gesture and closes with capture;
+missing/blocked audio leaves the visual countdown usable. A throttled timer
+never plays a burst of missed alerts. Cues do not submit audio or change limits.
 Reaching it stops capture for explicit Send/Discard review; it never commits an
 original automatically. Prepared text survives that review.
 

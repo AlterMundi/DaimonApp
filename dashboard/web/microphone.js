@@ -140,10 +140,41 @@ window.VoiceInput = (() => {
     function caption(text){notice(text);state.setAttribute('data-live-caption','true');state.setAttribute('aria-live','off');state.scrollLeft=state.scrollWidth;}
     let available=false, liveAvailable=false, liveMode='prepared', generation=0, recorder, stream, parts=[], bytes=0, timer, pending, latestSaved, uploading=false, controller;
     let phase='idle', commit=false, readySelection,recordingStarted,countdownTimer,conversationCapture=false;
+    let cueContext,cueSeconds=new Set();
+    function closeCues(){
+      const old=cueContext;cueContext=undefined;
+      if(old)try{void old.close().catch(()=>{});}catch{}
+    }
+    function prepareCues(){
+      closeCues();cueSeconds=new Set();
+      try{
+        const Context=window.AudioContext||window.webkitAudioContext;
+        if(!Context)return;
+        cueContext=new Context();
+        // Unlock while start() still owns the recording-button gesture.
+        void cueContext.resume().catch(()=>{});
+      }catch{closeCues();}
+    }
+    function recordingCue(seconds){
+      if(![10,5,3,2,1].includes(seconds)||cueSeconds.has(seconds))return;
+      cueSeconds.add(seconds);
+      const context=cueContext;
+      if(!context||context.state!=='running'||document.hidden)return;
+      try{
+        const at=context.currentTime,tone=context.createOscillator(),level=context.createGain();
+        tone.type='sine';tone.frequency.setValueAtTime(seconds===10?808:seconds===5?1010:1212,at);
+        level.gain.setValueAtTime(0,at);level.gain.linearRampToValueAtTime(.12,at+.01);
+        level.gain.setValueAtTime(.12,at+.07);level.gain.linearRampToValueAtTime(0,at+.1);
+        tone.connect(level);level.connect(context.destination);
+        tone.onended=()=>{tone.disconnect();level.disconnect();};tone.start(at);tone.stop(at+.11);
+      }catch{/* A notification must never interrupt or submit the recording. */}
+    }
     function countdown(){
       clearTimeout(countdownTimer);
-      if(remaining){remaining.hidden=phase!=='recording';if(remaining.hidden)return;
-        const seconds=Math.max(0,Math.ceil((RECORDING_MILLIS-(clock()-recordingStarted))/1000));
+      if(phase!=='recording')return;
+      const seconds=Math.max(0,Math.ceil((RECORDING_MILLIS-(clock()-recordingStarted))/1000));
+      recordingCue(seconds);
+      if(remaining){remaining.hidden=false;
         remaining.textContent=`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')} left`;
         remaining.setAttribute('aria-label',`${seconds} seconds of recording remaining`);
         remaining.setAttribute('data-near-limit',String(seconds<=15));
@@ -178,7 +209,7 @@ window.VoiceInput = (() => {
       check.hidden=!pending; check.disabled=uploading||checking;check.textContent=checking?'Checking delivery…':'Check delivery';
       onActivity(uploading || ['permission','recording','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
     }
-    function stopTracks() {if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
+    function stopTracks() {closeCues();if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
     function cancelRecording(message='Recording discarded. Nothing was sent.') {
       clearStatusTimer();checking=false;generation++;commit=false;latestSaved=undefined;const old=recorder;recorder=undefined;
       if(old?.discard)old.discard();else if(old && old.state!=='inactive')old.stop();stopTracks();parts=[];bytes=0;phase='idle';notice(message,!!message && message!=='Recording discarded. Nothing was sent.');noticeDismissible=!!message&&!pending;controls();
@@ -321,6 +352,7 @@ window.VoiceInput = (() => {
     }
     async function start(conversational=false) {
       if(!available || !getBinding() || !supported() || restoring || ownsSend() || document.hidden)return false;
+      prepareCues();
       conversationCapture=conversational;
       const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;
       notice('Allow microphone access to begin.');pauseAudio();controls();
