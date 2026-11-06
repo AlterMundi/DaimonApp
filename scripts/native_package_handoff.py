@@ -129,6 +129,28 @@ def cli(binary, args, env, timeout):
     return result.returncode, value
 
 
+def lifecycle_deadline(plan):
+    """Map an optional finite owner window once, without extending its expiry."""
+    selected = plan.get('lifecycle_deadline_unix')
+    if selected is None:
+        return None
+    remaining = float(selected) - time.time()
+    if not 0 < remaining <= 300:
+        raise ValueError('fresh bounded lifecycle window required')
+    return time.monotonic() + remaining
+
+
+def seconds_left(deadline):
+    return float('inf') if deadline is None else max(0.0, deadline - time.monotonic())
+
+
+def command_timeout(deadline, limit):
+    remaining = seconds_left(deadline)
+    if remaining <= 0:
+        raise TimeoutError('lifecycle window exhausted; inspect retained outcome')
+    return min(limit, remaining)
+
+
 def adopt(plan, receipt, *, env=None):
     """Serialize this finite intent without holding the native lifecycle lock."""
     fd = os.open(str(receipt) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
@@ -149,9 +171,15 @@ def _adopt(plan, receipt, *, env=None):
     """
     if receipt.exists():
         raise ValueError('retained operation exists; inspect it, never rearm')
-    if plan['schema'] != 'daimon.native-package-handoff/v1' or plan['ready'] is not True:
+    schema = plan['schema']
+    if schema not in ('daimon.native-package-handoff/v1', 'daimon.native-package-handoff/v2') or plan['ready'] is not True:
         raise ValueError('complete owner candidate required')
+    bounded = schema.endswith('/v2')
+    if bounded != ('lifecycle_deadline_unix' in plan) or (
+            bounded and type(plan['lifecycle_deadline_unix']) not in (int, float)):
+        raise ValueError('bounded handoff requires v2 with an absolute lifecycle deadline')
     uuid.UUID(plan['id'])
+    deadline = lifecycle_deadline(plan)
     if (Path('/proc/self/cgroup').read_text().strip() != plan['cgroup']
             or os.getuid() != plan['uid']):
         raise ValueError('receiving persistent cgroup/owner differs')
@@ -189,13 +217,14 @@ def _adopt(plan, receipt, *, env=None):
         raise
     state = {'schema': 'daimon.native-package-handoff-receipt/v1', 'id': plan['id'],
              'phase': 'preflight', 'supervisor_resumed': False, 'commands': [],
-             'old_receiver': receiver, 'native_input_sent': False}
+             'old_receiver': receiver, 'native_input_sent': False,
+             'lifecycle_deadline_unix': plan.get('lifecycle_deadline_unix')}
     held = False
     restored = False
     resume_safe = True
 
     def command(args, timeout=140):
-        code, value = cli(binary, args, environment, timeout)
+        code, value = cli(binary, args, environment, command_timeout(deadline, timeout))
         # Only fixed status metadata; neither source history nor credentials.
         state['commands'].append({'argv': args, 'returncode': code,
                                   'outcome': value.get('outcome') if isinstance(value, dict) else None})
@@ -226,10 +255,15 @@ def _adopt(plan, receipt, *, env=None):
             time.sleep(.02)
         if exited(receiver_fd) or identity(receiver['pid']) != receiver:
             raise ValueError('receiver changed before maintenance')
+        # Keep room for the fixed133s native observation plus stopped recovery.
+        # An undersized window defers before any maintenance packet is sent.
+        if seconds_left(deadline) < 200:
+            state['phase'] = 'deferred_window_budget'
+            return state
         state['phase'] = 'maintenance_requested'
         checkpoint(receipt, state)
         resume_safe = False
-        code, value = command(['maintenance'])
+        code, value = command(['maintenance'], timeout=138 if deadline is not None else 140)
         if code != 0 or not isinstance(value, dict) or value.get('pid') != receiver['pid']:
             raise RuntimeError('maintenance outcome unconfirmed')
         if value.get('outcome') != 'handoffReady':
@@ -240,20 +274,26 @@ def _adopt(plan, receipt, *, env=None):
             return state
         state['phase'] = 'handoff_ready'
         checkpoint(receipt, state)
-        until = time.monotonic() + 15
+        until = time.monotonic() + min(10 if deadline is not None else 15, seconds_left(deadline))
         while not exited(receiver_fd):
             if time.monotonic() >= until:
                 raise TimeoutError('handoff process exit not observed')
             time.sleep(.05)
         state['phase'] = 'old_exit_observed'
         checkpoint(receipt, state)
-        try:
-            code, _ = command(['update', '--from-cli', '--if-stopped', '--yes'])
-        except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            # Do not retry installation. Its atomic current selection is checked
-            # below; a known old/new package can still restore confirmed recovery.
-            code = -1
-            state['installer_acknowledgment'] = 'unconfirmed'
+        if seconds_left(deadline) < 66:
+            # Preserve availability: skip installation and restore the unchanged
+            # selected predecessor through its confirmed snapshot.
+            code = 0
+            state['installer_skipped'] = 'preserve_stopped_restore_reserve'
+        else:
+            try:
+                code, _ = command(['update', '--from-cli', '--if-stopped', '--yes'],
+                                  timeout=15 if deadline is not None else 140)
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                # Inspect selection after the CLI is gone; never resend install.
+                code = -1
+                state['installer_acknowledgment'] = 'unconfirmed'
         # Full files/resources identity distinguishes equal CLI binaries with
         # different helpers. Known fallback also pins the previous release path.
         installed, observed_package = selected_package(selected_root, candidate, previous_root, previous)
@@ -261,7 +301,7 @@ def _adopt(plan, receipt, *, env=None):
         state['installer_returncode'] = code
         state['phase'] = 'restoring_selected' if installed else 'restoring_previous'
         checkpoint(receipt, state)
-        restore_code, restored_value = command(['restart', '--if-stopped'], timeout=180)
+        restore_code, restored_value = command(['restart', '--if-stopped'], timeout=45 if deadline is not None else 180)
         if restore_code != 0 or not isinstance(restored_value, dict):
             raise RuntimeError('restore outcome unconfirmed; do not repeat start')
         replacement = restored_value.get('pid')

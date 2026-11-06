@@ -28,6 +28,7 @@ def selected(paths, previous=None):
                 isinstance(target, ast.Name)
                 and target.id
                 in {
+                    "native_handoff",
                     "common",
                     "header_changed",
                     "text_ci_changed",
@@ -52,6 +53,19 @@ def selected(paths, previous=None):
 
 
 class MatrixHostScope(unittest.TestCase):
+    def test_native_operator_uses_always_run_process_boundary_gate(self):
+        paths = ['scripts/native_package_handoff.py', 'tests/native_package_handoff.py',
+                 'tests/native_package_handoff_unit.py', 'docs/interaction-matrix.md']
+        self.assertEqual(selected(paths), set())
+        workflow = WORKFLOW.read_text()
+        always = workflow.split('  matrix-execution:\n', 1)[1].split('  matrix-host:\n', 1)[0]
+        self.assertIn('python -B tests/native_package_handoff_unit.py -v', always)
+        self.assertEqual(workflow.count('tests/native_package_handoff_unit.py -v'), 1)
+        self.assertIn('text', selected(paths + ['src/app.rs']))
+        self.assertIn('audio', selected(paths + ['src/transcribe.rs']))
+        self.assertIn('text', selected(paths + ['tests/native_package_handoff_unit.py-extra']))
+        self.assertIn('audio', selected(paths + ['unknown-operator.py']))
+
     def test_browser_native_voice_regression_uses_existing_dashboard_gate(self):
         self.assertEqual(selected([
             "dashboard/web/codex-conversation.js",

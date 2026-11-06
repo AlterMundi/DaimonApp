@@ -15,7 +15,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from activity_indicator import Native
-from native_package_handoff import adopt, digest, identity
+from native_package_handoff import adopt, identity, package_identity
 
 
 def rpc(client, method, params):
@@ -34,7 +34,7 @@ def rpc(client, method, params):
     raise AssertionError('isolated native RPC timed out')
 
 
-def qualify(old, candidate, scratch):
+def qualify(old, candidate, scratch, lifecycle_seconds=None):
     home = Path(tempfile.mkdtemp(prefix='native-handoff-', dir=scratch))
     env = {**os.environ, 'CODEX_HOME': str(home), 'HOME': str(home)}
     (home / 'config.toml').write_text('model="mock-model"\nmodel_provider="fixture"\napproval_policy="never"\nsandbox_mode="read-only"\n[features]\nplugins=false\n[model_providers.fixture]\nname="Unreachable loopback fixture"\nbase_url="http://127.0.0.1:1/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\n')
@@ -71,13 +71,22 @@ def qualify(old, candidate, scratch):
         watcher = subprocess.Popen([sys.executable, '-B', '-c', watcher_code, str(old)], env=env)
         time.sleep(.15)
         package = candidate.parent.parent
-        files = {name: digest(package / name) for name in (
-            'bin/codex', 'bin/codex-code-mode-host', 'codex-package.json',
-            'codex-path/rg', 'codex-resources/bwrap')}
+        files = package_identity(package)['files']
+        for name in ('bin/codex', 'bin/codex-code-mode-host', 'codex-package.json',
+                     'codex-path/rg', 'codex-resources/bwrap'):
+            assert name in files, name
+        # Include the canonical0.167 executor and any other qualified package
+        # bytes; a fixed0.163 five-file map cannot qualify a complete successor.
+        executor = json.loads((package / 'codex-package.json').read_text()).get('execServer')
+        if executor:
+            assert executor in files, executor
         plan = {'schema': 'daimon.native-package-handoff/v1', 'id': str(uuid.uuid4()),
                 'ready': True, 'uid': os.getuid(), 'package': str(package), 'files': files,
                 'codex_home': str(home), 'cgroup': Path('/proc/self/cgroup').read_text().strip(),
                 'supervisor': identity(watcher.pid), 'receiver': identity(original)}
+        if lifecycle_seconds is not None:
+            plan['schema'] = 'daimon.native-package-handoff/v2'
+            plan['lifecycle_deadline_unix'] = time.time() + lifecycle_seconds
         receipt = home / 'handoff.json'
         result = adopt(plan, receipt, env=env)
         assert result['phase'] == 'restored_candidate', result
@@ -122,5 +131,8 @@ if __name__ == '__main__':
     parser.add_argument('old', type=Path)
     parser.add_argument('candidate', type=Path)
     parser.add_argument('--scratch', required=True, type=Path)
+    parser.add_argument('--lifecycle-seconds', type=int, help='Exercise bounded v2;200..300 seconds')
     args = parser.parse_args()
-    qualify(args.old.resolve(), args.candidate.resolve(), args.scratch)
+    if args.lifecycle_seconds is not None and not 200 <= args.lifecycle_seconds <= 300:
+        parser.error('--lifecycle-seconds must be200..300')
+    qualify(args.old.resolve(), args.candidate.resolve(), args.scratch, args.lifecycle_seconds)
