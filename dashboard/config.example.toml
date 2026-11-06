@@ -116,3 +116,18 @@ Development = "/your-development-mount"
 # native_thread = "11111111-1111-4111-8111-111111111111"
 # since = "2026-10-29T00:00:00+00:00"
 # max_bytes = 268435456
+
+# Optional public GPT-Live comparison; independent of Codex login and Realtime.
+# Default absent/off. See docs/interaction-public-gpt-live.md before enabling.
+# This does not inherit integrating memory, tools or active work automatically.
+# [openai_live]
+# enabled = false
+# api_key_file = "/private/explicit-openai-project-key"
+# identity_file = "/private/selected-live-identity.txt"
+# backend_instructions_file = "/private/selected-responses-instructions.txt"
+# backend_model = "OWNER_SELECTED_RESPONSES_MODEL"
+# session_seconds = 600
+# backend_tools = []
+# session_options = {}
+# backend_options = {}
+# delegation_options = {}

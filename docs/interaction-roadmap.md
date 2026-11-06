@@ -174,6 +174,14 @@ work may be the intended integration; measure its actual ownership/history/cost.
 identity/memory/results/questions and existing integrating responsibility, and
 redesign provider-specific transport when appropriate.
 
+The default-off [public GPT-Live comparison](interaction-public-gpt-live.md)
+now has mounted authenticated admission, WebRTC browser wiring, trusted event
+retention and exact-original recovery. Its synthetic mounted/browser checks do
+not establish public project access or complete integrating identity/memory,
+work/tools/questions, semantic renewal or sustained device acceptance. Native
+Codex and current-provider modes stay available; development selection lives in
+Under the hood. Keep those remaining obligations active.
+
 Merged [#632](https://github.com/AlterMundi/DaimonApp/pull/632) now contains the
 separate, default-off native Codex WebRTC application route and explicit engine
 choice. Nicolas6ea37cd3 requires preserving Qwen/Gemini, frozen visit selection,

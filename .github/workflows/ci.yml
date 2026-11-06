@@ -433,6 +433,8 @@ jobs:
       - run: python -B tests/dashboard_codex_voice_history.py
       - run: python -B tests/dashboard_codex_voice_api.py
       - run: python -B tests/dashboard_openai_live.py
+      - run: python -B tests/dashboard_openai_live_api.py
+      - run: node tests/dashboard_openai_live_ui.js
       - run: node tests/codex_conversation_ui.js
       - run: python -B tests/dashboard_qwen_dialogue.py
       - run: python -B tests/dashboard_openai_dialogue.py

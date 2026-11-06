@@ -63,25 +63,27 @@ window.Conversation = (() => {
       finally{clearTimeout(deadline);if(fileDownloads.get(file.id)===controller)fileDownloads.delete(file.id);refreshFiles();}
     }
     let voiceEnabled=false,voiceSuspended=false,captureBusy=false,voiceBusy=false,voiceContext,voiceMode,conversationOnly=false,voiceModePrevious,voiceSession,continuousEnabled=false,nativeEnabled=false,nativeVoiceSession,legacyVoiceSession;
-    let providerVoiceSession,codexVoiceSession,voiceChoice='provider',codexEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
+    let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
     const voiceEngine=$('#conversation-voice-engine'),voiceChoiceBox=$('#conversation-voice-choice');
     function selectVoiceEngine(){
-      const nextNative=voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
-      const next=voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
+      const nextNative=voiceChoice==='gpt-live'?publicLiveEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
+      const next=voiceChoice==='gpt-live'?(publicLiveEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
       if((next!==voiceSession||nextNative!==nativeEnabled)&&voiceMode?.active)voiceMode.close();
       nativeEnabled=nextNative;nativeVoiceSession=nextNative?next:providerVoiceSession;voiceSession=next;
-      continuousEnabled=voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
-      voiceMode?.configure(voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
+      continuousEnabled=voiceChoice==='gpt-live'?publicLiveEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
+      voiceMode?.configure(voiceChoice==='gpt-live'?publicLiveEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
       if(voiceEngine){
         voiceEngine.value=voiceChoice;voiceEngine.disabled=!!voiceSession?.active;
         const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
         if(codexOption)codexOption.disabled=!codexEnabled;
+        const publicOption=voiceEngine.querySelector?.('option[value="gpt-live"]');
+        if(publicOption)publicOption.disabled=!publicLiveEnabled;
       }
-      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&voiceChoice!=='codex';
+      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&!publicLiveEnabled&&voiceChoice==='provider';
     }
     voiceEngine?.addEventListener('change',()=>{
       if(voiceSession?.active||voiceMode?.active){voiceEngine.value=voiceChoice;return;}
-      if(!['provider','codex'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled)return;
+      if(!['provider','codex','gpt-live'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveEnabled)return;
       voiceChoice=voiceEngine.value;selectVoiceEngine();
     });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
@@ -1739,8 +1741,10 @@ window.Conversation = (() => {
       providerNativeEnabled=value.can_converse_native===true&&window.NativeConversation?.supported()===true;
       providerContinuousEnabled=value.can_converse_continuous===true;providerVoiceAvailable=value.can_converse===true;
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
+      publicLiveEnabled=value.can_converse_public_live===true&&window.PublicLiveConversation?.supported()===true;
       selectVoiceEngine();
       if(codexEnabled)void codexVoiceSession?.restoreHistory().catch(()=>{});
+      if(publicLiveEnabled)void publicLiveSession?.restoreHistory().catch(()=>{});
       setCsrf(value.csrf);void foregroundHistory();
       canListen = !readOnly && value.can_listen;canStreamSpeech=canListen && !!value.can_stream_speech;
       canSpeakLive=canListen && value.can_speak_live_response===true;
@@ -2230,10 +2234,56 @@ window.Conversation = (() => {
       onState:value=>{if(voiceChoice!=='codex')return;if(voiceEngine)voiceEngine.disabled=!!codexVoiceSession?.active||!!voiceMode?.active;
         if(!voiceModePrevious?.continuous)return;captureBusy=false;presentState({capture:value.starting?'permission':'idle',playback:value.playback});voiceMode?.update({continuousState:value});}
     });
+    if(standalone&&!readOnly&&microphone&&window.PublicLiveConversation?.supported()){
+      const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
+      panel.setAttribute('aria-label','Voice original recovery');$('#conversation-compose').prepend(panel);
+      let speech;const retained=[];
+      publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,
+        onItem:value=>{
+          const event=value?.item,role=event?.type==='session.input_transcript.delta'?'user':event?.type==='session.output_transcript.delta'?'assistant':undefined;
+          if(!role||typeof event.delta!=='string'||!event.delta||event.delta.length>32768)return;
+          const observed=new Date().toISOString();
+          for(let offset=0;offset<event.delta.length;){
+            if(!speech||speech.visit!==value.visit||speech.role!==role||speech.text.length>=16000){
+              const key='live:'+value.visit+':'+event.event_id+':'+offset;
+              const box=node('article',undefined,'reply'),body=node('div',undefined,'reply-text'),status=node('p',undefined,'reply-status'),time=node('time',undefined,'message-time');
+              box.append(node('h3',role==='user'?'You · voice':'Voice conversation'),status,body,time);
+              speech={key,box,body,status,time,text:'',visit:value.visit,role,binding};retained.push(speech);
+              $('#conversation-answers').append(box);
+            }
+            const part=event.delta.slice(offset,offset+16000-speech.text.length);offset+=part.length;speech.text+=part;
+            setReplyText(speech.body,speech.text);speech.status.textContent='Voice transcript';speech.status.title='Automatic transcript; may be partial or differ from speech.';
+            messageTime(speech.time,observed);placeInTimeline(speech.box,speech.key,observed);
+          }
+          let size=retained.reduce((n,v)=>n+v.text.length,0);
+          while(retained.length>64||size>128*1024){const old=retained.shift();size-=old.text.length;old.box.remove();}
+          voiceMode?.update({caption:speech.text.slice(-800)});
+        },
+        onRecovery:values=>{
+          panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
+          panel.append(node('summary',`${selected.length} voice recording${selected.length===1?'':'s'} kept locally`));
+          for(const original of selected){
+            const row=node('div',undefined,'conversation-tools'),label=node('span',original.captureStop?'Recovered audio prefix · ending may be missing':'Voice recording · local copy');
+            const retry=node('button','Retry saving'),save=node('button','Save audio'),discard=node('button','Discard local copy');
+            for(const button of [retry,save,discard])button.type='button';
+            retry.title='Retain this same original; never resend speech or work';
+            retry.addEventListener('click',async()=>{retry.disabled=true;try{await publicLiveSession.retry(original);}catch{label.textContent='Original not confirmed; your local copy is kept.';}finally{retry.disabled=false;}});
+            save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.voice_visit+'-'+original.ordinal+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+            discard.addEventListener('click',async()=>{discard.disabled=true;try{await publicLiveSession.discard(original);}catch{label.textContent='Local audio is kept; capture may still be finishing in another page.';}finally{discard.disabled=false;}});
+            row.append(label,retry,save,discard);panel.append(row);
+          }
+        },
+        onState:value=>{
+          for(let i=retained.length-1;i>=0;i--)if(retained[i].binding!==binding){retained[i].box.remove();retained.splice(i,1);speech=undefined;}
+          if(voiceChoice!=='gpt-live')return;if(voiceEngine)voiceEngine.disabled=!!publicLiveSession?.active||!!voiceMode?.active;
+          if(!voiceModePrevious?.continuous)return;captureBusy=false;presentState({capture:value.starting?'permission':'idle',playback:value.playback});voiceMode?.update({continuousState:value});
+        }
+      });
+    }
     nativeVoiceSession=providerVoiceSession;
     if(standalone && !readOnly)voiceMode=window.ConversationVoiceMode?.mount({
-      portrait:$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice==='codex'?microphone.canStartNative():microphone.canStartContinuous())),
-      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice==='codex'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
+      portrait:$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
+      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
         if(voiceEngine)voiceEngine.disabled=true;
         voiceModePrevious={enabled:voiceEnabled,suspended:voiceSuspended,continuous:continuousEnabled};

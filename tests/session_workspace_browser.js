@@ -3,7 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
-const reloadCase=process.env.QUALIFICATION_RELOAD==='1';let prefixSupport=false;
+const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
 const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
@@ -32,13 +32,13 @@ const server=http.createServer(async(req,res)=>{
   }
   if(reloadCase&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='GET')return json({state:'closed',...(prefixSupport?{capture_prefix_retention:'v1'}:{})});
   if(route.endsWith('/capture/ended')&&route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST')return json({capture:'ended'});
-  if(route.startsWith('interaction/voice/codex/visits/')&&req.method==='POST'){
+  if((route.startsWith('interaction/voice/codex/visits/')||route.startsWith('interaction/voice/gpt-live/visits/'))&&req.method==='POST'){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const raw=Buffer.concat(chunks);
    const parts=route.split('/'),visit=parts[4],ordinal=Number(parts[6]);
    if(reloadCase)fs.writeFileSync(path.join(output,'tone-original-'+voiceUploads.length+'.wav'),raw,{flag:'wx'});
    voiceUploads.push({visit,ordinal,bytes:raw.length,sha:require('node:crypto').createHash('sha256').update(raw).digest('hex')});
    if(!uploadFailed){uploadFailed=true;return json({detail:'Synthetic first receipt unavailable'},503);}
-   return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,native_replay:'never',...(req.headers['x-voice-capture-stop']?{capture_stop:req.headers['x-voice-capture-stop']}:{})}});
+   return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,...(publicCase?{work_replay:'never'}:{native_replay:'never'}),...(req.headers['x-voice-capture-stop']?{capture_stop:req.headers['x-voice-capture-stop']}:{})}});
   }
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
   if(route.startsWith('interaction/requests/')){if(req.method==='POST')questionPosts++;return json(question());}
@@ -57,7 +57,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_reply_updates:true,can_listen:listenCase,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -82,7 +82,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
  });
- if(codexCase)await context.addInitScript(()=>{
+ if(codexCase||publicCase)await context.addInitScript(({publicCase})=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
   const fixture=window.codexFixture={opens:0,contexts:[],peers:[],captureBytes:0,audioRequests:0,audioRequestedWhileNativeOpen:false};
   let captureModule;Object.defineProperty(window,'StreamingVoice',{configurable:true,get:()=>captureModule,set(value){captureModule={...value,async openCapture(...args){const c=await value.openCapture(...args);c.subscribe(e=>{if(e.pcm)fixture.captureBytes+=e.pcm.byteLength;});return c;}};}});
@@ -94,24 +94,31 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    const track=dest.stream.getAudioTracks()[0],stop=track.stop.bind(track);track.stop=()=>{stop();source.stop();void ctx.close();};return dest.stream;
   };
   window.RTCPeerConnection=class{
-   constructor(){this.connectionState='new';fixture.peers.push(this);}addTrack(){}
-   createDataChannel(label){if(label!=='oai-events')throw Error('Unexpected native channel');return {close(){}};}
+   constructor(){this.connectionState='new';this.iceGatheringState='complete';fixture.peers.push(this);}addTrack(){}
+   createDataChannel(label){if(label!=='oai-events')throw Error('Unexpected native channel');return this.channel={close(){}};}
    async createOffer(){return {type:'offer',sdp:'v=0 synthetic-offer'};}
    async setLocalDescription(value){this.localDescription=value;}
-   async setRemoteDescription(value){if(value.sdp!=='v=0 synthetic-answer')throw Error('Unexpected answer');this.connectionState='connected';this.onconnectionstatechange();}
+   async setRemoteDescription(value){if(value.sdp!=='v=0 synthetic-answer')throw Error('Unexpected answer');this.connectionState='connected';this.onconnectionstatechange();if(publicCase)this.channel.onmessage({data:JSON.stringify({type:'session.started',session:{id:'live_opaque/provider:42'}})});}
    close(){this.connectionState='closed';this.onconnectionstatechange?.();}
   };
   window.WebSocket=class{
-   static OPEN=1;constructor(url){if(!String(url).endsWith('/voice/codex'))return new actualSocket(url);fixture.opens++;this.readyState=1;queueMicrotask(()=>this.onopen());}
+   static OPEN=1;constructor(url){if(!String(url).endsWith(publicCase?'/voice/gpt-live':'/voice/codex'))return new actualSocket(url);fixture.opens++;this.readyState=1;queueMicrotask(()=>this.onopen());}
    send(raw){const value=JSON.parse(raw),emit=value=>queueMicrotask(()=>this.onmessage({data:JSON.stringify(value)}));
-    if(value.binding){this.visit=value.id;emit({type:'prepared',id:this.visit,session_seconds:600,logical_visit:'v1',admission:null});}
+    if(value.binding){this.visit=value.id;emit(publicCase?{type:'prepared',id:this.visit,admission:{id:this.visit,remaining_seconds:600,max_input_pcm_bytes:600*32000}}:{type:'prepared',id:this.visit,session_seconds:600,logical_visit:'v1',admission:null});}
     if(value.type==='capture')emit({type:'capture_ready',id:this.visit,admission:{id:this.visit,remaining_seconds:600,expires:Date.now()/1000+600,max_input_pcm_bytes:600*32000,generation:0}});
-    if(value.type==='offer'){emit({type:'answer',id:this.visit,sdp:'v=0 synthetic-answer'});emit({type:'transcript',id:this.visit,item:{id:'source-1',role:'assistant',text:'A synthetic native voice reply.'}});}
+    if(value.type==='offer'){
+     emit({type:'answer',id:this.visit,sdp:'v=0 synthetic-answer',...(publicCase?{session:'live_opaque/provider:42'}:{})});
+     if(publicCase){
+      emit({type:'provider_event',event:{type:'session.input_transcript.delta',event_id:'speech-1',delta:'  Mi corrección.'}});
+      emit({type:'provider_event',event:{type:'session.output_transcript.delta',event_id:'speech-2',delta:'Conservo '}});
+      emit({type:'provider_event',event:{type:'session.output_transcript.delta',event_id:'speech-3',delta:'tu corrección.'}});
+     }else emit({type:'transcript',id:this.visit,item:{id:'source-1',role:'assistant',text:'A synthetic native voice reply.'}});
+    }
     if(value.type==='close')emit({type:'closed',id:this.visit,confirmed:true});
    }
    close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
   };
- });
+ },{publicCase});
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
@@ -123,7 +130,30 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.getByRole('button',{name:'Under the hood',exact:true}).click();
  }
 
- if(codexCase&&reloadCase){
+ if(publicCase){
+  assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','Public Live never replaces the default');
+  await page.locator('#conversation-message').fill('Keep this draft while I compare voices.');
+  await selectEngine('gpt-live');await page.locator('#conversation-companion pre').click();
+  await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');
+  assert(await page.locator('#conversation-voice-engine').isDisabled());
+  await page.locator('#conversation-voice-engine').evaluate(select=>{select.value='provider';select.dispatchEvent(new Event('change'));});
+  assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'gpt-live','A running public visit is frozen');
+  await page.waitForFunction(()=>codexFixture.captureBytes>64000);
+  await page.screenshot({path:path.join(output,'public-live-desktop.png')});
+  await page.setViewportSize({width:390,height:844});
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.waitForFunction(()=>codexFixture.contexts.every(ctx=>ctx.state==='closed')&&codexFixture.peers.every(peer=>peer.connectionState==='closed'));
+  await page.locator('#conversation-timeline').getByText('Conservo tu corrección.',{exact:true}).waitFor();
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I compare voices.');
+  const panel=page.locator('#conversation-public-live-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
+  await page.screenshot({path:path.join(output,'public-live-mobile-recovery.png')});
+  await panel.getByRole('button',{name:'Retry saving',exact:true}).click();await panel.waitFor({state:'hidden'});
+  assert.equal(voiceUploads.length,2);assert.deepEqual(voiceUploads[0],voiceUploads[1],'Public original retry preserves exact bytes and visit');
+  assert.equal(posts.length,0,'Public media and original recovery never submit ordinary native work');
+  assert.equal(await page.evaluate(()=>codexFixture.opens),1);
+  report.state='qualified-public-live-synthetic-browser';report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
+  report.viewports=['1280x800','390x844'];
+ }else if(codexCase&&reloadCase){
   await selectEngine('codex');await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');await page.waitForTimeout(3500);
   const before=await page.evaluate(()=>codexFixture.captureBytes);assert(before>32000);
