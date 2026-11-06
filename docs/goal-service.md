@@ -282,3 +282,82 @@ subscriber exists, metadata controls refuse an actual preparing execution
 existing conditional metadata RPC. Native revision/admission checks still apply;
 uncertain receipts, preparation, Stop and maintenance fences do not authorize
 independent retry. Check live admission, not only map membership or native idle.
+
+## Prepared owner-scoped maintenance bridge
+
+This source adds an owner-console bridge for the human-selected per-session
+maintenance route (DaimonApp #375). It is separate from global Stop, ordinary
+model-turn goal controls, heartbeat and native lifecycle adoption. Source
+qualification does not select a receiving binary or authorize a live pause.
+Matrix retains Core selection/adoption and the decision whether a particular
+running turn can be interrupted. This bridge never interrupts a turn.
+
+Use the existing authenticated gateway, `telecodex --control CONFIG goal
+maintenance ...`. No new socket, login, provider, background coordinator or model
+lease is introduced. Commands are `prepare JSON`, `status UUID`, `pause UUID`
+and `restore UUID`. Only the actual owner gateway installs the transaction;
+model controller capabilities do not grant this owner operation.
+
+A prepare request contains `request_id` (caller-retained UUID), `source` (actual
+retained human instruction reference, never invented speech), `entry`
+(`chat_id`, `thread_id`), absolute Unix-seconds `deadline`, and `targets`.
+Each of at most four targets contains `target`, exact public `binding` from
+`goal inspect CHAT TOPIC`'s `target_binding`, and its exact native `snapshot`.
+Preparation verifies the current native snapshot including observed accounting,
+then retains the owner, approval reference, entry/target incarnation, admission
+epoch, goal-command generation, complete goal definition, opaque native revision
+and accounting **before** any pause. A request ID cannot select a different plan.
+The source reference is an owner assertion under the existing authenticated
+owner authority, not a separately verified human-input capture or new delegation.
+The caller must retain the actual approval and observation evidence.
+
+The deadline must be at least `60 + 40 * target_count` seconds ahead and at most
+300 seconds ahead. One finite backend continuation is armed durably before
+pausing; repeated commands cannot arm another. It begins restoration early,
+reserving `40 * target_count + 10` seconds of the selected window. The existing conditional metadata RPC and context-aware continuation collector
+retain their native deadlines, and admission checks leave additional time
+for restoring acknowledged pauses. The whole transaction is journaled in the
+existing database, at most 64 records of 128 KiB; capacity refuses further plans
+instead of deleting evidence. No media/history copies or unbounded receipt list
+are created. Keep unresolved transactions; finished records can be retired only
+through an explicitly selected owning retention operation (none runs implicitly).
+
+Pause is a native conditional status write with `origin=automatic`; the
+interpreting turn may finish. Already paused, blocked or completed goals are
+preserved. Only an acknowledged operation-owned pause supplies restoration
+revision authority. Restore compares that exact revision and definition, current
+owner/binding, goal-command generation, admission epoch and Stop/maintenance
+fences before another conditional write. It restores the same goal through the existing context-aware continuation
+collector (`conditionalActivate`), with fresh invocation context and no objective,
+budget or accounting replacement, synthetic human text or separate turn
+start/steer. Direct status-only resume is deliberately avoided: native active
+status can start idle work with an expired invocation context. Admission expires
+20 seconds after each restore is queued, so a delayed collector cannot later
+start work under an old maintenance request. An acknowledged goal and native
+work admission are separate from useful incorporation, completion or hearing.
+
+On backend restart, interrupted markers are reconciled synchronously before
+the owner socket accepts new commands. One recovery pass then restores only
+the captured pending transactions, with the socket available to their fresh
+controllers. It restores acknowledged unchanged pauses immediately; it does not
+wait for or extend the old deadline. Native submission markers without matched
+receipts become `restart_unconfirmed`. A lost ACK, unknown response, later human
+goal decision or binding change never becomes inferred restoration authority.
+No automatic write retry occurs. `restore_unconfirmed`/`pause_unconfirmed` and
+native failures remain explicit for the owner; an unavailable backend cannot
+provide a hard wall-clock restoration guarantee. Source qualification must not
+be described as reserving native maintenance or guaranteed recovery during an
+outage.
+
+`restore UUID` also closes never-paused targets, allowing the owner to defer or
+finish adoption early. Later native decisions are `superseded`; prior paused or
+blocked targets remain `preserved`. The journal does not send messages. Its
+result explicitly leaves notification delivery false: the integrating owner
+must tell each affected session the observed outcome using the existing
+attributed session route, without pretending that a journal receipt is delivery.
+Core maintenance, actual resume/continuation and those notifications are outside
+this dependency's source-only qualification.
+
+Qualification: `cargo test --no-default-features scoped_maintenance` and
+`tests/scoped_maintenance_io.py` exercise private synthetic SQLite/native peers
+through the real owner socket. No real session, provider or service is operated.

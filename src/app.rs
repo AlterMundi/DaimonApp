@@ -29,6 +29,7 @@ mod creation;
 mod dialogue;
 mod forum;
 mod goal_controls;
+mod scoped_maintenance;
 mod goal_recovery;
 mod goals;
 mod heartbeat;
@@ -502,7 +503,14 @@ impl App {
         self.notify_primary_user(&format!("🟢 Telecodex {} started", app_version_label()))
             .await;
 
+        let maintenance_pending=scoped_maintenance::reconcile_startup(&self)?;
         stopping::start_control_socket(self.clone()).await?;
+        let maintenance_app=self.clone();
+        tokio::spawn(async move {
+            if scoped_maintenance::recover(maintenance_app,maintenance_pending).await.is_err() {
+                tracing::warn!("Scoped restoration unavailable; inspect retained owner transaction");
+            }
+        });
         let recovery_app = self.clone();
         tokio::spawn(async move {
             goal_recovery::run(recovery_app).await;
