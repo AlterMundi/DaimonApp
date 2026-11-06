@@ -21,7 +21,10 @@ def identity_response(origin, token):
             raise ValueError('Shared sign-in required')
         if response.status != 200 or len(body) > 8192:
             raise OSError('Shared authentication unavailable')
-        return json.loads(body)
+        try:
+            return json.loads(body)
+        except (ValueError, UnicodeError):
+            raise OSError('Shared identity response unavailable') from None
     finally:
         connection.close()
 
@@ -68,10 +71,12 @@ class HomeAuth:
             return None
         value = identity_response(self.origin, token)
         if not isinstance(value, dict) or not isinstance(value.get('actor'), dict):
-            raise ValueError('Shared identity unavailable')
+            raise OSError('Shared identity unavailable')
         actor = value.get('actor', {})
         expires = value.get('expires')
-        if type(expires) is not int or expires <= time.time():
+        if type(expires) is not int:
+            raise OSError('Shared identity expiry unavailable')
+        if expires <= time.time():
             raise ValueError('Shared sign-in expired')
         human = self.provider.human
         if (value.get('contract') != 'dm.home-session/v1' or value.get('origin') != self.origin

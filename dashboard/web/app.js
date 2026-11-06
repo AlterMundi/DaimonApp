@@ -6,7 +6,17 @@ const deviceMode = monitorOnly || standaloneConversation;
 const tg = deviceMode ? undefined : window.Telegram?.WebApp;
 let deviceAuthorization;
 let sharedConversationConnected = false;
-let sharedSignInAction;
+let sharedSignInAction, sharedAccessRead;
+async function sharedAccess() {
+  if(sharedAccessRead)return sharedAccessRead;
+  sharedAccessRead=(async()=>{
+    const response=await fetch("api/interaction/access",{credentials:"same-origin",redirect:"error",cache:"no-store",signal:AbortSignal.timeout(10000)});
+    if(!response.ok)throw Object.assign(Error("Conversation access unavailable"),{status:response.status});
+    const access=await response.json();
+    csrf=access.csrf;return access;
+  })();
+  try{return await sharedAccessRead;}finally{sharedAccessRead=undefined;}
+}
 let snapshot,
   csrf,
   filter = "attention",
@@ -89,6 +99,7 @@ async function api(route, body) {
     // Only immutable source-text reads may repeat after a cut JSON body.
     // Writes and other endpoints retain their original once-only outcome.
     const sourceRead = !body && route.startsWith("interaction/part?");
+    let sharedVerified=false;
     for (let attempt=0; ; attempt++) {
       const response = await fetch(`api/${route}`, {
         signal: controller.signal,
@@ -97,6 +108,11 @@ async function api(route, body) {
         headers,
         body: body ? JSON.stringify(body) : undefined,
       });
+      // Revalidate only the existing shared session. Never repeat a write or
+      // treat a resource failure as proof that the browser cookie has expired.
+      if(response.status===401 && !body && attempt===0 && sharedConversationConnected){
+        try{await sharedAccess();sharedVerified=true;continue;}catch(_){/* Retain the original rejection. */}
+      }
       let value;
       try { value = await response.json(); }
       catch (cause) {
@@ -109,7 +125,8 @@ async function api(route, body) {
       }
       if (!response.ok) {
         const error = new Error(value.detail || "Request unavailable");
-        error.status = response.status;
+        error.status = response.status===401 && sharedVerified ? 503 : response.status;
+        if(sharedVerified && response.status===401)error.message="This observation is unavailable; your sign-in is still valid.";
         if(value.code==="visual_reselection"&&value.submission_attempted===false)error.visualReselection=true;
         throw error;
       }
@@ -721,23 +738,38 @@ const conversationView = window.Conversation?.mount({
     document.title='Daimon Interaction';
     const feedback=$('#feedback');
     const signIn=el('button','Sign in');signIn.type='button';
+    let reconnecting;
+    const reconnect=()=>{
+      if(reconnecting)return reconnecting;
+      reconnecting=sharedAccess().then(access=>{
+        sharedConversationConnected=true;authenticated=true;
+        const humanName=el('span',access.label);humanName.className='human-name';
+        $('#conversation-account').replaceChildren(el('span','human: '),humanName);$('#conversation-account').hidden=false;
+        feedback.replaceChildren();conversationView?.authenticated();schedule();
+        // Re-read observations only; accepted or uncertain inputs are not replayed.
+        void refresh(true);return true;
+      }).catch(()=>false).finally(()=>{reconnecting=undefined;});
+      return reconnecting;
+    };
     sharedSignInAction=()=>{
       clearConversationAlerts();sharedConversationConnected=false;authenticated=false;
       $('#conversation-account').textContent='';$('#conversation-account').hidden=true;
       feedback.replaceChildren(el('p','Sign in again to reconnect.'),signIn);
+      void reconnect();
     };
     signIn.addEventListener('click',async()=>{
       signIn.disabled=true;
       try{
+        if(await reconnect())return;
         const result=await window.DaimonHomeAccess.createClient().signIn();
         if(result?.status!=='redirecting')location.reload();
       }catch(_){feedback.replaceChildren(el('p','Sign-in did not finish. You can try again.'),signIn);}
       finally{signIn.disabled=false;}
     });
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!authenticated)void reconnect();});
+    window.addEventListener('online',()=>{if(!authenticated)void reconnect();});
     try{
-      const response=await fetch('api/interaction/access',{credentials:'same-origin',redirect:'error',signal:AbortSignal.timeout(10000)});
-      if(!response.ok)throw Object.assign(Error('Sign in to continue'),{status:response.status});
-      const access=await response.json();
+      const access=await sharedAccess();
       csrf=access.csrf;sharedConversationConnected=true;authenticated=true;
       const humanName=el('span',access.label);humanName.className='human-name';
       $('#conversation-account').replaceChildren(el('span','human: '),humanName);$('#conversation-account').hidden=false;

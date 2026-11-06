@@ -61,6 +61,16 @@ class Companion(unittest.TestCase):
     def audio(self):
         return self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
 
+    def test_malformed_identity_response_is_unavailable_not_expired(self):
+        from dashboard.home_auth import identity_response
+        for body in (b'{', b'\xff'):
+            with patch('dashboard.home_auth.http.client.HTTPSConnection') as connection:
+                response=connection.return_value.getresponse.return_value
+                response.status=200;response.read.return_value=body
+                with self.assertRaises(OSError):
+                    identity_response('https://home.example.test','h'*43)
+                connection.return_value.close.assert_called_once()
+
     def test_shared_home_session_is_fileless_scoped_and_revalidated(self):
         self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
         self.config['additional_origins']=['https://home.example.test']
@@ -101,6 +111,8 @@ class Companion(unittest.TestCase):
             changed={**identity,'actor':{**identity['actor'],'ref':'human:telegram:200'}}
             current.return_value=changed
             self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
+            current.return_value={'actor':None}
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,503)
             current.side_effect=ValueError('revoked')
             self.assertEqual(self.client.get('/api/interaction',headers=headers).status_code,401)
         redirect=self.client.get('/?view=conversation&client=standalone',follow_redirects=False)
