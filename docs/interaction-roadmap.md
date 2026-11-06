@@ -47,6 +47,15 @@ before its real public comparison; preserve665/Qwen as separate modes. Exact
 controls, bounds and missing receiving work are recorded in the
 [public transport boundary](interaction-gpt-live-practices.md#instruction-delivery-and-the-public-transport-boundary--6november2026).
 
+The public path now also has durable owner-bound creation receipts and a trusted
+sideband primitive: exact retries read the original answer across process loss,
+uncertain calls do not silently create replacements, and provider finalization
+does not complete native work. These remain unmounted components. Continue the
+authenticated cross-mode lease, original capture/history and work/result/question
+integration before account/model/device comparison; creation is not microphone
+admission or successor readiness. See
+[creation/sideband boundaries](interaction-gpt-live-practices.md#durable-public-creation-and-trusted-sideband--6november2026).
+
 Historical659 qualification covers ordered native final sources and completion-before-close
 carry, with a short source-backed availability notice followed by corrected recall
 through three visits/two explicit reconnects. The same original receiver and

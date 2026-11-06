@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import json
 import re
 import threading
+from urllib.parse import quote
 
 import httpx
 
@@ -71,6 +72,37 @@ def session_spec(instructions, *, backend_model=None, backend_instructions=None,
     return json.loads(raw)
 
 
+def creation_request(sdp, spec):
+    """Freeze the exact owner request before a durable creation claim."""
+    if not _text(sdp, 65536) or not sdp.startswith('v=0'):
+        raise ValueError('Select a bounded WebRTC offer')
+    if not isinstance(spec, dict) or not {'model', 'instructions', 'delegation'} <= spec.keys():
+        raise ValueError('Select an owner Live session specification')
+    options = {key: value for key, value in spec.items()
+               if key not in ('model', 'instructions', 'delegation')}
+    delegation = spec['delegation']
+    if not isinstance(delegation, dict):
+        raise ValueError('Select a Live delegation mode')
+    delegation_options = {key: value for key, value in delegation.items() if key not in ('type', 'responses')}
+    if delegation.get('type') == 'client' and 'responses' not in delegation:
+        frozen = session_spec(spec['instructions'], client_delegation=True,
+            session_options=options, delegation_options=delegation_options)
+    elif delegation.get('type') == 'responses':
+        backend = delegation.get('responses')
+        if not isinstance(backend, dict) or not {'model', 'instructions', 'tools'} <= backend.keys():
+            raise ValueError('Select a Responses delegation specification')
+        frozen = session_spec(spec['instructions'], backend_model=backend['model'],
+            backend_instructions=backend['instructions'], backend_tools=backend['tools'],
+            session_options=options, delegation_options=delegation_options,
+            backend_options={key: value for key, value in backend.items()
+                if key not in ('model', 'instructions', 'tools')})
+    else:
+        raise ValueError('Select a Live delegation mode')
+    if frozen != spec:
+        raise ValueError('Select the requested GPT-Live model without overrides')
+    return {'session': frozen, 'transport': {'type': 'webrtc', 'sdp': sdp}}
+
+
 @dataclass(frozen=True)
 class LiveCall:
     session_id: str
@@ -94,44 +126,22 @@ class OpenAILive:
         self._attempted = False
         self._guard = threading.Lock()
 
-    def create(self, sdp, spec):
-        if not _text(sdp, 65536) or not sdp.startswith('v=0'):
-            raise ValueError('Select a bounded WebRTC offer')
-        if not isinstance(spec, dict) or not {'model', 'instructions', 'delegation'} <= spec.keys():
-            raise ValueError('Select an owner Live session specification')
-        options = {key: value for key, value in spec.items()
-                   if key not in ('model', 'instructions', 'delegation')}
-        delegation = spec['delegation']
-        if not isinstance(delegation, dict):
-            raise ValueError('Select a Live delegation mode')
-        delegation_options = {key: value for key, value in delegation.items() if key not in ('type', 'responses')}
-        if delegation.get('type') == 'client' and 'responses' not in delegation:
-            frozen = session_spec(spec['instructions'], client_delegation=True,
-                session_options=options, delegation_options=delegation_options)
-        elif delegation.get('type') == 'responses':
-            backend = delegation.get('responses')
-            if not isinstance(backend, dict) or not {'model', 'instructions', 'tools'} <= backend.keys():
-                raise ValueError('Select a Responses delegation specification')
-            frozen = session_spec(spec['instructions'], backend_model=backend['model'],
-                backend_instructions=backend['instructions'], backend_tools=backend['tools'],
-                session_options=options, delegation_options=delegation_options,
-                backend_options={key: value for key, value in backend.items()
-                    if key not in ('model', 'instructions', 'tools')})
-        else:
-            raise ValueError('Select a Live delegation mode')
-        if frozen != spec:
-            raise ValueError('Select the requested GPT-Live model without overrides')
+    def _project_key(self):
         try:
             key = private_bytes(self._api_key_file, 16384).decode().strip()
         except (OSError, UnicodeError, RenderError):
             raise LiveUnavailable('project_key_unavailable') from None
         if not re.fullmatch(r'sk-[A-Za-z0-9_-]{16,512}', key):
             raise LiveUnavailable('project_key_unavailable')
+        return key
+
+    def create(self, sdp, spec):
+        payload = creation_request(sdp, spec)
+        key = self._project_key()
         with self._guard:
             if self._attempted:
                 raise LiveUnavailable('creation_already_attempted')
             self._attempted = True
-        payload = {'session': frozen, 'transport': {'type': 'webrtc', 'sdp': sdp}}
         try:
             with httpx.Client(transport=self._transport, follow_redirects=False,
                               timeout=httpx.Timeout(20, connect=5, write=10, pool=5)) as client:
@@ -157,3 +167,90 @@ class OpenAILive:
             raise
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             raise LiveUnavailable('creation_unconfirmed') from None
+
+    def attach(self, call, *, connect=None):
+        """Attach to this owner's retained call; never create or restart it."""
+        if not isinstance(call, LiveCall) or not _text(call.session_id, 1024):
+            raise ValueError('Select one retained owner Live call')
+        key = self._project_key()
+        if connect is None:
+            from websocket import create_connection
+            connect = create_connection
+        url = 'wss://api.openai.com/v1/live/sessions/' + quote(call.session_id, safe='') + '/attach'
+        connection = None
+        try:
+            connection = connect(url, header={'Authorization': 'Bearer ' + key}, timeout=5)
+            connection.settimeout(.5)
+            return LiveSideband(call.session_id, connection)
+        except Exception:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+            raise LiveUnavailable('sideband_unavailable') from None
+
+
+class LiveSideband:
+    """Foreground control/event connection, independent of primary media/work.
+
+    The application owns its single reader and each action/delegation. This
+    class dispatches no tools, stores no reflected audio, and installs no loop,
+    wakeup or automatic retry. Detaching does not close the provider session.
+    """
+    max_event_bytes = 1024 * 1024
+
+    def __init__(self, session_id, connection):
+        self.session_id = session_id
+        self._connection = connection
+        self._write_lock = threading.Lock()
+        self._detached = False
+        self._uncertain_write = False
+
+    def receive(self):
+        from websocket import WebSocketTimeoutException
+        if self._detached:
+            raise LiveUnavailable('sideband_detached')
+        try:
+            raw = self._connection.recv()
+        except (TimeoutError, WebSocketTimeoutException):
+            return None
+        except Exception:
+            raise LiveUnavailable('sideband_unavailable') from None
+        if not raw:
+            raise LiveUnavailable('sideband_closed')
+        if not isinstance(raw, str) or len(raw.encode()) > self.max_event_bytes:
+            raise LiveUnavailable('sideband_event_exceeds_bound')
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            raise LiveUnavailable('sideband_event_invalid') from None
+        if not isinstance(value, dict) or not _text(value.get('type'), 128):
+            raise LiveUnavailable('sideband_event_invalid')
+        return value  # Source data, never tool-execution authority.
+
+    def send(self, event):
+        if (not isinstance(event, dict) or not _text(event.get('type'), 128)
+                or event['type'] == 'session.start'):
+            raise ValueError('Send a command to the existing Live session')
+        raw = json.dumps(event, allow_nan=False, ensure_ascii=False)
+        if len(raw.encode()) > self.max_event_bytes:
+            raise ValueError('Public Live command exceeds its bound')
+        with self._write_lock:
+            if self._detached or self._uncertain_write:
+                raise LiveUnavailable('sideband_write_unavailable')
+            try:
+                self._connection.send(raw)
+            except Exception:
+                self._uncertain_write = True
+                raise LiveUnavailable('command_unconfirmed') from None
+
+    def detach(self):
+        with self._write_lock:
+            if self._detached:
+                return
+            self._detached = True
+            try:
+                self._connection.close()
+            except Exception:
+                pass
