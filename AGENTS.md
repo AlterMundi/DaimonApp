@@ -345,3 +345,7 @@ on failure. Initial account loading keeps editor inputs inert. Revision lists
 carry summaries, not all designs. Artwork choices never assert mic/agent state.
 See docs/interaction-avatar-workshop.md; source/browser fixtures are not real
 Home-cookie, receiver, child or device acceptance.
+
+Read-only history fixtures must close an admitted voice socket before changing
+the synthetic owner binding. A live binding change correctly revokes the voice
+admission; accepting that race in a fixture would weaken the real ownership check.
