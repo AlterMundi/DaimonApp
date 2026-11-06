@@ -16,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from scripts.speech_render import private_bytes, RenderError
 
+from .voice_admission import hold_voice_task, admission_failure
 from .live import changes
 from .live_transcription import VoiceInbox
 from .native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
@@ -325,6 +326,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 await actor()
                 successor_opening=asyncio.create_task(asyncio.to_thread(old.successor,basis,
                     pending_effects=effects,pending_originals=originals))
+                hold_voice_task(socket.scope,successor_opening)
                 try:candidate=await asyncio.shield(successor_opening)
                 except (DialogueUnavailable,ValueError,TimeoutError,OSError):
                     if getattr(old,'phase','ready')!='ready':raise
@@ -635,6 +637,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                 await recheck()
                 opening=asyncio.create_task(asyncio.to_thread(dialogue_class(),selected.get('native_credential_file',selected['credential_file']),activity_mode=activity_mode,
                     voice_name=selected.get('native_voice_name'),context=context))
+                hold_voice_task(socket.scope,opening)
                 stream=await asyncio.shield(opening)
                 # Provider readiness is actual setupComplete, not successful connect().
                 while True:
@@ -745,7 +748,7 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                             await notice_if_idle()
         except (HTTPException,ValueError,TimeoutError,OSError,ProviderUnavailable,ForegroundUnavailable,DialogueUnavailable,DetectionUnavailable,WebSocketDisconnect) as error:
             close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error)
-            with suppress(Exception):await send({'type':'review','message':('The conversation is still being prepared. Reconnect voice to continue; your recordings and work are kept.' if isinstance(error,ResumePending) else 'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.')})
+            with suppress(Exception):await send({'type':'review','message':admission_failure(error) or ('The conversation is still being prepared. Reconnect voice to continue; your recordings and work are kept.' if isinstance(error,ResumePending) else 'Voice ended. Your retained recordings and integrating work remain available; review before sending anything again.')})
         except BaseException as error:
             close_error=type(error).__name__;close_site=failure_site(error);close_operation=owner_operation(error);raise
         finally:
@@ -822,4 +825,5 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
             cleanup_task=asyncio.create_task(cleanup())
             cleanup_task.add_done_callback(ForegroundBridge._observe)
             cleanup_task.add_done_callback(observe_close)
+            hold_voice_task(socket.scope,cleanup_task)
             await asyncio.shield(cleanup_task)

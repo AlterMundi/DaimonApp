@@ -70,6 +70,14 @@ class MatrixHostScope(unittest.TestCase):
             body = re.split(r'^  [a-zA-Z0-9_-]+:\n', body, maxsplit=1, flags=re.M)[0]
             self.assertNotIn('needs.scope.outputs', body)
 
+    def test_web_maintenance_helper_uses_web_gate_and_keeps_unknown_native_checks(self):
+        helper='scripts/interaction_web_maintenance.py'
+        self.assertEqual(selected([helper,'dashboard/voice_admission.py',
+                                   'tests/dashboard_voice_admission.py']),set())
+        self.assertEqual(selected([helper,'Cargo.toml']),{'text','audio','activity'})
+        self.assertEqual(selected([helper+'-unknown']),{'text','audio','activity'})
+        self.assertIn('python -B tests/dashboard_voice_admission.py',WORKFLOW.read_text())
+
     def test_native_operator_uses_always_run_process_boundary_gate(self):
         paths = ['scripts/native_package_handoff.py', 'tests/native_package_handoff.py',
                  'tests/native_package_handoff_unit.py', 'docs/interaction-matrix.md']

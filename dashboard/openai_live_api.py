@@ -205,6 +205,8 @@ def install(app, config, provider, authorize, origins):
                 if set(offer)!={'type','sdp'} or offer['type']!='offer':raise ValueError('Select one WebRTC offer')
                 await recheck();await current_owner()
                 creating=asyncio.create_task(asyncio.to_thread(history.create,visit,human,owner,offer['sdp'],spec,client))
+                from .voice_admission import hold_voice_task
+                hold_voice_task(socket.scope,creating)
                 call=await asyncio.shield(creating)
                 await recheck();await current_owner()
                 sideband=await asyncio.to_thread(client.attach,call)
@@ -297,7 +299,8 @@ def install(app, config, provider, authorize, origins):
                 'creation_storage_full':'Voice history storage is full. Your recordings and work are kept; review storage before starting another call.',
                 'native_reader_unavailable':'This native voice comparison needs its prepared server update. No voice call was opened.',
                 'project_key_unavailable':'This voice comparison needs its configured OpenAI project access. Your recordings and work are unchanged.'}
-            message=messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None
+            from .voice_admission import admission_failure
+            message=admission_failure(error) or (messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None)
             with suppress(Exception):
                 await asyncio.wait_for(socket.send_json({'type':'unconfirmed','id':visit,
                     'message':message or 'Voice paused. Keep your original audio; the connection and pending work need review.'}),2)

@@ -266,6 +266,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             return await run_in_threadpool(authorize, request)
         return authorize(request)
 
+    from .voice_admission import VoiceAdmission, VoiceAdmissionMiddleware
+    app.state.voice_admission=VoiceAdmission(config['state_dir'])
+    app.add_middleware(VoiceAdmissionMiddleware,admission=app.state.voice_admission)
     app.state.voice_active=set()
     from .native_history import NativeHistory
     app.state.native_history=NativeHistory(database,binding)
@@ -414,7 +417,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.get('/health')
     def health():
-        return {'ok': True}
+        from .voice_admission import HEADER
+        return JSONResponse({'ok': True},headers={HEADER:app.state.voice_admission.header})
 
     @app.post('/api/session')
     async def exchange(request: Request):
