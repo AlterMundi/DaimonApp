@@ -21,6 +21,18 @@ function boot({photo=false}={}){
   point(){nodes.get('#conversation-image-view').handlers.click({clientX:25,clientY:30});}};
 }
 (async()=>{
+
+ const pasted=boot();const input=pasted.nodes.get('#conversation-message');input.value='Keep my draft';
+ let prevented=0;
+ const image={name:'clipboard.png',size:100,type:'image/png'};
+ const paste=(items,text='',files=[])=>input.handlers.paste({clipboardData:{items,files,getData:()=>text},preventDefault(){prevented++;}});
+ await paste([{kind:'file',type:'image/png',getAsFile:()=>image}]);
+ assert.equal(prevented,1);assert.equal(input.value,'Keep my draft');assert.equal(pasted.uploads.length,0,'Paste never submits or uploads');
+ assert.equal(pasted.nodes.get('#conversation-visual').open,true);
+ await paste([{kind:'string',type:'text/plain'}],'ordinary text');assert.equal(prevented,1,'Text paste retains browser behavior');
+ await paste([], 'caption', [image]);assert.equal(prevented,1,'Mixed caption keeps native text insertion');
+ const pastedRefs=await pasted.ui.capture();assert.equal(pastedRefs.length,2);assert.notEqual(pastedRefs[0].source_id,pastedRefs[1].source_id);
+ pasted.ui.reset();await paste([{kind:'file',type:'image/png',getAsFile:()=>null}]);assert.equal(await pasted.ui.capture(),undefined);
  const f=boot(),held=f.hold(),opening=f.choose();
  await assert.rejects(f.ui.capture(),/Wait for the selected image/);assert.equal(f.uploads.length,0);assert(!f.nodes.get('#conversation-image-clear').hidden);
  held.resolve(f.bitmap());await opening;

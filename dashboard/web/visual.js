@@ -105,6 +105,20 @@ window.VisualInput = (() => {
       source.value='';
     }
     file.addEventListener('change',()=>choose(file));camera?.addEventListener('change',()=>choose(camera));
+    document.querySelector('#conversation-message')?.addEventListener('paste',event=>{
+      const clipboard=event.clipboardData;
+      if(!clipboard)return;
+      const selected=Array.from(clipboard.items||[])
+        .filter(item=>item.kind==='file'&&item.type.startsWith('image/'))
+        .map(item=>item.getAsFile()).filter(Boolean);
+      // Some WebViews expose files without DataTransfer items.
+      if(!selected.length)selected.push(...Array.from(clipboard.files||[]).filter(input=>input.type.startsWith('image/')));
+      if(!selected.length)return;
+      // Leave ordinary/mixed text paste to the browser; suppress image-only HTML.
+      if(!clipboard.getData('text/plain'))event.preventDefault();
+      box.open=true;
+      return choose({files:selected,value:''});
+    });
     canvas.addEventListener('click',event=>{const r=canvas.getBoundingClientRect();select(Math.min(canvas.width-1,Math.floor((event.clientX-r.left)*canvas.width/r.width)),Math.min(canvas.height-1,Math.floor((event.clientY-r.top)*canvas.height/r.height)));});
     canvas.addEventListener('keydown',event=>{const delta={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];if(!delta||active?.state!=='ready')return;event.preventDefault();const p=active.point||{x:Math.floor(active.width/2),y:Math.floor(active.height/2)},step=event.shiftKey?10:1;select(Math.max(0,Math.min(active.width-1,p.x+delta[0]*step)),Math.max(0,Math.min(active.height-1,p.y+delta[1]*step)));});
     for(const field of [x,y])field.addEventListener('change',()=>select(x.value===''?NaN:Number(x.value),y.value===''?NaN:Number(y.value)));
