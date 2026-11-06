@@ -140,6 +140,37 @@ class Mounted(unittest.TestCase):
                 value=socket.receive_json();self.assertEqual(value['type'],'unconfirmed')
                 self.assertIn('server update',value['message'])
         self.assertEqual(Client.instances,[])
+
+    def test_native_choice_has_its_own_frozen_capability_brief(self):
+        brief=self.root/'native-identity';brief.write_text('Native session owns identity, memory and work.');brief.chmod(0o600)
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'native_backend_enabled':True,'native_identity_file':str(brief)}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        # A file edit cannot alter a live/prepared process's selected brief.
+        brief.write_text('A later profile, not selected by this application.');brief.chmod(0o600)
+        with TestClient(app,base_url='https://example.test') as client:
+            for native in (False,True):
+                self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident};self.meta.pop('backend',None)
+                if native:self.meta['backend']='native'
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    call=self.start(socket)
+                    self.assertEqual(call.spec['instructions'],'Native session owns identity, memory and work.' if native else 'You are CompAII. Be brief.')
+                    self.assertEqual(call.spec['delegation']['type'],'client' if native else 'responses')
+                    self.close(socket)
+
+    def test_explicit_native_brief_failure_never_falls_back_to_managed_instructions(self):
+        from scripts.speech_render import RenderError
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        for path in ('relative-native-brief',str(self.root/'missing-native-brief')):
+            app=FastAPI();app.state.voice_active=set()
+            config={**self.config,'openai_live':{**self.config['openai_live'],
+                'native_backend_enabled':True,'native_identity_file':path}}
+            with self.assertRaises((ValueError,RenderError,OSError)):
+                install(app,config,self.owner,authorize,['https://example.test'])
+        self.assertEqual(Client.instances,[])
     def test_optional_source_seals_use_trusted_delegations_and_confirmed_uploads_only(self):
         app=FastAPI();app.state.voice_active=set()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
