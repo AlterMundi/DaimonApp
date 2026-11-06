@@ -637,6 +637,46 @@ class Provider:
             raise ProviderUnavailable('Heartbeat status is unavailable')
         return value
 
+    def heartbeat_control(self, body):
+        """One conditional owner write. Never configure resources or retry a send."""
+        if not isinstance(body,dict):
+            raise ValueError('Select an exact heartbeat action')
+        action=body.get('action')
+        keys={'action','paused','generation'}
+        if action=='set_lane_paused':keys|={'lane','global_generation'}
+        if (action not in ('set_paused','set_lane_paused') or set(body)!=keys
+                or type(body.get('paused')) is not bool
+                or any(type(body.get(k)) is not int or not 0<=body[k]<=2**53-1
+                       for k in keys & {'generation','global_generation'})
+                or action=='set_lane_paused' and body.get('lane')!='messaging'):
+            raise ValueError('Select an exact heartbeat action')
+        current=self.heartbeat_status()  # Also rechecks the current actor/binding.
+        caps=current.get('controls')
+        kind='conditional_global' if action=='set_paused' else 'conditional_lane'
+        if (not isinstance(caps,dict) or caps.get('schema')!='telecodex.heartbeat-controls/v1'
+                or caps.get(kind) is not True or not isinstance(caps.get('actions'),list)
+                or action not in caps['actions']):
+            raise ProviderUnavailable('Conditional heartbeat controls unavailable')
+        if action=='set_paused':
+            if current['generation']!=body['generation']:
+                raise ValueError('Heartbeat state changed; refresh')
+            command=f"heartbeat {'pause' if body['paused'] else 'resume'} {body['generation']}"
+        else:
+            lanes=current.get('lanes')
+            lane=lanes.get('messaging') if isinstance(lanes,dict) else None
+            if (not isinstance(lane,dict) or lane.get('supported') is not True or type(lane.get('paused')) is not bool
+                    or type(lane.get('generation')) is not int
+                    or lane.get('generation')!=body['generation']
+                    or current['generation']!=body['global_generation']):
+                raise ValueError('Heartbeat lane changed or unavailable; refresh')
+            command=f"heartbeat {'pause-lane' if body['paused'] else 'resume-lane'} messaging {body['global_generation']} {body['generation']}"
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Heartbeat owner unavailable')
+        value=control(self.receiver['session_control']['socket_path'],None,command)
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Heartbeat owner unavailable')
+        return value
+
     def codex_voice_binding(self, binding):
         """Resolve the current integrating thread and native voice entitlement."""
         return self._voice_binding(binding, native=True)

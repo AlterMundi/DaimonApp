@@ -574,6 +574,23 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         await authorize_async(request)
         return value
 
+    @app.post('/api/interaction/heartbeat')
+    async def heartbeat_control(request:Request):
+        session=await authorize_async(request)
+        if not secrets.compare_digest(request.headers.get('x-dashboard-csrf',''),session['csrf']):
+            raise HTTPException(403,'Action token missing')
+        try:
+            if len(raw:=await request.body())>1024:raise ValueError('Action too large')
+            body=json.loads(raw)
+            from starlette.concurrency import run_in_threadpool
+            value=await run_in_threadpool(provider.heartbeat_control,body)
+        except (ValueError,UnicodeError):
+            raise HTTPException(409,'Heartbeat action refused. Refresh status before choosing another action') from None
+        except (ProviderUnavailable,OSError):
+            raise HTTPException(503,'Heartbeat action unconfirmed. Read current status; do not resend automatically') from None
+        await authorize_async(request)
+        return value
+
     @app.get('/api/interaction')
     async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None):
         session = await authorize_async(request)
