@@ -11,7 +11,7 @@ from .provider import ProviderUnavailable
 
 
 def return_native_part(history, ident, human, owner, delegation, source, revision, offset,
-                       provider, sideband):
+                       provider, sideband, *, stopped=None):
     """Read a current source, persist one append intent, then send once.
 
     Canonical source association is not proof of semantic incorporation, task
@@ -29,6 +29,11 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
         if not provider.authorized(human) or provider.public_live_binding(owner['binding']) != owner:
             raise ProviderUnavailable('Public native result owner changed')
 
+    def current():
+        if stopped is not None and stopped.is_set():
+            raise ValueError('Voice ended before a new native result append')
+
+    current()
     authorize()
     with history_lock(history.root / '.lock'):
         value = history.read(ident, human, owner)
@@ -38,12 +43,14 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
             raise ValueError('A source-bound native work acknowledgment is required')
         intent = dict(intent)
     native = provider.conversation_input_status(intent['root'])
+    current()
     proof = native.get('foreground_delegation') or {}
     if (native.get('entry_binding') != owner['entry_binding'] or native.get('id') != intent['root']
             or native.get('foreground_dialogue') != ident or not isinstance(proof, dict)
             or proof.get('intent_id') != intent['intent_id']):
         raise ValueError('Native result belongs to another work intent')
     part = provider.presentation_part(source, revision, offset)
+    current()
     kind = part.get('kind')
     if (part.get('id') != source or part.get('revision') != revision or part.get('offset') != offset
             or part.get('entry_binding') != owner['entry_binding'][:3] + [owner['binding']]
@@ -91,6 +98,7 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
     key = hashlib.sha256(json.dumps([delegation, source, revision, offset]).encode()).hexdigest()
     authorize()
     with history_lock(history.root / '.lock'):
+        current()
         value = history.read(ident, human, owner)
         updates = value.setdefault('native_result_updates', {})
         old = updates.get(key)
@@ -114,6 +122,13 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
             'command': command, 'ack_reserve': ' ' * 512}
         history._write(value)
     authorize()
+    if stopped is not None and stopped.is_set():
+        with history_lock(history.root / '.lock'):
+            value=history.read(ident,human,owner)
+            row=value['native_result_updates'][key]
+            row['state']='not_sent';row.pop('ack_reserve',None)
+            history._write(value)
+            return _receipt(row)
     try:
         sideband.send(command)
     except (OSError, ValueError, LiveUnavailable):

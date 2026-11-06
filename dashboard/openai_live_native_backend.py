@@ -110,7 +110,7 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
     return dict(result)
 
 
-def return_one_native_part(history, ident, human, owner, delegation, provider, sideband):
+def return_one_native_part(history, ident, human, owner, delegation, provider, sideband, *, stopped=None):
     """Read at most eight source pages and append one fragment per foreground poll.
 
     Current trace-associated worker deliveries use exact canonical revisions,
@@ -118,6 +118,9 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
     readers without revision-bearing traces keep same-turn progress/answers;
     excerpts are never substituted. Renewal remains a separate integration.
     """
+    def current():
+        if stopped is not None and stopped.is_set():raise ValueError('Voice result read ended')
+    current()
     if not provider.authorized(human) or provider.public_live_binding(owner['binding'])!=owner:
         raise ProviderUnavailable('Native result owner changed')
     value=history.read(ident,human,owner)
@@ -129,8 +132,9 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
         if row['next_offset'] is not None and not any(other['source']==row['source']
                 and other['revision']==row['revision'] and other['offset']==row['next_offset'] for other in updates):
             return return_native_part(history,ident,human,owner,delegation,row['source'],row['revision'],
-                row['next_offset'],provider,sideband)
+                row['next_offset'],provider,sideband,stopped=stopped)
     trace=provider.conversation_input_trace(work['native_work']['root'])
+    current()
     if (trace.get('id')!=work['native_work']['root']
             or trace.get('entry_binding')!=owner['entry_binding']):
         raise ProviderUnavailable('Worker result original binding changed')
@@ -147,8 +151,9 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     and isinstance(source,str) and re.fullmatch(r'delivery:[a-f0-9-]{36}',source)
                     and isinstance(revision,str) and re.fullmatch('[a-f0-9]{64}',revision)
                     and not any(row['source']==source and row['revision']==revision for row in updates)):
-                return return_native_part(history,ident,human,owner,delegation,source,revision,0,provider,sideband)
+                return return_native_part(history,ident,human,owner,delegation,source,revision,0,provider,sideband,stopped=stopped)
     native=provider.conversation_input_status(work['native_work']['root'])
+    current()
     if type(native.get('local_turn')) is not int: return None
     def scanned(after):
         if type(after) is not int or after<0:raise ValueError('Invalid native result cursor')
@@ -159,7 +164,9 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
             history._write(latest)
     cursor={'delivery':0,'native':work['native_pipeline'].get('return_after',work['native_work']['native_source_floor'])}
     for _ in range(8):
+        current()
         page=provider.presentation_list(cursor['delivery'],cursor['native'],'after')
+        current()
         if page.get('binding')!=owner['binding']:raise ProviderUnavailable('Native result conversation changed')
         for source in page['items']:
             if (source.get('kind') in ('integrator_answer','integrator_progress')
@@ -167,7 +174,7 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     and source.get('current') is not False and source.get('correction_pending') is not True
                     and source.get('native_binding_current') is not False
                     and not any(row['source']==source['id'] and row['revision']==source['revision'] for row in updates)):
-                result=return_native_part(history,ident,human,owner,delegation,source['id'],source['revision'],0,provider,sideband)
+                result=return_native_part(history,ident,human,owner,delegation,source['id'],source['revision'],0,provider,sideband,stopped=stopped)
                 scanned(int(source['id'].split(':')[1]))
                 return result
         scanned(page.get('cursor',cursor)['native'])
