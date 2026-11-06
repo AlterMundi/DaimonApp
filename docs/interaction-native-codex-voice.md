@@ -708,6 +708,29 @@ an open interaction defect, not qualified factual waiting or full long-term
 continuity. Phone/hearing, repeated physical renewal and useful latency remain
 separate unfinished acceptance. Do not infer completion from catalog readback.
 
+## Terminal close and successor readiness
+
+The native close response distinguishes `confirmed` (the native voice closure
+was observed) from `successor_ready` (this control owner has also retained the
+final sources/work references, settled its existing collectors, closed its
+control connection and committed complete terminal visit metadata). Keep the
+voice lease until that cleanup finishes; a competing start during cleanup is
+refused before opening another native connection. A collector, transcript,
+control-close or terminal-write failure never returns successor readiness.
+
+This is a preparation barrier for automatic renewal, not automatic renewal or
+proof that output was heard. The browser still uses explicit reconnect and its
+existing bounded close wait. A timeout does not stop protected server cleanup,
+prove readiness or authorize replay. A future automatic successor must also
+preserve the original microphone admission/expiry/PCM budget, select a safe
+media boundary and demonstrate useful audio after repeated replacements.
+
+Mounted tests cover delayed final reconciliation with a competing connection,
+exact retained successor sources, failed terminal commits, failed control close,
+incomplete transcripts and failed collectors. These use synthetic native/control
+events, with no model/provider/microphone calls. Existing source/audio acceptance
+remains separate.
+
 ## Original recovery and bounds
 
 Capture starts before enabling the WebRTC microphone track. Raw microphone WAV

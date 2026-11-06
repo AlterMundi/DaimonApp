@@ -57,6 +57,15 @@ an audio-duration counter or a compaction ACK as the two required automatic
 successor installations. See the
 [native boundary findings](interaction-gpt-live-practices.md#native-lifecycle-boundary-inspection--6november2026).
 
+The terminal-close candidate now retains the native lease through final work
+reconciliation/control closure and terminal metadata commit. Its close response
+separates native `confirmed` from `successor_ready`; failures never authorize an
+automatic successor. Mounted delayed-cleanup/competing-start and failure tests
+cover this barrier. This does not install automatic renewal or change the600s
+microphone admission; the logical-visit lifecycle and useful audio through two
+automatic replacements remain pending. See the native guide's
+[terminal close contract](interaction-native-codex-voice.md#terminal-close-and-successor-readiness).
+
 Native Codex page-reload durability now retains bounded local audio fragments
 before final original sealing. Recovered prefixes explicitly disclose a possibly
 missing tail; only explicit saving against a closed capable visit is allowed.

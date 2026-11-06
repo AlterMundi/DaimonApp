@@ -293,6 +293,7 @@ def install(app,config,provider,authorize,origins):
                     with suppress(Exception):await asyncio.shield(starting)
                 if noticing is not None:
                     with suppress(Exception):await asyncio.shield(noticing)
+                control_closed=False
                 if voice is not None:
                     try:
                         await asyncio.to_thread(voice.stop)
@@ -323,9 +324,6 @@ def install(app,config,provider,authorize,origins):
                             # before admitting a successor startup snapshot.
                             if retained_visit and closed and not transcript_failed:
                                 await asyncio.to_thread(history.complete_transcript,visit,human,binding)
-                            if lease is not None and closed:lease.release()
-                            with suppress(Exception):await asyncio.wait_for(socket.send_json({
-                                'type':'closed','id':visit,'confirmed':closed}),1)
                             if collectors:
                                 results=await asyncio.gather(*collectors,return_exceptions=True)
                                 if any(isinstance(value,BaseException)for value in results):collection_failed=True
@@ -347,11 +345,27 @@ def install(app,config,provider,authorize,origins):
                             if not task.done():task.cancel()
                         for task in collectors:
                             with suppress(Exception,asyncio.CancelledError):await task
-                    with suppress(Exception):await asyncio.to_thread(voice.close)
+                    with suppress(Exception):
+                        await asyncio.to_thread(voice.close)
+                        control_closed=True
+                successor_ready=False
                 if retained_visit:
                     if starting is None:
                         with suppress(Exception):await asyncio.to_thread(history.abandon_unstarted,visit,human,binding)
-                    with suppress(Exception):await asyncio.to_thread(history.state,visit,human,binding,'closed'if closed and not collection_failed else'review')
+                    with suppress(Exception):
+                        terminal=await asyncio.to_thread(history.state,visit,human,binding,
+                            'closed'if closed and not collection_failed and not transcript_failed else'review')
+                        successor_ready=(closed and control_closed and not collection_failed and not transcript_failed
+                            and terminal['state']=='closed'and terminal['transcript_complete']is True)
+                # A native close notification is not yet a successor barrier:
+                # late work references, collectors and terminal metadata still
+                # belong to this lease. Publish readiness only after they settle
+                # and this exact control connection has been closed. Failure
+                # retains review; it must never authorize an automatic restart.
                 if lease is not None:lease.release()
+                if voice is not None:
+                    with suppress(Exception):await asyncio.wait_for(socket.send_json({
+                        'type':'closed','id':visit,'confirmed':closed,
+                        'successor_ready':successor_ready}),1)
                 with suppress(Exception):await asyncio.wait_for(socket.close(),1)
     return True
