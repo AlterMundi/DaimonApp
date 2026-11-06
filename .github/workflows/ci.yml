@@ -233,27 +233,27 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.text-rust-cache.outputs.cache-primary-key }}
-      - name: Qualify internal workflow native returns
-        run: python3 -B tests/workflow_native_returns_io.py target/release/telecodex
-      - name: Qualify ordinary routed native returns
-        run: python3 -B tests/routed_native_returns_io.py target/release/telecodex
-      - name: Qualify Live context returns and publication scope
-        run: python3 -B tests/live_context_returns_io.py target/release/telecodex
-      - name: Qualify the optional shared integrating entry
-        run: python3 -B tests/entry_projection_io.py target/release/telecodex
-      # Exercise this new slice before the longer unchanged compatibility group.
-      - name: Qualify live controller retirement and expression choices
+      - name: Qualify isolated native returns and goal-control journeys
         run: |
-          python3 -B tests/goal_controls_io.py target/release/telecodex
-          python3 -B tests/scoped_maintenance_io.py target/release/telecodex
-          python3 -B tests/goal_activation_io.py target/release/telecodex
-          python3 -B tests/goal_delegation_io.py target/release/telecodex
-          python3 -B tests/goal_recovery_io.py target/release/telecodex
-          python3 -B tests/goal_recovery_alerts.py
-          python3 -B tests/goal_inspection_io.py target/release/telecodex
-          python3 -B tests/live_tasks_io.py target/release/telecodex
-          python3 -B tests/warm_controller_io.py target/release/telecodex
-          python3 -B tests/heartbeat_io.py target/release/telecodex
+          python3 - <<'PYTHON'
+          import concurrent.futures, subprocess, sys
+          # These existing cases own separate temporary stores/native peers and
+          # only read the built executable. Keep the established four-worker
+          # ceiling, every invocation/flag, all logs and every nonzero outcome.
+          cases = (('tests/workflow_native_returns_io.py', 'target/release/telecodex'), ('tests/routed_native_returns_io.py', 'target/release/telecodex'), ('tests/live_context_returns_io.py', 'target/release/telecodex'), ('tests/entry_projection_io.py', 'target/release/telecodex'), ('tests/goal_controls_io.py', 'target/release/telecodex'), ('tests/scoped_maintenance_io.py', 'target/release/telecodex'), ('tests/goal_activation_io.py', 'target/release/telecodex'), ('tests/goal_delegation_io.py', 'target/release/telecodex'), ('tests/goal_recovery_io.py', 'target/release/telecodex'), ('tests/goal_recovery_alerts.py',), ('tests/goal_inspection_io.py', 'target/release/telecodex'), ('tests/live_tasks_io.py', 'target/release/telecodex'), ('tests/warm_controller_io.py', 'target/release/telecodex'), ('tests/heartbeat_io.py', 'target/release/telecodex'))
+          def qualify(argv):
+              result = subprocess.run([sys.executable, '-B', *argv], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              return argv, result
+          failed = False
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              jobs = [pool.submit(qualify, argv) for argv in cases]
+              for job in concurrent.futures.as_completed(jobs):
+                  argv, result = job.result()
+                  print(f'{" ".join(argv)}: exit {result.returncode}', flush=True)
+                  print(result.stdout, end='', flush=True)
+                  failed |= result.returncode != 0
+          sys.exit(1 if failed else 0)
+          PYTHON
       # Native-question HTTP journeys also decode voice; provision after goals,
       # before the first voice-capable compatibility group.
       - name: Select voice dependency cache
@@ -450,6 +450,7 @@ jobs:
       - run: python -B tests/dashboard_openai_live_native_commit.py
       - run: python -B tests/dashboard_openai_live_native_work.py
       - run: python -B tests/dashboard_openai_live_native_results.py
+      - run: python -B tests/dashboard_openai_live_native_renewal.py
       - run: python -B tests/dashboard_openai_live_seals.py
       - run: python -B tests/dashboard_openai_live_native_backend.py
       - run: python -B tests/dashboard_openai_live_api.py

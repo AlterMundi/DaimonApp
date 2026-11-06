@@ -495,6 +495,26 @@ model peers remain synthetic; no paid inference or device acceptance is claimed.
 
 #### Optional native client backend prototype
 
+For a separately selectable comparison, the owner enables
+`openai_live.native_backend_enabled=true`. Keep `backend_mode` and the existing
+Responses settings unchanged. Under the hood then offers **OpenAI · GPT-Live +
+CompAII** in addition to the current modes; the additional option is disabled
+when the server does not advertise it. Selecting it sends only the bounded
+`backend="native"` admission choice, authenticated through the existing
+grant/CSRF. The server checks its configured availability and actual native
+reader before paid creation or microphone permission. The browser requires the
+matching native prepared-mode acknowledgment, freezing its choice before any
+asynchronous setup; there is no switch/fallback during capture.
+
+This additional choice requires the current fresh-visit/no-upload-enrollment
+profile. It uses exact source seals and client delegation without managed
+Responses tools, even when the unchanged Responses mode has its conversation
+reader enabled. The admitted `backend_mode` is retained in the existing visit
+journal and status response. No additional account, key, history store or
+automatic provider activation is created. Qwen/current voice, Codex voice and
+the original GPT-Live mode/default remain unchanged. Operator enabling an option
+is not human microphone activation or real identity/memory/hearing acceptance.
+
 The owner may explicitly select `openai_live.backend_mode="native"` for the
 public GPT-Live comparison. The default remains `"responses"`; existing provider,
 native Codex login and deliberately chosen integrator settings are unchanged.
@@ -524,6 +544,17 @@ including when the durable capture-end marker has not yet been written.
 
 Same-turn canonical native progress/results are polled through bounded existing
 presentation pages and returned with the source/revision/append safeguards above.
+Worker returns use the original's existing native trace, including all covered
+request links rather than only a delivery's representative request. The trace
+now includes the scoped canonical source revision, or null when that source is
+unavailable. Up to five routes/eight results per route are inspected per poll;
+an explicit `more_results` remains incomplete coverage. Available, current,
+instruction-covered results are rechecked against the exact original and
+canonical revision immediately before one context append. A worker can finish
+after the native turn and outside the current conversation page; no history
+rescan, repeated ASR or new work is required. Unavailable routes are read afresh
+later. Older readers lacking result revisions keep same-turn results only;
+their excerpts are never manufactured into a revision or speech source.
 Ordinary speech fragments prefer sentence/whitespace boundaries within the byte
 cap instead of splitting a word. Injection ACKs remain separate from hearing.
 Native handoff observation is not a completed task: admitted native work remains
@@ -531,9 +562,18 @@ owned by Codex after voice closes. Preparation failures, while current authority
 remains valid, use the single close-intent/finalization path and retain their
 receipts. A duplicate browser close observes that same intent. Confirmed closure
 updates the UI to the ended/review state instead of leaving “Finishing” visible.
+Result discovery also has one owned task per visit: a slow native trace or
+canonical read cannot occupy the browser-control loop. Close sets the existing
+visit stop fence before cleanup; reads check it between owner calls and before
+creating a new append intent. If Close is observed after intent persistence but
+before the transport call, the journal records `not_sent`, distinct from a lost
+send acknowledgment. Neither state permits replay. Already-started writes keep
+their actual outcome. Cleanup waits for the owned task with the existing finite
+50second bound; it never cancels the independent native work or reopens audio.
 
 This prototype deliberately accepts only `resume_mode="fresh"`. Native stored
-fork/semantic continuation, older and cross-turn worker returns, first-marker
+fork/semantic continuation, returns across voice visits, complete older-trace
+pagination, cross-turn native callbacks, first-marker
 question scope, long/concurrent semantic incorporation and actual memory/device/
 hearing acceptance still require integration. They remain part of the full goal;
 do not report this source prototype as a completed voice circuit or silently
@@ -547,6 +587,61 @@ reader before paid creation, failed interpretation with one voice close, and a
 slow interpretation where Close stays responsive and the late derivative is
 retained without native dispatch. All provider/model peers are synthetic. These
 checks do not establish real CompAII identity, memory, speech, billing or hearing.
+Four additional pipeline tests cover trace-located late workers, unavailable and
+uncovered results becoming observable later, fresh association rechecks and
+foreign-owner refusal. The owner/SQLite/native HTTP journey checks canonical
+revision equality for both originals covered by a shared worker delivery.
+A further mounted race keeps a trace read blocked while Close reaches finishing
+and trusted closure; the work stays admitted and no late context append occurs.
+Two result tests distinguish closure during a canonical read from the known
+unsent post-intent outcome. These33mounted and13result tests pass with the locked
+dependencies on Python3.11 and3.13; no provider/device acceptance follows.
 The result scan retains its native cursor across bounded catch-up batches; a
 tested64-item unrelated backlog does not permanently hide the later matching
 answer. Source cursors/unknown append guards still apply before any new send.
+# Native results across fresh voice connections
+
+The native client-delegation mode now has a source-prepared return path for work
+that outlives a voice connection. This is not provider stored-session forking or
+proof of semantic/physical continuity. The existing persistent native thread owns
+identity, memory and work. A fresh native voice visit carries only the previous
+native visit ID and a flat historical-work scan cursor, never a copied transcript
+tree, another work submission, old audio or a new Responses reasoner.
+
+The live return task alternates current work with one previous work origin. It
+runs outside browser-control handling, at most once per500ms, only while the
+authorized finite native visit is open. Discovery stays within the existing
+512-record/32MiB journal limit and rotates through all eligible owner-matched
+closed visits; a large retained backlog therefore increases scan latency rather
+than creating unbounded concurrent readers. No periodic/background attention is
+installed. The existing native route/result/page limits remain unchanged, including
+the outstanding older-worker-result pagination gap.
+
+Before a historical result can return, its exact retained original/delegation,
+native acknowledgment, current canonical revision and character offset are
+rechecked. A flat origin claim records the destination visit/key before the
+destination append intent. Trusted append acknowledgments remain in that
+destination; subsequent replacements resolve the reference rather than repeat
+the fragment. A partial two-file commit, missing destination, unknown write or
+known stopped append stays held. No inference, old wire command, media or work
+is automatically replayed. Claims are at most128 per origin inside the unchanged
+256KiB record/32MiB journal bounds; capacity refuses before another append.
+
+Historical returns use a new event ID with `delegation_id: null`, preserving the
+old client delegation only in the local source association. OpenAI documents null
+delegation commentary for application-provided context in its
+[language/greeting guidance](https://developers.openai.com/api/docs/guides/live-prompting#language-and-pronunciation),
+and coherent bounded commentary/thinking chunks in
+[client delegation](https://developers.openai.com/api/docs/guides/live-delegation#client-delegation).
+Using this unscoped context channel for an earlier native result is an application
+integration choice; the documentation and synthetic ACKs do not prove actual
+semantic incorporation, correct spoken continuation or hearing.
+
+Seven renewal-component tests cover three successive connections, exact long-result
+cursors, restart/new admission, flat scan persistence, unknown append and partial
+commit preservation, current-source and actor refusal. The mounted API journey
+also closes the original native voice, introduces a late worker result and returns
+it to a fresh connection without another original, ASR or native dispatch. These
+checks use synthetic native/provider peers. Real first-use identity/memory/work,
+speech/interruption, repeated physical renewal and semantic checkpoints remain
+unfinished; this source extension has not been selected on a receiver.

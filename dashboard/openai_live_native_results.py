@@ -11,7 +11,7 @@ from .provider import ProviderUnavailable
 
 
 def return_native_part(history, ident, human, owner, delegation, source, revision, offset,
-                       provider, sideband):
+                       provider, sideband, *, stopped=None, source_visit=None):
     """Read a current source, persist one append intent, then send once.
 
     Canonical source association is not proof of semantic incorporation, task
@@ -29,21 +29,31 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
         if not provider.authorized(human) or provider.public_live_binding(owner['binding']) != owner:
             raise ProviderUnavailable('Public native result owner changed')
 
+    def current():
+        if stopped is not None and stopped.is_set():
+            raise ValueError('Voice ended before a new native result append')
+
+    origin=ident if source_visit is None else history._ident(source_visit)
+    current()
     authorize()
     with history_lock(history.root / '.lock'):
-        value = history.read(ident, human, owner)
+        value = history.read(origin, human, owner)
+        if origin!=ident and value['state']!='closed':
+            raise ValueError('A previous voice origin must have a trusted closure')
         work = value['delegations'].get(delegation, {})
         intent = work.get('native_work', {})
         if work.get('target') != 'client' or intent.get('state') != 'observed':
             raise ValueError('A source-bound native work acknowledgment is required')
         intent = dict(intent)
     native = provider.conversation_input_status(intent['root'])
+    current()
     proof = native.get('foreground_delegation') or {}
     if (native.get('entry_binding') != owner['entry_binding'] or native.get('id') != intent['root']
-            or native.get('foreground_dialogue') != ident or not isinstance(proof, dict)
+            or native.get('foreground_dialogue') != origin or not isinstance(proof, dict)
             or proof.get('intent_id') != intent['intent_id']):
         raise ValueError('Native result belongs to another work intent')
     part = provider.presentation_part(source, revision, offset)
+    current()
     kind = part.get('kind')
     if (part.get('id') != source or part.get('revision') != revision or part.get('offset') != offset
             or part.get('entry_binding') != owner['entry_binding'][:3] + [owner['binding']]
@@ -88,9 +98,12 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
     label = ('Native progress data' if kind == 'integrator_progress' else 'Native result data')
     content = label + (' (partial; more remains):\n' if next_offset is not None else ':\n') + text
     event_type = 'session.thinking.append' if kind == 'integrator_progress' else 'session.commentary.append'
-    key = hashlib.sha256(json.dumps([delegation, source, revision, offset]).encode()).hexdigest()
+    identity=[delegation,source,revision,offset]
+    if origin!=ident:identity.insert(0,origin)
+    key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
     authorize()
     with history_lock(history.root / '.lock'):
+        current()
         value = history.read(ident, human, owner)
         updates = value.setdefault('native_result_updates', {})
         old = updates.get(key)
@@ -101,19 +114,46 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
             raise ValueError('Native result needs a current finite voice visit; no append attempted')
         if len(updates) >= 128:
             raise ValueError('Native result context capacity reached; retain the source cursor')
-        related = [row for row in updates.values() if row['delegation'] == delegation]
+        related = [row for row in updates.values() if row['delegation'] == delegation
+                   and row.get('origin_visit',ident)==origin]
+        if origin!=ident:
+            # Keep one flat reference at the work origin before the destination
+            # intent. Any interrupted cross-file commit stays held, never replayed.
+            original=history.read(origin,human,owner)
+            if original['state']!='closed':raise ValueError('Voice origin changed')
+            inherited=_origin_returns(history,original,human,owner,delegation)
+            for target,row in inherited:
+                if (row['source'],row['revision'],row['offset'])==(source,revision,offset):
+                    return {**_receipt(row),'state':'already_forwarded' if row['state']=='context_injected' else 'held',
+                            'forwarded_visit':target,'original_state':row['state']}
+            related=[row for row in related if row.get('origin_visit')==origin]
+            related += [row for _,row in inherited]
         if any(row['state'] != 'context_injected' for row in related):
             raise ValueError('A previous native result append is unconfirmed; never skip or repeat it')
         if offset and not any(row['source'] == source and row['revision'] == revision
                 and row['next_offset'] == offset for row in related):
             raise ValueError('Read this canonical result in exact retained cursor order')
         command = {'type': event_type, 'event_id': str(uuid.uuid4()),
-            'delegation_id': delegation, 'content': content}
+            'delegation_id': delegation if origin==ident else None, 'content': content}
+        if origin!=ident:
+            claims=original.setdefault('native_return_claims',{})
+            if len(claims)>=128:raise ValueError('Native return reference capacity reached')
+            claims[key]={'target':ident,'key':key,'delegation':delegation,
+                         'source':source,'revision':revision,'offset':offset}
+            history._write(original)
         updates[key] = {'state': 'intent', 'delegation': delegation, 'source': source,
             'revision': revision, 'offset': offset, 'next_offset': next_offset,
             'command': command, 'ack_reserve': ' ' * 512}
+        if origin!=ident:updates[key]['origin_visit']=origin
         history._write(value)
     authorize()
+    if stopped is not None and stopped.is_set():
+        with history_lock(history.root / '.lock'):
+            value=history.read(ident,human,owner)
+            row=value['native_result_updates'][key]
+            row['state']='not_sent';row.pop('ack_reserve',None)
+            history._write(value)
+            return _receipt(row)
     try:
         sideband.send(command)
     except (OSError, ValueError, LiveUnavailable):
@@ -127,6 +167,29 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
         result = _receipt(row)
     authorize()
     return result
+
+
+def _origin_returns(history,original,human,owner,delegation):
+    """Read flat references across replacements without copying transcript trees.
+
+    A missing destination intent after a retained claim is a held partial commit,
+    not permission to manufacture another event or repeat native work.
+    Caller holds the existing journal lock; no new writer/store is introduced.
+    """
+    ident=original['id']
+    rows=[(ident,row) for row in original.get('native_result_updates',{}).values()
+          if row['delegation']==delegation and row.get('origin_visit',ident)==ident]
+    claims=original.get('native_return_claims',{})
+    if not isinstance(claims,dict) or len(claims)>128:raise ValueError('Native return reference bound exceeded')
+    for claim in claims.values():
+        if claim['delegation']!=delegation:continue
+        target=history.read(claim['target'],human,owner)
+        row=target.get('native_result_updates',{}).get(claim['key'])
+        if (row is None or row.get('origin_visit')!=ident or row['delegation']!=delegation
+                or any(row[k]!=claim[k] for k in ('source','revision','offset'))):
+            raise ValueError('Native return destination is unconfirmed; preserve the original claim')
+        rows.append((target['id'],row))
+    return rows
 
 
 def _receipt(row):

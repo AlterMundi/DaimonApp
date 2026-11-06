@@ -23,7 +23,7 @@ from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
-from .openai_live_native_backend import prepare_native, return_one_native_part
+from .openai_live_native_backend import prepare_native, return_next_native_part
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
 
@@ -36,7 +36,7 @@ def install(app, config, provider, authorize, origins):
     native_backend=backend_mode=='native'
     if (set(selected)-{'enabled','api_key_file','identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
@@ -67,6 +67,11 @@ def install(app, config, provider, authorize, origins):
         raise ValueError('Stored continuation requires explicit storage configuration')
     if native_backend and resume!='fresh':
         raise ValueError('Native client renewal needs its sourced continuation integration; no silent mode fallback')
+    native_enabled=selected.get('native_backend_enabled',False)
+    if type(native_enabled) is not bool or native_enabled and (native_originals or resume!='fresh'):
+        raise ValueError('The additional native choice requires fresh, sealed-source visits')
+    native_spec=session_spec(instructions,client_delegation=True,**options) if native_enabled else None
+    configured_native,configured_spec,configured_seals=native_backend,spec,source_seals
     seconds=selected.get('session_seconds',600)
     history=LiveCreations(Path(config['state_dir'])/'public-live-visits')
     uploads=asyncio.Semaphore(2)
@@ -95,7 +100,7 @@ def install(app, config, provider, authorize, origins):
         try:
             value=await asyncio.to_thread(history.owned,visit,session['human'],binding)
             # SDP/owner internals are unnecessary for a recovery/status read.
-            return {key:value[key] for key in ('id','state','recordings','delegations','finalization','latest_usage') if key in value}
+            return {key:value[key] for key in ('id','state','backend_mode','recordings','delegations','finalization','latest_usage') if key in value}
         except (OSError,ValueError,RenderError):raise HTTPException(404,'Voice visit unavailable') from None
 
     @app.get('/api/interaction/voice/gpt-live/visits/{visit}/events')
@@ -132,11 +137,12 @@ def install(app, config, provider, authorize, origins):
 
     @app.websocket('/api/interaction/voice/gpt-live')
     async def live(socket:WebSocket):
+        native_backend,spec,source_seals=configured_native,configured_spec,configured_seals
         if socket.headers.get('origin') not in origins:
             await socket.close(code=1008);return
         await socket.accept()
-        lease=sideband=creating=read_browser=read_provider=preparing=None
-        result_index=0
+        lease=sideband=creating=read_browser=read_provider=preparing=returning=None
+        result_index=0;result_poll=0
         preparation_stopped=threading.Event()
         visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
         async def message(limit):
@@ -162,8 +168,12 @@ def install(app, config, provider, authorize, origins):
         try:
             async with asyncio.timeout(seconds+60):
                 meta=await asyncio.wait_for(message(8192),5)
-                if set(meta)-{'id','binding','csrf','authorization'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
+                if set(meta)-{'id','binding','csrf','authorization','backend'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
                     raise ValueError('Select one public voice admission')
+                if 'backend' in meta:
+                    if meta['backend']!='native' or not (configured_native or native_enabled):
+                        raise ValueError('This public voice backend is not enabled')
+                    native_backend,spec,source_seals=True,native_spec or configured_spec,True
                 visit=history._ident(meta['id']);binding=meta['binding']
                 session,recheck,actor=await bind_voice_actor(provider,authorize,socket,meta,require_voice=False)
                 if dict(session).get('scope')=='monitor_readonly':raise HTTPException(403,'Voice interaction access required')
@@ -177,7 +187,9 @@ def install(app, config, provider, authorize, origins):
                 # Validate this explicitly configured project file before mic
                 # permission; never discover or reinterpret Codex credentials.
                 await asyncio.to_thread(client._project_key)
-                admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,resume_spec=spec if resume=='stored_fork' else None)
+                admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
+                    resume_spec=spec if resume=='stored_fork' else None,
+                    backend_mode='native' if native_backend else 'responses')
                 admitted=True
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
@@ -210,7 +222,7 @@ def install(app, config, provider, authorize, origins):
                                 break
                             if await asyncio.to_thread(history.event,visit,human,owner,event):
                                 await send({'type':'provider_event','event':event})
-                            if (context and event['type']=='response.event'
+                            if (context and not native_backend and event['type']=='response.event'
                                     and event.get('event',{}).get('type')=='response.completed'):
                                 # Only completed trusted function items can select a
                                 # read. Provider data never grants work execution.
@@ -226,6 +238,11 @@ def install(app, config, provider, authorize, origins):
                             if action!={'type':'close'}:raise ValueError('Select a matching source acknowledgment or an explicit close')
                             await begin_close()  # A duplicate close observes the same intent.
                         read_browser=asyncio.create_task(message(1024))
+                    if returning is not None and returning.done():
+                        completed=returning;returning=None
+                        try:completed.result()
+                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable):
+                            if not closing:native_failure=True;await begin_close()
                     if preparing is not None and preparing.done():
                         completed=preparing;preparing=None
                         try:outcome=completed.result()
@@ -254,14 +271,11 @@ def install(app, config, provider, authorize, origins):
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
                                         stopped=preparation_stopped))
-                            if native_backend:
-                                ready=[key for key,row in value['delegations'].items()
-                                    if row.get('native_work',{}).get('state')=='observed']
-                                if ready:
-                                    result_index%=len(ready)
-                                    await asyncio.to_thread(return_one_native_part,history,visit,human,owner,
-                                        ready[result_index],provider,sideband)
-                                    result_index+=1
+                            if native_backend and returning is None and asyncio.get_running_loop().time()>=result_poll:
+                                result_poll=asyncio.get_running_loop().time()+.5
+                                returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
+                                    result_index,provider,sideband,stopped=preparation_stopped))
+                                result_index+=1
                     if closing:
                         command=await asyncio.to_thread(history.close_intent,visit,human,owner)
                         if command is not None:await asyncio.to_thread(sideband.send,command)
@@ -296,6 +310,8 @@ def install(app, config, provider, authorize, origins):
                         with suppress(BaseException):await asyncio.wait_for(asyncio.shield(creating),50)
                     if preparing is not None:
                         with suppress(BaseException):await asyncio.wait_for(asyncio.shield(preparing),50)
+                    if returning is not None:
+                        with suppress(BaseException):await asyncio.wait_for(asyncio.shield(returning),50)
                     if sideband is not None:
                         with suppress(Exception):await asyncio.to_thread(sideband.detach)
                     if admitted:

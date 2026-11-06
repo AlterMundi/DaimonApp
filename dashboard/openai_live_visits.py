@@ -135,9 +135,11 @@ class LiveCreations:
             raise ValueError('Public Live receipt belongs to another conversation')
         return value
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
+        if backend_mode is not None and backend_mode not in ('responses','native'):
+            raise ValueError('Select the admitted public voice backend')
         if resume_spec is not None:
             creation_request('v=0 validation only',resume_spec)
             if resume_spec.get('store') is not True:raise ValueError('Stored continuation requires explicit project storage selection')
@@ -157,6 +159,15 @@ class LiveCreations:
                 'state':'prepared', 'created_at':time.time(), 'source_bound':2*1024*1024, 'recordings':[],
                 'delegations':{}, 'max_input_pcm_bytes':seconds*32000,
                 'admission':{'epoch':self.epoch, 'expires':time.monotonic()+seconds, 'ended':False}}
+            if backend_mode is not None:value['backend_mode']=backend_mode
+            if backend_mode=='native':
+                previous=[v for v,_ in records if v['owner']==owner and v['state']=='closed'
+                          and v.get('backend_mode')=='native']
+                if previous:
+                    parent=max(previous,key=lambda v:(v['created_at'],v['id']))
+                    value['native_continuation_from']=parent['id']
+                    if parent.get('native_return_scan'):
+                        value['native_return_scan']=parent['native_return_scan']
             if resume_spec is not None:
                 value['continuity']='stored_fork'
                 value['configuration_sha256']=self._configuration(resume_spec)
@@ -426,6 +437,36 @@ class LiveCreations:
             page=selected[:1]
             return {'visits':[{k:v[k] for k in ('id','created_at','state')} for v in page],
                 'more':len(selected)>1,'before':page[-1]['id'] if len(selected)>1 else None}
+
+    def native_return_origin(self,ident,human,frozen):
+        """One historical work reference per live poll, within existing journal bounds.
+
+        All owners/512records/32MiB remain bounded by _records. The cursor is two
+        identifiers, never a copied archive. No media, inference or work dispatch.
+        """
+        owner=self._owner(human,frozen)
+        with history_lock(self.root / '.lock'):
+            current=self.read(ident,human,frozen)
+            self.check_capture(current)
+            if current.get('backend_mode')!='native':raise ValueError('Select the native voice comparison')
+            records,_=self._records()
+            # Closure/owner/work proofs establish eligibility. Wall-clock
+            # ordering is presentation, not authority to lose a retained job.
+            records=[v for v,_ in records if v['owner']==owner and v['state']=='closed' and v['id']!=ident]
+            records.sort(key=lambda v:(v['created_at'],v['id']))
+            origins=[{'visit':v['id'],'delegation':key} for v in records
+                     for key,work in sorted(v['delegations'].items())
+                     if work.get('target')=='client' and work.get('native_work',{}).get('state')=='observed']
+            if not origins:return None
+            previous=current.get('native_return_scan')
+            index=0
+            if previous is not None:
+                if previous not in origins:raise ValueError('Native return cursor needs review; no reset or work replay')
+                index=(origins.index(previous)+1)%len(origins)
+            selected=origins[index]
+            current['native_return_scan']=selected
+            self._write(current)
+            return dict(selected)
 
     def source_page(self,ident,human,binding,*,after=0,revision=None):
         value=self.owned(ident,human,binding)
