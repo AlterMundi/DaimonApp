@@ -567,7 +567,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   threaded.ui.stop();
   const stream=single.nodes.get('#conversation-timeline');
   assert.equal(stream.children[0].dataset.timelineKey,'voice-history','The history toolbar remains above ordered message cards');
-  const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&c.dataset.timelineKey!=='voice-history');
+  const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&!c.dataset.timelineKey.startsWith('voice-history'));
   assert.deepEqual(messageCards().map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='native:1').children[1].textContent,'Progress update.');
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='input:between').children[0].textContent,'You');

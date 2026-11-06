@@ -3,7 +3,7 @@
 // originals and trusted sideband sources; it never commits synthetic turns.
 window.PublicLiveConversation=(()=>{
   const supported=()=>!!(window.RTCPeerConnection&&window.StreamingVoice?.supported()&&window.VoiceInput?.recoveryStore&&window.indexedDB&&navigator.locks?.request);
-  function create({headers,getBinding,onState=()=>{},onItem=()=>{},onRecovery=()=>{}}){
+  function create({headers,getBinding,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map();
@@ -11,7 +11,7 @@ window.PublicLiveConversation=(()=>{
     let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0;
-    let restored,restoring;
+    let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(message?{message}:{})});
@@ -204,13 +204,55 @@ window.PublicLiveConversation=(()=>{
         await wait(ready,15000);return true;
       }catch(error){if(owned===epoch&&!closing)await hold(error.name==='NotAllowedError'?'Microphone access was denied.':'Voice paused. Your original audio is kept.');return false;}
     }
-    async function restoreHistory(){
-      const selected=getBinding();if(restored===selected)return;
+    async function restoreHistory(older=false,explicit=false){
+      const selected=getBinding(),generation=historyGeneration;
+      if(!older&&restored===selected||historyFailed===selected&&!explicit)return;
       if(restoring)return restoring;
-      restoring=review().then(()=>{if(selected===getBinding())restored=selected;}).finally(()=>{restoring=undefined;});
-      return restoring;
+      if(older&&(!historyBefore||restored!==selected))return;
+      const cursor=older?historyBefore:undefined;
+      const current=()=>getBinding()===selected&&historyGeneration===generation;
+      const read=async path=>{
+        const response=await fetch(new URL('api/interaction/voice/gpt-live/visits'+path,window.location.href),{
+          headers:{...headers(),'x-voice-binding':selected},signal:AbortSignal.timeout(15000)});
+        if(!response.ok||!current())throw Error('Voice history unavailable');
+        const value=await response.json();if(!current())throw Error('Voice history changed');return value;
+      };
+      onHistory({loading:true,more:!!historyBefore});
+      restoring=(async()=>{
+        await review();if(!current())throw Error('Voice history changed');
+        const page=await read(cursor?'?before='+encodeURIComponent(cursor):'');
+        if(!Array.isArray(page.visits)||page.visits.length>1||page.more&&(!/^[a-f0-9-]{36}$/.test(page.before||'')||page.before===cursor))throw Error('Voice history cursor changed');
+        for(const entry of page.visits){
+          if(!/^[a-f0-9-]{36}$/.test(entry.id)||!Number.isFinite(entry.created_at))throw Error('Voice history source changed');
+          // The current connection already forwards this visit. Restoring its
+          // source concurrently must not duplicate live text or captions.
+          if(entry.id===visit&&(active||starting||closing))continue;
+          if(historyVisit!==entry.id){historyVisit=entry.id;historySeen=new Set();}
+          let after=0,revision,sourceOrder=0;
+          for(let n=0;n<128;n++){
+            const value=await read('/'+entry.id+'/events?after='+after+(revision?'&revision='+encodeURIComponent(revision):''));
+            if(!Array.isArray(value.items)||value.items.length>64||!Number.isSafeInteger(value.after)||value.after<after||value.after>2*1024*1024
+                ||value.more&&value.after===after||revision&&revision!==value.revision)throw Error('Voice source cursor changed');
+            for(const row of value.items){
+              const order=sourceOrder++,event=row.event;if(!event||typeof row.event_id!=='string'||event.event_id!==row.event_id)throw Error('Voice source changed');
+              if(historySeen.has(row.event_id))continue;
+              if(historySeen.size>=8192)throw Error('Voice history exceeds its bound');
+              historySeen.add(row.event_id);
+              onItem({visit:entry.id,item:event,public_live:true,history:true,source_order:order,observed_at:new Date(entry.created_at*1000).toISOString()});
+            }
+            if(!value.more)break;
+            if(n===127)throw Error('Voice history page bound reached');
+            after=value.after;revision=value.revision;
+          }
+        }
+        historyBefore=page.more?page.before:undefined;restored=selected;
+        historyFailed=undefined;onHistory({loading:false,more:!!historyBefore});
+      })();
+      try{return await restoring;}
+      catch(error){if(current()){historyFailed=selected;onHistory({loading:false,more:!!historyBefore,error:true,older});}throw error;}
+      finally{restoring=undefined;}
     }
-    return {start,hold,reconnect:start,restoreHistory,resetHistory:()=>{restored=undefined;},
+    return {start,hold,reconnect:start,restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyVisit=historyFailed=undefined;historySeen=new Set();onHistory({loading:false,more:false});},
       retry:value=>withLock(value.voice_visit,()=>upload(value)),
       discard:value=>withLock(value.voice_visit,async()=>{if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);originals.delete(value.id);notify();}),
       setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},

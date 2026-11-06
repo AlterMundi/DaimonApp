@@ -23,6 +23,14 @@ const server=http.createServer(async(req,res)=>{
  try{
  if(url.pathname.startsWith('/api/')){
   const route=url.pathname.slice(5);
+  if(route==='interaction/voice/gpt-live/visits'){
+   const older=url.searchParams.has('before');
+   return json({visits:publicCase?[{id:older?'22222222-2222-4222-8222-222222222222':'11111111-1111-4111-8111-111111111111',created_at:1704067000-(older?10:0),state:'created'}]:[],more:publicCase&&!older,before:publicCase&&!older?'11111111-1111-4111-8111-111111111111':null});
+  }
+  if(route.startsWith('interaction/voice/gpt-live/visits/')&&route.endsWith('/events')){
+   const older=route.includes('22222222-2222-4222-8222-222222222222');
+   return json({items:(older?['Una respuesta anterior.']:['Una corrección',' guardada.']).map((delta,i)=>({event_id:'retained-'+i,event:{event_id:'retained-'+i,type:'session.output_transcript.delta',delta}})),after:200,revision:'retained-source',more:false});
+  }
   if(route==='interaction/voice/codex/visits'){
    if(!codexCase)return json({visits:[],more:false,before:null});
    const older=url.searchParams.has('before'),cursor='12345678-1234-4234-8234-123456789012';
@@ -131,6 +139,10 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  }
 
  if(publicCase){
+  await page.locator('#conversation-timeline').getByText('Una corrección guardada.',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).click();
+  await page.locator('#conversation-timeline').getByText('Una respuesta anterior.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>codexFixture.opens),0,'Reading source history never opens voice');
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','Public Live never replaces the default');
   await page.locator('#conversation-message').fill('Keep this draft while I compare voices.');
   await selectEngine('gpt-live');await page.locator('#conversation-companion pre').click();
