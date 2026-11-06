@@ -29,3 +29,31 @@ not complete lane enable/pause, Core adoption or actual operational acceptance.
 Preserve current work, providers, all other goal states and the original voice
 roadmap. Software delivery uses the normal all-receiver route and actual evidence;
 source/browser checks alone do not establish served or human-phone acceptance.
+
+## Versioned native control successor
+
+The source successor adds `controls.schema=telecodex.heartbeat-controls/v1` with
+`conditional_global=true`, `conditional_lane=true` and explicit `actions` in
+status. These describe supported writes, not operational proof or receiving
+selection. The old selected reader may omit them. A UI must not infer support
+from a release label, `admission_paused=false` or a configured producer.
+
+The same scoped `heartbeat_control` handler accepts:
+
+```json
+{"action":"set_paused","paused":true,"generation":7}
+{"action":"set_lane_paused","lane":"messaging","paused":false,"generation":2,"global_generation":7}
+```
+
+Both global and lane revisions are checked atomically before any write or
+owned-execution cancellation. A stale page must refresh; it must not silently
+retry its intent with a newer revision. Unsupported lanes cannot be activated.
+Resources/cursors are conserved and no account or producer is created by these
+commands. Bare owner `pause` remains the unconditional emergency control.
+
+Owner console equivalents are `heartbeat pause GLOBAL_GENERATION`, and
+`heartbeat pause-lane LANE GLOBAL_GENERATION LANE_GENERATION` or
+`heartbeat resume-lane LANE GLOBAL_GENERATION LANE_GENERATION`.
+Existing explicit owner commands remain compatible. The source change does not
+add a web write endpoint, operational evidence, Core adoption or activation;
+those remain actual receiving integration work.

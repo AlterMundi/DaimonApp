@@ -346,7 +346,10 @@ def qualify_inbox(binary):
             json.dumps(contract),
         )
         j.answer_worker(8, "The original owner is still progressing.", finish=False, phase="commentary")
-        selected = j.read("heartbeat", "resume-lane", "messaging", "0")["result"]
+        selected = j.read("heartbeat", "resume-lane", "messaging",
+                          str(paused["generation"]), "0")["result"]
+        assert selected["controls"]["conditional_global"] is True
+        assert selected["controls"]["conditional_lane"] is True
         assert not selected["lanes"]["messaging"]["paused"]
         assert all(v["paused"] for k, v in selected["lanes"].items() if k != "messaging")
         j.read("heartbeat", "resume", str(paused["generation"]))
@@ -366,6 +369,13 @@ def qualify_inbox(binary):
             if o["evidence"]["reason"] == "matrix_original_available"
         )
         assert offered["source"] == "matrix-inbox:" + first["message_id"]
+        # A stale app pause must not interrupt this actual owned execution.
+        before_stale = j.read("heartbeat", "status")["result"]
+        j.read("heartbeat", "pause", "0", ok=False)
+        after_stale = j.read("heartbeat", "status")["result"]
+        assert after_stale["executions"] == before_stale["executions"]
+        assert after_stale["generation"] == before_stale["generation"]
+        assert not after_stale["admission_paused"]
         # A configured progress source remains silent while its lane is paused.
         assert not any(o["evidence"]["reason"] == "worker_progress_available"
                        for o in packet["evidence"]["offers"])
@@ -402,7 +412,10 @@ def qualify_inbox(binary):
         hold["enabled"] = True
         due()
         assert entered.wait(timeout=45), "Finite source read did not start"
-        paused = j.read("heartbeat", "pause-lane", "messaging")["result"]
+        current = j.read("heartbeat", "status")["result"]
+        paused = j.read("heartbeat", "pause-lane", "messaging",
+                        str(current["generation"]),
+                        str(current["lanes"]["messaging"]["generation"]))["result"]
         assert not paused["admission_paused"] and paused["lanes"]["messaging"]["paused"]
         assert (
             paused["producer"]["checks"] == 3
@@ -420,6 +433,7 @@ def qualify_inbox(binary):
         assert len(j.bounded) == 1
         due()
         j.read("heartbeat", "resume-lane", "messaging",
+               str(status["generation"]),
                str(status["lanes"]["messaging"]["generation"]))
         j.wait(lambda: len(j.bounded) == 2, seconds=45)
         j.wait(
@@ -485,7 +499,7 @@ def qualify_inbox(binary):
         })
         assert j.instructions(8)[0] == primary_before, "Primary original was replayed, rewritten or retired"
         finish(packet)
-        final = j.read("heartbeat", "pause")["result"]
+        final = j.read("heartbeat", "pause", str(status["generation"]))["result"]
         assert (
             final["producer"]["checks"] == 4
             and final["resources"]["reserved_provider_attempts"] == 9
