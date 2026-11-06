@@ -505,6 +505,7 @@ mod public_interpretation_tests {
     #[test]
     fn public_interpretation_requires_exact_private_canonical_wave() {
         let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = root.path().join("capture");
         let mut data = Vec::new();
         data.extend(b"RIFF");
@@ -518,6 +519,9 @@ mod public_interpretation_tests {
         let proof = public_interpretation_source(&path, "capture", &hash, 200, 30).unwrap();
         assert_eq!(proof.actual_transcriber.as_deref(), Some("gpt-transcribe"));
         assert_eq!(proof.audio_millis, 200);
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(public_interpretation_source(&path, "capture", &hash, 200, 30).is_err());
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(public_interpretation_source(&path, "capture", &hash, 201, 30).is_err());
         assert!(public_interpretation_source(&path, "capture", &"b".repeat(64), 200, 30).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
