@@ -63,27 +63,31 @@ window.Conversation = (() => {
       finally{clearTimeout(deadline);if(fileDownloads.get(file.id)===controller)fileDownloads.delete(file.id);refreshFiles();}
     }
     let voiceEnabled=false,voiceSuspended=false,captureBusy=false,voiceBusy=false,voiceContext,voiceMode,conversationOnly=false,voiceModePrevious,voiceSession,continuousEnabled=false,nativeEnabled=false,nativeVoiceSession,legacyVoiceSession;
-    let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
+    let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,publicLiveNativeEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
     const voiceEngine=$('#conversation-voice-engine'),voiceChoiceBox=$('#conversation-voice-choice');
+    const isPublicLive=()=>voiceChoice==='gpt-live'||voiceChoice==='gpt-live-native';
     function selectVoiceEngine(){
-      const nextNative=voiceChoice==='gpt-live'?publicLiveEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
-      const next=voiceChoice==='gpt-live'?(publicLiveEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
+      const publicEnabled=publicLiveEnabled&&(voiceChoice!=='gpt-live-native'||publicLiveNativeEnabled);
+      const nextNative=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
+      const next=isPublicLive()?(publicEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
       if((next!==voiceSession||nextNative!==nativeEnabled)&&voiceMode?.active)voiceMode.close();
       nativeEnabled=nextNative;nativeVoiceSession=nextNative?next:providerVoiceSession;voiceSession=next;
-      continuousEnabled=voiceChoice==='gpt-live'?publicLiveEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
-      voiceMode?.configure(voiceChoice==='gpt-live'?publicLiveEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
+      continuousEnabled=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
+      voiceMode?.configure(isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
       if(voiceEngine){
         voiceEngine.value=voiceChoice;voiceEngine.disabled=!!voiceSession?.active;
         const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
         if(codexOption)codexOption.disabled=!codexEnabled;
         const publicOption=voiceEngine.querySelector?.('option[value="gpt-live"]');
         if(publicOption)publicOption.disabled=!publicLiveEnabled;
+        const nativeOption=voiceEngine.querySelector?.('option[value="gpt-live-native"]');
+        if(nativeOption)nativeOption.disabled=!publicLiveNativeEnabled;
       }
       if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&!publicLiveEnabled&&voiceChoice==='provider';
     }
     voiceEngine?.addEventListener('change',()=>{
       if(voiceSession?.active||voiceMode?.active){voiceEngine.value=voiceChoice;return;}
-      if(!['provider','codex','gpt-live'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveEnabled)return;
+      if(!['provider','codex','gpt-live','gpt-live-native'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled)return;
       voiceChoice=voiceEngine.value;selectVoiceEngine();
     });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
@@ -1752,6 +1756,7 @@ window.Conversation = (() => {
       providerContinuousEnabled=value.can_converse_continuous===true;providerVoiceAvailable=value.can_converse===true;
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
       publicLiveEnabled=value.can_converse_public_live===true&&window.PublicLiveConversation?.supported()===true;
+      publicLiveNativeEnabled=publicLiveEnabled&&value.can_converse_public_live_native===true;
       selectVoiceEngine();
       if(codexEnabled)void codexVoiceSession?.restoreHistory().catch(()=>{});
       if(publicLiveEnabled)void publicLiveSession?.restoreHistory().catch(()=>{});
@@ -2248,7 +2253,7 @@ window.Conversation = (() => {
       const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
       panel.setAttribute('aria-label','Voice original recovery');$('#conversation-compose').prepend(panel);
       let speech;const retained=[];
-      publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,
+      publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,getBackend:()=>voiceChoice==='gpt-live-native'?'native':undefined,
         onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;publicHistoryOlder.disabled=value.loading===true;
           publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
         onItem:value=>{
@@ -2287,7 +2292,7 @@ window.Conversation = (() => {
         },
         onState:value=>{
           for(let i=retained.length-1;i>=0;i--)if(retained[i].binding!==binding){retained[i].box.remove();retained.splice(i,1);speech=undefined;}
-          if(voiceChoice!=='gpt-live')return;if(voiceEngine)voiceEngine.disabled=!!publicLiveSession?.active||!!voiceMode?.active;
+          if(!isPublicLive())return;if(voiceEngine)voiceEngine.disabled=!!publicLiveSession?.active||!!voiceMode?.active;
           if(!voiceModePrevious?.continuous)return;captureBusy=false;presentState({capture:value.starting?'permission':'idle',playback:value.playback});voiceMode?.update({continuousState:value});
         }
       });

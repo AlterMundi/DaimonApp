@@ -104,6 +104,42 @@ class Mounted(unittest.TestCase):
     def close(self,socket):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
+
+    def test_unenabled_native_choice_is_refused_before_paid_creation(self):
+        with self.socket() as socket:
+            socket.send_json({**self.meta,'backend':'native'})
+            self.assertEqual(socket.receive_json()['type'],'unconfirmed')
+        self.assertEqual(Client.instances,[])
+
+    def choice_client(self):
+        app=FastAPI();app.state.voice_active=set()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'native_backend_enabled':True,'conversation_context':True}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        return TestClient(app,base_url='https://example.test')
+
+    def test_explicit_native_choice_does_not_replace_the_existing_responses_mode(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        with self.choice_client() as client:
+            for choice,expected in (('native','client'),(None,'responses')):
+                self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+                self.meta.pop('backend',None)
+                if choice:self.meta['backend']=choice
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket)
+                    self.assertEqual(native.spec['delegation']['type'],expected)
+                    if choice:self.assertNotIn('responses',native.spec['delegation'])
+                    self.close(socket)
+                self.assertEqual(self.read()['backend_mode'],'native' if choice else 'responses')
+
+    def test_native_choice_still_requires_reader_before_microphone_or_billing(self):
+        with self.choice_client() as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                socket.send_json({**self.meta,'backend':'native'})
+                value=socket.receive_json();self.assertEqual(value['type'],'unconfirmed')
+                self.assertIn('server update',value['message'])
+        self.assertEqual(Client.instances,[])
     def test_optional_source_seals_use_trusted_delegations_and_confirmed_uploads_only(self):
         app=FastAPI();app.state.voice_active=set()
         async def authorize(request):return {'human':100,'csrf':'fresh'}

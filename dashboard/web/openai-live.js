@@ -3,7 +3,7 @@
 // originals and trusted sideband sources; it never commits synthetic turns.
 window.PublicLiveConversation=(()=>{
   const supported=()=>!!(window.RTCPeerConnection&&window.StreamingVoice?.supported()&&window.VoiceInput?.recoveryStore&&window.indexedDB&&navigator.locks?.request);
-  function create({headers,getBinding,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
+  function create({headers,getBinding,getBackend=()=>undefined,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
@@ -152,6 +152,7 @@ window.PublicLiveConversation=(()=>{
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
+      const backend=getBackend();
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
       confirmed.clear();seals.clear();
@@ -171,6 +172,7 @@ window.PublicLiveConversation=(()=>{
         const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
+          ...(backend===undefined?{}:{backend}),
           ...(headers().Authorization?{authorization:headers().Authorization}:{})}));};
         transport.onmessage=event=>{
           if(owned!==epoch)return;
@@ -194,7 +196,8 @@ window.PublicLiveConversation=(()=>{
         transport.onclose=()=>{if(owned!==epoch)return;closedAck?.(false);abortOpen?.(Error('Voice connection ended.'));
           if(owned===epoch&&!closing){socket=undefined;void hold('Voice connection ended. Your original audio is kept.');}};
         transport.onerror=()=>transport.close();
-        const admission=(await wait(prepared,10000)).admission;
+        const preparedValue=await wait(prepared,10000),admission=preparedValue.admission;
+        if(backend==='native'&&preparedValue.mode!=='public_live_native_comparison')throw Error('The selected native voice comparison is unavailable.');
         if(!current()||admission?.id!==visit||!Number.isFinite(admission.remaining_seconds)||admission.remaining_seconds<=0
             ||admission.remaining_seconds>600||admission.max_input_pcm_bytes>600*32000)throw Error('Voice admission changed');
         const deadline=Date.now()+admission.remaining_seconds*1000;

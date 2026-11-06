@@ -135,9 +135,11 @@ class LiveCreations:
             raise ValueError('Public Live receipt belongs to another conversation')
         return value
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
+        if backend_mode is not None and backend_mode not in ('responses','native'):
+            raise ValueError('Select the admitted public voice backend')
         if resume_spec is not None:
             creation_request('v=0 validation only',resume_spec)
             if resume_spec.get('store') is not True:raise ValueError('Stored continuation requires explicit project storage selection')
@@ -157,6 +159,7 @@ class LiveCreations:
                 'state':'prepared', 'created_at':time.time(), 'source_bound':2*1024*1024, 'recordings':[],
                 'delegations':{}, 'max_input_pcm_bytes':seconds*32000,
                 'admission':{'epoch':self.epoch, 'expires':time.monotonic()+seconds, 'ended':False}}
+            if backend_mode is not None:value['backend_mode']=backend_mode
             if resume_spec is not None:
                 value['continuity']='stored_fork'
                 value['configuration_sha256']=self._configuration(resume_spec)
