@@ -708,11 +708,24 @@ source revisions,64KiB batch,2MiB document/64MiB aggregate and4096source bounds
 include this evidence. A changed source refuses atomically; a late source changes
 the reconnect revision without reopening work or authorizing a stale seed.
 
+For ordinary subword deltas, compact `transcript_context` journal blocks preserve
+the exact concatenated language and a flat span table: speaker, provider start/end
+times, cumulative UTF8 text end, and exact source-record end offset. One immutable
+journal range/revision/hash references original event IDs and individual hashes;
+the raw source journal remains authoritative. Boundaries are storage chunks, not
+inferred utterance ends. The actual71second trial contained146transcript deltas
+for798UTF8 text bytes; copying a full session/event envelope per delta would cause
+context pressure from bookkeeping. A matching synthetic146delta case retains all
+spans in three blocks below16KiB. Block validation rejects UTF8 splits, omitted
+text, reordered source offsets, mixed authority and changed immutable evidence.
+
 `PublicLiveContextHistory` wraps the existing NativeHistory/NativeContext outbox
-interface and public visit source journal. It supplies at most eight exact
-transcript fragments per native sync, counts escaping/provenance within the
-language budget and commits only a constant generation/source-offset cursor after
-matching native receipts. No second transcript database or copied archive is
+interface and public visit source journal. It supplies one bounded complete
+source block per native sync and counts escaping/provenance within the language
+budget. Before native retention, one constant batch intent freezes its byte range,
+hash and source ID; only matching native receipts commit the source-offset cursor.
+A lost receipt followed by new deltas reconciles the old block first, then admits
+a distinct block. No second transcript database or copied archive is
 created. Lost native source-retention receipts can reconcile the same immutable
 IDs, as in the existing NativeContext contract; this is not replay permission for
 uncertain work, ASR, provider commands or context appends. Canonical assistant

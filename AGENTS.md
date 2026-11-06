@@ -4,7 +4,11 @@ Prepared public Live context uses the existing native semantic producer, through
 PublicLiveContextHistory and capability foreground_public_live_transcripts=v1.
 Its input/output transcript fragments are approximate source data, not canonical
 human ASR originals, complete utterances, new work or hearing. Keep speaker,
-provider timestamps and exact source hashes. Metadata lives in typed language
+provider timestamps and exact source hashes. Compact journal blocks keep flat
+speaker/time/UTF8 spans and one frozen range/hash reference, avoiding a full
+envelope per subword delta. Retain the exact batch intent before native sync so
+lost receipts followed by new deltas cannot regroup or duplicate old language.
+Metadata lives in typed language
 text that older projection readers preserve; do not add discardable document
 fields. Cursor reconciliation is idempotent native source retention, never
 permission to repeat uncertain media/ASR/work/provider writes. The admission and
