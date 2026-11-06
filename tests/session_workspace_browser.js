@@ -103,7 +103,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   window.WebSocket=class{
    static OPEN=1;constructor(url){if(!String(url).endsWith('/voice/codex'))return new actualSocket(url);fixture.opens++;this.readyState=1;queueMicrotask(()=>this.onopen());}
    send(raw){const value=JSON.parse(raw),emit=value=>queueMicrotask(()=>this.onmessage({data:JSON.stringify(value)}));
-    if(value.binding){this.visit=value.id;emit({type:'prepared',id:this.visit,session_seconds:600});}
+    if(value.binding){this.visit=value.id;emit({type:'prepared',id:this.visit,session_seconds:600,logical_visit:'v1',admission:null});}
+    if(value.type==='capture')emit({type:'capture_ready',id:this.visit,admission:{id:this.visit,remaining_seconds:600,expires:Date.now()/1000+600,max_input_pcm_bytes:600*32000,generation:0}});
     if(value.type==='offer'){emit({type:'answer',id:this.visit,sdp:'v=0 synthetic-answer'});emit({type:'transcript',id:this.visit,item:{id:'source-1',role:'assistant',text:'A synthetic native voice reply.'}});}
     if(value.type==='close')emit({type:'closed',id:this.visit,confirmed:true});
    }
