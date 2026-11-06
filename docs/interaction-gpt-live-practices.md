@@ -101,7 +101,7 @@ an explicit configured backend-prompt override taking precedence. The previous
 app supplied its owner brief in initial history, preserving native prompt and
 handoff behavior. A bounded trial removed that initial brief and used `prompt`
 instead. The loaded executable's experimental schema advertises the field, but
-the actual voice answered Soy ChatGPT to a short identity question. The session
+the native transcript read Soy ChatGPT for a short identity question. The session
 event exposed no instructions for prefix verification. No two-replacement phase
 was reached. This does not establish where the request was ignored or overridden.
 

@@ -1197,11 +1197,13 @@ browser operation failed. Do not infer context exhaustion or replay its inputs.
 A distinct finite native trial moved the unchanged owner brief from its developer
 initial item to supported per-session `prompt`. The loaded executable's generated
 experimental schema advertises that field, and the inspected native source maps
-it to voice instructions. Nevertheless, the actual answer to a short identity
-question was Soy ChatGPT. The session event supplied no instructions text for a
+it to voice instructions. Nevertheless, the native transcript for a short identity
+question read Soy ChatGPT. The session event supplied no instructions text for a
 prefix check. This is a negative model-behavior result, not proof of which layer
 ignored or overrode the request; the cause remains unknown. The two-replacement
-phase was not reached. Preserve the original/canonical transcript and output.
+phase was not reached. An independent output ASR draft rendered the name as
+Chajikiti, so it does not verify exact spoken wording. Preserve both drafts,
+original/canonical transcript and output; no physical hearing was established.
 
 The change was not deployed. Selected663 retains its qualified developer-initial
 owner brief and native default prompt. Do not add duplicated briefs, assume the
