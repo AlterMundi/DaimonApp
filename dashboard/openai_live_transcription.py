@@ -219,6 +219,9 @@ def commit_interpretation(history, ident, human, owner, ordinal, provider):
         caps = provider.presentation('input voice capabilities')
         if caps.get('binding') != owner['binding'] or caps.get('foreground_interpretation') != 'gpt-transcribe/v1':
             raise ValueError('Native interpretation import is unavailable; no write requested')
+        write = getattr(provider, 'conversation_foreground_interpret', None)
+        if not callable(write):
+            raise ValueError('Native interpretation adapter is unavailable; no write requested')
         authorize()
         with history_lock(history.root / '.lock'):
             value = history.read(ident, human, owner)
@@ -236,7 +239,7 @@ def commit_interpretation(history, ident, human, owner, ordinal, provider):
             history._write(value)
             previous = dict(slot['native_commit'])
         try:
-            native = provider.conversation_foreground_interpret({
+            native = write({
                 'binding': owner['binding'], 'id': recording['id'], 'dialogue_id': ident,
                 'audio_sha256': recording['audio_sha256'], 'model': frozen['model'],
                 'text': frozen['text'], 'audio_millis': frozen['audio_millis'],

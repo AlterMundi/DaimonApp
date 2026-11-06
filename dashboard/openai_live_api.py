@@ -187,7 +187,8 @@ def install(app, config, provider, authorize, origins):
                 human=session['human'];owner=await asyncio.to_thread(provider.public_live_binding,binding)
                 if native_backend:
                     caps=await asyncio.to_thread(provider.presentation,'input voice capabilities')
-                    if caps.get('binding')!=binding or caps.get('foreground_interpretation')!='gpt-transcribe/v1':
+                    if (caps.get('binding')!=binding or caps.get('foreground_interpretation')!='gpt-transcribe/v1'
+                            or not callable(getattr(provider,'conversation_foreground_interpret',None))):
                         raise LiveUnavailable('native_reader_unavailable')
                 lease=AvatarVoiceLease(app.state.voice_active,human,binding,owner['native_thread'])
                 client=OpenAILive(selected['api_key_file'])

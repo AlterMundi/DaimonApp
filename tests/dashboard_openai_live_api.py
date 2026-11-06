@@ -37,6 +37,8 @@ class Owner:
     def authorized(self,human):return human==100
     def assert_binding(self):pass
     def close(self):pass
+    def conversation_foreground_interpret(self,body):
+        raise AssertionError('This fixture did not select an interpretation writer')
     def public_live_binding(self,binding):
         if binding!=self.binding or self.held:raise ProviderUnavailable('Changed synthetic owner')
         return {'binding':binding,'entry_binding':[100,{'chat_id':100,'thread_id':7},1,'thread'],
@@ -236,6 +238,17 @@ class Mounted(unittest.TestCase):
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                 socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'unconfirmed')
         self.assertEqual(Client.instances,[]);self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
+
+    def test_native_choice_refuses_missing_python_adapter_even_with_current_native_capabilities(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        self.owner.conversation_foreground_interpret=None
+        with self.choice_client() as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                socket.send_json({**self.meta,'backend':'native'})
+                value=socket.receive_json();self.assertEqual(value['type'],'unconfirmed')
+                self.assertIn('server update',value['message'])
+        self.assertEqual(Client.instances,[])
+        self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
     def _native_backend_flow(self,slow_result=False,renew=False):
         app=FastAPI();app.state.voice_active=set();saved={};calls={'asr':0,'work':0}

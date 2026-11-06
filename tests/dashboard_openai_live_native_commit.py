@@ -50,6 +50,17 @@ class NativeCommit(unittest.TestCase):
         self.assertNotIn('native_commit_reserve',slot)
         self.assertNotIn('native_commit',self.enroll())
 
+    def test_missing_adapter_creates_no_unknown_native_write_intent(self):
+        self.setup_commit();write=self.provider.conversation_foreground_interpret
+        self.provider.conversation_foreground_interpret=None
+        with self.assertRaisesRegex(ValueError,'adapter is unavailable'):self.commit()
+        slot=self.visits.read(self.ident,100,self.owner)['native_originals']['0']
+        self.assertNotIn('native_commit',slot);self.assertNotIn('native_commit_reserve',slot)
+        self.assertEqual(self.native_writes,[]);self.assertEqual(len(self.sent),1)
+        self.provider.conversation_foreground_interpret=write
+        self.assertEqual(self.commit()['state'],'observed')
+        self.assertEqual(len(self.sent),1);self.assertEqual(len(self.native_writes),1)
+
     def test_lost_ack_only_reads_same_native_original_after_restart(self):
         self.setup_commit();write=self.provider.conversation_foreground_interpret
         def lost(body):write(body);raise ProviderUnavailable('Synthetic lost native acknowledgement')
