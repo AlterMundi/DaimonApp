@@ -89,14 +89,16 @@ class LiveCreations:
                 continue
             if path.is_symlink() or not path.is_file():
                 raise ValueError('Public Live state contains an unsafe entry')
-            if len(records) >= self.max_records or other_bytes > self.max_total_bytes:
-                raise ValueError('Public Live creation storage is full')
             if path.suffix == '.json':
+                if len(records) >= self.max_records:
+                    raise ValueError('Public Live creation storage is full')
                 value = self._read(path.stem)
                 records.append((value, path.stat().st_size))
             else:
                 # Interrupted atomic-write fragments count toward capacity too.
                 other_bytes += path.stat().st_size
+                if other_bytes > self.max_total_bytes:
+                    raise ValueError('Public Live source storage is full')
         return records, other_bytes
 
     def _write(self, value):

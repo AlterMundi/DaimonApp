@@ -206,6 +206,17 @@ class Journal(unittest.TestCase):
         self.history.prepare(self.ident,100,self.frozen,300)
         self.spec=session_spec('CompAII',backend_model='backend',backend_instructions='Be brief')
         self.client=Client('test');self.history.create(self.ident,100,self.frozen,'v=0 offer',self.spec,self.client)
+    def test_full_record_count_keeps_existing_sources_and_finalization_writable(self):
+        self.history.max_records=1
+        event={'type':'session.delegation.created','event_id':'work','delegation':{'id':'task','target':'responses'}}
+        self.history.event(self.ident,100,self.frozen,event)
+        self.history.end_capture(self.ident,100,'a'*64)
+        self.assertIsNone(self.history.close_intent(self.ident,100,self.frozen))
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'expired','session':{'id':'live_opaque:provider/42'}})
+        self.assertEqual(self.history.read(self.ident,100,self.frozen)['state'],'closed')
+        with self.assertRaises(LiveUnavailable):self.history.prepare(str(uuid.uuid4()),100,self.frozen,300)
+        self.assertEqual(len(self.history.source_page(self.ident,100,'a'*64)['items']),1)
     def test_prepared_capture_is_not_restarted_by_a_new_process(self):
         other=LiveCreations(self.root)
         with self.assertRaises(ValueError):other.prepare(self.ident,100,self.frozen,300)
