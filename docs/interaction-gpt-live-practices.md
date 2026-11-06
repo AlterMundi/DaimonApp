@@ -76,6 +76,64 @@ while redesigning their transport-specific implementation where necessary.
 
 ## Decisions from inspected sources
 
+### Durable public creation and trusted sideband —6November2026
+
+`LiveCreations` now supplies the creation journal that the earlier transport
+required. It binds the authenticated service's frozen human/entry/thread snapshot
+and exact offer/session-spec digest to one app UUID. Intent is fsynced before the
+POST. An identical retry, including from a new process, only reads the retained
+answer; changed offers, specifications or owners cannot reuse the record. Process
+loss, lost response or failed receipt commit remains uncertain and cannot start
+another call under a different ID for that human. A definitive rejection remains
+distinct. Filesystem locks cover only local commits, never provider network I/O.
+
+This is an owner-binding check, **not authentication or a mounted route**. Its
+caller must freshly authorize/recheck the current owner and acquire the existing
+cross-mode voice lease. Creation also does not admit microphone capture, reset
+the original600second/PCM budget, restore a transcript or prove successor
+readiness. Those remain the owning live-visit integration's responsibilities.
+No public key/account or receiving/default change is selected here.
+
+The journal allows at most512records/32MiB and two unsettled public creations;
+records are at most256KiB. Uncertain/active attempts reserve full receipt capacity
+before any POST, with atomic-write headroom. Interrupted write fragments count
+toward capacity. At the limit, refuse new calls before billing; never evict
+uncertain receipts, original media or work. Retain confirmed receipts until their
+owning lifecycle supports verified retirement; no automatic cleanup is installed.
+SDP answers stay in owner-only local records, not public diagnostics or model
+context. Request instructions/offers are identified by digest, not copied into
+every receipt.
+
+The [official sideband route](https://developers.openai.com/api/docs/guides/voice-server-controls?api=live)
+attaches to the exact retained session ID, escaped as one URL component, using
+the separately configured project key. It creates no new session and sends no
+`session.start`. One bounded reader exposes provider events as source data;
+the application still owns transcript persistence, tools and each delegation.
+Reflected audio is not automatically stored or mistaken for microphone delivery
+or human hearing. Events/commands are bounded to1MiB; connection establishment
+has a5second bound and socket operations a shared0.5second timeout, avoiding
+competing reader/writer timeout changes. A failed command write is unconfirmed,
+not automatically retried; reading can continue to observe its eventual outcome.
+This guard is per connection, not a durable command/delegation ledger.
+
+Detaching only closes this control socket; it does not send `session.close` or
+cancel accepted work. The [provider close contract](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close)
+requires needed Responses work/results/continuations to finish before close,
+because closing cancels queued Responses. The future integration must enforce
+that sequencing and independently preserve application-owned client work.
+Only a trusted server-side `session.closed` for the retained opaque ID records
+voice finalization here. Missing voice usage stays unconfirmed separately from
+known closure; cumulative snapshots are not summed. Neither closure nor voice
+usage marks native tasks, questions or backend token accounting complete.
+
+Qualification:22synthetic HTTP, filesystem, subprocess and socket tests include
+new-process exact receipt readback, competing writers, pre-POST process loss,
+lost response, receipt-write failure, changed owners/requests, capacity, exact
+sideband attachment, terminal session matching, usage uncertainty and detach
+without closing work.35unchanged native-history tests pass on lockedPython3.11.
+These are component boundaries, not actual public access, provider behavior,
+authenticated browser recovery, media continuity or family-pilot acceptance.
+
 ### Instruction delivery and the public transport boundary —6November2026
 
 Two additional native controls used the same isolated owner/thread, not human
