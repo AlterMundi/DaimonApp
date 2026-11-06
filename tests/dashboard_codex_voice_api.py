@@ -328,6 +328,8 @@ class Mounted(unittest.TestCase):
         with patch.object(Native,'close',side_effect=OSError('Synthetic control close failure')):
             with self.socket()as socket:self.start(socket);closed=self.close(socket)
         self.assertTrue(closed['confirmed']);self.assertFalse(closed['successor_ready'])
+        retained=CodexVoiceHistory(self.root/'dashboard'/'codex-voice-visits').read(self.visit,100,'a'*64)
+        self.assertEqual(retained['state'],'review')
         self.assertEqual(self.app.state.voice_active,set())
     def test_native_turn_admitted_during_stop_gets_existing_collector(self):
         self.owner.current='late-native-work'

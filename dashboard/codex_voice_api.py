@@ -354,7 +354,7 @@ def install(app,config,provider,authorize,origins):
                         with suppress(Exception):await asyncio.to_thread(history.abandon_unstarted,visit,human,binding)
                     with suppress(Exception):
                         terminal=await asyncio.to_thread(history.state,visit,human,binding,
-                            'closed'if closed and not collection_failed and not transcript_failed else'review')
+                            'closed'if closed and control_closed and not collection_failed and not transcript_failed else'review')
                         successor_ready=(closed and control_closed and not collection_failed and not transcript_failed
                             and terminal['state']=='closed'and terminal['transcript_complete']is True)
                 # A native close notification is not yet a successor barrier:
