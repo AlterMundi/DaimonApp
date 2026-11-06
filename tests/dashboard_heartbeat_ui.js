@@ -12,3 +12,10 @@ assert.equal(state({...base,resources:{state:'unavailable'},operational:true}),'
 assert.equal(state({...base,producer:{state:'error'}}),'error');
 for(const value of [null,{}, {...base,generation:-1},{...base,generation:1.2},{...base,admission_paused:'false'}])assert.equal(state(value),'unavailable');
 console.log('Heartbeat: explicit operational evidence, pause/configuration/error and invalid-source states passed.');
+const action=window.InteractionHeartbeat.action;
+const conditional={...base,controls:{schema:'telecodex.heartbeat-controls/v1',conditional_global:true,conditional_lane:true,actions:['set_paused','set_lane_paused']},lanes:{messaging:{generation:7,paused:true,supported:true}}};
+assert.equal(action(base,'global'),null);
+assert.deepEqual(JSON.parse(JSON.stringify(action(conditional,'messaging'))),{action:'set_lane_paused',lane:'messaging',paused:false,generation:7,global_generation:1});
+assert.equal(action(conditional,'sensory'),null);
+assert.equal(action({...conditional,lanes:{messaging:{generation:7,paused:true,supported:false}}},'messaging'),null);
+assert.equal(action({...conditional,generation:true},'global'),null);

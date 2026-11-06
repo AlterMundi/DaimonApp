@@ -862,4 +862,4 @@ const conversationView = window.Conversation?.mount({
   }
 })();
 
-heartbeatView = window.InteractionHeartbeat?.mount({api, authenticated:()=>authenticated});
+heartbeatView = window.InteractionHeartbeat?.mount({api, authenticated:()=>authenticated,canControl:()=>!monitorOnly});

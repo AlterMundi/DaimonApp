@@ -65,21 +65,42 @@ class DashboardHTTP(unittest.TestCase):
         return self.client.get('/api/state').json()['csrf']
     def stop(self,nonce,csrf):
         return self.client.post('/api/stop',json={'nonce':nonce},headers={**self.headers,'x-dashboard-csrf':csrf})
-    def test_heartbeat_status_is_owner_read_only_and_rechecks_access(self):
+    def test_heartbeat_status_and_conditional_write_recheck_access(self):
         from dashboard.provider import ProviderUnavailable
         from dashboard.companion import permitted
         status={'schema':'telecodex.heartbeat-control/v1','admission_paused':True,
             'generation':1,'producer':{'state':'not_configured'},'executions':[]}
         self.provider.heartbeat_status=lambda:status
+        def refuse(body):raise ValueError()
+        self.provider.heartbeat_control=refuse
         self.assertEqual(self.client.get('/api/interaction/heartbeat').status_code,401)
         csrf=self.login()
         self.assertEqual(self.client.get('/api/interaction/heartbeat').json(),status)
-        self.assertEqual(self.client.post('/api/interaction/heartbeat',json={'action':'resume','generation':1},headers={**self.headers,'x-dashboard-csrf':csrf}).status_code,405)
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json={'action':'resume','generation':1},headers={**self.headers,'x-dashboard-csrf':csrf}).status_code,409)
         self.assertTrue(permitted('GET','/api/interaction/heartbeat',scope='monitor_readonly'))
-        self.assertFalse(permitted('POST','/api/interaction/heartbeat'))
+        self.assertTrue(permitted('POST','/api/interaction/heartbeat'))
+        self.assertFalse(permitted('POST','/api/interaction/heartbeat',scope='monitor_readonly'))
         def revoke():self.provider.allowed=False;return status
         self.provider.heartbeat_status=revoke
         self.assertEqual(self.client.get('/api/interaction/heartbeat').status_code,401)
+    def test_heartbeat_write_requires_csrf_and_preserves_unknown_outcome(self):
+        from dashboard.provider import ProviderUnavailable
+        calls=[]
+        self.provider.heartbeat_control=lambda body:calls.append(body) or {'generation':2}
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json={},headers=self.headers).status_code,401)
+        csrf=self.login();body={'action':'set_paused','paused':True,'generation':1}
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json=body,headers=self.headers).status_code,403)
+        self.assertEqual(calls,[])
+        headers={**self.headers,'x-dashboard-csrf':csrf}
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json=body,headers=headers).json(),{'generation':2})
+        def lost(body):calls.append(body);raise ProviderUnavailable()
+        self.provider.heartbeat_control=lost
+        response=self.client.post('/api/interaction/heartbeat',json=body,headers=headers)
+        self.assertEqual(response.status_code,503);self.assertEqual(len(calls),2)
+        def revoke(body):self.provider.allowed=False;return {'generation':3}
+        self.provider.heartbeat_control=revoke
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json=body,headers=headers).status_code,401)
+
     def test_avatar_recovery_runs_bounded_asr_before_existing_owner_completion(self):
         csrf=self.login();calls=[]
         ident='10000000-0000-4000-8000-000000000001';dialogue='20000000-0000-4000-8000-000000000002'
@@ -450,6 +471,34 @@ class NativeMetadata:
 
 
 class ProviderIO(unittest.TestCase):
+    def test_heartbeat_exact_controls_never_downgrade_or_retry(self):
+        from dashboard.provider import ProviderUnavailable
+        p=Provider.__new__(Provider);p.human=100
+        p.receiver={'session_control':{'socket_path':'unused'}}
+        p.assert_binding=lambda:None;p.authorized=lambda human:True
+        current={'schema':'telecodex.heartbeat-control/v1','generation':4,'admission_paused':True,
+            'controls':{'schema':'telecodex.heartbeat-controls/v1','conditional_global':True,
+                'conditional_lane':True,'actions':['set_paused','set_lane_paused']},
+            'lanes':{'messaging':{'generation':2,'paused':True,'supported':True}}}
+        p.heartbeat_status=lambda:current
+        body={'action':'set_lane_paused','lane':'messaging','paused':False,'generation':2,'global_generation':4}
+        with patch('dashboard.provider.control',return_value=current) as send:
+            p.heartbeat_control(body)
+            self.assertEqual(send.call_args.args[2],'heartbeat resume-lane messaging 4 2')
+            p.heartbeat_control({'action':'set_paused','paused':True,'generation':4})
+            self.assertEqual(send.call_args.args[2],'heartbeat pause 4')
+            for wrong in [{**body,'global_generation':3},{**body,'generation':1},{**body,'lane':'sensory'},
+                    {**body,'paused':1},{**body,'generation':True},{**body,'extra':'x'}]:
+                with self.assertRaises(ValueError):p.heartbeat_control(wrong)
+            self.assertEqual(send.call_count,2)
+            current['controls']={}
+            with self.assertRaises(ProviderUnavailable):p.heartbeat_control(body)
+            self.assertEqual(send.call_count,2)
+        current['controls']={'schema':'telecodex.heartbeat-controls/v1','conditional_lane':True,'actions':['set_lane_paused']}
+        with patch('dashboard.provider.control',side_effect=ProviderUnavailable()) as send:
+            with self.assertRaises(ProviderUnavailable):p.heartbeat_control(body)
+            self.assertEqual(send.call_count,1)
+
     def test_integrator_message_reference_is_context_only_and_bounded(self):
         for source in ('native:1','native:9223372036854775807'):
             Provider.check_reply({'source':source,'revision':'a'*64,'context_only':True})
