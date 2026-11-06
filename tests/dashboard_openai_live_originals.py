@@ -36,6 +36,7 @@ class Originals(unittest.TestCase):
             def conversation_voice_submit(self,metadata,data,**options):
                 assert options=={'foreground_dialogue':test.ident,'defer_foreground':True}
                 assert not any(k in metadata for k in ('text','formulation','transcription'))
+                assert metadata['capture_questions'] == {}
                 self.submissions+=1
                 self.retained[metadata['id']]={'id':metadata['id'],'entry_binding':test.owner['entry_binding'],
                     'foreground_dialogue':test.ident,'voice':{'audio_sha256':hashlib.sha256(data).hexdigest()},

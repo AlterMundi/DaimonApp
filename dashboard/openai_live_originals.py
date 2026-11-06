@@ -16,7 +16,7 @@ def enroll_original(history, ident, human, owner, ordinal, provider):
         raise ValueError('Select one bounded public recording ordinal')
 
     def receipt(value):
-        return {k:v for k,v in value.items() if k not in ('interpretation','interpretation_reserve')}
+        return {k:v for k,v in value.items() if k not in ('interpretation','interpretation_reserve','native_commit','native_commit_reserve')}
 
     def authorized():
         if (not provider.authorized(human)
@@ -63,7 +63,11 @@ def enroll_original(history, ident, human, owner, ordinal, provider):
         try:
             result = provider.conversation_voice_submit(
                 {'binding': owner['binding'], 'id': recording['id'],
-                 'audio_sha256': recording['audio_sha256'], 'mime': 'audio/wav'},
+                 'audio_sha256': recording['audio_sha256'], 'mime': 'audio/wav',
+                 # This experimental route has no first-acoustic-marker question
+                 # snapshot yet. Narrow to none; upload-time questions are later
+                 # observations and cannot silently acquire answer authority.
+                 'capture_questions': {}},
                 data, foreground_dialogue=ident, defer_foreground=True)
         except (OSError, ValueError, ProviderUnavailable):
             return {**slots[key], 'state': 'unconfirmed'}

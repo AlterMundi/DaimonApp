@@ -25,6 +25,7 @@ class Interpretation(unittest.TestCase):
         self.prepare();self.enroll()
         self.provider.retained[self.receipt['id']]['voice']['transcription']=None
         self.sent=[]
+        self.provider.presentation=lambda command:{'binding':self.owner['binding'],'foreground_interpretation':'gpt-transcribe/v1'}
 
     def recognizer(self,reply=None):
         def handle(request):
@@ -94,6 +95,12 @@ class Interpretation(unittest.TestCase):
         with self.assertRaises(ValueError):self.run_original()
         self.assertEqual(self.sent,[])
         with self.assertRaises(ValueError):self.run_original(history=LiveCreations(self.root))
+
+    def test_older_native_reader_refuses_before_billable_intent(self):
+        self.ready();self.provider.presentation=lambda command:{'binding':self.owner['binding']}
+        with self.assertRaises(ValueError):self.run_original()
+        self.assertEqual(self.sent,[])
+        self.assertNotIn('interpretation',self.visits.read(self.ident,100,self.owner)['native_originals']['0'])
 
     def test_response_and_client_are_bounded_and_once_only(self):
         self.ready();client=self.recognizer(httpx.Response(200,content=b'x'*65537))
