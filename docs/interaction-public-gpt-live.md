@@ -637,7 +637,7 @@ Using this unscoped context channel for an earlier native result is an applicati
 integration choice; the documentation and synthetic ACKs do not prove actual
 semantic incorporation, correct spoken continuation or hearing.
 
-Six renewal-component tests cover three successive connections, exact long-result
+Seven renewal-component tests cover three successive connections, exact long-result
 cursors, restart/new admission, flat scan persistence, unknown append and partial
 commit preservation, current-source and actor refusal. The mounted API journey
 also closes the original native voice, introduces a late worker result and returns

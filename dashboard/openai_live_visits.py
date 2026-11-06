@@ -450,8 +450,9 @@ class LiveCreations:
             self.check_capture(current)
             if current.get('backend_mode')!='native':raise ValueError('Select the native voice comparison')
             records,_=self._records()
-            records=[v for v,_ in records if v['owner']==owner and v['state']=='closed'
-                     and (v['created_at'],v['id'])<(current['created_at'],current['id'])]
+            # Closure/owner/work proofs establish eligibility. Wall-clock
+            # ordering is presentation, not authority to lose a retained job.
+            records=[v for v,_ in records if v['owner']==owner and v['state']=='closed' and v['id']!=ident]
             records.sort(key=lambda v:(v['created_at'],v['id']))
             origins=[{'visit':v['id'],'delegation':key} for v in records
                      for key,work in sorted(v['delegations'].items())

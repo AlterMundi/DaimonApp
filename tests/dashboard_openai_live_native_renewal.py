@@ -111,5 +111,13 @@ class Renewal(unittest.TestCase):
             f.provider,f.channel,stopped=stopped))
         self.assertEqual(f.updates,[]);self.assertEqual(len(f.writes),1)
 
+    def test_historical_clock_order_is_not_native_work_authority(self):
+        f=self.f;self.replacement()
+        origin=f.visits.read(self.origin,100,f.owner)
+        origin['created_at']=f.visits.read(self.current,100,f.owner)['created_at']+3600
+        f.visits._write(origin)
+        self.assertEqual(f.visits.native_return_origin(self.current,100,f.owner),
+                         {'visit':self.origin,'delegation':f.delegation})
+
 
 if __name__=='__main__':unittest.main()
