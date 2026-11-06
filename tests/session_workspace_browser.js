@@ -3,6 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
 const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
@@ -67,7 +68,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:false,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:countdownCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -91,6 +92,20 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const context=await browser.newContext({viewport:{width:1280,height:800}});await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
+ });
+ if(countdownCase)await context.addInitScript(()=>{
+  const ActualContext=window.AudioContext,now=performance.now.bind(performance);
+  const fixture=window.countdownFixture={offset:0,tones:[],contexts:[],peak:0};
+  performance.now=()=>fixture.offset;
+  window.AudioContext=class extends ActualContext{
+   constructor(...args){super(...args);fixture.contexts.push(this);this.analyser=this.createAnalyser();this.samples=new Float32Array(this.analyser.fftSize);}
+   createGain(){const gain=super.createGain(),connect=gain.connect.bind(gain);gain.connect=target=>{if(target===this.destination){connect(this.analyser);setTimeout(()=>{this.analyser.getFloatTimeDomainData(this.samples);fixture.peak=Math.max(fixture.peak,...this.samples.map(Math.abs));},45);}return connect(target);};return gain;}
+   createOscillator(){const tone=super.createOscillator(),start=tone.start.bind(tone),set=tone.frequency.setValueAtTime.bind(tone.frequency);tone.frequency.setValueAtTime=(hz,...args)=>{tone.fixtureFrequency=hz;return set(hz,...args);};tone.start=(...args)=>{fixture.tones.push(tone.fixtureFrequency);return start(...args);};return tone;}
+  };
+  // Empty synthetic tracks are sufficient for the recorder fixture: no physical
+  // microphone, speech recognition, network upload or provider is used.
+  navigator.mediaDevices.getUserMedia=async()=>new MediaStream();
+  window.MediaRecorder=class{static isTypeSupported(){return true;}constructor(){this.state='inactive';this.events={};}addEventListener(n,f){this.events[n]=f;}start(){this.state='recording';}stop(){this.state='inactive';}};
  });
  if(codexCase||publicCase)await context.addInitScript(({publicCase})=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
@@ -131,6 +146,22 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  },{publicCase});
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
+ if(countdownCase){
+  page.on('dialog',dialog=>dialog.accept());
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  await page.locator('#conversation-talk').click();
+  await page.locator('#conversation-voice-remaining').waitFor({state:'visible'});
+  for(const offset of [110000,115000,117000,118000,119000]){
+   await page.evaluate(value=>{window.countdownFixture.offset=value;},offset);
+   await page.waitForTimeout(1050);
+  }
+  const measured=await page.evaluate(()=>({tones:window.countdownFixture.tones,peak:window.countdownFixture.peak}));
+  assert.deepEqual(measured.tones,[808,1010,1212,1212,1212]);assert(measured.peak>0,'The actual WebAudio graph emits a nonzero warning signal');
+  await page.locator('#conversation-voice-discard').click();
+  await page.waitForFunction(()=>window.countdownFixture.contexts.every(c=>c.state==='closed'));
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);
+  report.state='qualified-recording-countdown-cues';report.measured=measured;return;
+ }
  if(authCase){
   await page.locator('#conversation-message').fill('Keep my unsent draft.');
   await page.waitForFunction(()=>authenticated && sharedConversationConnected);
