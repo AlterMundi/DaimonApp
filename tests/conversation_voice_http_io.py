@@ -243,6 +243,40 @@ print(json.dumps({'text':'Synthetic native foreground interpretation.','final':T
         assert Path(str(provider.receiver['db_path'])+'.voice',recovered).read_bytes()==wav_bytes(tail)
         assert (j.root/'completed-calls').read_text().splitlines()==['read']
         assert len(j.packets)==1,'Close recovery must not submit another native turn'
+        # Public Live uses this SAME native foreground reservation, without
+        # inventing transcript text, starting ASR or submitting a model turn.
+        from dashboard.openai_live_visits import LiveCreations
+        from dashboard.openai_live_originals import enroll_original
+        public=LiveCreations(j.root/'public-visits');visit=str(uuid.uuid4())
+        owner=provider.public_live_binding(binding);public.prepare(visit,provider.human,owner)
+        receipt=public.recording(visit,provider.human,binding,0,audio(880),provider)
+        from dashboard.provider import ProviderUnavailable
+        native_submit=provider.conversation_voice_submit;native_calls=[]
+        def lost_native_ack(*args,**kwargs):
+            native_calls.append(True);native_submit(*args,**kwargs)
+            raise ProviderUnavailable('Synthetic lost acknowledgement after actual native reservation')
+        provider.conversation_voice_submit=lost_native_ack
+        assert enroll_original(public,visit,provider.human,owner,0,provider)['state']=='unconfirmed'
+        # Restart the App reader, retain the exact native write intent, and read
+        # the actual SQLite/owner receipt instead of submitting it again.
+        public=LiveCreations(j.root/'public-visits')
+        enrolled=enroll_original(public,visit,provider.human,owner,0,provider)
+        assert native_calls==[True]
+        provider.conversation_voice_submit=native_submit
+        assert enrolled['state']=='observed' and enrolled['work_admitted'] is False
+        original=provider.conversation_input_status(receipt['id'])
+        assert original['phase']=='foreground_captured' and original['foreground_dialogue']==visit
+        assert not original.get('text') and original['native_acceptance']=='not_requested'
+        assert not original['voice'].get('transcription')
+        assert original['voice']['audio_sha256']==receipt['audio_sha256']
+        assert enroll_original(public,visit,provider.human,owner,0,provider)==enrolled
+        assert (j.root/'completed-calls').read_text().splitlines()==['read']
+        assert len(j.packets)==1 and not (j.root/'unexpected-asr').exists()
+        correction=str(uuid.uuid4())
+        provider.conversation_foreground_retain({'id':correction,'binding':binding,
+            'dialogue_id':visit,'text':'Later correction belongs after this public acoustic original.'})
+        order=j.row("SELECT event_id FROM original_ingress_order WHERE channel='conversation' ORDER BY id")
+        assert order.index((receipt['id'],))<order.index((correction,))
         print('PASS native foreground WAV/proof and immediate-close deferred retention through actual owner/SQLite: actor/binding rechecked, exact unconfirmed WAV retained, no ASR/work/replay on close; one sourced native admission; zero models.')
     finally:j.close()
 

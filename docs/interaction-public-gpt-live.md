@@ -229,3 +229,39 @@ and close events retain strict source identities. A synthetic spoken backend
 question returned its backend-only fact, completed Responses and trusted close
 with24seconds usage; this is digital qualification, not physical hearing or full
 being/memory/native-tool acceptance.
+
+### Native acoustic-original enrollment (prepared; default off)
+
+The owner-only `openai_live.native_originals=true` option connects newly retained
+public microphone recordings to the existing native foreground reservation.
+This is an intermediate handoff prerequisite, not a completed native tool or
+permission to execute work. It is not selected in receiving684. Browser payloads
+cannot enable it or supply native text/formulations.
+
+The adapter uses the existing public visit journal and the existing native input
+journal, with the original's server-derived UUID, exact WAV hash, frozen actor
+and entry binding. Native `conversation_voice_submit` receives
+`foreground_dialogue=visit` and `defer_foreground=true`. It reserves original
+chronology without ASR, interruption or a native model turn. A later correction
+therefore remains after its acoustic original even before interpretation finishes.
+Interrupted/recovered prefixes stay in review rather than being silently enrolled.
+
+A native write intent is durable before its single submission. Lost ACKs can be
+reconciled by reading that same native input, including after App restart; missing
+status never authorizes another send. Restart cannot backfill an original with no
+retained enrollment intent. Current owner authorization is checked before and
+after native access. Existing original media and journal quotas still apply;
+no new queue, database, attention producer or funding mechanism is introduced.
+
+The native/current-conversation readers can observe a captured original, but this
+release does not manufacture its transcript from Live captions, invoke the
+existing file-ASR fallback, select another provider, or formulate/dispatch tasks.
+The remaining work is a source-bound completed OpenAI interpretation, explicit
+native handoff and sourced return to continuing speech, interruption and renewal.
+Keep this option off until that complete comparison journey is qualified.
+
+Qualification includes locked Python3.11 component/mounted HTTP tests and the
+actual native668 owner/SQLite foreground journey with synthetic transport and
+zero models: one original, exact hash and chronology, no extra ASR/work, lost ACK
+then restarted read-only reconciliation, and later-correction order. These are
+native admission facts, not physical hearing or full being/memory acceptance.
