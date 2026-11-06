@@ -34,7 +34,7 @@ def _event(record,technical):
     kind=p.get('type')
     if kind=='message':
         role=p.get('role')
-        if role not in ('user','assistant'):return None
+        if role not in ('user','assistant') or role=='user' and not technical:return None
         # Private analysis is never the CLI's exposed reasoning summary. Only
         # conversational assistant phases/channels enter either presentation.
         if role=='assistant' and (p.get('channel')=='analysis' or p.get('phase')=='analysis'):return None

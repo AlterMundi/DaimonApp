@@ -28,14 +28,23 @@
     const view=el('section',undefined,'session-conversation');view.hidden=true;view.setAttribute('aria-label','Selected session conversation');
     const viewBar=el('div',undefined,'session-view-toolbar'),heading=el('h3','Session');
     const back=button('←','Back to the conversation',()=>{expanded=undefined;leave();changed();toggle.focus?.();});
-    const technicalButton=button('>_','Show tools and exposed reasoning summaries',()=>{technical=!technical;technicalButton.setAttribute('aria-pressed',String(technical));clearHistory();void history();});
-    technicalButton.setAttribute('aria-pressed','false');
+    function setView(detail){
+      if(technical===detail)return;
+      technical=detail;syncView();clearHistory();void history();
+    }
+    function syncView(){
+      conversationButton.setAttribute('aria-pressed',String(!technical));
+      technicalButton.setAttribute('aria-pressed',String(technical));
+    }
+    const conversationButton=button('Conversation','Show session replies',()=>setView(false));
+    const technicalButton=button('>_ Detail','Show session detail and tools',()=>setView(true));
+    conversationButton.setAttribute('aria-pressed','true');technicalButton.setAttribute('aria-pressed','false');
     const earlier=button('Earlier','Read earlier messages',()=>history('before'));
     const newer=button('Newer','Read newer messages',()=>history('after'));
     const retryHistory=button('Retry reading','Retry reading this conversation',()=>history(retryDirection));retryHistory.hidden=true;
     const entries=el('div',undefined,'session-messages');entries.setAttribute('role','log');entries.setAttribute('aria-label','Selected session messages');
     const historyStatus=el('p','','session-history-status');historyStatus.setAttribute('role','status');
-    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
+    viewBar.append(heading,conversationButton,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(el('h3','Sessions · 24h'),reset);
@@ -77,7 +86,7 @@
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();toggle.focus?.();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
       expanded={id:row.id,title:row.title,destination:copy(row.destination)};
-      clearHistory();view.hidden=false;timeline.hidden=true;heading.textContent=row.title;
+      technical=false;syncView();clearHistory();view.hidden=false;timeline.hidden=true;heading.textContent=row.title;
       showRail(false);changed();back.focus?.();void history();
     }
     function annotate(row){
@@ -173,8 +182,15 @@
       const found=[...entries.children].find(box=>box.dataset.event===item.id);
       if(found)return;
       const box=el('article',undefined,'session-message');box.dataset.event=item.id;box.dataset.position=String(item.position);box.dataset.end=String(item.next_position);
-      const label=item.kind==='message'?(item.role==='user'?'Input':document.querySelector?.('#conversation-daimon')?.textContent||'Daimon'):item.kind==='tool_call'?`>_ ${item.name||'Tool'}`:item.kind==='tool_output'?'Tool output':'Reasoning summary';
+      const label=item.kind==='message'?(item.role==='user'?'Input':expanded?.title||'Daimon'):item.kind==='tool_call'?`>_ ${item.name||'Tool'}`:item.kind==='tool_output'?'Tool output':'Reasoning summary';
       const caption=el('h4',label),text=el(item.kind==='message'?'div':'pre',item.text,'session-message-text');
+      let sourceText=item.text;
+      const renderText=()=>{
+        box.dataset.characters=String(sourceText.length);
+        if(item.kind==='message'&&window.ConversationMarkdown)window.ConversationMarkdown.render(text,sourceText);
+        else text.textContent=sourceText;
+      };
+      renderText();
       const time=el('time');time.textContent=item.timestamp||'';box.append(caption,text,time);
       let offset=item.next;
       if(item.more){
@@ -185,7 +201,7 @@
             const result=await api(`interaction/sessions/${selection.id}?${new URLSearchParams({technical:String(technical),revision,event:item.position,text_offset:offset})}`);
             if(owned!==historyEpoch)return;
             const part=result.items?.[0];if(!part||part.id!==item.id||part.offset!==offset)throw Error('Message changed');
-            text.textContent+=part.text;offset=part.next;more.hidden=!part.more;trimHistory(false,box);
+            sourceText+=part.text;renderText();offset=part.next;more.hidden=!part.more;trimHistory(false,box);
           }catch(error){if(owned===historyEpoch){if(error.status===401||error.status===403)revoke();else historyStatus.textContent='This message could not be read. Select the session again.';}}
           finally{if(owned===historyEpoch)more.disabled=false;}
         });box.append(more);
@@ -193,11 +209,12 @@
       if(prepend)entries.insertBefore(box,entries.children[0]||null);else entries.append(box);
     }
     function trimHistory(backward,keep){
-      let characters=[...entries.children].reduce((sum,box)=>sum+box.textContent.length,0);
+      const size=box=>Math.max(box.textContent.length,Number(box.dataset.characters)||0);
+      let characters=[...entries.children].reduce((sum,box)=>sum+size(box),0);
       while(entries.children.length>240 || characters>4*1024*1024){
         const box=backward?entries.children[entries.children.length-1]:entries.children[0];
         if(box===keep)break;
-        characters-=box.textContent.length;
+        characters-=size(box);
         if(backward){activeHistory.after=Number(box.dataset.position);activeHistory.moreAfter=true;}
         else {activeHistory.before=Number(box.dataset.end);activeHistory.hasEarlier=true;}
         box.remove();

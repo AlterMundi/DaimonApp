@@ -69,12 +69,15 @@ and session binding after I/O. No client path, descendant traversal, model RPC,
 transcript corpus, persistent browser history or independent poller is added.
 Existing Conversation refresh events refresh the selected view.
 
-The ordinary view exposes retained harness user/assistant messages. **Input** is
-an honest harness-role label: it can contain attributed context and is not a
-claim that every byte is direct human speech. The terminal-symbol view adds
-available function/custom tool calls, outputs and exposed reasoning summaries.
+Opening a session defaults to **Conversation**, showing only its retained
+assistant output, formatted with the ordinary conversation Markdown renderer.
+Harness inputs and controller/context envelopes stay out of that view. The
+**>_ Detail** control additionally shows harness inputs, available function/custom
+tool calls, outputs and exposed reasoning summaries. **Input** labels a harness
+role, not verified human speech. Changing views keeps the input destination,
+explicit pin and composer draft; opening another session resets to Conversation.
 Private assistant analysis, encrypted reasoning, developer/system messages and
-unavailable event types are not exposed or reconstructed. This is a view of
+unavailable event types are not exposed or reconstructed. Detail presents the
 available events, not a promise of complete CLI reproduction.
 
 Reads use a 1-MiB target window (plus at most one crossing record), at most

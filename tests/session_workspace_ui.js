@@ -128,8 +128,15 @@ function boot(){
   const release=f.holdHistory();f.byText('Busy work').click();f.byText('Earlier work').click();await tick();
   release({schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{text:'Stale other session',kind:'message',role:'assistant',id:'stale',position:1,next_position:2}],before:1,after:2});await tick();
   assert(!f.root.textContent.includes('Stale other session'));
-  f.byLabel('Show tools and exposed reasoning summaries').click();await tick();
+  f.byLabel('Show session detail and tools').click();await tick();
   assert(f.reads.at(-1).includes('technical=true'));
+  const selectedTarget=f.control.capture();
+  f.byLabel('Show session replies').click();await tick();
+  assert(f.reads.at(-1).includes('technical=false'));
+  assert.deepEqual(f.control.capture(),selectedTarget,'Changing presentation keeps the input destination');
+  f.byLabel('Show session detail and tools').click();await tick();
+  f.byText('Busy work').click();await tick();
+  assert(f.reads.at(-1).includes('technical=false'),'Opening a session always starts with replies');
   // Access loss removes visible history, keeps a refused old target, and leaves
   // the ordinary conversation available without a global sign-out/reset.
   f.deny();await f.control.refresh('binding');

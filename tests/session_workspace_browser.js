@@ -46,7 +46,7 @@ const server=http.createServer(async(req,res)=>{
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
    return json({schema:'daimon.session-view/v1',revision:'c'.repeat(64),before:50,after:250,has_earlier:false,more:false,
-    items:after?[]:[{id:'message',kind:'message',role:'user',text:'Show me what we discovered.',position:50,next_position:100},
+    items:after?[]:[...(technical?[{id:'message',kind:'message',role:'user',text:'Show me what we discovered.',position:50,next_position:100}]:[]),
      {id:'response',kind:'message',role:'assistant',text:'The first prototype is ready. Let us look together.',position:100,next_position:150},
      ...(technical?[{id:'tool',kind:'tool_call',name:'inspect_result',text:'{"result":"prototype"}',position:150,next_position:200},
       {id:'summary',kind:'reasoning_summary',role:'assistant',text:'Compare the measured result with our original question.',position:200,next_position:250}]:[])]});
@@ -280,10 +280,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.locator('.session-message').first().waitFor();
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I look around.');
- await page.getByRole('button',{name:'Show tools and exposed reasoning summaries'}).click();
+ assert.equal(await page.getByText('Show me what we discovered.',{exact:true}).count(),0);
+ await page.getByRole('button',{name:'Show session detail and tools'}).click();
+ await page.getByText('Show me what we discovered.',{exact:true}).waitFor();
  await page.getByText('>_ inspect_result',{exact:true}).waitFor();
  assert(await page.getByText('Reasoning summary',{exact:true}).isVisible());
  await page.screenshot({path:path.join(output,'desktop-technical.png')});
+ await page.getByRole('button',{name:'Show session replies'}).click();
+ await page.waitForFunction(()=>!document.querySelector('.session-messages').textContent.includes('Show me what we discovered.'));
+ assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I look around.');
+ assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
  await page.getByRole('button',{name:'Back to the conversation',exact:true}).click();
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
  await page.locator('#conversation-send').click();await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');
