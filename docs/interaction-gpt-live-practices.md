@@ -123,10 +123,12 @@ because closing cancels queued Responses. The future integration must enforce
 that sequencing and independently preserve application-owned client work.
 Only a trusted server-side `session.closed` for the retained opaque ID records
 voice finalization here. Missing voice usage stays unconfirmed separately from
-known closure; cumulative snapshots are not summed. Neither closure nor voice
+known closure; cumulative snapshots are not summed. Keep the provider event ID;
+a later matching final observation can resolve missing usage without losing the
+original closure source or downgrading known usage. Neither closure nor voice
 usage marks native tasks, questions or backend token accounting complete.
 
-Qualification:22synthetic HTTP, filesystem, subprocess and socket tests include
+Qualification:24synthetic HTTP, filesystem, subprocess and socket tests include
 new-process exact receipt readback, competing writers, pre-POST process loss,
 lost response, receipt-write failure, changed owners/requests, capacity, exact
 sideband attachment, terminal session matching, usage uncertainty and detach

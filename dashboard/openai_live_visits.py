@@ -100,6 +100,14 @@ class LiveCreations:
                          separators=(',', ':')).encode()
         if len(raw) > self.max_record_bytes:
             raise ValueError('Public Live creation receipt exceeds its bound')
+        records, other_bytes = self._records()
+        charged = other_bytes
+        for existing, size in records:
+            if existing['id'] != value['id']:
+                charged += self.max_record_bytes if existing['state'] in self.unsettled else size
+        charged += self.max_record_bytes if value['state'] in self.unsettled else len(raw)
+        if charged + len(raw) > self.max_total_bytes:  # Include the temporary atomic write.
+            raise ValueError('Public Live receipt storage is full')
         atomic(self._path(value['id']), raw)
 
     def read(self, ident, human, frozen):
@@ -200,6 +208,7 @@ class LiveCreations:
         """
         owner = self._owner(human, frozen)
         if (not isinstance(event, dict) or event.get('type') != 'session.closed'
+                or not _text(event.get('event_id'), 1024)
                 or not isinstance(event.get('session'), dict)
                 or event.get('reason') not in ('close_requested', 'expired', 'content',
                     'remote_hangup', 'connection_lost')):
@@ -213,11 +222,19 @@ class LiveCreations:
             usage = event.get('usage')
             seconds = usage.get('seconds') if isinstance(usage, dict) else None
             confirmed = type(seconds) in (int, float) and math.isfinite(seconds) and seconds >= 0
-            receipt = {'reason': event['reason'], 'usage_seconds': seconds if confirmed else None,
+            receipt = {'provider_event_id': event['event_id'],
+                       'reason': event['reason'], 'usage_seconds': seconds if confirmed else None,
                        'voice_usage_confirmed': confirmed}
             if value['state'] == 'closed':
-                if value['finalization'] != receipt:
+                previous = value['finalization']
+                if (previous['reason'] != receipt['reason']
+                        or previous['voice_usage_confirmed'] and confirmed
+                        and previous['usage_seconds'] != receipt['usage_seconds']):
                     raise ValueError('Public Live finalization changed')
+                if not previous['voice_usage_confirmed'] and confirmed:
+                    previous.update(usage_seconds=seconds, voice_usage_confirmed=True,
+                                    usage_event_id=event['event_id'])
+                    self._write(value)
                 return value
             value.update(state='closed', finalization=receipt)
             self._write(value)

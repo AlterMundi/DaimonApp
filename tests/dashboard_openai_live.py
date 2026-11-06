@@ -162,7 +162,7 @@ class DurableCreation(unittest.TestCase):
 
     def closed(self, ident=None, usage=None):
         event = {'type': 'session.closed', 'session': {'id': 'opaque:live/example'},
-                 'reason': 'connection_lost'}
+                 'reason': 'connection_lost', 'event_id': 'provider-closed-1'}
         if usage is not None:
             event['usage'] = {'seconds': usage}
         return self.visits.observe_closed(ident or self.ident, 100, self.owner, event)
@@ -262,7 +262,8 @@ print(json.dumps({'id':v.session_id,'sdp':v.sdp}))
 
     def test_wrong_terminal_session_is_refused_and_closed_call_cannot_restart(self):
         self.create()
-        wrong = {'type': 'session.closed', 'session': {'id': 'other'}, 'reason': 'expired'}
+        wrong = {'type': 'session.closed', 'session': {'id': 'other'}, 'reason': 'expired',
+                 'event_id': 'provider-other-1'}
         with self.assertRaises(ValueError):
             self.visits.observe_closed(self.ident, 100, self.owner, wrong)
         with self.assertRaises(LiveUnavailable):
@@ -286,6 +287,11 @@ print(json.dumps({'id':v.session_id,'sdp':v.sdp}))
         self.assertFalse(value['finalization']['voice_usage_confirmed'])
         self.assertIsNone(value['finalization']['usage_seconds'])
         self.assertNotIn('work_completed', value)
+        reconciled = self.closed(usage=17)
+        self.assertTrue(reconciled['finalization']['voice_usage_confirmed'])
+        self.assertEqual(reconciled['finalization']['provider_event_id'], 'provider-closed-1')
+        self.assertEqual(reconciled['finalization']['usage_event_id'], 'provider-closed-1')
+        self.assertEqual(self.closed(), reconciled)  # A partial duplicate never downgrades known usage.
         self.assertEqual(len(self.calls), 1)
 
     def test_capacity_is_reserved_before_post_and_does_not_evict_receipts(self):
@@ -320,7 +326,8 @@ print(json.dumps({'id':v.session_id,'sdp':v.sdp}))
     def test_trusted_sideband_attaches_to_retained_owner_and_commits_final_usage(self):
         self.create()
         frames = [json.dumps({'type': 'session.closed', 'session': {'id': 'opaque:live/example'},
-                             'reason': 'expired', 'usage': {'seconds': 19}})]
+                             'reason': 'expired', 'event_id': 'provider-expired-1',
+                             'usage': {'seconds': 19}})]
         socket = SidebandSocket(frames)
         attached = []
         def connect(url, **kwargs):
@@ -341,6 +348,26 @@ print(json.dumps({'id':v.session_id,'sdp':v.sdp}))
         with self.assertRaises(LiveUnavailable):
             self.visits.attach(self.ident, 100, self.owner, self.client(self.success()), connect=connect)
         self.assertEqual(len(attached), 1)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_missing_provider_event_id_is_not_terminal_evidence(self):
+        self.create()
+        event = {'type': 'session.closed', 'session': {'id': 'opaque:live/example'},
+                 'reason': 'expired', 'usage': {'seconds': 3}}
+        with self.assertRaises(ValueError):
+            self.visits.observe_closed(self.ident, 100, self.owner, event)
+        self.assertEqual(self.visits.read(self.ident, 100, self.owner)['state'], 'created')
+
+    def test_receipt_growth_includes_temporary_bytes_and_preserves_previous_receipt(self):
+        self.create()
+        self.closed()
+        path = self.visits._path(self.ident)
+        before = path.read_bytes()
+        self.visits.max_total_bytes = len(before) + 1
+        with self.assertRaises(ValueError):
+            self.closed(usage=17)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(self.visits.read(self.ident, 100, self.owner)['finalization']['voice_usage_confirmed'])
         self.assertEqual(len(self.calls), 1)
 
 
