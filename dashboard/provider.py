@@ -619,13 +619,20 @@ class Provider:
         self.check_capture_questions(body.get('capture_questions'))
         return self.decorate_input(self.presentation('input foreground retain '+json.dumps(body,ensure_ascii=False)))
 
+    def public_live_binding(self, binding):
+        """Resolve the integrating owner without borrowing Codex voice entitlement."""
+        return self._voice_binding(binding, native=False)
+
     def codex_voice_binding(self, binding):
-        """Resolve the current integrating thread from the enrolled owner only."""
+        """Resolve the current integrating thread and native voice entitlement."""
+        return self._voice_binding(binding, native=True)
+
+    def _voice_binding(self, binding, *, native):
         if not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding):
             raise ValueError('Select a frozen native voice binding')
         value=self.presentation('input voice native capabilities')
         entry=value.get('entry_binding')
-        if (value.get('binding')!=binding or value.get('native_codex_voice')!='v1'
+        if (value.get('binding')!=binding or native and value.get('native_codex_voice')!='v1'
                 or not isinstance(entry,list) or len(entry)!=4
                 or entry[0]!=self.human or not isinstance(entry[3],str)
                 or not re.fullmatch('[A-Za-z0-9_-]{1,128}',entry[3])):

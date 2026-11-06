@@ -187,7 +187,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             # Native capture-only uploads own their fresh-auth/CSRF checks,
             # two upload slots,30s deadline and bounded streaming body. Do not
             # buffer them before that admission in the general JSON middleware.
-            if not re.fullmatch(r'/api/interaction/voice/codex/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',request.url.path):
+            if not re.fullmatch(r'/api/interaction/voice/(?:codex|gpt-live)/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',request.url.path):
                 data = bytearray()
                 async for chunk in request.stream():
                     data.extend(chunk)
@@ -272,6 +272,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     can_stream_transcribe = install_live_transcription(app,config,provider,authorize_async,[origin,*additional_origins])
     from .codex_voice_api import install as install_codex_voice
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
+    from .openai_live_api import install as install_openai_live
+    can_public_live=install_openai_live(app,config,provider,authorize_async,[origin,*additional_origins])
 
     public = Path(__file__).parent / 'web'
 
@@ -299,7 +301,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         client_build = hashlib.sha256((public / 'index.html').read_bytes())
-        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             client_build.update(name.encode() + b'\0' + asset)
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -587,6 +589,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_codex':bool(can_codex_voice and dict(session).get('scope')!='monitor_readonly'),
+                'can_converse_public_live':bool(can_public_live and dict(session).get('scope')!='monitor_readonly'),
                 'can_session_workspace':workspace_granted(session),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True

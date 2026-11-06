@@ -87,12 +87,12 @@ loss, lost response or failed receipt commit remains uncertain and cannot start
 another call under a different ID for that human. A definitive rejection remains
 distinct. Filesystem locks cover only local commits, never provider network I/O.
 
-This is an owner-binding check, **not authentication or a mounted route**. Its
-caller must freshly authorize/recheck the current owner and acquire the existing
-cross-mode voice lease. Creation also does not admit microphone capture, reset
-the original600second/PCM budget, restore a transcript or prove successor
-readiness. Those remain the owning live-visit integration's responsibilities.
-No public key/account or receiving/default change is selected here.
+The optional mounted route now freshly authorizes/rechecks the current owner
+and acquires the existing cross-mode voice lease before microphone permission.
+Its one admission freezes the600second/PCM budget through negotiation and
+capture; creation or a browser retry cannot reset it. Public project access
+remains separate from Codex login. No receiving account/default change is
+selected by this source integration.
 
 The journal allows at most512records/32MiB and two unsettled public creations;
 records are at most256KiB. Uncertain/active attempts reserve full receipt capacity
@@ -119,8 +119,10 @@ This guard is per connection, not a durable command/delegation ledger.
 Detaching only closes this control socket; it does not send `session.close` or
 cancel accepted work. The [provider close contract](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close)
 requires needed Responses work/results/continuations to finish before close,
-because closing cancels queued Responses. The future integration must enforce
-that sequencing and independently preserve application-owned client work.
+because closing cancels queued Responses. The mounted integration enforces
+that sequencing for observed managed Responses and refuses close while a known
+function result or client continuation is outstanding. It does not execute those
+functions, infer their completion or cancel application-owned work.
 Only a trusted server-side `session.closed` for the retained opaque ID records
 voice finalization here. Missing voice usage stays unconfirmed separately from
 known closure; cumulative snapshots are not summed. Keep the provider event ID;
@@ -135,6 +137,42 @@ sideband attachment, terminal session matching, usage uncertainty and detach
 without closing work.35unchanged native-history tests pass on lockedPython3.11.
 These are component boundaries, not actual public access, provider behavior,
 authenticated browser recovery, media continuity or family-pilot acceptance.
+
+### Mounted public comparison —6November2026
+
+The default-off `openai_live` configuration mounts authenticated WebRTC admission,
+trusted sideband, visit status/source pages and exact-original retention. The
+browser exposes **OpenAI · GPT-Live comparison** only with the capability enabled,
+inside **Under the hood**. Qwen/current voice and OpenAI · Codex voice remain
+separate choices; capture freezes the choice and never silently falls back.
+See [configuration and operating limits](interaction-public-gpt-live.md).
+
+The browser installs the data channel before its offer, waits for ICE gathering,
+and waits for the matching `session.started` plus a connected peer before showing
+Listening. The server attaches its trusted event reader before returning the SDP
+answer. Transcript fragments retain exact spacing/order; visible groups are
+presentation only, not inferred utterance boundaries or dispatched requests.
+One-second PCM fragments and sealed originals reuse the existing20MiB/128-record
+browser store; engine tags isolate recovery without adding another quota.
+
+Trusted meaningful events are fsynced before forwarding, bounded to2MiB/8192events
+per visit inside the existing32MiB aggregate journal. Admission reserves source
+headroom. Paginated source reads expose64events/64KiB at an exact file revision;
+no source log is automatically copied into a model prompt. Repeated cumulative
+usage replaces its previous snapshot. Graceful close stops capture, waits up to
+30seconds for known managed work, sends one durable close command and records
+only trusted finalization. A disconnected browser detaches control and preserves
+uncertain work; shielded bounded cleanup releases its media lease even under
+ASGI cancellation. Uncertain creation/finalization prevents another billed visit.
+
+Synthetic qualification includes the real mounted app/Companion authorization,
+streamed original upload/revocation, browser lifecycle races and shipped Chromium
+shells at desktop/mobile sizes with synthetic audio. The ordinary native Codex
+browser journey also passes. These checks make no provider request and establish
+neither public account access nor hearing/task quality. Full trusted-history UI
+restoration, semantic checkpoint/renewal/reconnect, integrating memory/work/tools,
+artifacts/questions and family-pilot acceptance remain unfinished. Do not present
+this isolated Responses comparison as the full CompAII conversation.
 
 ### Instruction delivery and the public transport boundary —6November2026
 

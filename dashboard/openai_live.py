@@ -1,14 +1,15 @@
 """Public GPT-Live WebRTC creation, separate from Codex and Realtime.
 
-Unselected transport primitive: its owner must authorize and durably record one
-creation intent before calling. No browser route, default change, credential
-discovery, source replay or automatic retry is installed here. Media travels on
-WebRTC tracks; native/backing work keeps its existing independent owner.
+Transport for the default-off mounted comparison. Its owner authorizes and
+durably records one creation intent before calling. This helper discovers no
+credentials and replays no sources or requests. Media travels on WebRTC tracks;
+native/backing work keeps its existing independent owner.
 """
 from dataclasses import dataclass, field
 import json
 import re
 import threading
+import time
 from urllib.parse import quote
 
 import httpx
@@ -143,6 +144,7 @@ class OpenAILive:
                 raise LiveUnavailable('creation_already_attempted')
             self._attempted = True
         try:
+            deadline = time.monotonic() + 30
             with httpx.Client(transport=self._transport, follow_redirects=False,
                               timeout=httpx.Timeout(20, connect=5, write=10, pool=5)) as client:
                 with client.stream('POST', self.endpoint,
@@ -152,8 +154,8 @@ class OpenAILive:
                                    and response.status_code != 408 else 'creation_unconfirmed')
                         raise LiveUnavailable(outcome, status=response.status_code)
                     body = bytearray()
-                    for chunk in response.iter_bytes(chunk_size=16384):
-                        if len(body) + len(chunk) > self.max_response_bytes:
+                    for chunk in response.iter_bytes():
+                        if time.monotonic() > deadline or len(body) + len(chunk) > self.max_response_bytes:
                             raise LiveUnavailable('creation_unconfirmed')
                         body.extend(chunk)
             value = json.loads(body)

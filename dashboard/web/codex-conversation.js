@@ -22,6 +22,7 @@ window.CodexConversation=(()=>{
     async function review(){
       const values=await recovery.list(),groups=new Map();originals.clear();
       for(const value of values){
+        if(value.engine && value.engine!=='codex')continue;
         if(!value.native_fragment){originals.set(value.id,value);continue;}
         const group=groups.get(value.fragment_group)||[];group.push(value);groups.set(value.fragment_group,group);
       }
