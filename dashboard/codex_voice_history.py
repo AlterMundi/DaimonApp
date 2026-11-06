@@ -388,6 +388,18 @@ class CodexVoiceHistory:
             raise ValueError('Native voice history belongs to another binding')
         return value
 
+    def startup_failure(self,ident,human,binding,stage,reason):
+        # One bounded browser observation, never provider/media/error payloads.
+        if stage not in ('microphone','peer','recorder','offer','answer') or reason not in (
+                'NotAllowedError','NotFoundError','NotReadableError','OverconstrainedError',
+                'SecurityError','AbortError','NotSupportedError','InvalidStateError','TimeoutError','Error'):
+            raise ValueError('Select one bounded voice startup observation')
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,binding)
+            if value['state']!='opening':raise ValueError('Voice startup already ended')
+            value['startup_failure']={'source':'browser','stage':stage,'reason':reason}
+            self._write(value)
+
     def state(self,ident,human,binding,state):
         if state not in ('active','closed','review'):raise ValueError('Unknown native voice state')
         with history_lock(self.root/'.lock'):
