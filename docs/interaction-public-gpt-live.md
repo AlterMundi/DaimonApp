@@ -132,6 +132,14 @@ Do not delete records, change UUIDs or replay commands to clear uncertainty.
 Owner-led reconciliation of interrupted public calls remains unfinished and
 blocks another billed visit.
 
+An unexpected exception from the owned native preparation task follows the same
+graceful-close path as a held preparation. Retain its original and uncertain
+ASR/native intents, stop new preparation, drain the existing eligible close and
+wait for trusted `session.closed`. Log only the exception class. A failed task
+must not abruptly detach the sideband and turn a recoverable failure into lost
+finalization evidence. Cancellation and independent accepted native work remain
+separate; this does not reconcile an older already-detached visit.
+
 ## Optional current-conversation context
 
 The owner may explicitly select `conversation_context=true`. Managed Responses
