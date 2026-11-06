@@ -20,6 +20,8 @@ def authority(config, provider):
 
 
 def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False):
+    if path=='/api/interaction/heartbeat':
+        return method=='GET' and scope in ('interaction_only','monitor_readonly')
     if path=='/api/interaction/voice/gpt-live' or path.startswith('/api/interaction/voice/gpt-live/'):
         return scope=='interaction_only' and (
             method=='POST' and path=='/api/interaction/voice/gpt-live'

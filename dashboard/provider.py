@@ -623,6 +623,20 @@ class Provider:
         """Resolve the integrating owner without borrowing Codex voice entitlement."""
         return self._voice_binding(binding, native=False)
 
+    def heartbeat_status(self):
+        """Read the existing configured owner console; never activate attention."""
+        self.assert_binding()
+        profile=self.receiver.get('interaction',{})
+        if profile.get('human_id')!=self.human or not self.authorized(self.human):
+            raise ProviderUnavailable('Heartbeat owner is unavailable')
+        value=control(self.receiver['session_control']['socket_path'],None,'heartbeat status')
+        self.assert_binding()
+        if (not self.authorized(self.human) or value.get('schema')!='telecodex.heartbeat-control/v1'
+                or type(value.get('admission_paused')) is not bool
+                or type(value.get('generation')) is not int or not 0<=value['generation']<=2**53-1):
+            raise ProviderUnavailable('Heartbeat status is unavailable')
+        return value
+
     def codex_voice_binding(self, binding):
         """Resolve the current integrating thread and native voice entitlement."""
         return self._voice_binding(binding, native=True)
