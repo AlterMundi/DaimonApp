@@ -113,8 +113,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
+ assert.equal(await page.locator('#conversation-compose #conversation-voice-engine').count(),0,'Voice engine is not an ordinary composer control');
+ assert.equal(await page.locator('#conversation-diagnostics #conversation-voice-engine').count(),1,'Development voice selection lives under the hood');
+ async function selectEngine(value){
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.locator('#conversation-voice-engine').selectOption(value);
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+ }
+
  if(codexCase&&reloadCase){
-  await page.locator('#conversation-voice-engine').selectOption('codex');await page.locator('#conversation-companion pre').click();
+  await selectEngine('codex');await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');await page.waitForTimeout(3500);
   const before=await page.evaluate(()=>codexFixture.captureBytes);assert(before>32000);
   const locked=await page.evaluate(async()=>{const row=(await VoiceInput.recoveryStore('codex_voice').list())[0];return navigator.locks.request('daimon-native-voice:'+row.codex_visit,{ifAvailable:true},lock=>lock===null);});
@@ -138,7 +146,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0);assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   report.state='qualified-native-reload-prefix-recovery';report.beforePCM=before;report.recovered=recovered;report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
  }else if(codexCase){
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   await page.locator('#conversation-voice-choice').waitFor({state:'visible'});
+  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','OpenAI never replaces the default');
   assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   await page.locator('#conversation-message').fill('My draft survives voice history reading.');
@@ -151,7 +161,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.locator('#conversation-message').inputValue(),'My draft survives voice history reading.');
   await page.locator('#conversation-message').fill('');
   await page.locator('#conversation-message').fill('My unsent draft stays while I review the question.');
-  await page.locator('#conversation-voice-engine').selectOption('codex');
+  await selectEngine('codex');
   await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});
   assert(await page.locator('#conversation-voice-engine').isDisabled());
@@ -200,7 +210,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0,'Native original recovery never uses ordinary Send');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1,'Recovery does not reopen or replay voice');
   assert.equal(await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('daimon-voice-recovery',1);r.onsuccess=()=>{const db=r.result,tx=db.transaction('capture','readonly'),q=tx.objectStore('capture').get('pending');q.onsuccess=()=>{resolve(q.result===undefined);db.close();};q.onerror=reject;};r.onerror=reject;})),true);
-  await page.locator('#conversation-voice-engine').selectOption('provider');
+  await selectEngine('provider');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1);
   assert.equal(errors.length,0,errors.join('\n'));
   report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.attention={reviewKeptCapture:true,exactQuestionReply:true,unsentDraftPreserved:true,decisionPosts:questionPosts,...(listenCase?{listenAfterClosure:true}:{} )};report.viewports=['1280x800','390x844'];
