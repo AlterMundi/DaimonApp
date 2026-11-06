@@ -129,6 +129,7 @@ Development = "/your-development-mount"
 # session_seconds = 600
 # resume_mode = "fresh" # or "stored_fork", only with explicit permitted storage
 # backend_tools = []
+# conversation_context = false # owner-authorized current conversation reads only
 # session_options = {}
 # backend_options = {}
 # delegation_options = {}

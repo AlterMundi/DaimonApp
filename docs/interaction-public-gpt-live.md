@@ -81,13 +81,43 @@ before the SDP answer reaches the browser.
 
 Stopping capture starts a bounded30second drain of known managed Responses and
 needed client continuations. One durable `session.close` is sent only when those
-are complete. Function/client work is never fabricated or executed here. Trusted
+are complete. Unconfigured function/client work is never fabricated or executed. Trusted
 `session.closed`, usage and backend completion remain separate. Missing
 finalization stays unconfirmed. Disconnect cleanup detaches control, releases the
 media lease and retains outcomes; it never sends close as a cancellation shortcut.
 Do not delete records, change UUIDs or replay commands to clear uncertainty.
 Owner-led reconciliation of interrupted public calls remains unfinished and
 blocks another billed visit.
+
+## Optional current-conversation context
+
+The owner may explicitly select `conversation_context=true`. Managed Responses
+then receives one application function, `compaii_conversation_read`, backed only
+by existing authorized presentation-page and exact source/revision readers. The
+browser supplies no tool calls, authority, source text or provider commands.
+Pages retain their exact cursors and bounded previews; part reads retain offsets
+and revisions. Ownership and paired-actor access are checked before and after
+the read. Returned text is source data, not new instructions or execution proof.
+This covers the current conversation, not DMK, arbitrary private sessions, native
+task execution or full being memory. Those roadmap requirements remain open.
+
+Only trusted completed function items select a read; argument deltas cannot.
+At most16calls are retained per visit, each with at most4KiB arguments and8KiB
+output, inside the existing256KiB receipt/32MiB aggregate journal bounds. A
+result intent precedes its single `response.item.create` write. Once all known
+results for that response are sent, a durable intent precedes one `response.create`.
+Socket sends are not acknowledgments. A lost write/commit is never retried; restart
+retains the unresolved intent and blocks close. Unknown tools remain unresolved.
+The documented continuation has no separate item success acknowledgment: trusted
+new Responses lifecycle and matching completion settle backend work. An old
+response completion cannot close over a new running response. No native input,
+work delegation, ASR retry, media replay or extra provider session is created.
+
+Source and mounted tests cover read authorization, two pending results, resumed
+completion, restart/lost-write refusal and storage bounds. Actual owner page/part
+reads establish access wiring; useful model recall and physical speech need their
+own receiving qualification. Keep this feature off on unconfigured receivers;
+ordinary common software delivery does not enable providers or copy credentials.
 
 ## Optional provider-stored continuation
 

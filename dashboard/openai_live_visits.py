@@ -316,18 +316,81 @@ class LiveCreations:
             if event['type']=='response.event':
                 nested=event.get('event',{});key=event.get('delegation_id')
                 if key not in value['delegations']:raise ValueError('Backend source has no retained delegation')
+                work=value['delegations'][key]
+                if nested.get('type')=='response.created':
+                    response=nested.get('response',{}).get('id')
+                    if not _text(response,1024):raise ValueError('Backend response identity unavailable')
+                    previous=work.get('continuation_intent')
+                    work['response_id']=response
+                    if previous and response!=previous['response_id'] and not work.get('unsupported_client'):
+                        work['needs_client']=False
+                    work['state']='pending';changed=True
                 if nested.get('type')=='response.output_item.done':
                     item=nested.get('item',{})
                     if (item.get('type') in ('function_call','custom_tool_call','computer_call',
                             'shell_call','apply_patch_call','mcp_approval_request') or
                             item.get('type')=='tool_search_call' and item.get('execution')=='client'):
                         value['delegations'][key]['needs_client']=True
+                        calls=value.setdefault('client_calls',{})
+                        call_id=item.get('call_id')
+                        if (item.get('type')=='function_call' and _text(call_id,1024)
+                                and _text(item.get('name'),128) and _text(item.get('arguments'),4096)):
+                            selected={'delegation':key,'name':item['name'],'arguments':item['arguments'],
+                                'response_id':work.get('response_id')}
+                            if call_id in calls:
+                                if any(calls[call_id][k]!=v for k,v in selected.items()):
+                                    raise ValueError('Backend tool call identity changed')
+                            else:
+                                if len(calls)>=16:raise ValueError('Backend tool call capacity reached')
+                                calls[call_id]={**selected,'state':'observed','source':event['event_id']}
+                        else:work['unsupported_client']=True
                         changed=True
                 if nested.get('type') in ('response.completed','response.failed','response.incomplete'):
+                    if work.get('continuation_intent') and nested.get('response',{}).get('id')!=work.get('response_id'):
+                        raise ValueError('Backend completion belongs to another response')
                     value['delegations'][key].update(state=nested['type'],source=event['event_id'])
                     changed=True
             if changed:self._write(value)
             return not duplicate
+
+    def tool_command(self,ident,human,frozen,call_id,output):
+        """Persist the exact result intent before one sideband write, never retry."""
+        if not _text(output,8192):raise ValueError('Bounded tool result required')
+        with history_lock(self.root / '.lock'):
+            value=self.read(ident,human,frozen)
+            if value['state']!='created':raise ValueError('Tool visit is not open')
+            call=value.get('client_calls',{}).get(call_id)
+            if call is None:raise ValueError('Tool call has no trusted source')
+            if call['state']!='observed':return None
+            command={'type':'response.item.create','event_id':str(uuid.uuid4()),
+                'item':{'type':'function_call_output','call_id':call_id,'output':output}}
+            call.update(state='result_intent',command=command)
+            self._write(value)
+            return command
+
+    def tool_sent(self,ident,human,frozen,call_id):
+        """Record a completed socket send, not a provider acknowledgment."""
+        with history_lock(self.root / '.lock'):
+            value=self.read(ident,human,frozen);call=value['client_calls'][call_id]
+            if call['state']!='result_intent':raise ValueError('Tool result intent changed')
+            call['state']='result_sent';self._write(value)
+
+    def tool_continue(self,ident,human,frozen,delegation):
+        with history_lock(self.root / '.lock'):
+            value=self.read(ident,human,frozen);work=value['delegations'][delegation]
+            response=work.get('response_id')
+            calls=[c for c in value.get('client_calls',{}).values()
+                   if c['delegation']==delegation and c['response_id']==response]
+            previous=work.get('continuation_intent')
+            if (value['state']!='created' or work['state']!='response.completed'
+                    or work.get('unsupported_client') or not _text(response,1024)
+                    or not calls or any(c['state']!='result_sent' for c in calls)
+                    or previous and previous['response_id']==response):return None
+            command={'type':'response.create','event_id':str(uuid.uuid4())}
+            work['continuation_intent']={'response_id':response,'command':command}
+            work['state']='pending'
+            self._write(value)
+            return command
 
     def close_intent(self,ident,human,frozen):
         """Never close over a known pending Responses delegation or retry a write."""
