@@ -22,6 +22,8 @@ final class SpeechOutput {
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
     private AudioFocusRequest focus;
+    private boolean speechFocus, beaconFocus;
+    private Runnable beaconFocusLost;
     private MediaPlayer player;
     private PcmSpeechOutput pcm;
     private ByteArrayOutputStream pending;
@@ -48,7 +50,18 @@ final class SpeechOutput {
         emit.accept(value);
     }
     private void releaseFocus() {
-        if (focus != null) { manager.abandonAudioFocusRequest(focus); focus = null; }
+        speechFocus = false; abandonUnusedFocus();
+    }
+    private void abandonUnusedFocus() {
+        if (!speechFocus && !beaconFocus && focus != null) { manager.abandonAudioFocusRequest(focus); focus = null; }
+    }
+    void acquireBeaconFocus(Runnable lost) {
+        beaconFocus = true; beaconFocusLost = lost;
+        try { requestFocus(); }
+        catch (RuntimeException error) { releaseBeaconFocus(); throw error; }
+    }
+    void releaseBeaconFocus() {
+        beaconFocus = false; beaconFocusLost = null; abandonUnusedFocus();
     }
     private void pause(String reason) {
         playWhenSeekDone = false;
@@ -57,15 +70,28 @@ final class SpeechOutput {
         releaseFocus(); event(reason);
     }
     private void acquireFocus() {
+        speechFocus = true;
+        try { requestFocus(); }
+        catch (RuntimeException error) { releaseFocus(); throw error; }
+    }
+    private void requestFocus() {
         if (focus == null) {
-            focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            final AudioFocusRequest[] owned = new AudioFocusRequest[1];
+            owned[0] = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(attributes).setAcceptsDelayedFocusGain(false)
                 .setOnAudioFocusChangeListener(change -> {
+                    if (focus != owned[0]) return;
                     if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-                        || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) pause("focuslost");
+                        || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+                        Runnable lost = beaconFocusLost;
+                        pause("focuslost");
+                        if (lost != null) lost.run();
+                    }
                 }, handler).build();
+            focus = owned[0];
             if (manager.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                releaseFocus(); throw new IllegalStateException("Audio focus unavailable");
+                if (focus != null) manager.abandonAudioFocusRequest(focus); focus = null;
+                throw new IllegalStateException("Audio focus unavailable");
             }
         }
     }

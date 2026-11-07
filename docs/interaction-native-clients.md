@@ -25,13 +25,33 @@ amplitude breathing, mid-transition retarget/fade-to-zero and atomic invalid inp
 refusal/defensive copying. Output arrays are transient synthetic samples; no
 recordings, provider calls or audible device test occurred.
 
-This is not yet wired to the native bridge or `SpeechService`; APK0.7 and current
-served audio remain unchanged. Finish one service-owned audio worker with finite
-lifetime and stale-observation expiry, the existing explicit Beacon controls,
-capture/speech ducking, foreground lifecycle/focus/noisy-route teardown and real
-WebView/AudioTrack qualification before claiming native Beacon delivery. Preserve
-the established opt-in behavior and existing browser lifecycle. Background voice
-playback, physical acceptance and the complete original goal remain separate.
+The source now also prepares `BeaconOutput` and `SpeechService` commands. One
+audio worker keeps one latest frame/level instead of accumulating a queue.
+Six-carrier configuration is frozen per owner; numeric frame bounds and mix are
+validated before admission. Frame validity is at most20seconds and level changes
+do not renew it. Expired observations fade their weights to zero. The two-hour
+owner lifetime includes initialization and is not extended by refreshes. Quiet
+workers sleep until a control or deadline rather than continuously synthesizing
+silence. AudioTrack writes are nonblocking with a bounded native buffer and
+two-second stalled-head refusal. Stop/lifecycle cannot admit later frames.
+
+Speech and Beacon share the existing AudioFocusRequest with independent holders;
+ending a spoken reply cannot abandon an audible Beacon, and stopping Beacon cannot
+abandon a speaking reply. Stale focus callbacks are ignored. Quiet observations
+carry the applied control revision so they cannot release a newer frame's focus.
+One stopping owner may retain one explicitly requested next owner; UUID identities
+prevent old-page callbacks from targeting the new page. Foreground loss/noisy
+route/global audio stop cancels that pending start. Disabling spoken replies stays
+separate from Beacon. These are source mechanics, not new background permission.
+
+The seven real synth/output/service classes compile with release17 against the
+verified API36 reference jar; that isolated signature check supplies an Activity
+class-literal stub and does not compile or qualify the real Activity/WebView.
+The six synth plus five PCM JVM tests pass. No JavaScript Beacon capability is
+advertised yet. Finish the existing explicit Beacon renderer/bridge, freshness,
+capture/speech ducking and real WebView/AudioTrack/focus/lifecycle qualification
+before delivery. APK0.7 and current served audio remain unchanged. Physical
+hearing, background voice and the complete original goal remain separate.
 
 ## Public Live native output candidate0.7 —7November2026
 

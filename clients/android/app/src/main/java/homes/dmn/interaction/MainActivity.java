@@ -126,6 +126,8 @@ public final class MainActivity extends ComponentActivity {
             try {
                 JSONObject value = new JSONObject(data); reply = proxy;
                 if (value.optString("command").startsWith("pcm_") && !foreground) return;
+                if (value.optString("command").startsWith("beacon_") && !foreground
+                    && !value.optString("command").equals("beacon_stop")) return;
                 if (value.optString("command").startsWith("file_")) {
                     if (foreground) exports.command(value); return;
                 }

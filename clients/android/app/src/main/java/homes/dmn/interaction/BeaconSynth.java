@@ -53,6 +53,12 @@ final class BeaconSynth {
         targetGain = next; gainFrames = frames; gainStep = frames == 0 ? 0 : (next - gain) / frames;
         if (frames == 0) gain = next;
     }
+    boolean silent() {
+        if (gainFrames == 0 && gain == 0) return true;
+        if (weightFrames != 0) return false;
+        for (double value : weight) if (value != 0) return false;
+        return true;
+    }
     void render(short[] output, int offset, int count) {
         if (output == null || offset < 0 || count < 0 || offset > output.length - count)
             throw new IllegalArgumentException("Invalid Beacon output window");

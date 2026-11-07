@@ -61,6 +61,7 @@ public class BeaconSynthTest {
         }
         synth.gain(0, 350); short[] tail = new short[9000]; synth.render(tail, 0, tail.length);
         for (int i = 8400; i < tail.length; i++) assertEquals(0, tail[i]);
+        assertTrue(synth.silent());
     }
     @Test public void invalidUpdatesAreAtomicAndInputsAreCopied() {
         double[] owned = frequencies.clone(); BeaconSynth valid = new BeaconSynth(24000, owned, new double[6], 0);
