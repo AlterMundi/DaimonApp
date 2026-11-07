@@ -108,7 +108,9 @@ reference/cache are accepted; arbitrary renderer input is not exposed.
 
 A lost generation response only reads the retained cache/outcome. Unknown or
 expired jobs cannot regenerate. Closing waits for an active generation to stop;
-actor reset discards client state, and each server-owned attempt remains bounded.
+actor reset immediately clears batch labels, notices and client audio before the
+next account read. Late old-account reads cannot change current controls, and
+each server-owned attempt remains bounded.
 Playback starts only on explicit Play, keeps at most A/B object URLs for the
 selected batch and revokes them on close, actor change or batch change. Hiding
 the panel or page stops playback. Recorded usage and first-audio timing are

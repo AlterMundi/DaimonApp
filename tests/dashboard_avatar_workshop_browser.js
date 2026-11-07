@@ -8,13 +8,19 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   page.setDefaultTimeout(5000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser error:',e.message);});page.on('dialog',dialog=>dialog.accept());
   // Browser interaction proof is synthetic; mounted provider/cache ownership is
   // covered by dashboard_voice_studio_preview_api.py, without paid auditions.
-  let previewState={generation:0,batches:[]},previewPosts=[];
+  await page.addInitScript(()=>{
+   const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);window.testVoiceURLs=new Set();
+   URL.createObjectURL=blob=>{const url=create(blob);if(blob.type==='audio/wav')testVoiceURLs.add(url);return url;};
+   URL.revokeObjectURL=url=>{testVoiceURLs.delete(url);return revoke(url);};
+  });
+  const previewStates=new Map();let previewPosts=[];
   await page.route('**/api/interaction/avatars/voice',async route=>{
    const response=await route.fetch(),value=await response.json();
    if(route.request().method()==='GET')value.audition_available=true;
    await route.fulfill({response,json:value});
   });
   await page.route('**/api/interaction/avatars/voice/previews',async route=>{
+   const actor=route.request().headers()['x-test-actor'];if(!previewStates.has(actor))previewStates.set(actor,{generation:0,batches:[]});const previewState=previewStates.get(actor);
    if(route.request().method()==='GET'){await route.fulfill({json:previewState});return;}
    const body=route.request().postDataJSON();previewPosts.push(body);
    if(body.action==='prepare'){
@@ -124,6 +130,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(previewPosts.filter(r=>r.action==='render'&&r.slot==='B').length,1,'Unknown generation only reads retained status');
   assert.equal(await studio.getByRole('button',{name:'Generate B',exact:true}).isDisabled(),true);
   assert.equal(await studio.getByRole('button',{name:'Play A',exact:true}).isEnabled(),true,'Generating B keeps the cached A audio');
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),1,'Only the current cached A preview is held');
   assert.equal(await studio.getByRole('button',{name:'Retire comparison',exact:true}).isDisabled(),true,'Unknown paid outcome is preserved');
   for(const width of [1200,375,320]){
    await page.setViewportSize({width,height:900});
@@ -135,7 +142,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(await studio.evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(16, 24, 32)');
   if(process.env.VOICE_STUDIO_SCREENSHOT)await page.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT.replace(/\.png$/,'-dark.png')});
   await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Closing releases recorded audio URLs');
   await page.evaluate(()=>{testActor='100';testAvatar.bind('actor100');});
+  assert.equal(await studio.getByLabel('Recorded comparison batches').locator('option').count(),0,'Actor reset clears old batch labels before the next read');
   await page.locator('#avatar-workshop-open').click();
   await page.getByRole('button',{name:'Voice',exact:true}).click();
   await studio.getByText('A · cedar · Current delivery',{exact:true}).waitFor();

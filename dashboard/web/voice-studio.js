@@ -40,7 +40,7 @@ window.VoiceStudioUI=(()=>{
    show();
   }
   async function read(){const turn=epoch,key=credential();const value=await api('interaction/avatars/voice');if(turn!==epoch||key!==credential())throw Error('Voice account changed');return value;}
-  async function refresh(){if(busy)return;busy=true;controls();try{reconcile(await read());}catch(error){status.textContent=error.message||'Voice revisions unavailable. Previous selection is kept.';}finally{busy=false;controls();}}
+  async function refresh(){if(busy)return;const turn=epoch;busy=true;controls();try{reconcile(await read());}catch(error){if(turn===epoch)status.textContent=error.message||'Voice revisions unavailable. Previous selection is kept.';}finally{if(turn===epoch){busy=false;controls();}}}
   async function write(body){
    if(busy)return;busy=true;controls();const turn=epoch,key=credential();
    try{const value=await api('interaction/avatars/voice',body);if(turn!==epoch||key!==credential())return;reconcile({...state,...value});}
@@ -80,7 +80,7 @@ window.VoiceStudioUI=(()=>{
    if(!batch()){clearAudio();batchId=previews.batches.at(-1)?.id;}previewSelect.value=batchId||'';previewControls();
   }
   async function previewRead(){const turn=epoch,key=credential();const value=await api('interaction/avatars/voice/previews');if(turn!==epoch||key!==credential())throw Error('Voice account changed');return value;}
-  async function refreshPreviews(){if(previewBusy)return;try{previews=await previewRead();showPreviews();}catch(error){previewStatus.textContent=error.message||'Comparisons unavailable.';}}
+  async function refreshPreviews(){if(previewBusy)return;const turn=epoch;try{previews=await previewRead();showPreviews();}catch(error){if(turn===epoch)previewStatus.textContent=error.message||'Comparisons unavailable.';}}
   async function previewWrite(body){
    if(previewBusy)return;if(['prepare','retire'].includes(body.action))clearAudio();else stopAudio();if(body.slot&&audioURLs.has(body.slot)){URL.revokeObjectURL(audioURLs.get(body.slot));audioURLs.delete(body.slot);}previewBusy=true;const turn=epoch,key=credential(),operation=++previewEpoch;controls();
    try{
@@ -102,7 +102,7 @@ window.VoiceStudioUI=(()=>{
   save.addEventListener('click',()=>{if(save.disabled)return;pendingSave={id:crypto.randomUUID(),profile:state.profiles[0],delivery:delivery.value,parentId:candidate||state.active||null,generation:state.generation};void write({action:'save',...pendingSave});});
   use.addEventListener('click',()=>{if(use.disabled)return;pendingUse={id:candidate,generation:state.generation};void write({action:'use',...pendingUse});});
   reload.addEventListener('click',()=>void refresh());
-  function reset(){clearAudio();previews={generation:0,batches:[]};batchId=undefined;previewBusy=false;previewEpoch++;epoch++;state=pendingSave=pendingUse=candidate=undefined;busy=dirty=false;delivery.value='';status.textContent='';current.textContent='';choices.replaceChildren();panel.hidden=true;controls();}
+  function reset(){clearAudio();previews={generation:0,batches:[]};batchId=undefined;previewBusy=false;previewEpoch++;epoch++;state=pendingSave=pendingUse=candidate=undefined;busy=dirty=false;delivery.value='';status.textContent='';previewStatus.textContent='';current.textContent='';choices.replaceChildren();previewSelect.replaceChildren();panel.hidden=true;controls();}
   return {panel,hide(){stopAudio();},open(){panel.hidden=false;if(!state)void refresh();void refreshPreviews();},reset,
    mayClose(){if(previewBusy){previewStatus.textContent='Stop generation and wait for its result before closing.';return false;}if(dirty&&!confirm('Discard the unsaved voice edit?'))return false;clearAudio();dirty=false;return true;}};
  }
