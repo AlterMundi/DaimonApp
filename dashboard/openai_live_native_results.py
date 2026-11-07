@@ -1,5 +1,6 @@
 """Bounded canonical native results to client Live context; no work dispatch."""
 import hashlib
+from datetime import datetime, timezone
 import json
 import re
 import time
@@ -45,6 +46,7 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
         if work.get('target') != 'client' or intent.get('state') != 'observed':
             raise ValueError('A source-bound native work acknowledgment is required')
         intent = dict(intent)
+        origin_date = datetime.fromtimestamp(value['created_at'], timezone.utc).date().isoformat()
     native = provider.conversation_input_status(intent['root'])
     current()
     proof = native.get('foreground_delegation') or {}
@@ -103,6 +105,8 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
         text=text[:boundary]
     next_offset = offset + len(text) if len(text) < len(part['text']) else part.get('next_offset')
     label = ('Native progress data' if kind == 'integrator_progress' else 'Native result data')
+    if origin != ident:
+        label += ' from earlier voice connection (opened ' + origin_date + ' UTC)'
     content = label + (' (partial; more remains):\n' if next_offset is not None else ':\n') + text
     event_type = 'session.thinking.append' if kind == 'integrator_progress' else 'session.commentary.append'
     identity=[delegation,source,revision,offset]

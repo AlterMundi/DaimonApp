@@ -733,7 +733,17 @@ Using this unscoped context channel for an earlier native result is an applicati
 integration choice; the documentation and synthetic ACKs do not prove actual
 semantic incorporation, correct spoken continuation or hearing.
 
-Seven renewal-component tests cover three successive connections, exact long-result
+Historical return fragments now identify the original connection's UTC opening
+date. The native voice brief treats their first-person wording and relative time
+as belonging to that earlier encounter, follows the current topic, and never
+turns a retained result into a claim of newly performed work. This addresses an
+observed fresh-visit transcript that restated an earlier result as a current
+action. It preserves the canonical text, cursor, result availability and exact
+append/replay fences. An opening date supplies chronology, not authorization or
+proof that a result is still applicable. Source qualification is not a verified
+spoken correction; the next genuine trial must check that distinction.
+
+Nine renewal-component tests cover three successive connections, exact long-result
 cursors, restart/new admission, flat scan persistence, unknown append and partial
 commit preservation, current-source and actor refusal. The mounted API journey
 also closes the original native voice, introduces a late worker result and returns

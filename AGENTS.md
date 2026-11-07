@@ -4,6 +4,13 @@ Only a later explicit capture retries after failure; do not turn retention into
 native work admission. Reset/remove aborts only that selection's request. Preserve
 drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
 
+Public Live returns from earlier voice connections retain their original UTC
+opening date and exact canonical wording/cursors. Treat relative time and
+first-person action claims as belonging to that earlier encounter; a historical
+return is not newly executed work. Keep useful late answers without interrupting
+an unrelated new topic with old progress. The brief is behavior guidance, not
+proof of spoken uptake. Do not replay work or unknown appends to repair phrasing.
+
 Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
 not native playback or an advertised capability. Preserve normalized mix,
 phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.

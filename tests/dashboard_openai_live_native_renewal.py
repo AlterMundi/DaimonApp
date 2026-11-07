@@ -1,5 +1,6 @@
 """Old native work, fresh voice context, flat receipts; zero providers/models."""
 import copy
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import unittest
@@ -44,6 +45,9 @@ class Renewal(unittest.TestCase):
         self.assertEqual(result['state'],'sent');self.assertEqual(len(self.f.updates),1)
         self.assertIsNone(self.f.updates[0]['delegation_id'])
         self.assertIn('Río Cobre',self.f.updates[0]['content'])
+        original=self.f.visits.read(self.origin,100,self.f.owner)
+        day=datetime.fromtimestamp(original['created_at'],timezone.utc).date().isoformat()
+        self.assertIn('from earlier voice connection (opened '+day+' UTC)',self.f.updates[0]['content'])
         self.assertEqual(len(self.f.writes),1,'Renewal must not dispatch work again')
         self.ack();self.replacement();seen=self.emit()
         self.assertEqual(seen['state'],'already_forwarded');self.assertEqual(seen['forwarded_visit'],target)
@@ -73,6 +77,9 @@ class Renewal(unittest.TestCase):
         third=self.emit(second['next_offset'])
         self.assertEqual(third['state'],'sent')
         self.assertEqual(len(f.updates),3);self.assertEqual(len(f.writes),1)
+        recovered=''.join(row['content'].split('\n',1)[1] for row in f.updates)
+        self.assertEqual(recovered,f.text[:third['next_offset']])
+        self.assertTrue(all(len(row['content'].encode())<=500 for row in f.updates))
         self.assertEqual([u['delegation_id'] for u in f.updates],[f.delegation,None,None])
         origin=f.visits.read(self.origin,100,f.owner)
         self.assertEqual(len(origin['native_return_claims']),2)
@@ -135,6 +142,19 @@ class Renewal(unittest.TestCase):
         f.visits._write(origin)
         self.assertEqual(f.visits.native_return_origin(self.current,100,f.owner),
                          {'visit':self.origin,'delegation':f.delegation})
+
+    def test_prior_day_first_person_result_keeps_exact_text_and_prior_date(self):
+        f=self.f;f.text='Hoy lo guardé. Ya cambié la voz.'
+        original=f.visits.read(self.origin,100,f.owner)
+        original['created_at']=datetime(2026,11,6,tzinfo=timezone.utc).timestamp()
+        f.visits._write(original);self.replacement()
+        result=self.emit();self.ack()
+        self.assertIsNone(result['next_offset'])
+        self.assertIn('(opened 2026-11-06 UTC)',f.updates[-1]['content'])
+        self.assertEqual(f.updates[-1]['content'].split('\n',1)[1],f.text)
+        self.assertEqual(len(f.writes),1)
+        self.replacement();self.assertEqual(self.emit()['state'],'already_forwarded')
+        self.assertEqual(len(f.updates),1)
 
 
 if __name__=='__main__':unittest.main()
