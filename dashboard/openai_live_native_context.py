@@ -94,7 +94,10 @@ class PublicLiveContextHistory:
                         start,end,len(next_text.encode()),offset]]
                     proposed={**metadata,'spans':next_spans,'journal_after':offset}
                     charged=len(json.dumps({'text':next_text,'live_transcript':proposed},ensure_ascii=False).encode())+1024
-                    if charged>12000:
+                    # Native typed transcript language is bounded at16KiB.
+                    # Charge the complete JSON plus its native envelope; do not
+                    # mistake the12KiB delta cap for the whole evidence budget.
+                    if charged>16384:
                         if not spans:raise ValueError('Complete public transcript fragment needs a bounded source read')
                         break
                     text=next_text;spans=next_spans;metadata['spans']=spans
