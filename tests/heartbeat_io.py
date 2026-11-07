@@ -128,7 +128,25 @@ def qualify(binary):
         assert j.row('SELECT count(*) FROM conversation_inputs') == [(1,)]
         assert not j.messages and not j.telegram_methods, j.telegram_methods
         assert len(j.bounded) == 2
+        # Simulate the finite observation period's exhausted counter in this
+        # synthetic journal, then exercise the actual owner command boundary.
+        j.row("UPDATE bot_state SET value=json_set(value,'$.checks',json_extract(value,'$.contract.max_checks')) WHERE key LIKE 'heartbeat_producer:%'")
+        predecessor = j.read('heartbeat', 'status')['result']
+        successor_args = ('renew-observation', str(paused['generation']), str(expiry), str(expiry + 60_000), '10')
+        successor = j.read('heartbeat', *successor_args)['result']
+        assert successor['producer']['checks'] == predecessor['producer']['checks'] == 4
+        assert successor['producer']['contract']['max_checks'] == 10
+        assert successor['producer']['observation_window_renewal']['previous_max_checks'] == 4
+        assert successor['resources'] == predecessor['resources']
+        assert successor['admission_paused'] and successor['generation'] == paused['generation']
+        assert j.read('heartbeat', *successor_args)['result'] == successor
+        j.stop(); j.start(); j.wait_control_socket(j.socket)
+        restarted = j.read('heartbeat', 'status')['result']
+        assert restarted['producer'] == successor['producer']
+        assert restarted['resources'] == successor['resources']
+        assert len(j.bounded) == 2
         print('PASS finite maintenance -> exact bounded root -> owned controller source read -> reserved bounded workflow child -> batch review -> same Conversation report; Telegram disabled, original account charged6, no fabricated original or provider call. Synthetic native, not receiving/model/device acceptance.')
+        print('PASS owner-only finite observation successor and lost-ACK repeat/restart conserve count4, original sources and inference account; explicit cumulative ceiling10 creates no native execution.')
     finally:
         j.close()
 

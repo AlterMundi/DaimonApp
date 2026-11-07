@@ -37,7 +37,7 @@ def package_identity(root):
         with os.scandir(directory) as entries:
             for entry in entries:
                 count += 1
-                if count > 64:
+                if count > 128:
                     raise ValueError('package entry capacity')
                 path = Path(entry.path)
                 name = path.relative_to(root).as_posix()
@@ -52,7 +52,7 @@ def package_identity(root):
                     pending.append(path)
                 elif stat.S_ISREG(metadata.st_mode):
                     total += metadata.st_size
-                    if len(files) >= 32 or total > 1024 ** 3:
+                    if len(files) >= 64 or total > 1024 ** 3:
                         raise ValueError('package file capacity')
                     files[name] = digest(path)
                 else:

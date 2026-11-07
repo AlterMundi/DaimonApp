@@ -102,27 +102,41 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         .filter(|(action, _)| matches!(*action, "renew-window" | "renew-observation"))
     {
         let fields: Vec<_> = rest.split_whitespace().collect();
-        let [generation, previous_expiry, expiry] = fields.as_slice() else {
-            bail!("Expected heartbeat {action} GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS");
-        };
         let cfg = super::routing::profile(&app.shared)?;
         anyhow::ensure!(
             cfg.human_id == human,
             "Heartbeat belongs to the configured paired human"
         );
-        let renew = if action == "renew-window" {
-            crate::store::Store::heartbeat_renew_window
-        } else {
-            crate::store::Store::heartbeat_renew_observation
-        };
-        renew(
-            &app.shared.store,
-            human,
-            cfg.entry(),
-            generation.parse()?,
-            previous_expiry.parse()?,
-            expiry.parse()?,
-        )?;
+        match fields.as_slice() {
+            [generation, previous_expiry, expiry] => {
+                let renew = if action == "renew-window" {
+                    crate::store::Store::heartbeat_renew_window
+                } else {
+                    crate::store::Store::heartbeat_renew_observation
+                };
+                renew(
+                    &app.shared.store,
+                    human,
+                    cfg.entry(),
+                    generation.parse()?,
+                    previous_expiry.parse()?,
+                    expiry.parse()?,
+                )?;
+            }
+            [generation, previous_expiry, expiry, max_checks] if action == "renew-observation" => {
+                app.shared.store.heartbeat_renew_observation_capacity(
+                    human,
+                    cfg.entry(),
+                    generation.parse()?,
+                    previous_expiry.parse()?,
+                    expiry.parse()?,
+                    max_checks.parse()?,
+                )?;
+            }
+            _ => bail!(
+                "Expected heartbeat {action} GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS (renew-observation also accepts an explicit cumulative MAX_CHECKS)"
+            ),
+        }
         return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
     }
     if let Some(rest) = args.strip_prefix("configure-producer ") {
@@ -185,7 +199,7 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(

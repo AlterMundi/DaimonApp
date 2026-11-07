@@ -198,6 +198,18 @@ class HandoffBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'selected package uncertain'):
             selected_package(previous_root, candidate, previous_root.resolve(), previous)
 
+    def test_stock_package_inventory_and_file_capacity(self):
+        package = self.root / 'stock-package'
+        package.mkdir()
+        # Actual receiving stock0.167 packages contain44 regular files.
+        for index in range(44):
+            (package / str(index)).write_text('fixture')
+        self.assertEqual(len(package_identity(package)['files']), 44)
+        for index in range(44, 65):
+            (package / str(index)).write_text('fixture')
+        with self.assertRaisesRegex(ValueError, 'package file capacity'):
+            package_identity(package)
+
     def test_candidate_map_must_cover_complete_tree(self):
         (Path(self.plan['package']) / 'bin/helper').write_text('unlisted helper')
         with self.assertRaisesRegex(ValueError, 'complete package differs'):
