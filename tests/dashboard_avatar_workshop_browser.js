@@ -73,7 +73,35 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(await page.locator('.workshop-portrait').count(),0,'Actor change removes private portrait');
   await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();await editor.locator('#versions').click();
   assert.equal(await editor.locator('#history button').count(),0,'Another actor has an isolated version library');
+  await page.getByRole('button',{name:'Voice',exact:true}).click();
+  const studio=page.getByRole('region',{name:'Voice studio'});
+  await studio.getByText('A · cedar · Current delivery',{exact:true}).waitFor();
+  await page.evaluate(()=>{testLoseVoiceSaveAck=true;testVoicePosts=0;});
+  await studio.getByRole('button',{name:'Warm',exact:true}).click();
+  await studio.getByRole('button',{name:'Save revision',exact:true}).click();
+  await studio.getByText('Revision saved. Your current voice is kept until you choose Use.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>testVoicePosts),1,'Lost save ACK only reads the same revision');
+  assert.equal(await studio.getByRole('button',{name:'Use on next conversation'}).isEnabled(),true);
+  await studio.getByText('A · cedar · Current delivery',{exact:true}).waitFor();
+  assert.equal(await page.locator('#conversation-companion pre').isVisible(),true,'Voice save keeps the visual avatar');
+  await studio.getByRole('button',{name:'Use on next conversation'}).click();
+  await studio.getByText('Selected for the next conversation. An open connection and its reconnects keep their voice.',{exact:true}).waitFor();
+  for(const width of [1200,375,320]){
+   await page.setViewportSize({width,height:900});
+   assert(await studio.evaluate(e=>e.scrollWidth<=e.clientWidth+1),'Voice studio overflow at '+width);
+   assert.equal(await studio.getByLabel('Voice delivery instruction').evaluate(e=>getComputedStyle(e).fontSize),'16px');
+  }
+  if(process.env.VOICE_STUDIO_SCREENSHOT)await page.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT});
+  await page.evaluate(()=>{for(const [key,value] of Object.entries({background:'#101820',surface:'#17212b',text:'#f3f1e6',accent:'#82d5e7'}))document.body.style.setProperty('--dm-'+key,value);});
+  assert.equal(await studio.evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(16, 24, 32)');
+  if(process.env.VOICE_STUDIO_SCREENSHOT)await page.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT.replace(/\.png$/,'-dark.png')});
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.evaluate(()=>{testActor='100';testAvatar.bind('actor100');});
+  await page.locator('#avatar-workshop-open').click();
+  await page.getByRole('button',{name:'Voice',exact:true}).click();
+  await studio.getByText('A · cedar · Current delivery',{exact:true}).waitFor();
+  assert.equal(await studio.getByLabel('Saved voice revisions').locator('option').count(),1,'Voice library is actor isolated');
   assert.deepEqual(errors,[]);
-  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; no provider calls');
+  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; voice revisions/current A/save lost-ACK/use, actor isolation and narrow layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

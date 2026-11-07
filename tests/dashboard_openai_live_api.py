@@ -134,6 +134,36 @@ class Mounted(unittest.TestCase):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
 
+    def test_studio_choice_reaches_provider_and_reconnect_keeps_frozen_delivery(self):
+        from dashboard.avatar_workshop import AvatarWorkshop
+        store=AvatarWorkshop(self.state)
+        profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'cedar'}
+        a=str(uuid.uuid4());b=str(uuid.uuid4())
+        store.voice_save(100,a,profile,'Warm.',None,0);store.voice_select(100,a,1,[profile])
+        app=self.app_with_history();app.state.avatar_workshop=store
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'session_options':{'audio':{'output':{'voice':'cedar'}}}}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        with TestClient(app,base_url='https://example.test') as client,patch.object(self,'client',client):
+            self.meta['voice_start']='new'
+            with self.socket() as socket:
+                first=self.start(socket);self.assertTrue(first.spec['instructions'].endswith('Warm.'))
+                store.voice_save(100,b,profile,'Neutral.',a,2);store.voice_select(100,b,3,[profile])
+                self.assertTrue(first.spec['instructions'].endswith('Warm.'))
+                self.close(socket)
+            previous=self.ident
+            self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh','voice_continuation':previous}
+            with self.socket() as socket:
+                reconnect=self.start(socket);self.assertTrue(reconnect.spec['instructions'].endswith('Warm.'));self.close(socket)
+            self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh','voice_start':'new'}
+            with self.socket() as socket:
+                fresh=self.start(socket);self.assertTrue(fresh.spec['instructions'].endswith('Neutral.'));self.close(socket)
+            self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh'}
+            with self.socket() as socket:
+                legacy=self.start(socket)
+                self.assertFalse(legacy.spec['instructions'].endswith('Neutral.'))
+                self.close(socket)
+
     def test_maintenance_refuses_before_provider_or_original_admission(self):
         from dashboard.voice_admission import VoiceAdmission, VoiceAdmissionMiddleware, maintenance_guard
         admission=VoiceAdmission(self.state)

@@ -1158,3 +1158,12 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 #avatar-workshop-status {display:block;font-size:14px;max-width:24rem}
 #avatar-workshop-open,#avatar-workshop-pause {font-size:14px;min-height:36px;padding:.3rem .6rem}
 @media(max-width:480px){.avatar-workshop-dialog{height:98dvh;max-height:98dvh;padding:.25rem}.workshop-portrait{width:100px;height:90px}}
+
+.voice-studio {min-height:0;overflow:auto;padding:clamp(.75rem,3vw,2rem);font-size:16px;line-height:1.5;background:var(--dm-background,#0b1018);color:var(--dm-text,#eee)}
+.voice-studio[hidden] {display:none}
+.voice-studio label {display:grid;gap:.5rem}
+.voice-studio textarea,.voice-studio select {box-sizing:border-box;width:100%;font:inherit;color:inherit;background:var(--dm-surface,#101925);border:1px solid currentColor;border-radius:var(--dm-radius,12px);padding:.7rem}
+.voice-studio-actions {display:flex;flex-wrap:wrap;gap:.6rem;margin:.8rem 0}
+.voice-studio button {font:inherit;min-height:44px;max-width:100%;white-space:normal}
+.voice-studio blockquote {margin:1rem 0;padding:1rem;border-left:3px solid var(--dm-accent,#84d5ec)}
+.avatar-workshop-dialog iframe[hidden] {display:none}

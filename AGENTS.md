@@ -1,3 +1,11 @@
+The source voice studio extends the existing workshop account document and quotas,
+not the visual model/design schema. Save and Use are separate. A new public Live
+logical start may select a revision; physical reconnect/replacement freezes its
+prior voice choice. Legacy clients keep default delivery. See
+`docs/interaction-voice-studio.md`; source/browser qualification is not receiving
+selection or paid audition/hearing acceptance. Do not deploy unfinished auditions
+or change per-pair voice/provider defaults while preparing the studio.
+
 Public Live grouped work supports up to32 raw originals from one sealed window,
 within the existing600second visit,64KiB language and192KiB native document
 bounds. Keep the legacy interpreted delegate at eight sources. A capacity refusal

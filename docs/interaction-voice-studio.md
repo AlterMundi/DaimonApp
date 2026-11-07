@@ -2,7 +2,10 @@
 
 DaimonApp owns implementation; Voces owns the attributed product candidate.
 Continue inside the existing avatar workshop and shared account authentication.
-This source is an unfinished foundation, not a served editor or provider trial.
+This source adds the existing-workshop Voice panel and its authenticated adapter.
+It is not deployed or listening-qualified; bounded auditions remain unfinished.
+The first adapter targets public GPT-Live Avatar. Ordinary Conversation speech
+keeps its current Realtime route; API-specific voice identities are not pooled.
 
 Voice revisions now share the existing atomic account document, lock and quota
 with visual revisions. They use a separate `voice` namespace and generation;
@@ -19,25 +22,34 @@ compatible profiles. Foreign, stale or incompatible actions keep the old pointer
 The store returns a copy for a newly created logical conversation. Updating the
 account selection cannot change that copy or the visual selection.
 
-## Remaining adapter and interface work
+## Account actions and frozen conversations
 
-No voice HTTP endpoint, user control, audition or active route consumes this
-foundation yet. Do not label it available. The adapter must derive exact supported
-profiles from receiving configuration/capabilities, with no account entitlement
-inferred from a voice name. Reuse the existing workshop owner/CSRF checks; do not
-accept a browser-supplied account or arbitrary provider profile.
+The Voice panel lives in the existing workshop wrapper, preserving the original
+editor and visual selection. It shows the current receiving-configured identity,
+current A and editable B, delivery starting descriptions, immutable Save and
+separate Use on next conversation. It performs no broad account catalogue or
+entitlement discovery. Existing workshop owner/CSRF checks authorize its exact
+`avatars/voice` endpoint; read-only monitors and foreign actors cannot use it.
+Save/Use outcomes are reconciled through reads under the retained revision and
+expected generation. A lost response never starts another automatic write.
 
-Add Voice inside the existing workshop wrapper. Preserve current A and candidate
-B, delivery descriptions, immutable Save and separate Use on next conversation.
-Keep the previous selection on cancel/error/unknown ACK and reconcile the same
-revision through reads. No microphone or provider call on open/edit/save.
+New clients explicitly mark a new logical voice start. It reads the selected
+revision once, before microphone permission or paid creation. Physical reconnects
+supply their owned previous visit, retaining that exact voice snapshot across
+repeated replacements. An explicitly reviewed disconnected visit supplies its
+own snapshot. The reference is flat, not a nested voice archive. Wrong owners,
+changed API/model/voice or corrupted snapshots refuse before paid creation.
+Legacy clients keep the configured default delivery and cannot silently consume
+an account selection intended for the new studio. Native context, identity,
+language, name pronunciation and execution instructions stay in the base brief;
+the saved delivery is appended as voice-only guidance within the existing8KiB
+instruction bound. It is not a SOUL or execution-policy replacement.
 
-Public Live currently has physical visits and continuation ancestry, but the
-studio needs an explicit frozen voice choice across physical replacement/manual
-reconnect. Complete that contract before exposing Use: a new logical conversation
-may read the selected revision once; its physical successors keep that snapshot.
-The account pointer must never silently alter an existing connection or renewal.
-Preserve owner identity, pronunciation/accent, native execution and sourced returns.
+Opening/editing/saving requests no microphone or audio. Existing connections
+cannot change through a workshop pointer update. Studio changes are not yet
+served and no per-pair defaults or provider flags were changed by preparation.
+
+## Remaining comparison and acceptance
 
 Paid comparison remains explicit and bounded: two compatible identities at most,
 the same passage of at most40words,30seconds/16MiB each, retained uncertain result
@@ -46,7 +58,11 @@ media is implemented; no separate store or login. Recorded previews are not live
 conversation latency measurements. Actual listening, mobile and receiving delivery
 remain separate acceptance.
 
-Qualification currently covers real actor-document save/reload, exact readback,
+Qualification covers real actor-document save/reload, exact readback,
 immutable revisions, isolated actors, stale generations, incompatible selection,
 frozen copies, shared visual/voice capacity and failed-write preservation. It
-calls no provider and does not prove the remaining interface/session contract.
+calls no real provider. Mounted API-to-provider fixtures prove delivery selection
+and legacy-client behavior; three physical journal successors preserve A before
+a new logical start takes B. Actual Chromium verifies the existing editor plus
+Voice Save/Use, lost save-ACK readback, account isolation and1200/375/320px layouts.
+These checks do not prove paid audition quality, hearing or physical devices.
