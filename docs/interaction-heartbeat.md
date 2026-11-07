@@ -90,7 +90,9 @@ serial bounded recovery pass; stale, interrupted and failed checks remain
 unavailable. The existing cadence, check ceiling and expiry do not change.
 
 Both finite windows must be current, sufficient unreserved inference capacity
-must remain and observation capacity must be available. Through the existing
+must remain and observation capacity must be available. An unresolved pending
+attention return cannot report idle readiness. The existing writer lease must
+still be held by this live loop. Through the existing
 native connection, the owner reads the serving Core's explicit
 `initialize.boundedIdleTurn` support advertisement and `thread/read` for the
 selected existing thread. It verifies identity, actual model/provider/effort,

@@ -40,6 +40,9 @@ fn eligible(value: &Value, now: i64, loop_started: i64) -> Result<(), &'static s
     {
         return Err("observation_capacity");
     }
+    if producer["pending"] == true {
+        return Err("attention_pending");
+    }
     let check = &producer["last_check"];
     if check["outcome"] != "succeeded"
         || check["generation"] != value["generation"]
@@ -93,6 +96,7 @@ pub(super) async fn annotate(app: &App, human: i64, entry: SessionKey, value: &m
             .store
             .get_session(entry)?
             .context("native_binding_unavailable")?;
+        anyhow::ensure!(!session.busy, "native_busy");
         let reason = app
             .shared
             .codex
@@ -116,6 +120,7 @@ pub(super) async fn annotate(app: &App, human: i64, entry: SessionKey, value: &m
             .store
             .get_session(entry)?
             .context("native_binding_unavailable")?;
+        anyhow::ensure!(!current.busy, "native_busy");
         anyhow::ensure!(
             current.id == session.id
                 && current.codex_thread_id == session.codex_thread_id
@@ -148,6 +153,7 @@ pub(super) async fn annotate(app: &App, human: i64, entry: SessionKey, value: &m
                 | "native_support_unavailable"
                 | "native_admission_unavailable"
                 | "native_busy"
+                | "attention_pending"
                 | "native_observation_unavailable"
                 | "controls_changed"
                 | "native_binding_changed" => text,
@@ -171,7 +177,7 @@ mod tests {
         json!({"generation":4,"admission_paused":false,
             "lanes":{"messaging":{"generation":2,"paused":false}},
             "resources":{"state":"available","remaining_provider_attempts":12,"contract":{"provider_attempts_per_execution":12,"expires_at_unix_ms":200000}},
-            "producer":{"state":"configured","checks":1,"contract":{"interval_seconds":30,"max_checks":120,"expires_at_unix_ms":200000},
+            "producer":{"state":"configured","checks":1,"pending":false,"contract":{"interval_seconds":30,"max_checks":120,"expires_at_unix_ms":200000},
                 "last_check":{"generation":4,"activation":{"lane":"messaging","generation":2},"outcome":"succeeded","started_at_unix_ms":90000,"completed_at_unix_ms":91000}}})
     }
     #[test]
@@ -193,6 +199,7 @@ mod tests {
                 "window_expired",
             ),
             ("/producer/checks", json!(120), "observation_capacity"),
+            ("/producer/pending", json!(true), "attention_pending"),
             (
                 "/producer/last_check/outcome",
                 json!("failed"),

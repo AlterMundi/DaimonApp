@@ -35,7 +35,7 @@
     return text;
   }
   function readiness(value) {
-    const reasons={native_busy:'Waiting for the general conversation to become idle.',native_support_unavailable:'Native heartbeat support is not observed.',native_admission_unavailable:'Native admission is unavailable.',native_observation_unavailable:'Current native readiness could not be verified.',source_check_stale:'A fresh source check is required.',source_check_unavailable:'A successful source check at the current generation is required.',loop_unavailable:'The heartbeat loop is unavailable.',controls_changed:'Controls changed during the readiness check; refresh status.',native_binding_changed:'The native conversation changed; refresh status.'};
+    const reasons={attention_pending:'Heartbeat work is still being reconciled.',native_busy:'Waiting for the general conversation to become idle.',native_support_unavailable:'Native heartbeat support is not observed.',native_admission_unavailable:'Native admission is unavailable.',native_observation_unavailable:'Current native readiness could not be verified.',source_check_stale:'A fresh source check is required.',source_check_unavailable:'A successful source check at the current generation is required.',loop_unavailable:'The heartbeat loop is unavailable.',controls_changed:'Controls changed during the readiness check; refresh status.',native_binding_changed:'The native conversation changed; refresh status.'};
     return value?.operational_evidence?.schema==='telecodex.heartbeat-operational/v1'?(reasons[value.operational_evidence.reason] || ''):'';
   }
   function action(value,id) {
