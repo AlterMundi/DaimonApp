@@ -46,8 +46,9 @@ The iOS-only `IOSSpokenAudioSession` supplies `.playback`/`.spokenAudio` ducking
 and deactivation notification to other apps. It closes prepared as well as active
 outputs on background, interruption begin or selected route loss/change. Returning
 to the foreground allows a later explicit start; no notification resumes sound.
-One instance belongs to the app, not one per buffer. This is a spoken-output
-policy, not a duplex capture policy or background entitlement. Actual session,
+One instance belongs to the app, not one per buffer. Output alone uses this
+policy; the explicit foreground capture extension below adds frozen duplex
+ownership without a background entitlement. Actual session,
 route and music behavior is not qualified by source/SDK compilation.
 
 CI also compiles every source against the actual iOS Simulator SDK with an iOS17
@@ -162,3 +163,10 @@ at the fixture CA admission30second timeout; shutdown/delete/server cleanup
 passed. Two consecutive runs hit this same prerequisite. The fixture now gives
 that single certificate operation90seconds, without retrying an uncertain write
 or weakening TLS/PCM assertions. Runtime capture/permission acceptance is pending.
+
+The extended simulator fixture tests the actual with-reply capture bridge from
+its own same-origin iframe (must refuse), then reserves one main-frame duplex
+session across real PCM playback/idle/pause/flush. It never requests getUserMedia
+or changes a microphone permission. This checks session/bridge coexistence only;
+actual microphone permission, audio input, duplex processing and physical hearing
+remain unqualified. Source20tests/SDK evidence is separate from this runtime result.

@@ -15,8 +15,9 @@ import UIKit
     func deactivate() throws { try session.setActive(false, options: [.notifyOthersOnDeactivation]) }
 }
 
-/// The app owns one instance. This spoken-output policy does not enable capture,
-/// duplex voice, background audio, automatic resumption or another login/store.
+/// The app owns one instance. Explicit foreground capture freezes duplex mode;
+/// output alone uses spoken mode. Neither grants microphone permission, background
+/// audio, automatic resumption or another login/store.
 @MainActor public final class IOSSpokenAudioSession {
     private let ownership = AudioSessionOwnership(device: IOSSessionDevice())
     private var observers: [NSObjectProtocol] = []

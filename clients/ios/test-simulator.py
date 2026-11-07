@@ -132,7 +132,10 @@ def qualify(app):
                     print(json.dumps({'native_log':'unconfirmed','error':str(error)[-512:]}),flush=True)
                 raise RuntimeError('No terminal WebView/native receipt within35seconds; no relaunch')
             result = json.loads((state/'result.json').read_text()); print(json.dumps(result),flush=True)
-            assert result.get('state')=='passed' and result.get('played_bytes')==28800, result
+            assert (result.get('state')=='passed' and result.get('played_bytes')==28800
+                    and result.get('capture_iframe')=='refused'
+                    and result.get('duplex_reservation')=='held_across_pcm_idle'
+                    and result.get('microphone_requested') is False), result
             passed = True
         finally:
             cleanup = []
