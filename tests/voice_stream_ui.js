@@ -228,7 +228,13 @@ function boot(fail){
   assert.equal(await captions.events[0].data.text(),'compressed-original');assert.equal(captions.sockets.length,1);
   assert(!socket.sent.some(value=>typeof value==='string'&&JSON.parse(value).type==='finish'));
  }
- await assert.rejects(boot().create(undefined,{transcriptionProvider:'openai'}));
+ const single=boot(),live=await single.create(undefined,{transcriptionProvider:'openai'});live.start();single.sockets[0].open();
+ assert.equal(JSON.parse(single.sockets[0].sent[0]).mode,'prepared');single.sockets[0].message({type:'ready'});
+ single.worklets[0].emit({pcm:samples});single.sockets[0].message({type:'partial',text:'Single live words'});
+ live.stop();single.worklets[0].emit({finished:true});single.sockets[0].message({type:'prepared',id:uuid,text:'Single live words'});
+ assert.equal(live.preparedText,'Single live words');assert.equal(single.events[0].data.type,'audio/wav');
+ assert.equal(single.sockets.length,1,'One live recognition, never another transcription');
+
  for(const failure of ['resume','connect']){
   const preview=boot(failure),original=new Canonical(),capture=await preview.create(original);
   let errors=0;capture.addEventListener('error',()=>errors++);capture.start(250);

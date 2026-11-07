@@ -46,7 +46,7 @@ class Stream:
         if value is None:raise TranscriptionUnavailable('closed')
         return value
     def result(self):
-        return {'text':'Final words','final':True,'model':'gemini-3.5-transcribe-live' if self.selected_provider=='gemini' else 'qwen-audio-3.0-realtime-plus',
+        return {'text':'Final words','final':True,'model':{'openai':'gpt-live-transcribe','gemini':'gemini-3.5-transcribe-live'}.get(self.selected_provider,'qwen-audio-3.0-realtime-plus'),
                 'pcm_sha256':hashlib.sha256(self.pcm).hexdigest(),
                 'audio_millis':len(self.pcm)*1000//32000}
     def close(self):self.closed=True;self.events.put(None);self.closed_event.set()
@@ -145,10 +145,50 @@ class LiveTranscription(unittest.TestCase):
                 ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
                 ws.send_json({'type':'discard'})
             self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+        # Upload through the same enrolled-device action scope, not an admin cookie.
+        self.provider.receiver['voice']['transcription_profiles']={'openai-live':{},'previous-live':{}}
+        retained=[]
+        self.provider.conversation_voice_submit=lambda meta,data: retained.append(meta) or {'id':meta['id'],'phase':'preparing'}
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            headers={'Origin':'https://example.test','Authorization':device['authorization'],
+                'x-dashboard-csrf':device['csrf'],'content-type':'audio/wav',
+                'x-input-binding':self.binding,'x-input-id':self.ident,'x-audio-sha256':'a'*64}
+            for profile in ('openai-live','previous-live'):
+                response=client.post('/api/interaction/voice/'+profile,content=b'original',headers=headers)
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(retained[-1]['transcription_profile'],profile)
+                self.assertEqual(client.post('/api/interaction/voice/'+profile,content=b'original',headers={**headers,'x-dashboard-csrf':'wrong'}).status_code,403)
         from dashboard.companion import permitted
         self.assertTrue(permitted('POST','/api/interaction/voice/openai/live'))
         self.assertFalse(permitted('POST','/api/interaction/voice/openai/live','monitor_readonly'))
         self.assertFalse(permitted('POST','/api/interaction/voice/openai/live/extra'))
+
+    def test_openai_prepared_result_is_reused_without_another_recognition(self):
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'prepared',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared')}
+        pcm=b'\0\0'*1600
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+            client.cookies.set('telecodex_dashboard',client.cookies.get('telecodex_dashboard'),path='/')
+            csrf=client.get('/api/state').json()['csrf']
+            with client.websocket_connect('/api/interaction/voice/openai/live',headers={'Origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta(),'csrf':csrf,'mode':'prepared'})
+                self.assertEqual(ws.receive_json()['type'],'ready');ws.send_bytes(pcm)
+                self.assertEqual(ws.receive_json()['type'],'partial');ws.send_json({'type':'finish'})
+                final=ws.receive_json();self.assertEqual(final['type'],'prepared')
+        self.assertEqual(len(Stream.opened),1);self.assertTrue(Stream.opened[0].finished)
+        source=self.root/self.ident;source.write_bytes(wav_bytes(pcm));source.chmod(0o600)
+        from scripts.interaction_asr import process
+        binding=self.root/'live-only.json';binding.write_text(json.dumps({
+            'schema':'telecodex.interaction-asr/v1','provider':'live-result','models':['gpt-live-transcribe'],
+            'streaming_cache_root':str(self.root/'prepared'),'cache_root':str(self.root/'asr')}));binding.chmod(0o600)
+        with patch('scripts.interaction_asr.openai_recognizer',side_effect=AssertionError('Second recognition forbidden')):
+            result=process(source,binding)
+            self.assertEqual(result['text'],final['text']);self.assertEqual(result['live_model'],'gpt-live-transcribe')
+            self.assertEqual(process(source,binding,completed_only=True)['text'],final['text'])
+        self.assertEqual(source.read_bytes(),wav_bytes(pcm));self.assertEqual(len(Stream.opened),1)
 
     def test_streams_before_finish_retains_only_text_for_exact_wav(self):
         pcm=b'\0\0'*1600

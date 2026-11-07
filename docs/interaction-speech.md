@@ -496,13 +496,14 @@ not infer progressive OpenAI WAV support from the previous engine configuration.
 
 ## OpenAI live text during Conversation recording
 
-`gpt-live-transcribe` supplies provisional text as microphone audio arrives;
-`gpt-transcribe` remains the final file interpretation. This follows the official
+`gpt-live-transcribe` supplies text as microphone audio arrives. New prepared
+captures commit that same live session once and retain its completed text; no
+second file interpretation verifies or replaces it. This follows the official
 [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription).
 Do not use committed-turn `gpt-transcribe` as a substitute for live captions.
 
 Configure a separate optional `[streaming_transcription_openai]` with
-`enabled=true`, `provider="openai"`, `mode="captions"`, the existing approved
+`enabled=true`, `provider="openai"`, `mode="prepared"`, the existing approved
 absolute `credential_file`, existing private transcription `cache_root`, and
 `endpoint="wss://api.openai.com/v1/realtime?intent=transcription"`. Optional
 `transcription_options` contains bounded `languages`, `keywords`, and `delay`
@@ -516,15 +517,52 @@ allowlist, fresh authorization, voice maintenance fence,
 two-capture capacity and120second audio/140second connection bounds. It streams
 only to a transcription session with no assistant response/tools. Existing mono
 16kHz preview PCM is deterministically resampled to24kHz across packet boundaries;
-the compressed acoustic original and its hash/profile are never replaced.
-Provisional text cannot submit work, prepare a canonical transcript or finish the
-original. Stop/Cancel closes only the preview; final Send uses the same frozen
-OpenAI file-ASR route. Failed captions keep the original recording and show live
-text unavailable; no reconnect, audio replay or Qwen/Gemini fallback occurs.
+the new capture retains that exact16kHz PCM as its canonical WAV original.
+Partials update the display only. Send commits the SAME transcription session;
+its completed receipt supplies canonical text without a file-ASR call. Cancel
+closes without work. Missing completion keeps audio held, without reconnect,
+audio replay or a provider fallback. Historical `mode="captions"` captures keep
+their frozen compressed/file route; never reinterpret old originals at rollout.
 
 `openai_can_stream_transcribe` advertises this configured route independently of
 previous-provider streaming. New clients freeze the selected route before
 microphone permission; unsupported/older servers retain completed-only ASR.
-Caption transcription and final file transcription are separate provider usage;
-keep both in cost comparisons. Software tests, model access and synthetic streaming
+Historical captions-only captures and their final file interpretation retained
+separate provider usage; new live-only profiles never make that second call.
+Include both when comparing historical costs. Software tests, model access and synthetic streaming
 measurements do not prove real microphone/accent/noise/hearing acceptance.
+
+
+### Single live recognition
+
+Configure `streaming_transcription_openai.mode="prepared"` and native profile
+`openai-live` together. The profile invokes `scripts/interaction_asr.py` with a
+private `telecodex.interaction-asr/v1` binding: `provider="live-result"`,
+`models=["gpt-live-transcribe"]`, absolute `streaming_cache_root` matching the
+WebSocket receipt store and a bounded `cache_root`. No key/helper/file recognizer
+is accepted by this binding. `previous-live` uses the same reader with the exact
+configured Qwen/Gemini model list and its existing prepared store. Keep existing
+`openai` and `previous` commands unchanged for historical/file-only originals.
+The four-profile limit is unchanged. Pin explicit transcriber labels; OpenAI's
+model is retained as `live_model` in the helper receipt, never mislabeled as
+Qwen/Gemini to fit an older native streaming-model enum.
+
+New browser captures freeze their live-only profile before permission and retain
+PCM WAV plus recovery v6 metadata. Complete/commit the existing stream once;
+read its source/binding/model-checked result unchanged. Missing completion stays
+held with audio preserved; completed-only recovery may read a later exact receipt
+but cannot start another recognition. Existing compressed/historical captures
+retain their selected route. Never reinterpret those originals during rollout.
+
+Synthetic qualification: `tests/single_live_voice_http_io.py NATIVE_BINARY`
+exercises the actual native profile reader with the base file recognizer disabled,
+exact text/provenance, retry identity and one immutable original. Browser and
+shared Home/device tests cover route freezing and scoped admission. These do not
+establish hearing or every public Avatar source-window path.
+
+Avatar `/voice/recover` selects the retained original's profile and its exact
+completed-only command. New unsubmitted native captures require the live reader.
+Missing results or profiles keep audio held; the base file recognizer cannot
+fill that gap. Historical completed results may be read without another provider
+call. A live-only reader must still bind `provider="live-result"`, without
+helper/key/file-provider settings.

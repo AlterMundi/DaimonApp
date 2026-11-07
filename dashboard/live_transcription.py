@@ -255,8 +255,8 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
         raise ValueError('Explicit private streaming-transcription binding required')
-    if openai and (mode!='captions' or selected['endpoint']!='wss://api.openai.com/v1/realtime?intent=transcription'):
-        raise ValueError('OpenAI live captions cannot prepare or dispatch originals')
+    if openai and selected['endpoint']!='wss://api.openai.com/v1/realtime?intent=transcription':
+        raise ValueError('Select the exact OpenAI transcription-only endpoint')
     native_provider=selected.get('native_provider','gemini')
     if native_provider not in ('gemini','qwen'):
         raise ValueError('Select a supported native conversation provider')

@@ -85,6 +85,11 @@ function boot(live=false,recovery,status404=false,cues=false){
  openaiCaptions.preparation().onPartial('Texto mientras hablás');assert.equal(openaiCaptions.state(),'Texto mientras hablás');
  openaiCaptions.preparation().onUnavailable();assert.equal(openaiCaptions.state(),'Recording… Live text unavailable.');assert.equal(openaiCaptions.devices.at(-1).state,'recording','Preview failure must keep the acoustic original recording');
  openaiCaptions.cancel();
+ const liveOnlyRecovery=memoryRecovery(),liveOnly=boot(true,liveOnlyRecovery);await until(()=>!liveOnly.button().disabled);liveOnly.profile('openai-live');liveOnly.ui.configure(true,false,'prepared',true);await liveOnly.click();
+ assert.equal(liveOnly.preparation().transcriptionProvider,'openai');assert.equal(liveOnly.preparation().canonicalRecorder,undefined,'Use the exact PCM live original, not another compressed interpretation');
+ liveOnly.devices.at(-1).preparedText='Same live words';liveOnly.mode('after');await liveOnly.click();await until(()=>liveOnly.uploads.length===1);
+ assert.equal(liveOnly.uploads[0].route,'api/interaction/voice/openai-live');
+ assert.equal(liveOnlyRecovery.values.get('pending').schema,'telecodex.voice-recovery/v6','Older readers must refuse live-only profiles rather than run file ASR');
  const prepared=boot(true);await prepared.click();prepared.preparation().onPartial('Live caption without a prior error');
  assert.equal(prepared.nodes.get('#conversation-voice-state')['data-live-caption'],'true');
  prepared.devices[0].preparationTiming={provider_final_ms:123};

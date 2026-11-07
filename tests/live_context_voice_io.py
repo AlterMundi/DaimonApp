@@ -202,6 +202,11 @@ with (root/'completed-calls').open('a') as f:f.write('read\\n')
 print(json.dumps({'text':'Exact synthetic interpretation','final':True,'streaming_model':'gemini-3.8-live'}))
 """)
         j.config.write_text(j.config.read_text()+'\n[voice]\ntranscriber_label="synthetic/no-inference"\ntimeout_seconds=20\ntranscription_command='+json.dumps(['/usr/bin/python3',str(helper),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(helper),str(j.root),'--completed-only'])+'\n')
+        # The user's one recognition is already completed by the live stream.
+        # Native completion only reads it; the base helper remains for captions
+        # of generated assistant audio, never another user recognition.
+        live_command=['/usr/bin/python3',str(helper),str(j.root),'--completed-only']
+        j.config.write_text(j.config.read_text()+'\n[voice.transcription_profiles.previous-live]\ntranscriber_label="synthetic/same-live-result"\ntranscription_command='+json.dumps(live_command)+'\ncompleted_transcription_command='+json.dumps(live_command)+'\n')
         j.start();j.wait_control_socket(j.socket);j.messages.clear()
         journal=j.row('SELECT count(*) FROM incoming_updates')
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),

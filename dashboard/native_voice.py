@@ -567,7 +567,9 @@ def install(app,config,provider,origins,bind_voice,detector_command,active):
                     return await ForegroundBridge._run(owner_slots,function,*args)
                 # All preflight happens before provider opening and browser microphone acquisition.
                 capabilities=await asyncio.to_thread(provider.presentation,'input voice capabilities')
-                if (capabilities.get('binding')!=meta['binding'] or capabilities.get('foreground_retention')!='v1'
+                if (capabilities.get('binding')!=meta['binding']
+                        or 'previous-live' not in capabilities.get('voice_transcription_profiles',[])
+                        or capabilities.get('foreground_retention')!='v1'
                         or capabilities.get('foreground_completed_reader') is not True
                         or capabilities.get('foreground_context')!='v1'
                         or capabilities.get('foreground_continuation')!='v1'

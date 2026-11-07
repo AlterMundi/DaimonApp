@@ -164,7 +164,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -595,6 +595,8 @@ function boot(readOnly=false,standalone=false,options={}) {
   await follow.ui.refresh();
   assert.equal(live.scrollTop,live.scrollHeight,'The committed transcript cannot silently leave following mode');
   const until=async check=>{for(let n=0;n<100;n++){if(check())return;await new Promise(resolve=>setTimeout(resolve,5));}throw Error("Voice transition did not finish");};
+  const liveResult=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true,openaiCaptions:true,liveResult:true});await liveResult.ui.refresh();
+  assert.equal(liveResult.transcriptionProfile(),'openai-live','A completed live result must never select the file recognizer');
   const openaiOnly=boot(false,true,{capture:true,openaiConversation:true,progressive:true,immediateHash:true});openaiOnly.audio();await openaiOnly.ui.refresh();
   assert.equal(openaiOnly.nodes.get('#conversation-services-choice').hidden,false);
   const services=openaiOnly.nodes.get('#conversation-services-engine');services.value='openai';services.handlers.change();
