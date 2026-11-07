@@ -10,6 +10,13 @@ from datetime import datetime
 import uuid
 
 
+def _size(value):
+    # Context JSON is itself text inside the provider's JSON message. Count
+    # both escaping layers; raw context bytes undercount quotes/backslashes.
+    text=json.dumps(value,ensure_ascii=False,separators=(',',':'),allow_nan=False)
+    return len(json.dumps(text,ensure_ascii=False).encode())
+
+
 def _time(value):
     if not isinstance(value,str):return None
     try:
@@ -75,7 +82,7 @@ def integrating_sources(provider, frozen, *, max_bytes=8192, check=lambda:None):
                 if type(following) is not int or following!=offset+len(part['text']):
                     raise ValueError('Current integrating result cursor changed')
                 offset=following
-                if len(text.encode())>max_bytes:break
+                if _size(text)>max_bytes:break
             else:raise ValueError('Current integrating result exceeds its source read bound')
             if following is not None:
                 if not selected:raise ValueError('Latest integrating source needs semantic preparation before voice')
@@ -83,7 +90,7 @@ def integrating_sources(provider, frozen, *, max_bytes=8192, check=lambda:None):
             result={'kind':part.get('kind'),'source':row['id'],'revision':row['revision'],
                 'text':text,'completed':row.get('completed'),'observed_at':row.get('observed_at'),
                 'ordering_unknown':observed is None}
-        if len(json.dumps(selected+[result],ensure_ascii=False,separators=(',',':')).encode())>max_bytes:
+        if _size(selected+[result])>max_bytes:
             if not selected:raise ValueError('Latest integrating source needs semantic preparation before voice')
             more=True;break
         selected.append(result)
@@ -128,7 +135,7 @@ def read(native, thread, *, max_bytes=16384, check=lambda:None):
                  'started_at_ms':entry.get('startedAtMs'),'completed_at_ms':entry.get('completedAtMs')}
             candidate={'kind':'current_integrator_conversation','thread':thread,
                 'messages':list(reversed(rows+[row])),'earlier_history_available':True}
-            if len(json.dumps(candidate,ensure_ascii=False,separators=(',',':')).encode())>max_bytes:
+            if _size(candidate)>max_bytes:
                 if not rows:raise ValueError('Latest integrator message needs semantic preparation before voice')
                 more=True;break
             rows.append(row)

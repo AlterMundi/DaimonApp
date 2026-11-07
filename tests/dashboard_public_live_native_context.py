@@ -175,6 +175,26 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         await context.close(settled=True)
         self.assertTrue(self.provider.producers[self.dialogue]['closed'])
 
+    async def test_current_context_reserve_measures_complete_provider_message(self):
+        from dashboard.integrator_startup import _size
+        self.prepare();budgets=[]
+        def current(frozen,budget):
+            budgets.append(budget)
+            value={'text':'x'*(budget-_size({'text':''}))}
+            self.assertEqual(_size(value),budget)
+            return value
+        self.provider.public_live_integrator_context=current
+        context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,
+            self.dialogue,self.frozen,self.owner)
+        spec={'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'},
+            'input':[{'type':'message','role':'developer',
+                'content':[{'type':'input_text','text':'Prior retained context. '+'x'*20000}]}]}
+        prepared=await context.prepare(spec)
+        self.assertEqual(len(json.dumps(prepared,ensure_ascii=False).encode()),32768)
+        self.assertEqual(len(budgets),1,'No repeated context read to repair the budget')
+        self.assertEqual(prepared['input'][0],spec['input'][0])
+        await context.close()
+
 
     async def active_context(self):
         self.prepare()

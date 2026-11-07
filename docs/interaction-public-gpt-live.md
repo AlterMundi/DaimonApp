@@ -749,7 +749,13 @@ A bounded window
 omits only complete older sources with an explicit earlier-history marker; an
 oversized latest source refuses for semantic preparation rather than clipping its
 text. The combined reserve is at most16KiB inside the unchanged complete32KiB
-public session specification. Existing native24KiB resume and64k/48k/600s limits
+public session specification. Charge context as JSON text embedded in the final
+JSON request, including both escaping layers; quotes/backslashes cannot use a
+raw-byte estimate. Measure the actual developer-message envelope and policy
+before allocating that reserve. Whole older sources can be omitted; the latest
+source still refuses if it cannot fit. The boundary fixture fills the complete
+32KiB specification without clipping or another context read. Existing
+native24KiB resume and64k/48k/600s limits
 are unchanged. No history store, provider call, new human original, work replay,
 memory write, daemon start, native login change or context injection is needed
 to read this startup data. Only the short-lived existing observer proxy closes.

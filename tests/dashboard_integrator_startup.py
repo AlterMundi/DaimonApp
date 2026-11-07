@@ -52,6 +52,16 @@ class CurrentIntegrator(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'semantic preparation'):
             read(Reader([{'data':[message('new','large '*10000)],'nextCursor':None}]),'owned',max_bytes=1024)
 
+    def test_voice_spec_budget_counts_embedding_context_as_json_text(self):
+        native=Reader([{'data':[message('new','Latest complete correction.'),
+            message('old','"'*180)],'nextCursor':None}])
+        result=read(native,'owned',max_bytes=1024)
+        embedded=json.dumps(json.dumps(result,ensure_ascii=False,separators=(',',':')),
+            ensure_ascii=False).encode()
+        self.assertLessEqual(len(embedded),1024)
+        self.assertEqual(result['messages'][0]['text'],'Latest complete correction.')
+        self.assertTrue(result['earlier_history_available'])
+
     def test_bounded_paging_and_repeated_cursor_refusal(self):
         native=Reader([{'data':[],'nextCursor':str(i)} for i in range(4)])
         self.assertTrue(read(native,'owned')['earlier_history_available'])
