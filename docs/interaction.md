@@ -1591,3 +1591,13 @@ coming online or the explicit Sign in button rechecks the same remembered sessio
 Only the existing shared sign-in client can initiate login when that check fails.
 Malformed identity-service responses return503, not a fabricated expired session.
 No new identity store, token refresh mechanism, capture reopening or work replay.
+
+### Visible recovery after a lost reply acknowledgment
+
+The composer keeps an exact-ID Check message status action beside the preserved
+draft while submission is unconfirmed. It uses the existing read-only status
+route and never resubmits text or a question answer. Status and audio recovery
+controls must keep their parent visible even without an attention message or
+live caption. The synthetic Chromium recovery journey exercises the shipped
+390px layout, a lost POST acknowledgment, one explicit status read and exactly
+one original POST; physical phone/network acceptance remains separate.

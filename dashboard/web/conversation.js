@@ -815,7 +815,21 @@ window.Conversation = (() => {
       card.retry.disabled=!!card.retryBusy || !!card.retryNeedsCheck;
       if(card.retryNeedsCheck)card.check.hidden=false;
     }
+    const composerCheck=$("#conversation-send-check");
+    function syncComposerRecovery(){
+      if(!composerCheck)return;
+      const card=inputs.get(latestComposerId),value=card?.value;
+      const unconfirmed=value&&(!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
+      composerCheck.hidden=readOnly||posting||!unconfirmed||value.binding!==binding;
+      composerCheck.disabled=!!card?.checking;
+    }
+    composerCheck?.addEventListener('click',async()=>{
+      const card=inputs.get(latestComposerId);
+      if(!card||posting||card.value.binding!==binding||card.checking)return;
+      await card.checkStatus();
+    });
     function inputActivity() {
+      syncComposerRecovery();
       presentState({transcribing:[...inputs.values()].some(c=>c.value.voice && c.value.phase==="preparing"),
         routing:[...inputs.values()].some(c=>["requested","queued","submitting","steering"].includes(c.value.routing?.phase))});
     }
@@ -828,7 +842,7 @@ window.Conversation = (() => {
       publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;timeline?.append(publicHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
       inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = undefined;
-      latestComposerId = undefined; composerNotice("",false);clearFocus();routingChoices=[];
+      latestComposerId = undefined;syncComposerRecovery(); composerNotice("",false);clearFocus();routingChoices=[];
       telegramCursor=0;telegramNewest=0;telegramLoaded=false;
       $("#conversation-inputs").replaceChildren();
       $("#conversation-inputs-older").hidden = true;
@@ -953,7 +967,7 @@ window.Conversation = (() => {
         routeButton.addEventListener("click",()=>routeInput(card,card.routePending||{binding,selector:select.value})); inputs.set(value.id, card);
         card.checkStatus = async () => {
           if(card.checking)return;
-          card.checking=true;
+          card.checking=true;syncComposerRecovery();
           const owned = inputGeneration, observation = ++inputObservation;
           check.disabled = true;
           try {
@@ -964,7 +978,7 @@ window.Conversation = (() => {
             if (owned !== inputGeneration) return;
             if (observation >= card.observed) status.textContent = phaseText(card.value) + " Status check unavailable; no resend was made.";
             if (e.status === 401 || e.status === 403) failed(e);
-          } finally { card.checking=false;check.disabled = false; }
+          } finally { card.checking=false;check.disabled = false;syncComposerRecovery(); }
         };
         check.addEventListener("click",()=>inputNeedsText(card)?readInputText(card):card.checkStatus());
         retry.addEventListener("click", async () => {
@@ -1166,7 +1180,7 @@ window.Conversation = (() => {
         if (id === latestComposerId) composerNotice(retained?.phase ? phaseText(retained)
           : "Submission unconfirmed. Check this message status; it will not be resent automatically.");
         if (e.status === 401 || e.status === 403) failed(e);
-      } finally { posting = false; send.disabled = !inputBinding;microphone?.syncControls?.(); }
+      } finally { posting = false; send.disabled = !inputBinding;microphone?.syncControls?.();syncComposerRecovery(); }
     });
     $("#conversation-inputs-older").addEventListener("click", async () => {
       const button = $("#conversation-inputs-older"); button.disabled = true;
