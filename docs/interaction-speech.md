@@ -468,3 +468,19 @@ file transcription and Realtime synthesis are separate charges. A configured
 route or fixture is not actual API access, organization credit attribution,
 latency, device or quality acceptance. Source qualification does not establish
 receiving deployment.
+
+
+An owner may explicitly set dashboard `voice_services_default = "openai"`.
+Then omitted audio API profile selects OpenAI, new clients initially select
+OpenAI Conversation and GPT-Live + CompAII Avatar, and explicit `current` keeps
+the previous speech route. Configure native `voice.default_transcription_profile
+= "openai"` for new unprofiled Conversation and Telegram recordings, plus named
+`previous` commands for the retained legacy route. New native originals store
+the effective default profile. Exact retries/recovery first retain an existing
+original's profile; historical originals without one keep the legacy completed
+reader. Changing a default never changes a captured original or repeats ASR.
+The prior profile uses `/api/interaction/voice/previous` and recovery v5 too.
+This explicit default selection requires owner receiving-profile requalification
+for existing device grants, Alerts/menu and Traffic; retain their state through
+the maintained same-human adoption route in interaction-companion.md. Receiver
+configuration without API access is not authorization to enable peer billing.

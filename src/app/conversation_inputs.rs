@@ -468,6 +468,13 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         {
             result["foreground_interpretation"] = json!("gpt-transcribe/v1");
         }
+        result["voice_default_transcription_profile"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .and_then(|voice| voice.default_transcription_profile.as_deref())
+        );
         result["voice_transcription_profiles"] = json!(
             app.shared
                 .config
@@ -1055,7 +1062,25 @@ async fn voice_submit(
     recover: bool,
 ) -> Result<Value> {
     use crate::store::ConversationVoice;
-    let request: VoiceSubmit = serde_json::from_str(body)?;
+    let mut request: VoiceSubmit = serde_json::from_str(body)?;
+    if request.transcription_profile.is_none() {
+        let existing = app
+            .shared
+            .store
+            .conversation_input_read(human, entry, &request.id)
+            .ok();
+        request.transcription_profile = if let Some(original) = existing {
+            original.voice.and_then(|voice| voice.transcription_profile)
+        } else if !recover && request.foreground_dialogue.is_none() {
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .and_then(|voice| voice.default_transcription_profile.clone())
+        } else {
+            None
+        };
+    }
     if request.defer_foreground && request.foreground_dialogue.is_none() {
         bail!("Deferred completion requires a foreground capture");
     }

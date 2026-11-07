@@ -441,6 +441,14 @@ class Companion(unittest.TestCase):
             self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'speech_provider':'missing'},headers=self.headers).status_code,409)
             self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'stream':True},headers=self.headers).status_code,409)
         self.assertEqual(len(engines),2)
+        self.config['voice_services_default']='openai'
+        self.client.close();self.client=self.client_for()
+        with patch.object(Speech,'render',render):
+            default=self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
+            self.assertEqual(default.status_code,200);self.assertEqual(default.headers['x-speech-provider'],'openai')
+            self.assertEqual(engines[-1].binding,binding)
+            previous=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'current'},headers=self.headers)
+            self.assertEqual(previous.status_code,200);self.assertEqual(engines[-1].binding,self.speech.binding)
         self.assertEqual(self.speech.calls,[])
 
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):

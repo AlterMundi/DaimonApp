@@ -65,7 +65,7 @@ window.Conversation = (() => {
     let voiceEnabled=false,voiceSuspended=false,captureBusy=false,voiceBusy=false,voiceContext,voiceMode,conversationOnly=false,voiceModePrevious,voiceSession,continuousEnabled=false,nativeEnabled=false,nativeVoiceSession,legacyVoiceSession;
     let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,publicLiveNativeEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
     const voiceEngine=$('#conversation-voice-engine'),voiceChoiceBox=$('#conversation-voice-choice');
-    let conversationServices='current',openaiConversationAvailable=false,lastVoiceCapabilities;
+    let conversationServices='current',openaiConversationAvailable=false,lastVoiceCapabilities,servicesDefaultApplied=false;
     const servicesEngine=$('#conversation-services-engine'),servicesChoice=$('#conversation-services-choice');
     function applyConversationServices(){
       const useOpenAI=conversationServices==='openai';
@@ -75,6 +75,7 @@ window.Conversation = (() => {
         microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&lastVoiceCapabilities.can_stream_transcribe,lastVoiceCapabilities.streaming_transcription_mode);
       }
       if(servicesChoice)servicesChoice.hidden=!openaiConversationAvailable&&conversationServices==='current';
+      const previousOption=servicesEngine?.querySelector?.('option[value="current"]');if(previousOption)previousOption.textContent=lastVoiceCapabilities?.voice_services_default==='openai'?'Previous voice':'Current voice';
       if(servicesEngine){servicesEngine.value=conversationServices;servicesEngine.disabled=captureBusy||voiceBusy||!!active||!!speechWait||!!voiceSession?.active||!!microphone?.ownsSend();}
     }
     servicesEngine?.addEventListener('change',()=>{
@@ -303,7 +304,7 @@ window.Conversation = (() => {
     }
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?'openai':undefined,getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?'openai':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined,getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
       const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
       if(!card)return;
@@ -1779,6 +1780,7 @@ window.Conversation = (() => {
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
       publicLiveEnabled=value.can_converse_public_live===true&&window.PublicLiveConversation?.supported()===true;
       publicLiveNativeEnabled=publicLiveEnabled&&value.can_converse_public_live_native===true;
+      if(!servicesDefaultApplied){servicesDefaultApplied=true;if(value.voice_services_default==='openai'){conversationServices='openai';voiceChoice='gpt-live-native';}}
       selectVoiceEngine();
       if(codexEnabled)void codexVoiceSession?.restoreHistory().catch(()=>{});
       if(publicLiveEnabled)void publicLiveSession?.restoreHistory().catch(()=>{});
@@ -2022,7 +2024,7 @@ window.Conversation = (() => {
       const deadline=setTimeout(()=>controller.abort(),145000),speechProvider=conversationServices==='openai'?'openai':undefined;
       try{
         const response = await fetch("api/interaction/audio", {method:"POST",credentials:"same-origin",
-          headers:headers(),signal:controller.signal,body:JSON.stringify({source:source.id,revision:source.revision,offset,...(speechProvider?{speech_provider:speechProvider}:{}),...(canStreamSpeech && window.NativeSpeechAudio?.progressive!==false && source.kind!=="native_question" && window.SpeechStream?.available()?{stream:true}:{})})});
+          headers:headers(),signal:controller.signal,body:JSON.stringify({source:source.id,revision:source.revision,offset,...((speechProvider||lastVoiceCapabilities?.voice_services_default==='openai')?{speech_provider:speechProvider||'current'}:{}),...(canStreamSpeech && window.NativeSpeechAudio?.progressive!==false && source.kind!=="native_question" && window.SpeechStream?.available()?{stream:true}:{})})});
         if (!response.ok) {
           const value = await response.json();
           const error = new Error(value.detail || "Audio unavailable. Continue reading or refresh.");

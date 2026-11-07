@@ -21,6 +21,8 @@ pub struct VoiceConfig {
     /// Explicit per-original alternatives; omission keeps the existing route.
     #[serde(default)]
     pub transcription_profiles: BTreeMap<String, TranscriptionProfile>,
+    #[serde(default)]
+    pub default_transcription_profile: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
 }
@@ -49,11 +51,19 @@ impl VoiceConfig {
         config.transcriber_label = selected.transcriber_label.clone();
         config.completed_transcription_command = selected.completed_transcription_command.clone();
         config.transcription_profiles.clear();
+        config.default_transcription_profile = None;
         config.validate()?;
         Ok(config)
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self
+            .default_transcription_profile
+            .as_ref()
+            .is_some_and(|name| !self.transcription_profiles.contains_key(name))
+        {
+            bail!("Default transcription profile is unavailable; no fallback");
+        }
         if self.transcription_profiles.len() > 4 {
             bail!("Bounded transcription profile selection required");
         }
@@ -176,7 +186,8 @@ pub async fn transcribe(
     path: &Path,
     file_id: &str,
 ) -> Result<(String, TranscriptSource)> {
-    transcribe_committed(config, path, Some(file_id), None, None).await
+    let selected = config.select_profile(config.default_transcription_profile.as_deref())?;
+    transcribe_committed(&selected, path, Some(file_id), None, None).await
 }
 
 pub async fn transcribe_committed(
@@ -580,7 +591,7 @@ mod public_interpretation_tests {
     }
     #[test]
     fn explicit_transcription_profile_preserves_default_and_refuses_fallback() {
-        let config: VoiceConfig = serde_json::from_value(serde_json::json!({
+        let mut config: VoiceConfig = serde_json::from_value(serde_json::json!({
             "transcription_command":["legacy"],"transcriber_label":"existing",
             "transcription_profiles":{"openai":{
                 "transcription_command":["openai-final"],"transcriber_label":"OpenAI gpt-transcribe",
@@ -599,5 +610,16 @@ mod public_interpretation_tests {
         );
         assert!(config.select_profile(Some("missing")).is_err());
         assert_eq!(config.transcription_command, ["legacy"]);
+        config.default_transcription_profile = Some("openai".into());
+        config.validate().unwrap();
+        assert_eq!(
+            config
+                .select_profile(config.default_transcription_profile.as_deref())
+                .unwrap()
+                .transcription_command,
+            ["openai-final"]
+        );
+        config.default_transcription_profile = Some("missing".into());
+        assert!(config.validate().is_err());
     }
 }

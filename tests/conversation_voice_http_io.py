@@ -26,7 +26,7 @@ def audio(frequency=440,silence=False):
         wav.writeframes(b''.join(struct.pack('<h',0 if silence else int(5000*math.sin(2*math.pi*frequency*i/16000))) for i in range(3200)))
     return target.getvalue()
 
-def qualify(binary, stop_reason="duration_limit", profile=False):
+def qualify(binary, stop_reason="duration_limit", profile=False, default=False):
     j=Requests(str(Path(binary).resolve()));client=None
     try:
         j.start()
@@ -49,7 +49,7 @@ print(json.dumps({'text':item['text'],'final':True}))
         if profile:
             # An ignored named route cannot accidentally pass by using legacy.
             base=j.config.read_text().replace('transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)]), 'transcription_command=["/usr/bin/false"]',1)
-            j.config.write_text(base+'\n[voice.transcription_profiles.openai]\ntranscriber_label="synthetic/OpenAI-profile"\ntranscription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root),'--completed-only'])+'\n')
+            j.config.write_text(base+('default_transcription_profile="openai"\n' if default else '')+'\n[voice.transcription_profiles.openai]\ntranscriber_label="synthetic/OpenAI-profile"\ntranscription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root),'--completed-only'])+'\n')
         j.start();j.wait_control_socket(j.socket);j.routing=True
         binding=j.read('presentation','list','0','0')['result']['binding'];j.messages.clear()
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
@@ -66,7 +66,7 @@ print(json.dumps({'text':item['text'],'final':True}))
             ident=ident or str(uuid.uuid4());digest=digest or hashlib.sha256(data).hexdigest()
             h={**(headers if selected is None else selected),'content-type':'audio/wav','x-input-binding':binding,'x-input-id':ident,'x-audio-sha256':digest}
             if stop is not None:h['x-recording-stop']=stop
-            route='/api/interaction/voice/openai' if profile else '/api/interaction/voice'
+            route='/api/interaction/voice/openai' if profile and not default else '/api/interaction/voice'
             return ident,client.post(route+('/limited' if stop is not None else ''),content=data,headers=h)
         def status(ident):
             result=client.get('/api/interaction/inputs/'+ident,headers=headers);assert result.status_code==200,result.text;return result.json()
@@ -506,11 +506,13 @@ print(json.dumps({'text':'Keep this exact protected requirement.','final':True})
         j.close()
 
 if __name__=='__main__':
-    if '--openai-profile' in sys.argv[2:]:qualify(sys.argv[1],profile=True)
+    if '--openai-default' in sys.argv[2:]:qualify(sys.argv[1],profile=True,default=True)
+    elif '--openai-profile' in sys.argv[2:]:qualify(sys.argv[1],profile=True)
     elif '--archive-hold' in sys.argv[2:]:archive_hold(sys.argv[1])
     elif '--archive-legacy' in sys.argv[2:]:archive_hold(sys.argv[1],legacy=True)
     else:
         qualify(sys.argv[1],profile=True)
+        qualify(sys.argv[1],profile=True,default=True)
         foreground_capture(sys.argv[1])
         for reason in ('duration_limit','audio_flush_unconfirmed'):qualify(sys.argv[1],reason)
         archive_hold(sys.argv[1])

@@ -188,6 +188,9 @@ class DashboardHTTP(unittest.TestCase):
         self.assertEqual(self.client.post(path+'/limited',content=b'original',headers={**headers,'x-recording-stop':'duration_limit'}).status_code,200)
         self.assertEqual(retained[-1][0]['transcription_profile'],'openai')
         self.assertEqual(retained[-1][0]['capture_stop'],'duration_limit')
+        self.provider.receiver['voice']['transcription_profiles']['previous']={}
+        self.assertEqual(self.client.post('/api/interaction/voice/previous',content=b'original',headers=headers).status_code,200)
+        self.assertEqual(retained[-1][0]['transcription_profile'],'previous')
         self.assertEqual(self.client.post('/api/interaction/voice',content=b'original',headers=headers).status_code,200)
         self.assertNotIn('transcription_profile',retained[-1][0])
 

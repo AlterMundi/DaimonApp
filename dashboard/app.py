@@ -72,6 +72,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise ValueError('Explicit OpenAI speech requires its own bounded Realtime route')
         openai_speech.capacity = speech.capacity
         openai_speech.media_retention = speech.media_retention
+    services_default = config.get('voice_services_default','current')
+    if services_default not in ('current','openai') or services_default=='openai' and openai_speech is None:
+        raise ValueError('Configured default voice services unavailable; no fallback')
     origin = config['origin']
     prefix = config.get('prefix', '/sessions')
     additional_origins = config.get('additional_origins', [])
@@ -181,7 +184,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if request.headers.get('origin') not in allowed:
                 return JSONResponse({'detail': 'Wrong request origin'}, status_code=403)
             # Bound chunked bodies as well as Content-Length before parsing them.
-            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
+            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
                 try:
                     selected = await authorize_async(request)
                     if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), selected['csrf']):
@@ -628,6 +631,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),
                 'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
                 'can_listen':speech is not None,
+                'voice_services_default':services_default,
                 'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
                 'can_stream_speech':bool(speech and speech.streaming),
@@ -869,6 +873,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     @app.post('/api/interaction/voice/limited')
     @app.post('/api/interaction/voice/openai')
     @app.post('/api/interaction/voice/openai/limited')
+    @app.post('/api/interaction/voice/previous')
+    @app.post('/api/interaction/voice/previous/limited')
     async def conversation_voice(request: Request):
         session = await authorize_async(request)
         if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), session['csrf']):
@@ -876,10 +882,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         metadata = {key:request.headers.get(header, '') for key, header in
                     (('binding', 'x-input-binding'), ('id', 'x-input-id'),
                      ('audio_sha256', 'x-audio-sha256'), ('mime', 'content-type'))}
-        if '/voice/openai' in request.url.path:
-            if 'openai' not in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}):
+        profile = 'openai' if '/voice/openai' in request.url.path else 'previous' if '/voice/previous' in request.url.path else None
+        if profile:
+            if profile not in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}):
                 raise HTTPException(409,'OpenAI transcription is unavailable; no fallback')
-            metadata['transcription_profile']='openai'
+            metadata['transcription_profile']=profile
         capture_stop = request.headers.get('x-recording-stop')
         if request.url.path.endswith('/limited') and capture_stop not in ('duration_limit','audio_flush_unconfirmed'):
             raise HTTPException(400, 'Limited recording stop reason required')
@@ -1243,8 +1250,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if (not isinstance(body, dict) or not {'source','revision','offset'}<=set(body) or set(body)-{'source','revision','offset','stream','speech_provider'}
                     or type(body.get('stream',False)) is not bool):
                 raise ValueError()
-            profile = body.get('speech_provider')
-            if profile not in (None, 'openai'):
+            profile = body.get('speech_provider',services_default)
+            if profile not in ('current', 'openai'):
                 raise ValueError('Unknown speech profile; no fallback')
             engine = openai_speech if profile == 'openai' else speech
             if engine is None:

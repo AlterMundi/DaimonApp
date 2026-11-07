@@ -164,7 +164,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -603,6 +603,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>openaiOnly.audioCalls.length===1);
   assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
   services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
+  const openaiDefault=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true});await openaiDefault.ui.refresh();
+  assert.equal(openaiDefault.transcriptionProfile(),'openai','Selected server default applies before first capture');
+  assert.equal(openaiDefault.nodes.get('#conversation-services-engine').value,'openai');
+  openaiDefault.nodes.get('#conversation-services-engine').value='current';openaiDefault.nodes.get('#conversation-services-engine').handlers.change();
+  assert.equal(openaiDefault.transcriptionProfile(),'previous','Explicit previous mode freezes its route despite the OpenAI default');
   const directOptions={capture:true,continuous:true,playback:true,immediateHash:true};
   const direct=boot(false,true,directOptions);direct.audio();await direct.ui.refresh();
   const bridge=direct.continuous();direct.nodes.get('#conversation-message').value='Keep this ordinary draft';bridge.mode.open();

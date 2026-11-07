@@ -393,3 +393,12 @@ reader during web rollback (local recovery v5 refuses older clients). Reuse
 canonical part authentication, shared speech capacity/media quotas and the
 existing one-attempt OpenAI transcription adapter; no second work/session store.
 See docs/interaction-speech.md. Configuration is not receiving/hearing acceptance.
+
+An explicitly selected `voice_services_default="openai"` also makes omitted audio
+API selections and new client Conversation/Avatar selections OpenAI. Native
+`voice.default_transcription_profile="openai"` freezes the effective default on
+new ordinary/Telegram originals. Existing originals retain their original route,
+including legacy completed-only recovery. Explicit previous-provider captures
+use the named `previous` route; changing a default never changes an active capture.
+Same-actor device/Alerts/menu/Traffic requalification remains required when the
+native receiving profile changes. Native work/provider identity is unchanged.

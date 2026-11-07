@@ -36,7 +36,7 @@ window.VoiceInput = (() => {
     function records(old){
       if(!old)return [];
       if(old.schema==='telecodex.voice-recovery/v5'){
-        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&v.transcriptionProfile!=='openai')||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
+        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous'].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
         return [...old.items];
       }
       if(['telecodex.voice-recovery/v3','telecodex.voice-recovery/v4'].includes(old.schema)){
@@ -299,8 +299,8 @@ window.VoiceInput = (() => {
       try {
         if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
-        if(frozen.transcriptionProfile!==undefined&&frozen.transcriptionProfile!=='openai')throw Error('Recording provider unavailable; no fallback');
-        const route=frozen.transcriptionProfile==='openai'?'api/interaction/voice/openai':'api/interaction/voice';
+        if(frozen.transcriptionProfile!==undefined&&!['openai','previous'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
+        const route=frozen.transcriptionProfile?'api/interaction/voice/'+frozen.transcriptionProfile:'api/interaction/voice';
         const response=frozen.foreground_dialogue?await fetch('api/interaction/voice/recover',{
           method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,
