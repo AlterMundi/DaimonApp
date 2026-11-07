@@ -62,7 +62,7 @@ function boot(live=false,recovery,status404=false,cues=false){
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
  let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
- return {profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
+ return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
   confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
@@ -299,6 +299,22 @@ function boot(live=false,recovery,status404=false,cues=false){
  const offline=boot();offline.mode('before');await offline.click();offline.click();await until(()=>offline.state().startsWith('Recording unconfirmed'));
  assert.equal(offline.originals.size,0);await offline.click();await until(()=>offline.received.length===1);
  assert.equal(offline.uploads.length,2);assert.deepEqual(offline.uploads[0].headers,offline.uploads[1].headers);assert.equal(offline.uploads[0].body,offline.uploads[1].body,'Explicit retry preserves the exact original bytes');
+ // Switching browser tabs must not discard an explicitly started voice message.
+ for(const live of [false,true]){
+  const tabs=boot(live);await tabs.click();const recording=tabs.devices.at(-1);
+  tabs.visibility(true);assert.equal(recording.state,'recording','An ordinary message keeps recording in another tab');
+  assert.equal(recording.stream.stopped,0);assert.equal(tabs.uploads.length,0);
+  tabs.visibility(false);await tabs.click();await until(()=>tabs.received.length===1);
+  assert.equal(tabs.uploads.length,1,'Returning and Send submit one original only');
+ }
+ const backgroundSend=boot();await backgroundSend.click();const transfer=backgroundSend.holdUpload();backgroundSend.click();await until(()=>backgroundSend.uploads.length===1);
+ backgroundSend.visibility(true);assert.equal(backgroundSend.uploads[0].signal.aborted,false,'Switching tabs must not abort an in-flight original');
+ transfer.resolve();await until(()=>backgroundSend.received.length===1);assert.equal(backgroundSend.uploads.length,1);
+ const hiddenPermission=boot(),pendingPermission=hiddenPermission.permission(),pendingStart=hiddenPermission.click();
+ hiddenPermission.visibility(true);const hiddenMedia=hiddenPermission.media();pendingPermission.resolve(hiddenMedia);await pendingStart;
+ assert.equal(hiddenMedia.stopped,1,'A late permission result cannot start capture in a hidden tab');assert.equal(hiddenPermission.devices.length,0);
+ const directTabs=boot(true);await directTabs.ui.startConversation();directTabs.visibility(true);
+ await until(()=>directTabs.devices.at(-1).state==='inactive');assert.equal(directTabs.uploads.length,0,'Avatar/alternating voice still holds rather than capturing in background');
  const hidden=boot();await hidden.click();hidden.events.pagehide();await until(()=>hidden.devices[0].state==='inactive');assert.equal(hidden.uploads.length,0);assert.equal(hidden.devices[0].stream.stopped,1);
  const delayed=boot(),permission=delayed.permission();const starting=delayed.click();delayed.cancel();const lateMedia=delayed.media();permission.resolve(lateMedia);await starting;assert.equal(lateMedia.stopped,1);assert.equal(delayed.devices.length,0);
  for(const live of [false,true]){

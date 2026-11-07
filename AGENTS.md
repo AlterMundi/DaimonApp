@@ -1,3 +1,11 @@
+Ordinary voice messages already recording survive browser tab visibility changes,
+as do their in-flight original uploads. Keep late microphone permission blocked
+while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
+explicit teardown distinct. No hidden-tab automatic capture/restart is allowed.
+The existing120second/20MiB bounds remain; browser/OS suspension is not physical
+mobile background-capture acceptance. Qualify microphone_ui.js with both ordinary
+and live-backed recording plus hidden permission and upload races.
+
 Image send preparation shares one bounded in-flight immutable PNG upload between
 text and voice consumers. Ordinary audio/image media POSTs have no application
 wall-clock cutoff (Nicolas503b5d76); network failure and existing explicit
