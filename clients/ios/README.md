@@ -148,14 +148,31 @@ unknown. Termination was unconfirmed, but shutdown/delete/server stop were
 acknowledged. That journey did not exercise this unwired DSP core and is not
 recorded as a native Beacon playback pass.
 
-This is the DSP core only, not advertised or wired into the iOS audio device.
-Continue with one bounded foreground native output owner, the existing shared
-audio session, at most one latest frame/level, unchanged cached observation expiry
-<=20seconds and a nonrenewable two-hour owner. Quiet output must release only its
-own holder; speech/capture and Beacon cannot abandon one another. Route/background/
-stop must close it without replay or automatic resume. Qualify actual native
-playback, stale silence, fresh resume, ducking and lifecycle before advertisement;
-physical phone/music/hearing and the full original goal remain open.
+`BeaconPlaybackDriver` now prepares foreground output through the existing
+ApplePCMOutput and IOSSpokenAudioSession. One reschedulable monotonic timer and
+at most two40ms PCM buffers bound pending output; controls replace current targets
+without accumulating work. Only a contiguous actual played-callback prefix can
+report sound. A two-second callback stall closes the owner without retry. Frame
+validity is at most20seconds and gain cannot refresh it; stale weights fade to
+zero over one second. The nonrenewable two-hour deadline includes a final350ms
+fade and an independent sample-production ceiling. Quiet output releases only
+its own shared-session holder; host route/interruption/foreground-exit closes it
+without automatic resume. The combined speech/Beacon owner count stays at two.
+
+Five new synthetic-device tests cover queue/callback ordering, stale/gain/fresh
+controls, independent speech ownership, absolute lifetime, failure and no retry.
+The qualification-only app probe uses the actual native output/session to require
+played callbacks, stale quiet, fresh resumption, selected gain-zero quiet, gain
+restoration and host foreground-exit closure. It runs once with a12second bound,
+requests no microphone/provider/observer and does not expose a new JS command.
+Its receipt is required before the existing PCM WebView journey. This exercises
+host foreground-exit policy, not an actual OS background transition or physical
+hearing/music/route acceptance. SDK/runtime outcomes must be recorded separately.
+
+The normal JS bridge and native Beacon capability stay off. Continue with the
+closed per-document adapter and actual capture/duplex compatibility before
+advertisement. Physical phone/music/hearing, shared login, distribution/signing
+and the full original goal remain open.
 
 The common simulator fixture also reuses the90second observation bound for its
 single CA-admission operation, already qualified in PR728source816fd9a andd1f1f4b.

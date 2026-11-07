@@ -387,8 +387,15 @@ the supported fixture observes unknown install/launch without replay. A bounded
 one-day CA is trusted only on the new disposable simulator, never production.
 These are synthetic source/device observations, not physical hearing or shared
 login/passkey/capture acceptance. Native capabilities stay off pending those paths.
+The iOS Beacon DSP now has a prepared foreground output driver and independent
+shared-session holder: two40ms buffers, one reschedulable timer, unchanged20s
+observation expiry, one-second stale fade and a nonrenewable two-hour owner.
+A qualification-only native probe requires played/stale-quiet/fresh/duck/restored/
+foreground-close receipts before the PCM WebView journey. It requests no mic,
+provider or observer and adds no normal JS bridge/capability advertisement.
 Normal device packaging/signing, real account, duplex/progressive/background,
-Beacon and physical iPhone acceptance remain open. No iOS distribution is claimed.
+Beacon bridge and physical iPhone/music/hearing acceptance remain open. No iOS
+distribution is claimed.
 
 1. Build/sign/install the pilot; qualify shared login, complete text/voice input,
    reply/source binding, copy/files, native speech and music recovery on Android.

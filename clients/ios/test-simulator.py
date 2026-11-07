@@ -133,6 +133,10 @@ def qualify(app):
                 raise RuntimeError('No terminal WebView/native receipt within35seconds; no relaunch')
             result = json.loads((state/'result.json').read_text()); print(json.dumps(result),flush=True)
             assert result.get('state')=='passed' and result.get('played_bytes')==28800, result
+            beacon = result.get('beacon_qualification',{})
+            assert (beacon.get('state')=='passed' and beacon.get('microphone_requested') is False
+                    and beacon.get('played_frames',0)>0 and beacon.get('phases')==[
+                        'playing','stale_quiet','fresh_playing','duck_quiet','restored_playing','foreground_closed']), beacon
             passed = True
         finally:
             cleanup = []

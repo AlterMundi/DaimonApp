@@ -8,7 +8,9 @@ window.runQualification=async()=>{
   const failures=[],phases=[];
   const wait=async predicate=>{for(let n=0;n<80&&!predicate()&&!failures.length;n++)await sleep(50);if(!predicate()||failures.length)throw Error(JSON.stringify({failures,phases}));};
   try{
-    if(!window.NativeSpeechAudio||NativeSpeechAudio.pcm!==false)throw Error('Unexpected capability advertisement');
+    if(!window.NativeSpeechAudio||NativeSpeechAudio.pcm!==false||NativeSpeechAudio.beacon!==false)throw Error('Unexpected capability advertisement');
+    const beacon=window.__nativeBeaconQualification;
+    if(beacon?.state!=='passed'||beacon.microphone_requested!==false||!(beacon.played_frames>0))throw Error('Native Beacon probe: '+JSON.stringify(beacon));
     // Same-origin iframe knows the main document token but cannot reserve native output.
     const iframe=document.createElement('iframe');iframe.srcdoc='<script>window.webkit.messageHandlers.audio.postMessage(JSON.stringify({command:"pcm_begin",document_id:parent.__DaimonAudioDocument,id:"pcm_999",seconds:600}));<\/script>';
     document.body.append(iframe);await sleep(250);iframe.remove();
@@ -25,7 +27,7 @@ window.runQualification=async()=>{
     await wait(()=>positions.get(last)===tone.length);
     output.close();output=undefined;
     if(failures.length)throw Error(JSON.stringify(failures));
-    sessionStorage.setItem('qualification',JSON.stringify({state:'native_bridge_passed',played_bytes:3*tone.length,iframe_attempt:'could_not_reserve_owner',phases}));
+    sessionStorage.setItem('qualification',JSON.stringify({state:'native_bridge_passed',played_bytes:3*tone.length,beacon_qualification:window.__nativeBeaconQualification,iframe_attempt:'could_not_reserve_owner',phases}));
     location.href='/outside/';
   }catch(error){
     await fetch('/result',{method:'POST',body:JSON.stringify({state:'failed',message:error.name+': '+error.message})});

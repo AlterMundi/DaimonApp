@@ -1,5 +1,10 @@
-Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
-not native playback or an advertised capability. Preserve normalized mix,
+Prepared iOS BeaconSynth is the six-carrier Android-compatible DSP core.
+BeaconPlaybackDriver now prepares foreground native output through the existing
+shared session; its qualification-only app probe does not advertise a capability.
+Keep at most two40ms buffers and one reschedulable timer, contiguous played
+callbacks, a two-second stalled-output close, stale fade and independent holder
+release. The native probe exercises synthetic output and host foreground-exit
+policy, not physical hearing, OS background, music routes or capture overlap. Preserve normalized mix,
 phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.
 Future output must reuse the shared session,<=20s observation expiry without
 cached-refresh renewal, two-hour nonrenewable owner and bounded latest controls.
