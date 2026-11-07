@@ -36,6 +36,25 @@ compiler jobs and a ten-minute deadline. No dependency package or signing identi
 is fetched. Scratch output belongs to the disposable runner; no generated audio
 or new retained cache/artifact is uploaded.
 
+`AudioSessionOwnership` prepares one shared session with at most two independent
+holders. A stale release cannot deactivate a fresh owner. Failed activation gets
+one owned cleanup attempt; failed cleanup/deactivation remains unconfirmed and
+blocks new owners until exact explicit recovery. Four synthetic-session tests
+cover these transitions without an audio device.
+
+The iOS-only `IOSSpokenAudioSession` supplies `.playback`/`.spokenAudio` ducking
+and deactivation notification to other apps. It closes prepared as well as active
+outputs on background, interruption begin or selected route loss/change. Returning
+to the foreground allows a later explicit start; no notification resumes sound.
+One instance belongs to the app, not one per buffer. This is a spoken-output
+policy, not a duplex capture policy or background entitlement. Actual session,
+route and music behavior is not qualified by source/SDK compilation.
+
+CI also compiles every source against the actual iOS Simulator SDK with an iOS17
+minimum target and signing disabled (a transient library, not an application).
+This catches iOS-only API/type errors that a macOS package build cannot observe.
+Neither the dylib nor build cache is uploaded; the ten-minute job bound remains.
+
 This is not an installable app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
 WKWebView's exact-origin/main-frame bridge and shared-login shell,
 foreground capture/route/interruption/return handling, progressive/background

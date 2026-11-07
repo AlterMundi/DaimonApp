@@ -376,7 +376,11 @@ and SHA256 fences. Flush cannot replenish its lifetime. A separate macOS CI job
 builds/tests it with two workers and a ten-minute deadline. This prepares the
 audio core only. Its prepared AVAudioEngine driver adds eight-buffer scheduling,
 main-actor ownership and contiguous played callbacks fenced across flush/close.
-Actual device/session acceptance is missing; no installable iOS app, WebView bridge,
+Its iOS-only spoken-session host also prepares independent holders, retained
+unknown-release refusal, foreground/prepared-output cancellation and no automatic
+resume after interruptions/routes. The same sources compile against the iOS
+Simulator SDK separately from macOS tests. Actual device/session acceptance is
+missing; no installable iOS app, WebView bridge,
 shared-login acceptance, signing or physical-device delivery is claimed. The
 complete iOS increment below remains open.
 

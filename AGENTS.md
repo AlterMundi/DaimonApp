@@ -5,6 +5,11 @@ callbacks and stops outside Apple completion threads. Its host must supply owned
 AVAudioSession activation/release and close on lifecycle/route/interruption. Swift package tests are not an installable app,
 WKWebView/shared-login, AVAudioSession, simulator or physical iPhone acceptance.
 Reuse the hosted Conversation/grants; no new login/editor/server or provider work.
+The iOS spoken-session host closes both prepared/active owners on background or
+selected interruptions/routes; it never resumes them automatically. Keep unknown
+session releases blocked until explicit exact-owner recovery. The spoken-output
+policy is not duplex capture/background entitlement. macOS tests and iOS SDK
+compilation do not establish simulator/device audio or shared-login acceptance.
 
 Native Beacon preparation reuses the existing Sonic score/explicit activation.
 Keep six normalized phase-continuous sine carriers, bounded latest frame/level,
