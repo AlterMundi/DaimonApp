@@ -29,7 +29,7 @@ from dashboard.native_history import NativeHistory
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import dashboard_native_context as context_fixtures
 
-NATIVE_CAPS={"foreground_interpretation":"gpt-transcribe/v1",
+NATIVE_CAPS={"foreground_interpretation":"gpt-transcribe/v1","foreground_live_window":"journal-input/v1","voice_available":True,"foreground_completed_reader":True,
     "foreground_context":"v1","foreground_resume":"v1","foreground_public_live_transcripts":"v1"}
 
 
@@ -47,6 +47,8 @@ class Owner:
     def authorized(self,human):return human==100
     def assert_binding(self):pass
     def close(self):pass
+    def conversation_foreground_delegate(self,body):
+        raise AssertionError('This fixture did not select a delegation writer')
     def conversation_foreground_interpret(self,body):
         raise AssertionError('This fixture did not select an interpretation writer')
     def public_live_binding(self,binding):
@@ -314,12 +316,21 @@ class Mounted(unittest.TestCase):
 
     def test_native_choice_refuses_missing_python_adapter_even_with_current_native_capabilities(self):
         self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
-        self.owner.conversation_foreground_interpret=None
+        self.owner.conversation_foreground_delegate=None
         with self.choice_client() as client:
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                 socket.send_json({**self.meta,'backend':'native'})
                 value=socket.receive_json();self.assertEqual(value['type'],'unconfirmed')
                 self.assertIn('server update',value['message'])
+        self.assertEqual(Client.instances,[])
+        self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
+
+    def test_native_choice_refuses_unconfigured_raw_voice_before_paid_creation(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS,'voice_available':False}
+        with self.choice_client() as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                socket.send_json({**self.meta,'backend':'native'})
+                self.assertEqual(socket.receive_json()['type'],'unconfirmed')
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
@@ -345,11 +356,12 @@ class Mounted(unittest.TestCase):
             return copy.deepcopy(row)
         def delegate(body):
             calls['work']+=1;row=saved[body['id']]
+            row['text']=self.read()['delegations']['native-task']['live_window']['text']
             self.assertIn('native semantic producer',body['formulation'])
             self.assertIn(self.ident,body['formulation'])
             self.assertIn(self.ident,owner.journal.producers,'Context must be retained before native work')
             row.update(phase='accepted',native_acceptance='observed',local_turn=42,foreground_delegation={
-                'intent_id':body['intent_id'],'dialogue_id':self.ident,'formulation':body['formulation'],
+                'intent_id':body['intent_id'],'dialogue_id':self.ident,'formulation':body['formulation'],'live_window':body['live_window']['proof'],
                 'sources':[{'id':ident,'capture_order':index+1,'text':saved[ident]['text'],
                     'text_sha256':hashlib.sha256(saved[ident]['text'].encode()).hexdigest(),
                     'voice':copy.deepcopy(saved[ident]['voice'])} for index,ident in enumerate(body['source_ids'])]})
@@ -376,7 +388,7 @@ class Mounted(unittest.TestCase):
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
         install(app,config,owner,authorize,['https://example.test'])
-        with patch('dashboard.openai_live_native_backend.OriginalTranscription',lambda key:Recognizer()),patch.object(Client,'send',acknowledge):
+        with patch.object(Client,'send',acknowledge):
             with TestClient(app,base_url='https://example.test') as client:
                 with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                     native=self.start(socket);self.assertEqual(native.spec['delegation']['type'],'client')
@@ -403,7 +415,7 @@ class Mounted(unittest.TestCase):
                         self.assertEqual(socket.receive_json()['event']['type'],'session.commentary.appended')
                         self.assertIn('Soy CompAII',next(row['content'] for row in native.sent if row['type']=='session.commentary.append'))
                         self.close(socket)
-                    self.assertEqual(calls,{'asr':1,'work':1})
+                    self.assertEqual(calls,{'asr':0,'work':1})
                 first_value=self.read()
                 if renew:
                     original=self.ident;self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
@@ -428,7 +440,7 @@ class Mounted(unittest.TestCase):
                     renewed=self.read()
                     self.assertEqual(renewed['native_continuation_from'],original)
                     self.assertEqual(renewed['delegations'],{},'No new provider delegation or original was needed')
-                    self.assertEqual(calls,{'asr':1,'work':1},'Renewal never interprets or dispatches the old work again')
+                    self.assertEqual(calls,{'asr':0,'work':1},'Renewal never interprets or dispatches the old work again')
                     self.assertEqual(next(iter(renewed['native_result_updates'].values()))['origin_visit'],original)
         self.assertEqual(first_value['state'],'closed')
         self.assertEqual(first_value['delegations']['native-task']['native_pipeline']['state'],'admitted')
@@ -455,9 +467,8 @@ class Mounted(unittest.TestCase):
             config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',**settings}}
             with self.assertRaises(ValueError):install(app,config,self.owner,lambda _:None,['https://example.test'])
 
-    def test_native_interpretation_failure_finalizes_voice_once_without_work_or_retry(self):
-        from dashboard.openai_live_transcription import InterpretationUnavailable
-        self._failed_native_preparation(InterpretationUnavailable('unconfirmed'),'unconfirmed')
+    def test_native_window_failure_finalizes_voice_once_without_work_or_retry(self):
+        self._failed_native_preparation(ValueError('Synthetic source window unavailable'),'unconfirmed')
 
     def test_unexpected_preparation_error_keeps_sideband_until_confirmed_close_without_replay(self):
         with self.assertLogs('dashboard.openai_live_api',level='WARNING') as logs:
@@ -478,10 +489,11 @@ class Mounted(unittest.TestCase):
         class Recognizer:
             model='gpt-transcribe'
             def transcribe(self,data):attempts.append(data);raise error
+        def fail_window(*args):attempts.append('source-window');raise error
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
         install(app,config,owner,authorize,['https://example.test'])
-        with patch('dashboard.openai_live_native_backend.OriginalTranscription',lambda key:Recognizer()):
+        with patch('dashboard.openai_live_native_backend.freeze_input_window',fail_window):
             with TestClient(app,base_url='https://example.test') as client:
                 with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                     native=self.start(socket);audio=wav_bytes(b'\1\0'*800)
@@ -501,10 +513,10 @@ class Mounted(unittest.TestCase):
         value=self.read();self.assertEqual(value['state'],'closed')
         self.assertTrue(value['finalization']['voice_usage_confirmed'])
         self.assertEqual(value['delegations']['failed-task']['native_pipeline']['state'],'held')
-        self.assertEqual(value['native_originals']['0']['interpretation']['state'],interpretation_state)
+        self.assertNotIn('interpretation',value['native_originals']['0'])
         self.assertNotIn('native_work',value['delegations']['failed-task'])
 
-    def test_slow_native_preparation_keeps_close_responsive_and_preserves_late_interpretation(self):
+    def test_slow_native_window_read_keeps_close_responsive_without_asr(self):
         app=self.app_with_history();saved={};entered=threading.Event();release=threading.Event()
         self.addCleanup(release.set);owner=self.owner;frozen=owner.public_live_binding('a'*64)
         owner.presentation=lambda command:{'binding':owner.binding,**NATIVE_CAPS}
@@ -523,7 +535,11 @@ class Mounted(unittest.TestCase):
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
         install(app,config,owner,authorize,['https://example.test'])
-        with patch('dashboard.openai_live_native_backend.OriginalTranscription',lambda key:Recognizer()):
+        def slow_window(*args):
+            from dashboard.openai_live_window import freeze_input_window
+            entered.set();test.assertTrue(release.wait(3),'Source read blocked voice Close')
+            return freeze_input_window(*args)
+        with patch('dashboard.openai_live_native_backend.freeze_input_window',slow_window):
             with TestClient(app,base_url='https://example.test') as client:
                 with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                     native=self.start(socket);audio=wav_bytes(b'\1\0'*800)
@@ -540,7 +556,7 @@ class Mounted(unittest.TestCase):
                     self.assertFalse(release.is_set());release.set()
                     self.assertEqual(socket.receive_json()['type'],'closed')
         value=self.read()
-        self.assertEqual(value['native_originals']['0']['interpretation']['state'],'completed')
+        self.assertNotIn('interpretation',value['native_originals']['0'])
         self.assertEqual(value['delegations']['slow-task']['native_pipeline']['state'],'held')
         self.assertNotIn('native_work',value['delegations']['slow-task'])
         self.assertEqual([row['type'] for row in native.sent],['session.close'])

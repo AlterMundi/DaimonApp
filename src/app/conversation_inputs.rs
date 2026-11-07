@@ -431,18 +431,54 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             intent_id: String,
             formulation: String,
             source_ids: Vec<String>,
+            #[serde(default)]
+            live_window: Option<LiveWindow>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LiveWindow {
+            path: String,
+            proof: crate::voice::PublicLiveWindow,
         }
         let selected: Delegate = serde_json::from_str(body)?;
         let _ingress = app.shared.conversation_ingress.lock().await;
-        let (input, fresh) = app.shared.store.conversation_foreground_delegate(
-            human,
-            cfg.entry(),
-            &selected.binding,
-            &selected.id,
-            &selected.intent_id,
-            &selected.formulation,
-            &selected.source_ids,
-        )?;
+        let (input, fresh) = if let Some(window) = selected.live_window {
+            #[cfg(unix)]
+            {
+                let proof = window.proof;
+                let checked = proof.clone();
+                let path = std::path::PathBuf::from(window.path);
+                let text = tokio::task::spawn_blocking(move || {
+                    crate::voice::public_live_window_source(&path, &checked)
+                })
+                .await??;
+                app.shared.store.conversation_foreground_live_delegate(
+                    human,
+                    cfg.entry(),
+                    &selected.binding,
+                    &selected.id,
+                    &selected.intent_id,
+                    &selected.formulation,
+                    &selected.source_ids,
+                    &text,
+                    proof,
+                )?
+            }
+            #[cfg(not(unix))]
+            {
+                bail!("Private Live journal reader unavailable on this receiver");
+            }
+        } else {
+            app.shared.store.conversation_foreground_delegate(
+                human,
+                cfg.entry(),
+                &selected.binding,
+                &selected.id,
+                &selected.intent_id,
+                &selected.formulation,
+                &selected.source_ids,
+            )?
+        };
         if fresh {
             // Bypass voice-selected routing and automatic question answers.
             // Only the existing integrator decides downstream work.
@@ -485,6 +521,10 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         );
         result["foreground_context"] = json!("v1");
         result["foreground_public_live_transcripts"] = json!("v1");
+        #[cfg(unix)]
+        {
+            result["foreground_live_window"] = json!("journal-input/v1");
+        }
         result["foreground_audio_observations"] = json!("v1");
         result["foreground_derived_captions"] = json!("v1");
         result["foreground_guidance"] = json!("v1");
@@ -1087,7 +1127,10 @@ async fn voice_submit(
         .as_ref()
         .context("Voice input is not configured")?
         .select_profile(request.transcription_profile.as_deref())?;
-    if recover || request.foreground_dialogue.is_some() {
+    // A deferred acoustic reservation starts no recognizer and therefore does
+    // not require an unused completed-transcript command. Ordinary foreground
+    // recovery still selects only its configured completed reader.
+    if recover || (request.foreground_dialogue.is_some() && !request.defer_foreground) {
         config.transcription_command = config
             .completed_transcription_command
             .clone()

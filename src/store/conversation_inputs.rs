@@ -74,6 +74,8 @@ pub struct ForegroundDelegation {
     pub dialogue_id: String,
     pub formulation: String,
     pub sources: Vec<ForegroundSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_window: Option<crate::voice::PublicLiveWindow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +272,17 @@ impl ConversationInput {
     /// Preserve original speech attribution without copying device focus into
     /// the native question's answer as if it were human speech.
     pub fn answer_text(&self) -> String {
+        if let Some(window) = self
+            .foreground_delegation
+            .as_ref()
+            .and_then(|d| d.live_window.as_ref())
+        {
+            return format!(
+                "[Live input transcript window]\nProvider-generated input fragments associated with the retained acoustic group, not verified speech or exact per-clip alignment. Incomplete/late fragments and corrections remain possible. No second transcription was requested.\nSource: {}\n{}",
+                serde_json::to_string(window).expect("typed Live window"),
+                self.text
+            );
+        }
         match self.voice.as_ref().and_then(|v| v.transcription.as_ref()) {
             Some(proof) => format!(
                 "[Committed voice input]\nCapture: {}\nAutomatic interpretation of the original human clip, not verified written speech. Compare receiver capture order; a slow earlier transcript does not supersede later corrections.\nProvenance: {}\n{}\n{}",
@@ -839,6 +852,63 @@ impl Store {
         formulation: &str,
         source_ids: &[String],
     ) -> Result<(ConversationInput, bool)> {
+        self.foreground_delegate_on(
+            human,
+            entry,
+            binding,
+            id,
+            intent_id,
+            formulation,
+            source_ids,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_foreground_live_delegate(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        intent_id: &str,
+        formulation: &str,
+        source_ids: &[String],
+        text: &str,
+        proof: crate::voice::PublicLiveWindow,
+    ) -> Result<(ConversationInput, bool)> {
+        use sha2::{Digest, Sha256};
+        if text.trim().is_empty()
+            || text.contains('\0')
+            || text.len() > 65536
+            || format!("{:x}", Sha256::digest(text.as_bytes())) != proof.text_sha256
+        {
+            bail!("Invalid grouped Live input language");
+        }
+        self.foreground_delegate_on(
+            human,
+            entry,
+            binding,
+            id,
+            intent_id,
+            formulation,
+            source_ids,
+            Some((text, proof)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn foreground_delegate_on(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        intent_id: &str,
+        formulation: &str,
+        source_ids: &[String],
+        live: Option<(&str, crate::voice::PublicLiveWindow)>,
+    ) -> Result<(ConversationInput, bool)> {
         use sha2::{Digest, Sha256};
         if Uuid::parse_str(intent_id)
             .ok()
@@ -872,7 +942,10 @@ impl Store {
             selected.sort();
             let mut retained = old.sources.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
             retained.sort();
-            if old.intent_id != intent_id || old.formulation != formulation || selected != retained
+            if old.intent_id != intent_id
+                || old.formulation != formulation
+                || selected != retained
+                || old.live_window.as_ref() != live.as_ref().map(|(_, proof)| proof)
             {
                 bail!("Foreground delegation identity is immutable");
             }
@@ -882,7 +955,24 @@ impl Store {
             .foreground_dialogue
             .clone()
             .context("Not a foreground original")?;
-        if input.phase != "foreground" {
+        if let Some((text, proof)) = &live {
+            if input.phase != "foreground_captured"
+                || proof.dialogue != dialogue
+                || !input.text.is_empty()
+                || input
+                    .voice
+                    .as_ref()
+                    .is_none_or(|v| v.transcription.is_some() || v.capture_stop.is_some())
+            {
+                bail!("Live window needs an uninterpreted retained acoustic root");
+            }
+            let overlap:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs WHERE human_id=?1 AND session_id=?2 AND json_extract(doc,'$.foreground_dialogue')=?3 AND json_extract(doc,'$.foreground_delegation.live_window.journal_revision')=?4 AND json_extract(doc,'$.foreground_delegation.live_window.journal_from')<?5 AND json_extract(doc,'$.foreground_delegation.live_window.journal_after')>?6)",params![human,session,dialogue,proof.journal_revision,proof.journal_after,proof.journal_from],|r|r.get(0))?;
+            if overlap {
+                bail!("Live input window already belongs to another work intent");
+            }
+            input.text = (*text).into();
+            input.voice.as_mut().unwrap().preserve_original = Some(true);
+        } else if input.phase != "foreground" {
             bail!("Foreground original already has an admission outcome");
         }
         eligible_binding_on(&tx, &input)?;
@@ -893,8 +983,30 @@ impl Store {
         let mut sources = Vec::new();
         let mut size = 0;
         for source_id in source_ids {
-            let original = read_on(&tx, source_id, human)?;
+            let mut original = if live.is_some() && source_id == id {
+                input.clone()
+            } else {
+                read_on(&tx, source_id, human)?
+            };
             eligible_binding_on(&tx, &original)?;
+            if live.is_some() {
+                if original.phase != "foreground_captured"
+                    || original
+                        .voice
+                        .as_ref()
+                        .is_none_or(|v| v.transcription.is_some() || v.capture_stop.is_some())
+                    || (source_id != id && !original.text.is_empty())
+                {
+                    bail!("Live acoustic group cannot replace an existing interpretation");
+                }
+                original.voice.as_mut().unwrap().preserve_original = Some(true);
+                if source_id != id {
+                    tx.execute(
+                        "UPDATE conversation_inputs SET doc=?1 WHERE id=?2 AND human_id=?3",
+                        params![serde_json::to_string(&original)?, source_id, human],
+                    )?;
+                }
+            }
             if original.entry != entry
                 || original.session != session
                 || original.native != native
@@ -926,6 +1038,7 @@ impl Store {
             dialogue_id: dialogue,
             formulation: formulation.into(),
             sources,
+            live_window: live.map(|(_, proof)| proof),
         });
         input.phase = "queued".into();
         let doc = serde_json::to_string(&input)?;
@@ -935,7 +1048,18 @@ impl Store {
             bail!("Encoded foreground source context exceeds owner reply bound");
         }
         select_return_on(&tx, human, &input.native, &input.id)?;
-        let changed=tx.execute("UPDATE conversation_inputs SET phase='queued',doc=?1,instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase='foreground'",params![doc,self.instance_id,id,human])?;
+        let expected_phase = if input
+            .foreground_delegation
+            .as_ref()
+            .unwrap()
+            .live_window
+            .is_some()
+        {
+            "foreground_captured"
+        } else {
+            "foreground"
+        };
+        let changed=tx.execute("UPDATE conversation_inputs SET phase='queued',doc=?1,instance_id=?2 WHERE id=?3 AND human_id=?4 AND phase=?5",params![doc,self.instance_id,id,human,expected_phase])?;
         if changed != 1 {
             bail!("Foreground delegation admission changed");
         }
@@ -1897,6 +2021,174 @@ mod tests {
         select_return_on(&conn, 100, "entry-native", "new-text").unwrap();
         select_return_on(&conn, 100, "entry-native", "telegram:10").unwrap();
         assert_eq!(selected(), "new-text");
+    }
+
+    #[test]
+    fn grouped_live_window_is_atomic_immutable_and_never_per_clip_asr() {
+        use sha2::{Digest, Sha256};
+        let (_file, store, key, binding) = setup();
+        let dialogue = Uuid::now_v7().to_string();
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let id = Uuid::now_v7().to_string();
+            store
+                .conversation_foreground_voice_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    clip(),
+                    false,
+                    &dialogue,
+                    None,
+                )
+                .unwrap();
+            ids.push(id);
+        }
+        let text = "Use the sole Live transcript, with uncertainty.";
+        let proof = crate::voice::PublicLiveWindow {
+            dialogue: dialogue.clone(),
+            journal_revision: "a".repeat(64),
+            journal_from: 0,
+            journal_after: 200,
+            journal_sha256: "b".repeat(64),
+            text_sha256: format!("{:x}", Sha256::digest(text)),
+            input_events: 2,
+        };
+        let intent = Uuid::now_v7().to_string();
+        let root = ids.last().unwrap();
+        assert!(
+            store
+                .conversation_foreground_live_delegate(
+                    101,
+                    key,
+                    &binding,
+                    root,
+                    &intent,
+                    "Interpret sources",
+                    &ids,
+                    text,
+                    proof.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_foreground_live_delegate(
+                    100,
+                    key,
+                    "stale",
+                    root,
+                    &intent,
+                    "Interpret sources",
+                    &ids,
+                    text,
+                    proof.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_foreground_live_delegate(
+                    100,
+                    key,
+                    &binding,
+                    root,
+                    &intent,
+                    "Interpret sources",
+                    &ids,
+                    "replace text",
+                    proof.clone()
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.conversation_input_read(100, key, root).unwrap().phase,
+            "foreground_captured"
+        );
+        let (saved, fresh) = store
+            .conversation_foreground_live_delegate(
+                100,
+                key,
+                &binding,
+                root,
+                &intent,
+                "Interpret sources",
+                &ids,
+                text,
+                proof.clone(),
+            )
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(saved.phase, "queued");
+        assert!(saved.local_turn.is_none());
+        assert_eq!(saved.text, text);
+        assert!(saved.voice.as_ref().unwrap().transcription.is_none());
+        assert!(
+            saved
+                .foreground_delegation
+                .as_ref()
+                .unwrap()
+                .sources
+                .iter()
+                .all(|s| s.voice.as_ref().unwrap().transcription.is_none())
+        );
+        assert!(
+            saved
+                .answer_text()
+                .contains("not verified speech or exact per-clip alignment")
+        );
+        assert!(
+            !store
+                .conversation_foreground_live_delegate(
+                    100,
+                    key,
+                    &binding,
+                    root,
+                    &intent,
+                    "Interpret sources",
+                    &ids,
+                    text,
+                    proof.clone()
+                )
+                .unwrap()
+                .1
+        );
+        let later = Uuid::now_v7().to_string();
+        store
+            .conversation_foreground_voice_capture(
+                100,
+                key,
+                &binding,
+                &later,
+                clip(),
+                false,
+                &dialogue,
+                None,
+            )
+            .unwrap();
+        assert!(
+            store
+                .conversation_foreground_live_delegate(
+                    100,
+                    key,
+                    &binding,
+                    &later,
+                    &Uuid::now_v7().to_string(),
+                    "Interpret sources",
+                    std::slice::from_ref(&later),
+                    text,
+                    proof
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .conversation_input_read(100, key, &later)
+                .unwrap()
+                .phase,
+            "foreground_captured"
+        );
     }
 
     fn setup() -> (tempfile::NamedTempFile, Store, SessionKey, String) {

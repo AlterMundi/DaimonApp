@@ -768,7 +768,7 @@ class Provider:
 
     def conversation_foreground_delegate(self, body):
         """One immutable source-bound formulation to the existing integrator."""
-        if (not isinstance(body,dict) or set(body)!={'binding','id','intent_id','formulation','source_ids'}
+        if (not isinstance(body,dict) or set(body) not in ({'binding','id','intent_id','formulation','source_ids'}, {'binding','id','intent_id','formulation','source_ids','live_window'})
                 or not isinstance(body['binding'],str) or not re.fullmatch('[a-f0-9]{64}',body['binding'])
                 or not isinstance(body['formulation'],str) or not body['formulation'].strip()
                 or len(body['formulation'].encode())>8192 or '\0' in body['formulation']
@@ -776,6 +776,12 @@ class Provider:
                 or any(not isinstance(i,str) for i in body['source_ids'])
                 or len(set(body['source_ids']))!=len(body['source_ids']) or body['id'] not in body['source_ids']):
             raise ValueError('Select a bounded attributed foreground formulation')
+        if 'live_window' in body:
+            window=body['live_window']
+            if (not isinstance(window,dict) or set(window)!={'path','proof'}
+                    or not isinstance(window['path'],str) or not Path(window['path']).is_absolute()
+                    or not isinstance(window['proof'],dict)):
+                raise ValueError('Select one source-bound Live input window')
         self.input_id(body['id']);self.input_id(body['intent_id'])
         for source in body['source_ids']:self.input_id(source)
         return self.decorate_input(self.presentation('input foreground delegate '+json.dumps(body,ensure_ascii=False)))

@@ -543,21 +543,43 @@ Responses-only backend settings are not used in native mode.
 
 Native mode requires source seals (enabled for that explicit mode), forbids
 upload-time native enrollment and managed-Responses conversation tools, and checks
-the selected native reader's `foreground_interpretation="gpt-transcribe/v1"`
-capability before microphone admission or public voice creation. Unsupported
-readers report that the prepared server update is missing; retrying does not
-create a paid call. No alternate engine or credentials are discovered.
+the selected native reader's `foreground_live_window="journal-input/v1"`
+capability and configured raw voice capture before microphone admission or public
+voice creation. A deferred acoustic reservation needs no completed-ASR command.
+An older reader
+refuses before a paid creation; it never falls back to file recognition.
 
-After a confirmed nonempty window, one owned foreground task sequentially enrolls
-the exact originals, interprets each once through the configured public project,
-commits its machine proof, and delegates an attributed formulation to the native
-integrator. Existing per-original/per-visit attempt/context/storage bounds apply.
-Repeated pipeline calls read their retained outcome; they do not retry uncertain
-ASR or native writes. The voice/control loop remains available while preparation
-runs. A per-visit stop fence is set before durable-close cleanup, and is checked
-again at the interpretation/dispatch boundary. Closing during an in-flight
-interpretation retains its eventual result without admitting new native work,
-including when the durable capture-end marker has not yet been written.
+After a confirmed nonempty acoustic window, one owned task enrolls its exact raw
+originals and freezes the input-speaker deltas already retained by the trusted
+Live sideband. It makes no second ASR request. The existing native delegate reads
+that exact private journal prefix, verifies its file identity, boundaries, hash,
+input count and text digest, and atomically binds the grouped language and raw
+originals to the existing integrator. Assistant output cannot become request text.
+The root carries the group's language; earlier raw clips intentionally have no
+per-clip transcript. This is approximate provider language for a source window,
+not verified speech, an utterance-end marker or exact audio/text alignment.
+
+Each window starts after the prior frozen window. Late fragments stay in the
+journal for the next window and semantic context; they never rewrite a frozen
+work intent. Missing input language holds the originals without another recognizer.
+A source window reads at most4MiB/8192 journal records, with the unchanged64KiB
+language and eight-original bounds. Existing visit/store quotas still apply.
+Native overlap checks reject reuse by another work intent; exact retries observe
+one retained outcome, and uncertain writes never resubmit automatically.
+
+The voice/control loop remains responsive during source preparation. Its stop
+fence is checked after freezing and at native dispatch; closure preserves retained
+sources without creating new work. Historical completed file interpretations and
+their proofs stay immutable. The earlier components above retain their historical
+proof/outcome contracts; new public Avatar delegations never invoke file ASR.
+
+Once grouped windows are retained, keep a window-aware native writer during web
+rollback: earlier strict readers cannot deserialize the new optional delegation
+proof. The former web/native pair is a pre-window rollback only: its public
+backend starts file ASR and is not an acceptable enabled rollback for this mode.
+After window admission, recovery must retain a qualified window-aware pair or
+leave public creation unavailable, with originals and explicit alternate modes
+preserved. This source change is not receiving selection or physical acceptance.
 
 Same-turn canonical native progress/results are polled through bounded existing
 presentation pages and returned with the source/revision/append safeguards above.
@@ -599,7 +621,7 @@ fall back to Responses to conceal the gap.
 Qualification includes eight pipeline tests,32mounted API tests, nine interpretation
 tests and eleven result tests, using the locked Python3.11 dependencies, plus
 browser closure/state regressions. The mounted route exercises the complete
-source→interpretation→native handoff→canonical result→context ACK path, a missing
+source→Live input window→native handoff→canonical result→context ACK path, a missing
 reader before paid creation, failed interpretation with one voice close, and a
 slow interpretation where Close stays responsive and the late derivative is
 retained without native dispatch. All provider/model peers are synthetic. These
