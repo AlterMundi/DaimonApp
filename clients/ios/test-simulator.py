@@ -42,7 +42,15 @@ def serve(state):
 
 
 def run(argv, *, timeout=30):
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    started = time.monotonic()
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        details = (error.stdout or b'') + (error.stderr or b'')
+        print(json.dumps({'command':argv[:4],'state':'observation_timeout','seconds':timeout,
+                          'partial_output':details[-12000:].decode(errors='replace')}),flush=True)
+        raise
+    print(json.dumps({'command':argv[:4],'exit':result.returncode,'elapsed':round(time.monotonic()-started,2)}),flush=True)
     if result.returncode:
         raise RuntimeError(f'{argv[0]} exit {result.returncode}: {(result.stdout + result.stderr)[-12000:]}')
     return result.stdout
@@ -52,6 +60,8 @@ def qualify(app):
     device = None
     server = None
     server_log = None
+    launch_attempted = False
+    passed = False
     with tempfile.TemporaryDirectory(prefix='daimon-ios-', dir=os.environ.get('RUNNER_TEMP')) as temporary:
         state = Path(temporary)
         try:
@@ -87,7 +97,16 @@ def qualify(app):
             print(json.dumps({'device':device,'runtime':runtime['identifier'],'phone':phone['name']}),flush=True)
             run(['xcrun','simctl','boot',device]); run(['xcrun','simctl','bootstatus',device,'-b'],timeout=120)
             run(['xcrun','simctl','keychain',device,'add-root-cert',str(state/'ca.crt')])
-            run(['xcrun','simctl','install',device,str(app)],timeout=30)
+            try:
+                run(['xcrun','simctl','install',device,str(app)],timeout=90)
+            except subprocess.TimeoutExpired:
+                # The native installation may have committed after its CLI lost
+                # observation. Read this same unique device; never install again.
+                installed = Path(run(['xcrun','simctl','get_app_container',device,
+                                      'homes.dmn.interaction.qualification','app'],timeout=15).strip())
+                assert (installed/'native-audio.js').read_bytes()==(app/'native-audio.js').read_bytes()
+                print('Exact installed adapter observed after lost install receipt; no reinstall',flush=True)
+            launch_attempted = True
             run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'])
             until = time.monotonic()+35
             while not (state/'result.json').exists() and time.monotonic()<until:
@@ -99,18 +118,28 @@ def qualify(app):
                 raise RuntimeError('No terminal WebView/native receipt within35seconds; no relaunch')
             result = json.loads((state/'result.json').read_text()); print(json.dumps(result),flush=True)
             assert result.get('state')=='passed' and result.get('played_bytes')==28800, result
+            passed = True
         finally:
+            cleanup = []
             try:
                 if device:
-                    subprocess.run(['xcrun','simctl','terminate',device,'homes.dmn.interaction.qualification'],capture_output=True,timeout=15)
-                    subprocess.run(['xcrun','simctl','shutdown',device],capture_output=True,timeout=30)
-                    run(['xcrun','simctl','delete',device],timeout=30)
+                    commands = []
+                    if launch_attempted: commands.append(['xcrun','simctl','terminate',device,'homes.dmn.interaction.qualification'])
+                    commands += [['xcrun','simctl','shutdown',device],['xcrun','simctl','delete',device]]
+                    for command in commands:
+                        try:
+                            run(command,timeout=30); cleanup.append({'action':command[2],'state':'acknowledged'})
+                        except (subprocess.TimeoutExpired,RuntimeError) as error:
+                            cleanup.append({'action':command[2],'state':'unconfirmed','error':str(error)[-1000:]})
             finally:
                 if server:
                     if (state/'server.pid').exists():
                         subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],capture_output=True,timeout=10)
                     server.wait(timeout=10)
                 if server_log: server_log.close()
+            print(json.dumps({'cleanup':cleanup,'fixture_server_stopped':server is None or server.poll() is not None}),flush=True)
+            if passed:
+                assert any(c['action']=='delete' and c['state']=='acknowledged' for c in cleanup),'Simulator deletion not confirmed'
     print('Owned simulator, HTTPS fixture, one-day CA and temporary state removed',flush=True)
 
 
