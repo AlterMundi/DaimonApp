@@ -133,10 +133,9 @@ def install(app, config, provider, authorize, origins):
             async with uploads:
                 await asyncio.to_thread(history.owned,visit,session['human'],binding)
                 data=bytearray()
-                async with asyncio.timeout(30):
-                    async for part in request.stream():
-                        if len(data)+len(part)>120*32000+44:raise HTTPException(413,'Voice original exceeds bound')
-                        data.extend(part)
+                async for part in request.stream():
+                    if len(data)+len(part)>120*32000+44:raise HTTPException(413,'Voice original exceeds bound')
+                    data.extend(part)
                 fresh,current=await http_owner(request,write=True)
                 if fresh['human']!=session['human'] or current!=binding:raise HTTPException(403,'Voice audience changed')
                 receipt=await asyncio.to_thread(history.recording,visit,session['human'],binding,ordinal,bytes(data),provider,capture_stop=capture_stop)

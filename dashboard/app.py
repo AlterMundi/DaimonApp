@@ -197,7 +197,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 bound = (1048576 if request.url.path=='/api/interaction/avatars' else
                     262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
             # Native capture-only uploads own their fresh-auth/CSRF checks,
-            # two upload slots,30s deadline and bounded streaming body. Do not
+            # two upload slots and bounded streaming body. Do not
             # buffer them before that admission in the general JSON middleware.
             if not re.fullmatch(r'/api/interaction/voice/(?:codex|gpt-live)/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',request.url.path):
                 data = bytearray()

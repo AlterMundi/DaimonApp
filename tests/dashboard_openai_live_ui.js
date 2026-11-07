@@ -82,6 +82,16 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ // A real WebRTC creation has already started the provider. The optional
+ // frontend data channel need not repeat a WebSocket startup event.
+ const httpStarted=fixture(),httpStarting=httpStarted.engine.start();
+ await until(()=>httpStarted.peers[0]?.listeners.has('icegatheringstatechange'));
+ httpStarted.peers[0].ice();await until(()=>httpStarted.peers[0].connectionState==='connected');
+ try{
+  assert(httpStarted.states.at(-1).active&&!httpStarted.states.at(-1).starting,
+   'Confirmed HTTP creation plus connected WebRTC must not wait for an optional session.started event');
+  assert.equal(await httpStarting,true);assert.equal(httpStarted.sockets.length,1);
+ }finally{await httpStarted.engine.hold();await httpStarting;}
  const slow=fixture();await slow.start();let releaseSlow;
  slow.uploads(()=>new Promise(resolve=>{releaseSlow=resolve;}));slow.pcm();
  const slowRequest=crypto.randomUUID();slow.sockets[0].onmessage({data:JSON.stringify({
@@ -170,7 +180,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  assert(f.order.indexOf('recorder')<f.order.indexOf('create-offer'));
  assert(!f.sockets[0].sent.some(v=>v.type==='offer'),'No incomplete ICE offer is sent');
  f.peers[0].ice();await until(()=>f.peers[0].connectionState==='connected');
- assert(f.states.at(-1).starting,'A connected peer is not session.started');
+ assert(f.states.at(-1).active&&!f.states.at(-1).starting,'Validated HTTP creation starts WebRTC without another startup event');
  f.peers[0].started();assert.equal(await starting,true);
  assert.equal(f.sockets[0].sent.find(v=>v.type==='offer').sdp,'v=0 gathered ICE');
  f.records.push({id:'native-original',engine:'codex',codex_visit:'native',blob:new Blob(['native original']),binding:'a'.repeat(64)});

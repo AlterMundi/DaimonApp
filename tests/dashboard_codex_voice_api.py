@@ -425,6 +425,24 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.client.post(route,content=wav_bytes(b'\x02\x00'*16000),headers=self.headers).status_code,409)
         status=self.client.get(route.rsplit('/recordings',1)[0],headers=self.headers).json()
         self.assertEqual(len(status['recordings']),1);self.assertEqual(len(status['items']),1)
+
+    def test_original_upload_has_no_absolute_application_body_clock(self):
+        import httpx
+        with self.socket() as socket:
+            self.start(socket);self.close(socket)
+        audio=wav_bytes(b'\0\0'*800);clock=asyncio.timeout;scheduled=[]
+        def expiry(seconds):
+            scheduled.append(seconds);return clock(.001 if seconds==30 else seconds)
+        async def body():
+            yield audio[:44];await asyncio.sleep(.02);yield audio[44:]
+        async def send():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://example.test') as client:
+                return await client.post(f'/api/interaction/voice/codex/visits/{self.visit}/recordings/0',headers=self.headers,content=body())
+        with patch('dashboard.codex_voice_api.asyncio.timeout',side_effect=expiry):result=asyncio.run(send())
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertNotIn(30,scheduled)
+        self.assertEqual(result.json()['recording']['audio_bytes'],len(audio))
+        self.assertEqual(len(Native.opened),1);self.assertEqual(self.owner.collected,[])
     def test_prefix_retention_requires_closed_visit_and_preserves_provenance(self):
         audio=wav_bytes(b'\x01\x00'*16000)
         headers={**self.headers,'x-voice-capture-stop':'interrupted_prefix'}
