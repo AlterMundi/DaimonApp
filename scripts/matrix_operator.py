@@ -79,6 +79,7 @@ class EnrolledOwnerClient:
     verified_source: dict
     timeout_seconds: float = 10
     deadline_ns: int | None = None
+    intake_after: int = 0
 
     @property
     def config(self):
@@ -122,7 +123,13 @@ def configured_client(path, source, *, required_methods=("messaging.send",)):
 
     raw = strict_json(protected_read(path))
     enrolled = raw.get("schema") == "telecodex.matrix-host-binding/v2" if isinstance(raw, dict) else False
-    binding = closed(raw, ("schema", "messaging", "enrollment" if enrolled else "observation", "source"))
+    names = ("schema", "messaging", "enrollment" if enrolled else "observation", "source")
+    if enrolled and "intake_after" in raw:
+        names += ("intake_after",)
+    binding = closed(raw, names)
+    intake_after = binding.get("intake_after", 0)
+    if type(intake_after) is not int or not 0 <= intake_after <= 2**53 - 1:
+        raise MatrixExecutionError("Bounded owner-selected initial inbox frontier required")
     if binding["schema"] not in {"telecodex.matrix-host-binding/v1", "telecodex.matrix-host-binding/v2"}:
         raise MatrixExecutionError("Explicit owner Matrix host binding required")
     if binding["source"] != source:
@@ -154,7 +161,8 @@ def configured_client(path, source, *, required_methods=("messaging.send",)):
     }:
         raise MatrixExecutionError("Existing messaging-only capability required")
     if enrolled:
-        return EnrolledOwnerClient(messaging, verified_enrollment(messaging, source, binding["enrollment"]))
+        return EnrolledOwnerClient(messaging, verified_enrollment(messaging, source, binding["enrollment"]),
+                                   intake_after=intake_after)
     observation = load(binding["observation"])
     if "runtime.status" not in observation.config.capability.methods:
         raise MatrixExecutionError("Existing source observation capability required")
@@ -197,7 +205,7 @@ def receive(value, client, *, timeout=10):
     )
 
 
-def inbox(value, client, *, timeout=10):
+def inbox(value, client, *, timeout=10, intake_window=True):
     """One selected authenticated channel page; never send, poll or run a model.
 
     The native SDK verifies signatures and current audience. This projection
@@ -237,11 +245,17 @@ def inbox(value, client, *, timeout=10):
             or runtime.get("local_origin", {}).get("embodiment_id") != source["embodiment_id"]
         ):
             raise MatrixExecutionError("Authenticated inbox owner changed")
+    native_after = after
+    if isinstance(selected, EnrolledOwnerClient) and intake_window:
+        if after == 0:
+            native_after = selected.intake_after
+        elif after < selected.intake_after:
+            raise MatrixExecutionError("Initial inbox window cannot rebase an existing cursor")
     _, response = selected.invoke(
         "messaging.inbox",
         {
             "channel_id": channel,
-            "after": after,
+            "after": native_after,
             "limit": limit,
         },
     )
@@ -255,7 +269,7 @@ def inbox(value, client, *, timeout=10):
     cursor, items = after, []
     for row in page["items"]:
         sequence, message = row["inbox_sequence"], row["message"]
-        if type(sequence) is not int or not cursor < sequence <= 2**53 - 1:
+        if type(sequence) is not int or not max(cursor, native_after) < sequence <= 2**53 - 1:
             raise MatrixExecutionError("Inbox cursor is not monotonic")
         author = {
             "being_ref": message["being_ref"],
@@ -297,6 +311,10 @@ def inbox(value, client, *, timeout=10):
         "page_full": len(page["items"]) == limit,
         "meaning": "SDK-authenticated peer source, never human speech or execution authority",
     }
+    if native_after != after:
+        result["meaning"] = ("SDK-authenticated owner-selected intake after native frontier "
+                             + str(native_after) + "; after/next_cursor are consumer cursors. "
+                             "Earlier originals remain in native history; no review is claimed.")
     if len(canonical(result).encode()) > 65536:
         raise MatrixExecutionError(
             "Bounded inbox projection required; cursor not advanced"
@@ -350,7 +368,7 @@ def respond(value, client, *, timeout=10, inspect_only=False):
                 "limit": 1,
             },
             selected,
-            timeout=timeout,
+            timeout=timeout, intake_window=False,
         )
         if page["items"] != [parent]:
             raise MatrixExecutionError(

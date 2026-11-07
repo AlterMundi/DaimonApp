@@ -626,3 +626,18 @@ binding remains compatible with its separate observation capability.
 
 Use the same finite owner-selected heartbeat/resource controls. Enrollment alone
 is neither model-execution permission nor proof of receipt, action or response.
+
+The v2 owner binding may additionally select `intake_after`, a nonnegative native
+inbox frontier at most2^53-1, observed through the existing authenticated SDK.
+Set this only for a new intake before producer activation, under the existing
+paused generation, to avoid spending model allocation on pre-pilot history.
+The private owner selection filters the intake view; no native original is
+removed, acknowledged, marked read or described as processed. Existing retained
+parent verification and direct/manual native history access remain unchanged.
+
+A zero consumer cursor fetches after that configured native frontier. An empty
+view keeps the consumer cursor at zero; the page meaning discloses the selected
+frontier. Only a genuine new native event advances it to that event's sequence.
+A nonzero consumer cursor below the selected frontier refuses: this cannot rebase
+an existing reader or hide its pending originals. Keep the selected window frozen
+for the operation; it is not a model-supplied request argument or a reset control.
