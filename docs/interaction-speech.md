@@ -559,3 +559,10 @@ exercises the actual native profile reader with the base file recognizer disable
 exact text/provenance, retry identity and one immutable original. Browser and
 shared Home/device tests cover route freezing and scoped admission. These do not
 establish hearing or every public Avatar source-window path.
+
+Avatar `/voice/recover` selects the retained original's profile and its exact
+completed-only command. New unsubmitted native captures require the live reader.
+Missing results or profiles keep audio held; the base file recognizer cannot
+fill that gap. Historical completed results may be read without another provider
+call. A live-only reader must still bind `provider="live-result"`, without
+helper/key/file-provider settings.
