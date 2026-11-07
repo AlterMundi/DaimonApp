@@ -10,6 +10,15 @@ assert.equal(state({...base,admission_paused:true,operational:true}),'paused');
 assert.equal(state({...base,producer:{state:'not_configured'},operational:true}),'unconfigured');
 assert.equal(state({...base,resources:{state:'unavailable'},operational:true}),'unavailable');
 assert.equal(state({...base,producer:{state:'error'}}),'error');
+for(const [producer,resources,expected] of [
+  ['configured','expired','inference_expired'],
+  ['configured','exhausted','inference_exhausted'],
+  ['expired','available','observation_expired'],
+  ['check_capacity','available','observation_stopped'],
+  ['binding_retired','available','observation_stopped'],
+  ['configured','unknown','unavailable'],
+  ['unknown','available','unavailable'],
+])assert.equal(state({...base,producer:{state:producer},resources:{state:resources},operational:true}),expected,'Contradictory dependency state must not pulse');
 for(const value of [null,{}, {...base,generation:-1},{...base,generation:1.2},{...base,admission_paused:'false'}])assert.equal(state(value),'unavailable');
 console.log('Heartbeat: explicit operational evidence, pause/configuration/error and invalid-source states passed.');
 const action=window.InteractionHeartbeat.action;
@@ -19,3 +28,14 @@ assert.deepEqual(JSON.parse(JSON.stringify(action(conditional,'messaging'))),{ac
 assert.equal(action(conditional,'sensory'),null);
 assert.equal(action({...conditional,lanes:{messaging:{generation:7,paused:true,supported:false}}},'messaging'),null);
 assert.equal(action({...conditional,generation:true},'global'),null);
+const observation=window.InteractionHeartbeat.observation;
+const checked={...base,lanes:{messaging:{generation:7}},producer:{last_check:{sequence:2,generation:1,activation:{lane:'messaging',generation:7},outcome:'succeeded',started_at_unix_ms:1700000000000,completed_at_unix_ms:1700000001000},last_success_at_unix_ms:1700000001000}};
+assert.equal(observation(checked),'Last source check succeeded at 2023-11-14T22:13:21.000Z.');
+assert.match(observation({...checked,generation:2}),/different or unconfirmed control generation/);
+assert.match(observation({...checked,lanes:{messaging:{generation:8}}}),/different or unconfirmed control generation/);
+const failed={...checked,producer:{...checked.producer,last_check:{...checked.producer.last_check,outcome:'failed',error:'arbitrary private adapter output'}}};
+assert.equal(observation(failed),'Last source check failed at 2023-11-14T22:13:21.000Z. Last successful source check: 2023-11-14T22:13:21.000Z.');
+assert.match(observation({...failed,producer:{...failed.producer,last_success_at_unix_ms:null}}),/not observed/);
+assert.match(observation({...checked,producer:{last_check:{...checked.producer.last_check,outcome:'in_progress',completed_at_unix_ms:null}}}),/completion not observed/);
+for(const value of [null,base,{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Infinity}}},{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Number.MAX_SAFE_INTEGER}}}])assert.equal(observation(value),'');
+console.log('Heartbeat: expired/exhausted/stopped dependencies cannot pulse; source-check timestamps remain distinct from operational proof.');

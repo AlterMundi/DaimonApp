@@ -14,6 +14,16 @@ it. An open admission gate or a running execution is insufficient. Operational
 evidence expires after15seconds or tab hiding; failed reads clear it. Reduced
 motion replaces the pulse with a steady labeled heart.
 
+The menu distinguishes an expired observation window, a stopped/capacity-limited
+observer, an expired inference window and exhausted inference allocation. These
+known dependency states cannot pulse even if a contradictory positive flag is
+present. Unknown dependency states stay unavailable. When supplied by the owner,
+the menu shows the last source-check outcome/time and the previous successful
+source-check time after a failure. Different or unconfirmed global/lane generations are labeled.
+An unfinished source check states that completion was not observed; it does not
+claim that an old process is still running. These source timestamps never prove
+native action, reply delivery or current operational readiness.
+
 Selected per-body receiving state belongs in the owning current service record.
 An older backend without conditional capabilities leaves control rows disabled
 with explanations; a compatible selected backend enables the explicit controls
