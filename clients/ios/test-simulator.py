@@ -133,7 +133,7 @@ def qualify(app):
                             cleanup.append({'action':command[2],'state':'unconfirmed','error':str(error)[-1000:]})
             finally:
                 if server:
-                    if (state/'server.pid').exists():
+                    if server.poll() is None and (state/'server.pid').exists():
                         subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],capture_output=True,timeout=10)
                     server.wait(timeout=10)
                 if server_log: server_log.close()
