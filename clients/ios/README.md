@@ -124,3 +124,34 @@ References:
 - [Apple playback completion types](https://developer.apple.com/documentation/avfaudio/avaudioplayernodecompletioncallbacktype)
 - [Swift Package Manager](https://docs.swift.org/main/documentation/packagemanagerdocs/)
 - [Standard GitHub runner contract](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+## Prepared foreground duplex capture
+
+The iOS-only native-capture.js hook wraps the existing shared adapter, without
+changing Android or the hosted recorder. Before getUserMedia it acquires one
+UUID-owned native session holder. WebKit and the OS still prompt; only the selected
+HTTPS main-frame microphone request can reach that prompt, never camera/iframe or
+SSO. The closed reply handler accepts only begin/end with canonical document and
+owner UUIDs. This is ownership, not permission or proof of recording.
+
+A duplex holder selects playAndRecord/voiceChat before microphone permission.
+PCM output joins that same mode and cannot deactivate it when becoming idle.
+Mode stays frozen while any holder remains; starting capture during existing
+spoken-only playback refuses before asking permission, instead of changing an
+active audio graph. Capture and output share the existing two-holder bound.
+A capture stop is requested at600seconds, route/interruption/background, explicit
+track stop or page exit. Native cancellation requests actual WebKit microphone state none;
+only its observed completion releases that exact session holder. Unknown stop or
+session-deactivation outcomes stay held, never retried by refresh. A late device
+permission closes its returned tracks after the old capture epoch has ended.
+Returning foreground never resumes an old capture or sound.
+
+Synthetic Node checks cover explicit track stop (which emits no ended event),
+concurrent requests, late native/OS grants, permission refusal and lifecycle.
+Foundation cases cover frozen mode/independent capture-output holders and the
+closed native contract. These are not real microphone, permission, WebKit duplex,
+route/interruption or phone acceptance. Native audio capabilities remain off;
+no production build, provider call, entitlement or distribution is selected.
+Apple references: [voiceChat](https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/voicechat),
+[media permission delegate](https://developer.apple.com/documentation/webkit/wkuidelegate),
+[actual capture stop](https://developer.apple.com/documentation/webkit/wkwebview/setmicrophonecapturestate(_:completionhandler:)).
