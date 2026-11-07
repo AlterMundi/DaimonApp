@@ -336,7 +336,8 @@ class Provider:
         # An after-maximum cursor returns metadata/choices without transporting
         # original messages. This is the existing input-list cursor contract.
         choices=self.presentation(f'input list {2**63-1} after')['routing_choices']
-        if not isinstance(choices,list) or len(choices)>64:
+        # 127 local destinations plus at most 16 explicit Matrix destinations.
+        if not isinstance(choices,list) or len(choices)>143:
             raise ProviderUnavailable('Routing membership unavailable')
         for target in choices:
             selector=target.get('selector')

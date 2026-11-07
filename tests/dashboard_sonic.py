@@ -80,6 +80,13 @@ topic_id=8
         response=self.client.get('/api/interaction/sonic',headers=self.owner)
         self.assertEqual(response.status_code,200,response.text)
         return {s['id']:s for s in response.json()['sources']}
+    def test_sixty_five_destinations_keep_state_readable_without_widening_ownership(self):
+        self.choices += [{'selector':f't{n}','label':f'Task {n}'} for n in range(100,163)]
+        response=self.client.get('/api/interaction/sonic',headers=self.owner)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertNotIn('Private foreign title',response.text)
+        self.assertIsNone(self.provider.native)
+
     def test_selected_history_is_owned_and_requires_the_workspace_grant(self):
         with closing(sqlite3.connect(self.db)) as db:
             db.execute('ALTER TABLE sessions ADD COLUMN busy INTEGER DEFAULT 0')
