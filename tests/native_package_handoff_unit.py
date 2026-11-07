@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import shutil
 import subprocess
 import sys
@@ -39,13 +40,20 @@ class HandoffBoundaries(unittest.TestCase):
         self.receipt = self.root / 'receipt.json'
 
     def process(self):
-        child = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'])
+        child = subprocess.Popen([sys.executable, '-c',
+            'import time;print("ready",flush=True);time.sleep(60)'],
+            stdout=subprocess.PIPE, text=True)
         def cleanup():
             if child.poll() is None:
                 child.send_signal(signal.SIGCONT)
                 child.terminate()
                 child.wait(timeout=5)
         self.addCleanup(cleanup)
+        self.addCleanup(child.stdout.close)
+        # Popen returning is not proof that /proc/cmdline has settled. Capture
+        # the operator's exact identity only after the fixture is running.
+        self.assertTrue(select.select([child.stdout], [], [], 5)[0], 'Fixture startup unavailable')
+        self.assertEqual(child.stdout.readline(), 'ready\n')
         return child
 
     def state(self, child):
