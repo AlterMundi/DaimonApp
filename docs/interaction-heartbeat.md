@@ -61,6 +61,22 @@ through the owning current service record; source capability is not selection.
 
 ### Operational evidence still required from the native owner
 
+The producer status now retains one replaceable `last_check` with its sequence,
+global generation, lane activation, start/completion milliseconds and outcome.
+`last_success_at_unix_ms` records the last completed source check; it stays
+unchanged after a failed read. Older producer documents report these fields as
+null until a new check. A failed inbox read uses the fixed
+`matrix_inbox_unavailable` classification, without retaining arbitrary adapter
+error text. A late page rejected after pause or a generation change
+cannot complete the earlier observation. An interrupted check can therefore
+remain `in_progress`; its timestamp and generation must be inspected rather than
+interpreting the word as a current live process. The existing 256KiB producer
+document cap includes this record; it is not an accumulating event log.
+
+These are source observations only. They neither demonstrate a useful native
+action/delivered reply nor grant operational readiness. The following additional
+readiness evidence remains required.
+
 Proposed exact additional status field, to agree and qualify before consumption:
 
 ```json

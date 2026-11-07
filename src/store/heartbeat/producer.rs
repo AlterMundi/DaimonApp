@@ -105,6 +105,18 @@ pub(in crate::store) struct Offer {
     pub evidence: Value,
 }
 
+/// One replaceable observation, not a readiness lease or execution receipt.
+#[derive(Clone, Serialize, Deserialize)]
+struct CheckObservation {
+    sequence: u32,
+    generation: u64,
+    activation: lanes::Activation,
+    started_at_unix_ms: i64,
+    completed_at_unix_ms: Option<i64>,
+    outcome: String,
+    error: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::store) struct Parent {
     #[serde(default)]
@@ -129,6 +141,10 @@ pub(in crate::store) struct Parent {
     pub stopped_reason: Option<String>,
     #[serde(default)]
     pub inbox_state: Option<String>,
+    #[serde(default)]
+    last_check: Option<CheckObservation>,
+    #[serde(default)]
+    last_success_at_unix_ms: Option<i64>,
     pub seen: BTreeMap<String, String>,
     pub native_returns: Vec<WorkflowReturn>,
 }
@@ -414,6 +430,8 @@ pub(in crate::store) fn configure_on(
             next_activation: 0,
             stopped_reason: None,
             inbox_state: None,
+            last_check: None,
+            last_success_at_unix_ms: None,
             seen: BTreeMap::new(),
             native_returns: vec![],
         },
@@ -441,7 +459,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "configured"
     };
     Ok(
-        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -693,6 +711,15 @@ impl Store {
         p.next_activation = (index + 1) % available.len();
         p.checks += 1;
         p.next_check_ms = now + i64::from(p.contract.interval_seconds) * 1000;
+        p.last_check = Some(CheckObservation {
+            sequence: p.checks,
+            generation: control.generation,
+            activation: activation.clone(),
+            started_at_unix_ms: now,
+            completed_at_unix_ms: None,
+            outcome: "in_progress".into(),
+            error: None,
+        });
         // A failed source read still consumes this finite observation. It must
         // not roll back the cadence/counter and spin on the same failure.
         save(&tx, &p)?;
@@ -751,6 +778,22 @@ impl Store {
                 _ => false,
             };
             p.inbox_state = Some(if retained { "available" } else { "unavailable" }.into());
+        }
+        let now = Utc::now().timestamp_millis();
+        let error = (c.matrix_inbox.is_some() && p.inbox_state.as_deref() != Some("available"))
+            .then(|| "matrix_inbox_unavailable".to_owned());
+        if let Some(observation) = &mut p.last_check {
+            observation.completed_at_unix_ms = Some(now);
+            observation.outcome = if error.is_some() {
+                "failed"
+            } else {
+                "succeeded"
+            }
+            .into();
+            observation.error = error.clone();
+        }
+        if error.is_none() {
+            p.last_success_at_unix_ms = Some(now);
         }
         let mut retire = vec![];
         for (index, r) in p.native_returns.iter().enumerate() {
@@ -1252,6 +1295,7 @@ mod inbox_tests {
         assert!(s.heartbeat_begin_check(100, e).unwrap().is_none());
         let selected = selection(&s, e, &source);
         let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        assert_eq!(paused["producer"]["last_check"]["outcome"], "in_progress");
         assert!(!s.heartbeat_check_current(&c).unwrap());
         assert!(
             s.heartbeat_finish_check(
@@ -1278,6 +1322,9 @@ mod inbox_tests {
             .is_none()
         );
         assert_eq!(selection(&s, e, &source).after, 0);
+        let fenced = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert!(fenced["producer"]["last_check"]["completed_at_unix_ms"].is_null());
+        assert!(fenced["producer"]["last_success_at_unix_ms"].is_null());
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         let r = s
@@ -1306,18 +1353,38 @@ mod inbox_tests {
         );
         let status = s.heartbeat_control(100, e, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 2);
+        assert_eq!(status["producer"]["last_check"]["sequence"], 2);
+        assert_eq!(
+            status["producer"]["last_check"]["generation"],
+            status["generation"]
+        );
+        assert_eq!(
+            status["producer"]["last_check"]["activation"]["lane"],
+            "messaging"
+        );
+        assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
         assert_eq!(selection(&s, e, &source).after, 1);
     }
     #[test]
     fn inbox_no_news_is_quiet_and_failed_reads_consume_checks_without_repeated_attention() {
         let (_f, s, e, source) = setup();
+        let initial = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert!(initial["producer"]["last_check"].is_null());
+        assert!(initial["producer"]["last_success_at_unix_ms"].is_null());
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         let selected = selection(&s, e, &source);
         assert!(
             s.heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
                 .unwrap()
                 .is_none()
+        );
+        let success = s.heartbeat_control(100, e, H::Status).unwrap();
+        let last_success = &success["producer"]["last_success_at_unix_ms"];
+        assert!(last_success.as_i64().is_some());
+        assert_eq!(
+            last_success,
+            &success["producer"]["last_check"]["completed_at_unix_ms"]
         );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
@@ -1329,6 +1396,14 @@ mod inbox_tests {
             .unwrap()
             .unwrap();
         assert!(r.output.contains("matrix-inbox-status"));
+        let failed = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(failed["producer"]["last_check"]["outcome"], "failed");
+        assert_eq!(
+            failed["producer"]["last_check"]["error"],
+            "matrix_inbox_unavailable"
+        );
+        assert_eq!(&failed["producer"]["last_success_at_unix_ms"], last_success);
+        assert!(!failed.to_string().contains("synthetic source unavailable"));
         reviewed(&s, e);
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
@@ -1354,6 +1429,14 @@ mod inbox_tests {
         );
         let status = s.heartbeat_control(100, e, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 5);
+        assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
+        assert!(status["producer"]["last_check"]["error"].is_null());
+        assert!(
+            status["producer"]["last_success_at_unix_ms"]
+                .as_i64()
+                .unwrap()
+                >= last_success.as_i64().unwrap()
+        );
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
     }
     #[test]
