@@ -91,7 +91,7 @@ fail before accepting the exact localhost chain (details below). The fixture sen
 the actual WebView/bridge/engine, checks played receipts and pause/resume/flush,
 attempts iframe reservation, then navigates outside the application path. No
 microphone, provider, human voice original or real shared-login account is used.
-It starts the fixture once, waits at most35seconds for its terminal receipt and
+It starts the fixture once, waits at most65seconds for its terminal receipt and
 never relaunches on timeout. Teardown removes that device, server, CA and state.
 CI replaces the redundant standalone SDK library build with this application
 build and journey under the same ten-minute cap. No app/certificate/audio artifact
@@ -262,3 +262,19 @@ PCM completion while Beacon remains selected, and a native refusal of a previous
 closed ID. This is a new required journey, not a claim that it has passed. The old
 srcdoc iframe probe remains non-proof of frame-handler admission; actual receiving
 frame/capture qualification and independent boundary review remain required.
+
+
+Source6bdcd10 passed31Swift tests (zero failures,1.642s), both SDK apps and normal
+helper absence inCI42393067284. Runtime launched in16.06s, served the actual HTTPS
+Conversation, then expired its20second page-readiness loop at16:52:59 before the
+page finished loading at16:53:03. No Beacon probe or JS audio journey ran. Native
+termination/shutdown/delete and fixture server stop were acknowledged. This is a
+measured fixture-readiness failure, not a Beacon playback failure or pass.
+
+The fixture now has a40second absolute monotonic page-readiness deadline, checked
+again on late JS evaluation completion without renewal. The outer terminal-receipt
+observation is65seconds, allowing that cold page load plus the existing12second
+native probe and bounded JS/PCM journey. The job remains capped at ten minutes;
+there is one launch and no timeout relaunch. Retirement qualification now waits
+for the native closed receipt before testing the same ID's refusal. Normal app
+behavior and audio/provider/TTL/lifetime bounds remain unchanged.

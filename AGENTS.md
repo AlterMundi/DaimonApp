@@ -44,6 +44,9 @@ trust unchanged. No app-container read/copy is needed before the single launch. 
 app without FixtureTrust.swift and verify its symbols contain no QualificationTLS.
 Never weaken production TLS or mutate existing device trust. No capture/provider/human-original
 fixture, automatic timeout relaunch or permanent simulator/server/cache is allowed.
+Qualification page readiness has a40s absolute monotonic deadline, including late
+JS callbacks; outer terminal observation65s includes cold WebKit plus12s probe.
+Keep the ten-minute job cap and native close receipt before retired-ID testing.
 
 Native Beacon preparation reuses the existing Sonic score/explicit activation.
 Keep six normalized phase-continuous sine carriers, bounded latest frame/level,

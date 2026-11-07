@@ -29,10 +29,10 @@ window.runQualification=async()=>{
     await wait(()=>positions.get(first)===tone.length);
     if(beaconStates.at(-1)!=='beacon_playing')throw Error('Speech completion displaced Beacon');
     beaconOutput.level(0,80);await wait(()=>beaconStates.filter(s=>s==='beacon_quiet').length===2);
-    const retired=beaconOutput.id;beaconOutput.close();beaconOutput=undefined;
-    const previous=DaimonAudio.onmessage;
+    const retired=beaconOutput.id,previous=DaimonAudio.onmessage;let nativeClosed=false;
     try{
-      DaimonAudio.onmessage=event=>{if(JSON.parse(event.data).id===retired&&JSON.parse(event.data).type==='beacon_error')replayRefused=true;previous?.(event);};
+      DaimonAudio.onmessage=event=>{const message=JSON.parse(event.data);if(message.id===retired){if(message.type==='beacon_closed')nativeClosed=true;if(message.type==='beacon_error')replayRefused=true;}previous?.(event);};
+      beaconOutput.close();beaconOutput=undefined;await wait(()=>nativeClosed);
       DaimonAudio.postMessage(JSON.stringify({command:'beacon_begin',id:retired}));
       await wait(()=>replayRefused);
     }finally{DaimonAudio.onmessage=previous;}

@@ -104,12 +104,13 @@ import WebKit
 /// Test-only start after observed foreground + actual page readiness. It never
 /// enters the normal application build or simulates a human voice original.
 @MainActor private enum QualificationStart {
-    static func run(_ controller: UIViewController, attempt: Int = 0) {
-        guard attempt < 200 else { qualificationStage("page_readiness_expired"); return }
+    static func run(_ controller: UIViewController, expires: TimeInterval = ProcessInfo.processInfo.systemUptime+40) {
+        guard ProcessInfo.processInfo.systemUptime < expires else { qualificationStage("page_readiness_expired"); return }
         guard UIApplication.shared.applicationState == .active, let web = controller.view as? WKWebView else {
-            DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { run(controller,attempt:attempt+1) }; return
+            DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { run(controller,expires:expires) }; return
         }
         web.evaluateJavaScript("typeof window.runQualification==='function'") { ready,error in
+            guard ProcessInfo.processInfo.systemUptime < expires else { qualificationStage("page_readiness_expired"); return }
             if (ready as? Bool) == true {
                 qualificationStage("fixture_start_submitted")
                 guard let session = (UIApplication.shared.delegate as? AppDelegate)?.audioSession else { return }
@@ -120,7 +121,7 @@ import WebKit
                     web.evaluateJavaScript("window.__nativeBeaconQualification=\(text);window.runQualification()")
                 }
             }
-            else { DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { run(controller,attempt:attempt+1) } }
+            else { DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { run(controller,expires:expires) } }
         }
     }
 }

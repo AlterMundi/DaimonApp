@@ -123,7 +123,7 @@ def qualify(app):
                 run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost',*anchors],timeout=90)
             except subprocess.TimeoutExpired:
                 print('Launch receipt unconfirmed; observing this same fixture result without relaunch',flush=True)
-            until = time.monotonic()+35
+            until = time.monotonic()+65
             while not (state/'result.json').exists() and time.monotonic()<until:
                 if server.poll() is not None: raise RuntimeError('HTTPS fixture stopped during the journey: '+(state/'server.log').read_text()[-8192:])
                 time.sleep(.2)
@@ -141,7 +141,7 @@ def qualify(app):
                                '--predicate','process == "Daimon"'],timeout=10)[-16384:])
                 except (subprocess.TimeoutExpired,RuntimeError) as error:
                     print(json.dumps({'native_log':'unconfirmed','error':str(error)[-512:]}),flush=True)
-                raise RuntimeError('No terminal WebView/native receipt within35seconds; no relaunch')
+                raise RuntimeError('No terminal WebView/native receipt within65seconds; no relaunch')
             result = json.loads((state/'result.json').read_text()); print(json.dumps(result),flush=True)
             assert result.get('state')=='passed' and result.get('played_bytes')==28800, result
             beacon = result.get('beacon_qualification',{})
