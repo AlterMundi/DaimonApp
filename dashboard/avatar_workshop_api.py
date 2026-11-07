@@ -61,7 +61,7 @@ def install(app,config,provider,authorize,origins):
         value=await call(request,store.voice_snapshot)
         profiles=configured_profiles(config)
         return {**value,'profiles':profiles,'profile_source':'receiving_configuration',
-                'audition_available':False,'selection_scope':'next_logical_conversation',
+                'audition_available':previews.available(await owner(request)),'selection_scope':'next_logical_conversation',
                 'message':None if profiles else 'OpenAI voice is not configured for this account.'}
 
     @app.post('/api/interaction/avatars/voice')
@@ -105,4 +105,6 @@ def install(app,config,provider,authorize,origins):
             return await call(request,select,body['id'],body['generation'],write=True)
         raise HTTPException(400,'Select a bounded save, edit or use action')
 
+    from .voice_studio_preview_api import install as install_previews
+    previews=install_previews(app,config,provider,store,owner,call)
     return store

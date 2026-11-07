@@ -33,9 +33,9 @@ class WorkshopPreviewBatches:
     def preview_snapshot(self,human):
         with history_lock(self.root/'.lock'):return copy.deepcopy(preview_state(self._read(human)))
 
-    def preview_prepare(self,human,ident,profile,delivery,voice_generation,generation,planner):
+    def preview_prepare(self,human,ident,profile,delivery,voice_generation,generation,planner,*,receiving_fingerprint=None):
         self._ident(ident);voice_profile(profile,delivery)
-        request=digest([profile,delivery,voice_generation,generation])
+        request=digest([profile,delivery,voice_generation,generation,receiving_fingerprint])
         with history_lock(self.root/'.lock'):
             value=self._read(human);previews=preview_state(value)
             old=next((r for r in previews['batches'] if r['id']==ident),None)
@@ -49,7 +49,7 @@ class WorkshopPreviewBatches:
             candidate={'revision':None,'profile':copy.deepcopy(profile),'delivery':delivery,
                        'sha256':voice_profile(profile,delivery)[1]}
             row={'id':ident,'generation':generation+1,'request_sha256':request,'createdAt':int(time.time()*1000),
-                 'phase':'prepared','passage':PASSAGE,'choices':{'A':current,'B':candidate}}
+                 'phase':'prepared','receiving_fingerprint':receiving_fingerprint,'passage':PASSAGE,'choices':{'A':current,'B':candidate}}
             planned=planner(copy.deepcopy(row))
             if (not isinstance(planned,dict) or set(planned)!={'A','B'}
                     or any(not isinstance(v,str) or len(v)!=64 or any(c not in '0123456789abcdef' for c in v) for v in planned.values())):
@@ -66,6 +66,10 @@ class WorkshopPreviewBatches:
         row=next((r for r in state['batches'] if r['id']==ident and r['generation']==generation),None)
         if row is None:raise KeyError('Preview batch unavailable for this account or generation')
         return row
+
+    def preview_get(self,human,ident,generation):
+        with history_lock(self.root/'.lock'):
+            return copy.deepcopy(self._preview_row(preview_state(self._read(human)),ident,generation))
 
     def preview_start(self,human,ident,generation,slot):
         if slot not in ('A','B'):raise ValueError('Select preview A or B')

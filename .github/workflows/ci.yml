@@ -446,6 +446,7 @@ jobs:
       - run: python -B tests/dashboard_openai_live_voice_choice.py
       - run: python -B tests/dashboard_voice_studio_batches.py
       - run: python -B tests/dashboard_voice_studio_render.py
+      - run: python -B tests/dashboard_voice_studio_preview_api.py
       - run: python -B tests/dashboard_avatar_workshop_api.py
       - run: python -B tests/dashboard_media_retention.py
       - run: python -B tests/dashboard_live.py

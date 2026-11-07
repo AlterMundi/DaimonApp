@@ -12,7 +12,7 @@ with visual revisions. They use a separate `voice` namespace and generation;
 voice data never enters ascii-avatar-model/v1 or ascii-quest-design/v2. The
 combined visual and voice revision count stays within32 and the existing8MiB
 actor/32MiB aggregate limits. Quota refusal keeps prior selections; no recorder,
-provider call, cache or automatic deletion is added.
+provider call or automatic deletion is added by revision actions.
 
 A revision retains an exact OpenAI API/model/voice reference, delivery instruction
 at most1024UTF8bytes, parent, timestamp and digest. Save does not select. Exact
@@ -74,8 +74,10 @@ References: [GPT-Live conversations](https://developers.openai.com/api/docs/guid
 
 ## Remaining comparison and acceptance
 
-The preview transport is not exposed by the workshop yet. The account-document
-batch layer now freezes A/B and the same passage before any attempt, with at
+The source workshop now exposes the authenticated preview adapter and explicit
+Prepare comparison, Generate A/B, cached Play, Stop generation/playback and Retire
+controls. The account-document batch layer freezes A/B and the same passage before
+any attempt, with at
 most4batches/2slots per actor. Existing64actor and document/audio limits remain;
 new preview job metadata therefore has at most512jobs. Batch identity includes
 its monotonic generation. Exact prepare readback never replans or changes A;
@@ -97,13 +99,29 @@ The runner validates the returned cache ID, source hash, WAV bytes/format and
 30second duration. Tests exercise the actual subprocess/cache-hit and cancellation
 while an unrelated process remains alive. No real provider was contacted.
 
-The remaining work is the authenticated preview adapter and panel controls:
-connect these bounded batch/process components to explicit Generate, cached
-Play, Stop and Retire actions. Reuse the existing voice admission ticket and
-actor voice lease; shared speech capacity must remain shared with ordinary TTS.
-Preserve exact cached outcomes and status-only reconciliation on lost ACKs.
-Do not expose arbitrary renderer configurations or regenerate expired/unknown
-jobs. Comparison generation and playback stay separate user actions.
+The exact `/api/interaction/avatars/voice/previews` endpoint reuses workshop
+owner/CSRF authorization. Generation acquires the existing HTTP voice admission
+and actor voice lease, using the same semaphore as ordinary TTS. A receiving
+configuration fingerprint prevents old attempts or cleanup from being rerouted.
+Only current configured GPT-Live profiles and the existing approved project key
+reference/cache are accepted; arbitrary renderer input is not exposed.
+
+A lost generation response only reads the retained cache/outcome. Unknown or
+expired jobs cannot regenerate. Closing waits for an active generation to stop;
+actor reset discards client state, and each server-owned attempt remains bounded.
+Playback starts only on explicit Play, keeps at most A/B object URLs for the
+selected batch and revokes them on close, actor change or batch change. Hiding
+the panel or page stops playback. Recorded usage and first-audio timing are
+reported separately from unmeasured live-conversation latency and hearing.
+
+Mounted synthetic tests cover owner/CSRF isolation, maintenance and capture
+exclusion before intent, exact cache readback without another worker, lost worker
+responses, unknown outcome retention, configuration drift and owned cancellation.
+The actual Chromium editor verifier additionally exercises synthetic preview
+routes: no generation on open/save/use, explicit A/B, recorded playback controls,
+lost B response without retry, keeping A while B is generated and refusing
+retirement of the unknown B. It also checks1200/375/320 layouts. These UI fixtures
+are separate from mounted API/cache ownership tests; none contacts a provider.
 
 Paid comparison remains explicit and bounded: two compatible identities at most,
 the same passage of at most40words,30seconds/16MiB each, retained uncertain result

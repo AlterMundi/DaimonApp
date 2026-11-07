@@ -290,6 +290,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
     from .openai_live_api import install as install_openai_live
     can_public_live=install_openai_live(app,config,provider,authorize_async,[origin,*additional_origins])
+    app.state.voice_preview_capacity=openai_speech.capacity if openai_speech else None
     from .avatar_workshop_api import install as install_avatar_workshop
     install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins])
 
