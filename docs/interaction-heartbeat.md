@@ -104,6 +104,30 @@ rejects contradictory status; this preparation adds no synthetic positive proof.
 
 ### Explicit owner renewal of an expired window
 
+Observation and execution have independent finite policies. Initial
+`configure-producer` selects its own 30–3600 second cadence, 1–1024 lifetime
+checks and deadline within seven days, even when the execution account is absent,
+expired, exhausted or unavailable. Global/lane pause and source-binding fences
+still apply. Successful authenticated inbox pages and source-check observations
+are retained under the existing caps; unavailable execution resources prevent
+offer-cursor advancement and native-return reservation. Later authorized
+execution sees the same original sources, without replaying them as new messages.
+Neither configuration nor an empty check spends inference attempts.
+
+The owner can independently renew an expired observation deadline:
+
+```
+heartbeat renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS
+```
+
+This requires the exact paused global generation and a new deadline within seven
+days. It preserves the check ceiling/count, cadence, original sources, pending
+returns (including uncertainty), cursors, resource contract and reservations.
+Exhausted observation capacity refuses renewal. One replaceable receipt makes an
+exact lost-ACK repeat idempotent at the same paused generation. A separate Resume
+is required. This command is owner-console only and absent from model actions.
+It grants no execution permission, retries or automatic future renewal.
+
 The owner console additionally supports:
 
 ```
@@ -113,7 +137,9 @@ heartbeat renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS
 Use only under an explicit owner-selected new operating window. Read status,
 pause at its exact generation, and supply the observed common resource/producer
 expiry. The predecessor must be expired and the new window must end within seven
-days. Both deadlines change in one transaction. The account ID, lifetime reserved
+days. Matching producer/resource deadlines change in one transaction. An already
+longer independently authorized observation deadline stays unchanged; otherwise
+select a sufficient observation window before renewing execution. The account ID, lifetime reserved
 attempts, request/execution limits, producer check ceiling/count, cadence, source
 bindings, cursors and pending identities remain unchanged. Exhausted capacity,
 changed bindings and unresolved/uncertain native work refuse the operation.

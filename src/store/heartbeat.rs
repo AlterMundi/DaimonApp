@@ -87,6 +87,33 @@ pub(super) fn generation_current_on(
 }
 
 impl Store {
+    /// Explicit owner-only model-free observation successor. No account change.
+    pub fn heartbeat_renew_observation(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let control: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            control.paused && control.generation == generation,
+            "Pause and select the exact heartbeat generation before explicit owner renewal"
+        );
+        producer::renew_observation_on(&tx, human, entry, generation, expected_expiry, expiry)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Owner-console only: not part of HeartbeatCommand or model tool actions.
     /// Renew an expired finite window without minting capacity or activating it.
     pub fn heartbeat_renew_window(
