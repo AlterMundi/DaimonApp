@@ -296,7 +296,9 @@ window.VoiceInput = (() => {
         pending={...pending,submissionRequested:true,automaticRetries:(pending.automaticRetries||0)+(automatic?1:0)};
       }
       const frozen=pending;onTiming(frozen.id,'send');uploading=true;controller=new AbortController();const active=controller;
-      const deadline=setTimeout(()=>active.abort(),20000);if(frozen.preparedText)caption(frozen.preparedText);else notice('Saving your recording…');controls();
+      // Transport failure or explicit lifecycle cancellation ends a media POST;
+      // an arbitrary application timer must not cut off a progressing upload.
+      if(frozen.preparedText)caption(frozen.preparedText);else notice('Saving your recording…');controls();
       try {
         if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
@@ -326,7 +328,7 @@ window.VoiceInput = (() => {
         pending={...frozen,uncertainSubmission:true};
         notice('Recording unconfirmed. Check its status or retry this same recording. Delivery will be checked before a limited retry.'+(!frozen.localRecovery?' Keep this page open or save an audio copy before leaving.':''),true);
         if(e.status===401 || e.status===403)unauthorized(e);
-      } finally {clearTimeout(deadline);if(controller===active){controller=undefined;uploading=false;controls();scheduleStatus();}}
+      } finally {if(controller===active){controller=undefined;uploading=false;controls();scheduleStatus();}}
     }
     async function finish(owned,binding,mime,selection) {
       if(owned!==generation)return;

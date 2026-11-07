@@ -19,7 +19,7 @@ function boot({photo=false}={}){
  return {ui,nodes,uploads,encodings,bitmap,timers,
   holdUpload(){network=deferred();return network;},
   reply(index=uploads.length-1){return reply(uploads[index].options);},
-  expire(){for(const timer of [...timers.values()])timer.fn();},
+  expire(ms=Infinity){for(const timer of [...timers.values()])if(timer.ms<=ms)timer.fn();},
   binding(value){binding=value;},
   hold(){decode=deferred();return decode;},
   choose(){nodes.get('#conversation-image').files=[{name:'selected.png',size:100}];nodes.get('#conversation-image').value='selected.png';return nodes.get('#conversation-image').handlers.change();},
@@ -71,19 +71,22 @@ function boot({photo=false}={}){
  assert.equal(simultaneous.uploads.length,1,'Concurrent text and voice must share one immutable-image upload');
  heldUpload.resolve(simultaneous.reply());const [textRef,voiceRef]=await Promise.all([textCapture,voiceCapture]);
  assert.equal(textRef.source_id,voiceRef.source_id);assert.equal(textRef.image_sha256,voiceRef.image_sha256);assert.equal(simultaneous.timers.size,0);
+ const slow=boot();await slow.choose();const slowUpload=slow.holdUpload(),slowCapture=slow.ui.capture();
+ slow.expire();assert.equal(slow.uploads[0].options.signal.aborted,false,'No application timer may abort an active transfer');
+ slowUpload.resolve(slow.reply());await slowCapture;assert.equal(slow.uploads.length,1);assert.equal(slow.timers.size,0);
  const timeout=boot();await timeout.choose();timeout.nodes.get('#conversation-message').value='Keep my draft';
- timeout.holdUpload();const timed=timeout.ui.capture(),timedVoice=timeout.ui.captureForVoice();
- const declined=Promise.all([assert.rejects(timed,/Image upload timed out/),assert.rejects(timedVoice,/Image upload timed out/)]);
- timeout.expire();await declined;assert.equal(timeout.uploads.length,1);assert.equal(timeout.timers.size,0);
+ const failedTransfer=timeout.holdUpload();const timed=timeout.ui.capture(),timedVoice=timeout.ui.captureForVoice();
+ const declined=Promise.all([assert.rejects(timed,/Image upload not confirmed/),assert.rejects(timedVoice,/Image upload not confirmed/)]);
+ failedTransfer.reject(new TypeError('Synthetic network failure'));await declined;assert.equal(timeout.uploads.length,1);assert.equal(timeout.timers.size,0);
  assert.equal(timeout.nodes.get('#conversation-message').value,'Keep my draft');assert.equal(timeout.nodes.get('#conversation-image-list').children.length,1);
  const originalBlob=timeout.uploads[0].options.body,originalHash=timeout.uploads[0].options.headers['X-Image-Sha256'];
  const retried=await timeout.ui.capture();assert.equal(timeout.uploads.length,2,'Only a later explicit capture retries');
  assert.equal(timeout.uploads[1].options.body,originalBlob);assert.equal(retried.image_sha256,originalHash);
  await timeout.ui.captureForVoice();assert.equal(timeout.uploads.length,2,'Confirmed bytes are reused');
  const acknowledgement=boot();await acknowledgement.choose();const holdResponse=acknowledgement.holdUpload(),body=deferred();
- const waitingBody=acknowledgement.ui.capture();const ackRefused=assert.rejects(waitingBody,/Image upload timed out/);
+ const waitingBody=acknowledgement.ui.capture();const ackRefused=assert.rejects(waitingBody,/Image acknowledgement unavailable/);
  holdResponse.resolve({ok:true,json:()=>body.promise});await Promise.resolve();await Promise.resolve();
- acknowledgement.expire();body.reject(Object.assign(Error('Aborted body'),{name:'AbortError'}));await ackRefused;
+ acknowledgement.expire();body.reject(new TypeError('Synthetic response-body failure'));await ackRefused;
  assert.equal(acknowledgement.uploads.length,1);assert.equal(acknowledgement.timers.size,0);
  const networkFailure=boot();await networkFailure.choose();const broken=networkFailure.holdUpload();
  const disconnected=networkFailure.ui.capture();const networkRefused=assert.rejects(disconnected,/Image upload not confirmed.*kept/);
@@ -101,5 +104,5 @@ function boot({photo=false}={}){
  changedBinding.binding('another-binding');await assert.rejects(changedBinding.ui.capture(),/selected images changed/);
  assert.equal(changedBinding.uploads.length,1,'A new binding cannot share or restart an old pending upload');
  frozenUpload.resolve(changedBinding.reply());await oldRefused;
- console.log('Visual UI: ordered multi-image text/voice, reorder/removal, later-selection preservation and held/failed decode never drops an intended image, whole image or optional point, coalesced in-flight upload, retained timeout/network recovery, explicit same-byte retry, remove/binding fences, upload only on send, filename retained and explicit removal invalidates late decoding; zero models.');
+ console.log('Visual UI: ordered multi-image text/voice, reorder/removal, later-selection preservation and held/failed decode never drops an intended image, whole image or optional point, coalesced in-flight upload, retained network/body recovery without application upload timeout, explicit same-byte retry, remove/binding fences, upload only on send, filename retained and explicit removal invalidates late decoding; zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
