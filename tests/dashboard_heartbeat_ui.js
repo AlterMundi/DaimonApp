@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const window={};vm.runInNewContext(fs.readFileSync('dashboard/web/heartbeat.js','utf8'),{window});
 const state=window.InteractionHeartbeat.state;
 const base={schema:'telecodex.heartbeat-control/v1',admission_paused:false,generation:1};
-assert.equal(state({...base,operational:true}),'operational');
+assert.equal(state({...base,operational:true}),'unavailable');
 assert.equal(state(base),'unavailable');
 assert.equal(state({...base,executions:[{phase:'running'}]}),'unavailable');
 assert.equal(state({...base,admission_paused:true,operational:true}),'paused');
@@ -39,3 +39,17 @@ assert.match(observation({...failed,producer:{...failed.producer,last_success_at
 assert.match(observation({...checked,producer:{last_check:{...checked.producer.last_check,outcome:'in_progress',completed_at_unix_ms:null}}}),/completion not observed/);
 for(const value of [null,base,{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Infinity}}},{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Number.MAX_SAFE_INTEGER}}}])assert.equal(observation(value),'');
 console.log('Heartbeat: expired/exhausted/stopped dependencies cannot pulse; source-check timestamps remain distinct from operational proof.');
+
+const now=1700000000000;
+const ready={...base,operational:true,lanes:{messaging:{paused:false,generation:2}},
+ producer:{state:'configured',contract:{expires_at_unix_ms:now+60000}},
+ resources:{state:'available',contract:{expires_at_unix_ms:now+60000}},
+ operational_evidence:{schema:'telecodex.heartbeat-operational/v1',operational:true,generation:1,observed_at_unix_ms:now,valid_for_seconds:15,lanes:{messaging:{operational:true,generation:2}}}};
+assert.equal(state(ready,now),'operational');
+assert.equal(state(ready,now+14999),'operational');
+assert.equal(state(ready,now+15000),'unavailable');
+assert.equal(state(ready,now-1),'unavailable');
+for(const change of [{generation:2},{valid_for_seconds:16},{observed_at_unix_ms:now-15001},{lanes:{messaging:{operational:true,generation:3}}}])assert.equal(state({...ready,operational_evidence:{...ready.operational_evidence,...change}},now),'unavailable');
+assert.equal(state({...ready,resources:{state:'available',contract:{expires_at_unix_ms:now}}},now),'unavailable');
+assert.equal(state({...ready,producer:{state:'configured',contract:{expires_at_unix_ms:now}}},now),'unavailable');
+console.log('Heartbeat: native operational evidence expires at its actual age/window and rejects changed generations.');

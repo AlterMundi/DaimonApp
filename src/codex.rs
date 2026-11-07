@@ -410,6 +410,7 @@ pub struct CommandSpec {
     pub current_dir: Option<PathBuf>,
 }
 struct AppServerProcess {
+    bounded_idle_turn: bool,
     child: Child,
     transport: AppServerTransport,
     stderr_buffer: Arc<Mutex<String>>,
@@ -812,6 +813,73 @@ impl CodexRunner {
         self.session_profiles
             .iter()
             .find(|profile| profile.key() == key)
+    }
+
+    /// Read current serving support and the selected existing native thread.
+    /// No resume, admission probe, input, reservation or provider call is sent.
+    pub async fn bounded_idle_readiness(&self, session: &SessionRecord) -> Result<&'static str> {
+        if !self.shared_app_server || session.force_fresh_thread {
+            return Ok("native_binding_unavailable");
+        }
+        let Some(native) = session.codex_thread_id.as_deref() else {
+            return Ok("native_binding_unavailable");
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut process = AppServerProcess::spawn(&self.binary, true).await?;
+            let result = async {
+                process.initialize().await?;
+                if !process.bounded_idle_turn {
+                    return Ok("native_support_unavailable");
+                }
+                let id = process
+                    .send_request(
+                        "thread/read",
+                        json!({"threadId":native,"includeTurns":false}),
+                    )
+                    .await?;
+                let response = process.await_response(id).await?;
+                let thread = &response["thread"];
+                anyhow::ensure!(
+                    thread["id"] == native,
+                    "Native observation identity changed"
+                );
+                if let Some(selected) = self.session_profile(session.key) {
+                    NativeModelProfile::load(&default_codex_home(), selected)?.verify(thread)?;
+                } else {
+                    anyhow::ensure!(
+                        thread["model"].as_str().is_some_and(|s| !s.is_empty())
+                            && thread["modelProvider"]
+                                .as_str()
+                                .is_some_and(|s| !s.is_empty()),
+                        "Native model route unavailable"
+                    );
+                    anyhow::ensure!(
+                        session
+                            .model
+                            .as_deref()
+                            .is_none_or(|m| thread["model"] == m)
+                            && session
+                                .reasoning_effort
+                                .as_deref()
+                                .is_none_or(|e| thread["reasoningEffort"] == e),
+                        "Native model selection changed"
+                    );
+                }
+                if thread["canAcceptDirectInput"] != true {
+                    return Ok("native_admission_unavailable");
+                }
+                Ok(match thread["status"]["type"].as_str() {
+                    Some("idle") => "ready",
+                    Some("active") => "native_busy",
+                    _ => "native_binding_unavailable",
+                })
+            }
+            .await;
+            process.shutdown().await?;
+            result
+        })
+        .await
+        .context("Native readiness observation timed out")?
     }
 
     /// Apply a configured model to an existing idle native cache entry without
@@ -3366,6 +3434,7 @@ impl AppServerProcess {
             }
         };
         Ok(Self {
+            bounded_idle_turn: false,
             child,
             transport,
             stderr_buffer,
@@ -3376,9 +3445,11 @@ impl AppServerProcess {
     }
     async fn initialize(&mut self) -> Result<()> {
         let request_id=self.send_request("initialize",json!({"clientInfo":{"name":"telecodex","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
-        let _ = tokio::time::timeout(Duration::from_secs(15), self.await_response(request_id))
-            .await
-            .context("Codex App Server initialize timed out")??;
+        let response =
+            tokio::time::timeout(Duration::from_secs(15), self.await_response(request_id))
+                .await
+                .context("Codex App Server initialize timed out")??;
+        self.bounded_idle_turn = response["boundedIdleTurn"] == true;
         self.send_notification("initialized").await?;
         Ok(())
     }
@@ -4087,6 +4158,88 @@ mod tests {
             true,
         )
         .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_idle_readiness_is_read_only_and_checks_actual_native_metadata() {
+        for (support, status, returned_id, model, expected) in [
+            (true, "idle", "selected-native", "gpt-5.4", Some("ready")),
+            (
+                true,
+                "active",
+                "selected-native",
+                "gpt-5.4",
+                Some("native_busy"),
+            ),
+            (
+                false,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some("native_support_unavailable"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                Some("native_binding_unavailable"),
+            ),
+            (true, "idle", "another-native", "gpt-5.4", None),
+            (true, "idle", "selected-native", "another-model", None),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut reads = 0;
+                while let Some(Ok(message)) = socket.next().await {
+                    if message.is_close() {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => json!({"boundedIdleTurn":support}),
+                        Some("initialized") => continue,
+                        Some("thread/read") => {
+                            assert!(support);
+                            reads += 1;
+                            assert_eq!(
+                                request["params"],
+                                json!({"threadId":"selected-native","includeTurns":false})
+                            );
+                            json!({"thread":{"id":returned_id,"model":model,"modelProvider":"openai","canAcceptDirectInput":true,"status":{"type":status}}})
+                        }
+                        other => panic!(
+                            "Readiness must never resume, admit, mutate or call a provider: {other:?}"
+                        ),
+                    };
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"id":request["id"],"result":result})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(reads, usize::from(support));
+            });
+            let mut session = session_with_sandbox("read-only");
+            session.codex_thread_id = Some("selected-native".into());
+            let actual = CodexRunner::new(binary)
+                .with_shared_app_server(true)
+                .bounded_idle_readiness(&session)
+                .await;
+            match expected {
+                Some(reason) => assert_eq!(actual.unwrap(), reason),
+                None => assert!(actual.is_err()),
+            }
+            server.await.unwrap();
+        }
     }
 
     #[cfg(unix)]

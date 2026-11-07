@@ -69,46 +69,52 @@ This source preparation does not select native/Core code, restart services or
 activate heartbeat. Resolve actual served versions and per-body native support
 through the owning current service record; source capability is not selection.
 
-### Operational evidence still required from the native owner
+### Fresh native operational observation
 
-The producer status now retains one replaceable `last_check` with its sequence,
-global generation, lane activation, start/completion milliseconds and outcome.
-`last_success_at_unix_ms` records the last completed source check; it stays
-unchanged after a failed read. Older producer documents report these fields as
-null until a new check. A failed inbox read uses the fixed
-`matrix_inbox_unavailable` classification, without retaining arbitrary adapter
-error text. A late page rejected after pause or a generation change
-cannot complete the earlier observation. An interrupted check can therefore
-remain `in_progress`; its timestamp and generation must be inspected rather than
-interpreting the word as a current live process. The existing 256KiB producer
-document cap includes this record; it is not an accumulating event log.
-
-These are source observations only. They neither demonstrate a useful native
-action/delivered reply nor grant operational readiness. The following additional
-readiness evidence remains required.
-
-Proposed exact additional status field, to agree and qualify before consumption:
+The owner status emits `operational` and one nonaccumulating
+`operational_evidence` observation. This source successor must still be selected
+on the receiving bodies; older backends supply no positive proof.
 
 ```json
 {"operational_evidence":{"schema":"telecodex.heartbeat-operational/v1",
-  "generation":4,"observed_at":"2026-11-06T12:00:00Z",
-  "valid_for_seconds":15,"operational":true,
-  "lanes":{"messaging":{"generation":2,"operational":true,"reason":"ready"}}}}
+  "generation":4,"observed_at_unix_ms":1794093000000,
+  "valid_for_seconds":15,"operational":true,"reason":"ready",
+  "lanes":{"messaging":{"generation":2,"operational":true}}}}
 ```
 
-The native owner must derive this observation from the selected producer's
-actual bounded readiness (registered/live loop and fresh successful check),
-valid unexpired finite resources with remaining admission capacity, and the
-selected native execution primitive's actual availability for this actor/entry.
-The global fence and each claimed lane must be enabled at the exact returned
-generations. Missing, expired, exhausted, unavailable or errored dependencies
-must return false with a bounded reason; an idle ready loop can be operational.
-An active execution, configured producer, open gate or successful control ACK
-alone cannot supply this proof. Evidence lifetime is at most15seconds; stale
-or mismatched generations cannot pulse the heart. This is a proposed contract,
-not a claim that the currently selected backend emits or proves it. The existing
-App state reader still waits for explicit owner-derived `operational=true` and
-rejects contradictory status; this preparation adds no synthetic positive proof.
+A positive observation requires the actual existing maintenance task handle to
+be live and a successful selected Messaging check performed since that loop
+started. The last check must match both exact generations. Source freshness is
+bounded by two configured check intervals plus15seconds, allowing the existing
+serial bounded recovery pass; stale, interrupted and failed checks remain
+unavailable. The existing cadence, check ceiling and expiry do not change.
+
+Both finite windows must be current, sufficient unreserved inference capacity
+must remain and observation capacity must be available. Through the existing
+native connection, the owner reads the serving Core's explicit
+`initialize.boundedIdleTurn` support advertisement and `thread/read` for the
+selected existing thread. It verifies identity, actual model/provider/effort,
+idle status and direct-input readiness. It sends no resume, turn, malformed
+mutation probe, provider request or reservation. Missing support on an older
+Core stays unavailable. A busy native conversation is explicitly waiting.
+These checks establish current readiness, not a promise of provider success or
+future delivery. Genuine useful work and its receipts remain separate evidence.
+
+After the bounded native read, the owner rereads its generations, windows,
+resources and entry binding. Changed controls/bindings refuse positive evidence.
+The frontend requires the matching evidence document and both generation values,
+rejects future or older-than15second observations, and expires its pulse at the
+earlier native observation deadline or either finite window. Re-reading an old
+proof cannot extend its lifetime. Tab hiding and failed reads clear the pulse.
+Only fixed reason classifications are exposed; arbitrary private native/adapter
+errors are not copied into status.
+
+The producer separately retains one replaceable `last_check` with sequence,
+generations, start/completion milliseconds and outcome, plus the last successful
+check time. A failed read uses `matrix_inbox_unavailable`; an interrupted check
+may remain `in_progress`, which never claims that an old process is still alive.
+The existing256KiB producer cap includes this record. These source timestamps
+alone still do not prove operational readiness, native action or reply delivery.
 
 ## Versioned native control successor
 

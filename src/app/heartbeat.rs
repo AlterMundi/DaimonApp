@@ -3,6 +3,8 @@ use super::*;
 use crate::store::HeartbeatCommand;
 use serde_json::Value;
 
+mod readiness;
+
 pub(super) async fn execute(
     app: &App,
     human: i64,
@@ -94,6 +96,7 @@ pub(super) async fn execute(
     value["executions"] =
         serde_json::to_value(app.shared.store.heartbeat_executions(human, entry, false)?)?;
     value["cancellation_observations"] = serde_json::to_value(observations)?;
+    readiness::annotate(app, human, entry, &mut value).await;
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
