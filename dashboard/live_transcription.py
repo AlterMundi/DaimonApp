@@ -240,18 +240,23 @@ async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=T
 
 
 
-def install(app, config, provider, authorize, origins):
-    selected = config.get('streaming_transcription', {})
+def install(app, config, provider, authorize, origins, *, configuration='streaming_transcription'):
+    if configuration not in ('streaming_transcription','streaming_transcription_openai'):
+        raise ValueError('Select an existing transcription route')
+    openai=configuration=='streaming_transcription_openai'
+    selected = config.get(configuration, {})
     if selected.get('enabled') is not True:
         return False
     mode=selected.get('mode','prepared')
     if (mode not in ('prepared','captions')
-            or selected.get('provider','qwen') not in ('qwen','gemini')
-            or set(selected)-{'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name','native_caption_recovery','native_session_seconds','native_provider','native_credential_file'}
+            or selected.get('provider','qwen') not in (('openai',) if openai else ('qwen','gemini'))
+            or set(selected)-({'enabled','endpoint','credential_file','cache_root','mode','provider','transcription_options'} if openai else {'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name','native_caption_recovery','native_session_seconds','native_provider','native_credential_file'})
             or not {'enabled','endpoint','credential_file','cache_root'}<=set(selected)
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
         raise ValueError('Explicit private streaming-transcription binding required')
+    if openai and (mode!='captions' or selected['endpoint']!='wss://api.openai.com/v1/realtime?intent=transcription'):
+        raise ValueError('OpenAI live captions cannot prepare or dispatch originals')
     native_provider=selected.get('native_provider','gemini')
     if native_provider not in ('gemini','qwen'):
         raise ValueError('Select a supported native conversation provider')
@@ -296,7 +301,8 @@ def install(app, config, provider, authorize, origins):
     candidates=[selected]+([fallback] if fallback is not None else [])
     detector_command = detection_command(selected)
     root = private_directory(selected['cache_root'])
-    active = set()
+    if not hasattr(app.state,'transcription_active'):app.state.transcription_active=set()
+    active = app.state.transcription_active
     if not hasattr(app.state,'voice_active'):app.state.voice_active=set()
     analysis_active = app.state.voice_active
     prepared_writes = asyncio.Semaphore(1)
@@ -317,7 +323,7 @@ def install(app, config, provider, authorize, origins):
         return await bind_voice_actor(provider,authorize,socket,meta)
 
 
-    @app.websocket('/api/interaction/voice/live')
+    @app.websocket('/api/interaction/voice/openai/live' if openai else '/api/interaction/voice/live')
     async def voice_live(socket: WebSocket):
         diagnostic = {'stage':'metadata', 'audio_bytes':0, 'finish_received':False, 'prepared_saved':False}
         preparation_started = {}
@@ -382,7 +388,8 @@ def install(app, config, provider, authorize, origins):
                         choice=candidates[index]
                         try:
                             value=TranscriptionStream(choice['endpoint'],Path(choice['credential_file']),
-                                                      provider=choice.get('provider','qwen'))
+                                                      provider=choice.get('provider','qwen'),
+                                                      **({'transcription_options':choice.get('transcription_options')} if openai else {}))
                         except (OSError,ValueError,TranscriptionUnavailable):
                             if index+1==len(candidates):raise
                             continue
@@ -546,6 +553,10 @@ def install(app, config, provider, authorize, origins):
                 with suppress(Exception):await socket.close()
             finally:
                 if owner is not None:active.discard(owner)
+    if openai:
+        # Reuse authenticated bounded captions only. Never install another
+        # activity/native-dialogue route or grant caption text work authority.
+        return True
     @app.websocket('/api/interaction/voice/activity')
     async def foreground_activity(socket: WebSocket):
         """One explicit warm foreground analyzer; no ASR, originals or work."""

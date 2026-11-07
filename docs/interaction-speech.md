@@ -442,7 +442,8 @@ CompAII Avatar mode when available; native Codex retains identity, memory and
 work. This creates no peer API enrollment or provider/default switch.
 
 Each ordinary recording freezes its transcription profile before microphone
-permission. OpenAI recordings bypass legacy live previews and use the explicit
+permission. OpenAI recordings bypass legacy live previews and may use the separately configured
+OpenAI captions route described below. They use the explicit
 `/api/interaction/voice/openai` (or `/limited`) route for final interpretation.
 Native `[voice.transcription_profiles.openai]` chooses a named command and
 completed-only reader; the immutable original retains that name through
@@ -491,3 +492,38 @@ configuration without API access is not authorization to enable peer billing.
 The presentation capability flags describe the selected default engine. Explicit
 previous-provider flags retain its streaming/preview availability. A client must
 not infer progressive OpenAI WAV support from the previous engine configuration.
+
+
+## OpenAI live text during Conversation recording
+
+`gpt-live-transcribe` supplies provisional text as microphone audio arrives;
+`gpt-transcribe` remains the final file interpretation. This follows the official
+[Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription).
+Do not use committed-turn `gpt-transcribe` as a substitute for live captions.
+
+Configure a separate optional `[streaming_transcription_openai]` with
+`enabled=true`, `provider="openai"`, `mode="captions"`, the existing approved
+absolute `credential_file`, existing private transcription `cache_root`, and
+`endpoint="wss://api.openai.com/v1/realtime?intent=transcription"`. Optional
+`transcription_options` contains bounded `languages`, `keywords`, and `delay`
+(`minimal`, `low`, `medium`, `high`, `xhigh`; default `low`). Use `es`, not an
+unsupported regional language code, for Argentine Spanish input. No alternate
+provider/fallback, native dialogue or turn detection is configured on this route.
+
+The authenticated `/api/interaction/voice/openai/live` socket reuses the existing
+Origin/actor/CSRF/binding checks, fresh authorization, voice maintenance fence,
+two-capture capacity and120second audio/140second connection bounds. It streams
+only to a transcription session with no assistant response/tools. Existing mono
+16kHz preview PCM is deterministically resampled to24kHz across packet boundaries;
+the compressed acoustic original and its hash/profile are never replaced.
+Provisional text cannot submit work, prepare a canonical transcript or finish the
+original. Stop/Cancel closes only the preview; final Send uses the same frozen
+OpenAI file-ASR route. Failed captions keep the original recording and show live
+text unavailable; no reconnect, audio replay or Qwen/Gemini fallback occurs.
+
+`openai_can_stream_transcribe` advertises this configured route independently of
+previous-provider streaming. New clients freeze the selected route before
+microphone permission; unsupported/older servers retain completed-only ASR.
+Caption transcription and final file transcription are separate provider usage;
+keep both in cost comparisons. Software tests, model access and synthetic streaming
+measurements do not prove real microphone/accent/noise/hearing acceptance.

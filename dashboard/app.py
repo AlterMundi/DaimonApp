@@ -285,6 +285,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     app.state.native_history=NativeHistory(database,binding)
     from .live_transcription import install as install_live_transcription
     can_stream_transcribe = install_live_transcription(app,config,provider,authorize_async,[origin,*additional_origins])
+    can_openai_stream_transcribe = install_live_transcription(app,config,provider,authorize_async,[origin,*additional_origins],configuration='streaming_transcription_openai')
     from .codex_voice_api import install as install_codex_voice
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
     from .openai_live_api import install as install_openai_live
@@ -656,7 +657,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     and dict(session).get('scope') != 'monitor_readonly'),
                 'streaming_transcription_mode':config.get('streaming_transcription',{}).get('mode','prepared'),
                 'previous_can_stream_transcribe':can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly',
-                'can_stream_transcribe':services_default!='openai' and can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
+                'openai_can_stream_transcribe':can_openai_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly',
+                'can_stream_transcribe':(can_openai_stream_transcribe if services_default=='openai' else can_stream_transcribe) and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
 
     @app.get('/api/interaction/inputs')
     async def conversation_inputs(request: Request, before: int = 0, direction: str = 'before'):

@@ -72,7 +72,7 @@ window.Conversation = (() => {
       if(lastVoiceCapabilities){
         canStreamSpeech=canListen&&!useOpenAI&&!!(lastVoiceCapabilities.previous_can_stream_speech??lastVoiceCapabilities.can_stream_speech);
         canSpeakLive=canListen&&(useOpenAI?lastVoiceCapabilities.openai_speech_live_response:(lastVoiceCapabilities.previous_can_speak_live_response??lastVoiceCapabilities.can_speak_live_response))===true;
-        microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&(lastVoiceCapabilities.previous_can_stream_transcribe??lastVoiceCapabilities.can_stream_transcribe),lastVoiceCapabilities.streaming_transcription_mode);
+        microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&(lastVoiceCapabilities.previous_can_stream_transcribe??lastVoiceCapabilities.can_stream_transcribe),lastVoiceCapabilities.streaming_transcription_mode,useOpenAI&&lastVoiceCapabilities.openai_can_stream_transcribe);
       }
       if(servicesChoice)servicesChoice.hidden=!openaiConversationAvailable&&conversationServices==='current';
       const previousOption=servicesEngine?.querySelector?.('option[value="current"]');if(previousOption)previousOption.textContent=lastVoiceCapabilities?.voice_services_default==='openai'?'Previous voice':'Current voice';
@@ -1774,7 +1774,7 @@ window.Conversation = (() => {
       refreshFiles();
       await goalControls?.observe(value.goal_controls);
       lastVoiceCapabilities=value;openaiConversationAvailable=value.can_openai_conversation===true;
-      microphone?.configure(value.can_speak,conversationServices!=='openai'&&value.can_stream_transcribe,value.streaming_transcription_mode);
+      microphone?.configure(value.can_speak,conversationServices!=='openai'&&(value.previous_can_stream_transcribe??value.can_stream_transcribe),value.streaming_transcription_mode,conversationServices==='openai'&&value.openai_can_stream_transcribe);
       providerNativeEnabled=value.can_converse_native===true&&window.NativeConversation?.supported()===true;
       providerContinuousEnabled=value.can_converse_continuous===true;providerVoiceAvailable=value.can_converse===true;
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;

@@ -123,12 +123,13 @@ window.StreamingVoice=(()=>{
       get closed(){return closed;}
     };
   }
-  async function create(media,{headers,binding,id,onPartial=()=>{},canonicalRecorder,turnDetection=false,onEndpoint=()=>{},onDetectionUnavailable=()=>{},captureSource,initialPCM=()=>[],onFlushed=()=>{}}){
+  async function create(media,{headers,binding,id,onPartial=()=>{},onUnavailable=()=>{},canonicalRecorder,transcriptionProvider='current',turnDetection=false,onEndpoint=()=>{},onDetectionUnavailable=()=>{},captureSource,initialPCM=()=>[],onFlushed=()=>{}}){
+    if(!['current','openai'].includes(transcriptionProvider)||transcriptionProvider==='openai'&&(!canonicalRecorder||captureSource||turnDetection))throw Error('OpenAI captions require a separate original recorder');
     if(captureSource&&canonicalRecorder)throw Error('Shared PCM cannot split a compressed original');
     const shared=!!captureSource,capture=captureSource||await openCapture(media);
     let socket,unsubscribe;
     try{
-      const target=new URL('api/interaction/voice/live',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
+      const target=new URL(transcriptionProvider==='openai'?'api/interaction/voice/openai/live':'api/interaction/voice/live',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
       socket=new WebSocket(target);
     }catch(error){if(!shared)capture.close();throw error;}
     let origin=0,collecting=!shared;
@@ -198,6 +199,7 @@ window.StreamingVoice=(()=>{
     };
     const unavailable=()=>{
       ready=false;
+      if(canonicalRecorder&&!ending&&!discarded&&!done&&!disposed)onUnavailable();
       if(turnDetection&&!detectorFailed&&!ending&&!discarded&&!done){detectorFailed=true;onDetectionUnavailable();}
       if(canonicalRecorder){parts=[];dispose();}else if(ending&&!canonicalRecorder)complete();
     };
@@ -246,7 +248,7 @@ window.StreamingVoice=(()=>{
       }
     });}catch(error){dispose();throw error;}
     function previewFailed(){
-      if(canonicalRecorder){ready=false;parts=[];dispose();}
+      if(canonicalRecorder){ready=false;parts=[];onUnavailable();dispose();}
       else{event('error');recorder.discard();}
     }
     recorder.start=(timeslice)=>{

@@ -403,3 +403,11 @@ including legacy completed-only recovery. Explicit previous-provider captures
 use the named `previous` route; changing a default never changes an active capture.
 Same-actor device/Alerts/menu/Traffic requalification remains required when the
 native receiving profile changes. Native work/provider identity is unchanged.
+
+
+OpenAI Conversation live captions use a separately configured captions-only
+`gpt-live-transcribe` route. Keep the original compressed recorder and named final
+file-ASR profile unchanged. Caption text is provisional, not canonical/work input;
+reuse the existing authenticated WebSocket and maintenance fence, preserve audio
+on preview failure, and never fall back to another provider or replay the stream.
+Caption and final-file usage are separate. See docs/interaction-speech.md.

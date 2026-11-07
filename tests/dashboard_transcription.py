@@ -215,4 +215,48 @@ class GeminiStreamingTranscription(unittest.TestCase):
                 self.event({'serverContent': {'inputTranscription': {'text': text}}})
 
 
+class OpenAIStreamingTranscription(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.key=Path(self.tmp.name)/'key'
+        self.key.write_text('sk-'+'synthetic'*4);self.key.chmod(0o600)
+        self.socket=Socket();self.connections=[]
+        def connect(*args,**kwargs):
+            self.connections.append((args,kwargs));return self.socket
+        self.stream=TranscriptionStream('wss://api.openai.com/v1/realtime?intent=transcription',self.key,connect,provider='openai',transcription_options={'languages':['es'],'delay':'low'})
+    def tearDown(self):self.stream.close();self.tmp.cleanup()
+    def ready(self):
+        self.socket.events.append({'type':'session.updated','session':self.socket.sent[0]['session']})
+        self.assertEqual(self.stream.receive(),{'type':'ready'})
+    def test_live_deltas_arrive_before_commit_without_generated_response(self):
+        self.ready();self.stream.append(b'\0\0'*1600)
+        for text,expected in [('Dale,','Dale,'),(' CompAII','Dale, CompAII')]:
+            self.socket.events.append({'type':'conversation.item.input_audio_transcription.delta','item_id':'one','delta':text})
+            self.assertEqual(self.stream.receive()['text'],expected)
+        self.assertEqual(self.stream.audio_bytes,3200)
+        import base64
+        self.assertEqual(len(base64.b64decode(self.socket.sent[1]['audio'])),4798)
+        self.assertEqual([v['type'] for v in self.socket.sent],['session.update','input_audio_buffer.append'])
+        self.stream.close();self.assertTrue(self.socket.closed);self.assertEqual(len(self.connections),1)
+    def test_resampling_is_packet_boundary_independent_and_preserves_input_hash(self):
+        import struct,hashlib,base64
+        pcm=struct.pack('<8h',-10000,-5000,0,5000,10000,15000,12000,3000)
+        expected=self.stream._openai_pcm(pcm)
+        self.stream._resample_count=self.stream._resample_tick=0;self.stream._resample_tail=None
+        self.ready()
+        for n in range(0,len(pcm),2):self.stream.append(pcm[n:n+2])
+        actual=b''.join(base64.b64decode(v['audio']) for v in self.socket.sent[1:])
+        self.assertEqual(actual,expected)
+        self.assertEqual(self.stream.audio_sha256.hexdigest(),hashlib.sha256(pcm).hexdigest())
+    def test_refuses_conversation_mode_vad_and_other_items_without_retry(self):
+        self.socket.events.append({'type':'session.updated','session':{'type':'realtime','audio':{}}})
+        with self.assertRaises(TranscriptionUnavailable):self.stream.receive()
+        self.assertEqual(len(self.connections),1)
+    def test_final_requires_committed_audio_and_correct_item(self):
+        self.ready();self.stream.append(b'\0\0'*1600)
+        self.socket.events.append({'type':'conversation.item.input_audio_transcription.delta','item_id':'one','delta':'Dale'})
+        self.stream.receive();self.stream.finish()
+        self.socket.events.append({'type':'conversation.item.input_audio_transcription.completed','item_id':'one','transcript':'Dale.'})
+        self.assertEqual(self.stream.receive()['type'],'final');self.assertEqual(self.stream.result()['text'],'Dale.')
+
+
 if __name__=='__main__':unittest.main()
