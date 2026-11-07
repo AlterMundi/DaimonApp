@@ -409,7 +409,9 @@ Live microphone transcription is the sole recognition for that capture. New
 OpenAI and previous-provider captures freeze `openai-live` / `previous-live`;
 these named profiles only read the same live session's completed receipt. They
 have no recognizer, credential or file fallback. Missing completion keeps the
-original held; do not verify/correct it with another ASR. File-only Telegram and
+original held; do not verify/correct it with another ASR. Explicit Avatar
+recovery uses the original's frozen completed-only reader, never the base file
+recognizer to fill a missing live result. File-only Telegram and
 historical originals retain their original profiles and outcomes. Recovery v6
 freezes live-only selection; older readers must refuse it. Qualify exact native
 receipt ingestion and Home/device admission. Previous-provider native Avatar requires the loaded listener to advertise
