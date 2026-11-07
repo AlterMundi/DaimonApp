@@ -30,8 +30,8 @@ audio worker keeps one latest frame/level instead of accumulating a queue.
 Six-carrier configuration is frozen per owner; numeric frame bounds and mix are
 validated before admission. Frame validity is at most20seconds and level changes
 do not renew it. Readiness stamps the native monotonic clock; the prepared frame
-contract requires an absolute deadline on that clock. The JS adapter must derive
-it conservatively from receipt time and existing source age, so delayed bridge
+contract requires an absolute deadline on that clock. The prepared JS adapter derives
+it conservatively from receipt time and the caller's remaining source validity, so delayed bridge
 delivery cannot manufacture a fresh20second allowance. Expired observations fade
 their weights to zero. The two-hour
 owner lifetime includes initialization and is not extended by refreshes. Quiet
@@ -51,9 +51,22 @@ separate from Beacon. These are source mechanics, not new background permission.
 The seven real synth/output/service classes compile with release17 against the
 verified API36 reference jar; that isolated signature check supplies an Activity
 class-literal stub and does not compile or qualify the real Activity/WebView.
-The six synth plus five PCM JVM tests pass. No JavaScript Beacon capability is
-advertised yet. Finish the existing explicit Beacon renderer/bridge, freshness,
-capture/speech ducking and real WebView/AudioTrack/focus/lifecycle qualification
+The six synth plus five PCM JVM tests pass. The prepared `openBeacon` JS adapter
+has a separate UUID owner and five-second readiness bound; closing during readiness,
+native failure or backgrounding clears it without resetting speech. Its closed
+numeric frame contract rejects extra fields, excessive weights, invalid expiry
+and audible aliased carriers before any bridge write. Level commands carry no
+freshness. Node qualification covers a cached observation keeping its original
+absolute expiry, invalid frames with no effects, late-owner events, pending-start
+cancellation, continued speech on background and throwing diagnostic callbacks.
+The existing renderer now has a native branch gated by the still-unadvertised
+`beacon=true` capability. It reuses the six components, equal per-session mix,
+vocabulary frequencies/pulses/peak, source-age validity and capture/speech ducking;
+no browser AudioContext is created after native selection. Node fixtures cover
+the normalized mix, no freshness renewal by ducking, late starts and owner failure
+without browser fallback. Older clients keep the browser renderer.
+No JavaScript Beacon capability is advertised yet. Finish real
+WebView/AudioTrack/focus/lifecycle qualification
 before delivery. APK0.7 and current served audio remain unchanged. Physical
 hearing, background voice and the complete original goal remain separate.
 

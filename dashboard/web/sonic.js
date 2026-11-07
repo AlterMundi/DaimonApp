@@ -40,10 +40,44 @@ window.ConversationSound = (() => {
       .map(s=>{const observed={...s,fresh:s.fresh && frame.connected===true};return {...s,state:state(observed,frame.observed_at*1000,elapsed),components:components(observed,frame.observed_at*1000,elapsed)};});
     const eligible=sources.filter(s=>Number.isSafeInteger(s.session) && s.session>0 && s.components.length>0)
       .sort((a,b)=>priority(a)-priority(b) || a.id.localeCompare(b.id));
-    return {sources,voices:eligible.slice(0,vocabulary.max_sessions),omitted:eligible.length-Math.min(eligible.length,vocabulary.max_sessions),
+    const voices=eligible.slice(0,vocabulary.max_sessions);
+    const valid_for_ms=voices.length?Math.max(0,Math.min(20000,...voices.map(s=>20000-(frame.observed_at*1000-Number(s.observed_at)*1000+elapsed)))):0;
+    return {sources,voices,valid_for_ms,omitted:eligible.length-Math.min(eligible.length,vocabulary.max_sessions),
       unconfirmed:sources.filter(s=>s.state==="unknown" || [s.tools_running,s.error,s.pending].some(value=>typeof value!=="boolean")).length,truncated:!!frame.truncated};
   }
-  function renderer({Context=window.AudioContext||window.webkitAudioContext,changed=()=>{}}={}) {
+  function nativeRenderer(native,changed){
+    let owner,ready=false,volume=.3,ducking=1,catalog;
+    function stop(){const previous=owner;owner=undefined;ready=false;catalog=undefined;previous?.close();changed(false);}
+    function level(transition_ms){if(owner&&ready)owner.level(volume*ducking*(catalog?.peak_gain||0),transition_ms);}
+    return {
+      async start(){
+        if(owner)return ready;
+        const selected=native.openBeacon({onUnavailable(){if(owner===selected){owner=undefined;ready=false;catalog=undefined;changed(false);}}});
+        owner=selected;
+        try{await selected.ready;if(owner!==selected)return false;ready=true;changed(true);return true;}
+        catch(error){if(owner===selected)stop();throw error;}
+      },
+      stop,
+      render(composition,v){
+        if(!owner||!ready)return {voices:[],dropped:composition.voices.length,running:false};
+        const keys=["idle","active","tools","goal","pending","blocked"],frequencies=keys.map(key=>v.fundamental_hz*v.components[key]);
+        const voices=composition.voices.filter(source=>source.components.every(key=>frequencies[keys.indexOf(key)]<10800));
+        const weights=keys.map(key=>voices.reduce((sum,source)=>sum+(source.components.includes(key)?1/(voices.length*source.components.length):0),0));
+        catalog=v;
+        try{owner.frame({frequencies,pulses:keys.map((key,i)=>v.pulse_hz*(v.pulse_mode==="harmonic"?frequencies[i]/v.fundamental_hz:1)),
+          weights,depth:v.pulse_hz?v.pulse_depth:0,level:volume*ducking*v.peak_gain,
+          transition_ms:Math.max(v.attack_ms,v.release_ms),valid_for_ms:voices.length?composition.valid_for_ms:0});}
+        catch(error){stop();throw error;}
+        return {voices,dropped:composition.voices.length-voices.length,running:true};
+      },
+      setVolume(value){volume=Math.max(0,Math.min(1,Number(value)||0));level(120);},
+      setDucking(value){const next=Math.max(0,Math.min(1,Number(value)||0)),transition=next<ducking?180:600;ducking=next;level(transition);},
+      setQuiet(value){this.setDucking(value?0:1);}
+    };
+  }
+  function renderer({Context=window.AudioContext||window.webkitAudioContext,changed=()=>{},Native=window.NativeSpeechAudio}={}) {
+    // Select once per renderer; failure never silently opens browser audio.
+    if(Native?.beacon===true)return nativeRenderer(Native,changed);
     let context,master,breath,lfo,modulation,ducking=1,volume=0.3,catalog,masterEnvelope,pulseKey,signature;
     const tones=new Map();
     // Track our linear envelopes rather than reading an AudioParam's scheduled target.

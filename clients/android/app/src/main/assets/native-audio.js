@@ -2,10 +2,10 @@
 /* Loaded only by the Android host, on its exact selected HTTPS main origin. */
 window.NativeSpeechAudio=(()=>{
   const bridge=window.DaimonAudio,outputs=new Map(),streams=new Set(),encodedStreams=new Map();
-  let serial=0,captureEpoch=0,controls,sessionEnabled=false,pcmOwner;
+  let serial=0,captureEpoch=0,controls,sessionEnabled=false,pcmOwner,beaconOwner;
   if(!bridge?.postMessage)return;
   const send=value=>bridge.postMessage(JSON.stringify(value));
-  bridge.onmessage=event=>{try{const value=JSON.parse(event.data);if(value.type==="file"){window.NativeFiles?.receive(value);return;}if(value.type==="control"){controls?.[value.action]?.();return;}outputs.get(value.id)?.receive(value);}catch{}};
+  bridge.onmessage=event=>{try{const value=JSON.parse(event.data);if(value.type==="file"){window.NativeFiles?.receive(value);return;}if(value.type==="control"){controls?.[value.action]?.();return;}if(value.id===beaconOwner?.id){beaconOwner.receive(value);return;}outputs.get(value.id)?.receive(value);}catch{}};
   send({command:"hello"});
   const devices=navigator.mediaDevices,original=devices?.getUserMedia?.bind(devices);
   if(original)devices.getUserMedia=async constraints=>{
@@ -18,6 +18,58 @@ window.NativeSpeechAudio=(()=>{
     stream.getTracks().forEach(track=>track.addEventListener("ended",()=>{if(stream.getTracks().every(t=>t.readyState==="ended"))streams.delete(stream);},{once:true}));
     return stream;
   };
+  // Prepared independently of speech. Capability advertisement waits for the
+  // renderer and actual Android bridge qualification.
+  function openBeacon({onState=()=>{},onUnavailable=()=>{}}={}){
+    if(beaconOwner)throw Error("Native Beacon already active");
+    const id="beacon_"+crypto.randomUUID(),clock=()=>performance.now();
+    let closed=false,anchor,resolve,reject;
+    const ready=new Promise((yes,no)=>{resolve=yes;reject=no;});ready.catch(()=>{});
+    const command=(command,extra={})=>send({command,id,...extra});
+    const callback=(fn,value)=>{try{fn(value);}catch{}};
+    const timer=setTimeout(()=>fail(Error("Native Beacon readiness timed out")),5000);
+    function close(){
+      if(closed)return;closed=true;clearTimeout(timer);reject(Error("Native Beacon closed"));
+      if(beaconOwner===value)beaconOwner=undefined;
+      command("beacon_stop");
+    }
+    function fail(error){if(closed)return;close();callback(onUnavailable,error.message);}
+    const number=(n,lo,hi)=>typeof n==="number"&&Number.isFinite(n)&&n>=lo&&n<=hi;
+    const vector=(a,lo,hi)=>Array.isArray(a)&&a.length===6&&a.every(n=>number(n,lo,hi));
+    const transition=n=>Number.isInteger(n)&&number(n,20,2000);
+    const value={id,ready,close,
+      receive(event){
+        if(closed||event.id!==id)return;
+        if(event.type==="beacon_ready"){
+          if(anchor)return;
+          if(!Number.isSafeInteger(event.clock_ms)||event.clock_ms<0){fail(Error("Native Beacon clock unavailable"));return;}
+          // Transport delay makes this anchor conservative, never fresher.
+          anchor={native:event.clock_ms,page:clock()};clearTimeout(timer);resolve();
+        }else if(event.type==="beacon_closed"||event.type==="beacon_error"){
+          fail(Error(event.type==="beacon_error"?"Android Beacon unavailable":"Android Beacon closed"));
+        }else if(event.type==="beacon_playing"||event.type==="beacon_quiet")callback(onState,event.type);
+      },
+      frame(frame){
+        if(closed||!anchor)throw Error("Native Beacon is not ready");
+        const keys=["frequencies","pulses","weights","depth","level","transition_ms","valid_for_ms"];
+        if(!frame||Object.keys(frame).length!==keys.length||!keys.every(key=>Object.hasOwn(frame,key))
+          ||!vector(frame.frequencies,20,16384)||!vector(frame.pulses,0,64)||!vector(frame.weights,0,1)
+          ||frame.weights.reduce((a,b)=>a+b,0)>1+1e-9||frame.weights.some((weight,i)=>weight>0&&frame.frequencies[i]>=10800)
+          ||!number(frame.depth,0,.5)||!number(frame.level,0,.8)||!transition(frame.transition_ms)||!number(frame.valid_for_ms,0,20000))throw Error("Invalid native Beacon frame");
+        const {valid_for_ms,...payload}=frame,elapsed=clock()-anchor.page;
+        if(!number(elapsed,0,7200000))throw Error("Native Beacon clock expired");
+        command("beacon_frame",{...payload,expires_at_ms:Math.floor(anchor.native+elapsed+valid_for_ms)});
+      },
+      level(level,transition_ms){
+        if(closed||!anchor)throw Error("Native Beacon is not ready");
+        if(!number(level,0,.8)||!transition(transition_ms))throw Error("Invalid native Beacon level");
+        command("beacon_level",{level,transition_ms});
+      }
+    };
+    beaconOwner=value;
+    try{command("beacon_begin");}catch(error){fail(error);}
+    return value;
+  }
   function openStream(){
     if(encodedStreams.size>=3)throw Error("Native speech preparation bound reached");
     const url="native-speech:"+(++serial);
@@ -205,6 +257,7 @@ window.NativeSpeechAudio=(()=>{
   function serviceLost(){background();controls?.stop?.();}
   function background(keepPlayback=false){
     captureEpoch++;
+    beaconOwner?.close(); // Foreground-only even while spoken replies continue.
     window.dispatchEvent(new Event(keepPlayback?"nativecapturebackground":"pagehide"));
     pcmOwner?.suspend(); // Native conversation remains explicitly foreground-only.
     if(!keepPlayback){
@@ -213,5 +266,5 @@ window.NativeSpeechAudio=(()=>{
     }
     for(const stream of streams)for(const track of stream.getTracks())track.stop();streams.clear();
   }
-  return {mount,background,openStream,openPcm,pcm:true,pcmMaxSeconds:600,webrtcPcm:true,progressive:true,backgroundPlayback:true,setSession,serviceLost,setControls:value=>{controls=value;}};
+  return {mount,background,openStream,openPcm,openBeacon,pcm:true,pcmMaxSeconds:600,webrtcPcm:true,progressive:true,backgroundPlayback:true,setSession,serviceLost,setControls:value=>{controls=value;}};
 })();
