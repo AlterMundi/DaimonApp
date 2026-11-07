@@ -59,6 +59,32 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.visits.read(self.dialogue,100,self.frozen)['native_context_cursor'],before)
         await self.producer.close()
 
+    async def test_valid_large_provider_delta_reaches_native_context_without_closing_voice(self):
+        self.prepare()
+        text='á'*6000  # One valid12KiB UTF-8 provider fragment, no second ASR.
+        event=self.event(text)
+        await self.producer.open()
+        await self.producer._sync(self.producer.record)
+        self.assertEqual([source['text'] for source in self.provider.fresh],[text])
+        source=self.provider.fresh[0]
+        self.assertEqual(source['live_transcript']['spans'][0][3],12000)
+        self.assertLessEqual(len(json.dumps(source,ensure_ascii=False).encode())+1024,16384)
+        self.assertEqual(self.adapter.context_pending(self.producer.record),[])
+        self.assertFalse(self.provider.producers[self.dialogue]['closed'])
+        await self.producer.close()
+
+    async def test_complete_escaped_delta_over_native_typed_bound_remains_retained_without_advancing(self):
+        self.prepare()
+        self.event('"'*12000)
+        await self.producer.open()
+        with self.assertRaisesRegex(ValueError,'bounded source read'):
+            await self.producer._sync(self.producer.record)
+        self.assertEqual(self.provider.fresh,[])
+        retained=self.visits.read(self.dialogue,100,self.frozen)
+        self.assertNotIn('native_context_cursor',retained)
+        self.assertNotIn('native_context_batch',retained)
+        self.assertEqual(self.visits.source_page(self.dialogue,100,self.binding)['items'][0]['event']['delta'],'"'*12000)
+
     async def test_lost_native_receipt_keeps_source_cursor_and_reconciles_same_sources_after_restart(self):
         self.prepare();self.event();await self.producer.open();self.provider.lose_next=True
         with self.assertRaises(ProviderUnavailable):await self.producer._sync(self.producer.record)

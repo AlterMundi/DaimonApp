@@ -584,6 +584,14 @@ After window admission, recovery must retain a qualified window-aware pair or
 leave public creation unavailable, with originals and explicit alternate modes
 preserved. This source change is not receiving selection or physical acceptance.
 
+Public transcript context charges the complete typed source plus reserved native
+envelope against the existing16KiB native language limit. The12KiB individual
+provider-delta bound is separate: a valid delta near that bound must not fail
+merely because its exact speaker/timestamp/journal evidence adds metadata. The
+adapter keeps whole deltas and source ranges, with no clipping, new ASR or change
+to visit/context/storage limits. Complete typed evidence that cannot fit still
+refuses before cursor advancement.
+
 Same-turn canonical native progress/results are polled through bounded existing
 presentation pages and returned with the source/revision/append safeguards above.
 Worker returns use the original's existing native trace, including all covered

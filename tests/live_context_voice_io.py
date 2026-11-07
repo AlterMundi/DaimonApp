@@ -614,7 +614,11 @@ def qualify_public_context(binary):
         async def owner(function,*args):return await asyncio.to_thread(function,*args)
         async def scenario():
             previous=None
-            texts=['The key is orange.', 'Correction: the key is violet. The bell remains unresolved.']
+            # A complete provider fragment near12KiB still fits native typed
+            # language16KiB; evidence metadata must not close an otherwise valid visit.
+            large='The key is orange. '+('á'*5990)
+            assert 11900<len(large.encode())<=12000
+            texts=[large, 'Correction: the key is violet. The bell remains unresolved.']
             for cycle in range(3):
                 ident=str(uuid.uuid4());visits.prepare(ident,100,frozen,backend_mode='native')
                 context=PublicLiveSessionContext(history,visits,provider,100,ident,frozen,owner)
@@ -646,6 +650,7 @@ def qualify_public_context(binary):
         assert j.row('SELECT count(*) FROM conversation_inputs')==baseline
         assert j.row("SELECT count(*) FROM live_context WHERE json_extract(doc,'$.closed')=1")==[(3,)]
         assert len(j.read_texts)>=2 and not j.messages
+        assert any(('á'*5990) in text for text in j.read_texts),'Native reader must receive the complete large Unicode fragment'
         print('PASS three public visits through actual native source retention, incorporation and complete startup seeds; corrections retained, Cedar preserved, zero new human originals/ASR/work/provider calls; speech and Core reasoning simulated')
     finally:j.close()
 
