@@ -734,6 +734,19 @@ human input. Selected context does not authorize repeating source effects.
 An interaction profile may start with no enrolled targets; an empty inventory
 is not by itself a reason to create a session. One immutable creation intent
 reserves the original input before any topic RPC.
+When controller capability `create.after_dispatch="retained-source/v1"` is
+selected, an explicitly requested remaining distinct clause can create its one
+additional topic after another clause was dispatched. Preparation freezes the
+existing canonical source ID/hash. Enrollment reuses that exact source and adds
+only the confirmed creation topic; original targets, instructions, request IDs
+and source bytes stay unchanged. The receiving context identifies this additional
+scope and preserves existing work. Exact old dispatch retries remain readable;
+arbitrary target widening, changed source/intent, duplicate title and uncertain
+creation replay remain refused. Inspect the original's `creation_status` after
+failure; `not_found` permits correcting a known pre-admission refusal through the
+same controller, never a raw topic/store write or a replacement human original.
+A receiving worker without `create` authority returns the exact supported recovery
+to the existing integrator; it does not borrow the integrator's private grant.
 With `telegram.enabled=false`, creation reserves a receiver-local destination in
 the same SQLite transaction as its receipt. It reserves configured target IDs,
 stored sessions and retained creation destinations, including targets that have
