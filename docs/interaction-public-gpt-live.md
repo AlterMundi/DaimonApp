@@ -129,8 +129,10 @@ are complete. Unconfigured function/client work is never fabricated or executed.
 finalization stays unconfirmed. Disconnect cleanup detaches control, releases the
 media lease and retains outcomes; it never sends close as a cancellation shortcut.
 Do not delete records, change UUIDs or replay commands to clear uncertainty.
-Owner-led reconciliation of interrupted public calls remains unfinished and
-blocks another billed visit.
+An unresolved prior call blocks automatic billed admission. A known-created
+native visit with ended capture can use the explicit source-bound replacement
+review described below; this retires its transport without confirming its bill.
+Unknown creation outcomes and incomplete replacement commits remain held.
 
 An unexpected exception from the owned native preparation task follows the same
 graceful-close path as a held preparation. Retain its original and uncertain
@@ -139,6 +141,23 @@ wait for trusted `session.closed`. Log only the exception class. A failed task
 must not abruptly detach the sideband and turn a recoverable failure into lost
 finalization evidence. Cancellation and independent accepted native work remain
 separate; this does not reconcile an older already-detached visit.
+
+### Documented observation limits after disconnect
+
+Checked7November2026 against the official [Live Sessions reference](https://developers.openai.com/api/reference/python/resources/live/subresources/sessions)
+and [session lifecycle guide](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close).
+The reference documents recording download and accept/fork/hangup/refer/reject
+actions; it does not document a generic session-state or final-usage GET.
+Recording availability or duration does not replace cumulative billed usage.
+Do not invent an endpoint or repeat attach/close/create to clear a lost receipt.
+A sideband receives future events; no replay of finalization is promised.
+
+Keep latest usage provisional until a trusted `session.closed` confirms its final
+value. Missing final usage is unconfirmed, not zero. The native replacement offer
+is a read-only review of the retained owner, capture and source revision, not
+settlement or a new admission. Only the later explicit reviewed reconnect can
+admit its destination. Preserve the old record and original effects, and keep
+provider billing uncertainty separate from source/native continuity acceptance.
 
 ## Optional current-conversation context
 
