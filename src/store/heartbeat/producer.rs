@@ -505,6 +505,89 @@ pub(super) fn resume_on(
     Ok(())
 }
 
+pub(super) fn renew_window_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    expected_expiry: i64,
+    expiry: i64,
+) -> Result<Option<Value>> {
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let mut p = load(conn, human, session)?.context("Heartbeat producer not configured")?;
+    anyhow::ensure!(
+        p.contract.expires_at_unix_ms == expected_expiry,
+        "Producer window changed; inspect status before renewal"
+    );
+    anyhow::ensure!(
+        bound(conn, &p)? && purpose_on(conn, &p).is_ok(),
+        "Heartbeat source binding changed"
+    );
+    anyhow::ensure!(
+        p.stopped_reason.is_none()
+            && p.checks < p.contract.max_checks
+            && p.seen.len() < 256
+            && p.native_returns.len() < 16,
+        "Producer capacity exhausted; renewal cannot reset counters or evidence"
+    );
+    let mut retry = None;
+    for r in p
+        .native_returns
+        .iter()
+        .filter(|r| r.reported_revision.is_none() && r.phase != "retired_unsent")
+    {
+        anyhow::ensure!(
+            unsubmitted_on(conn, r)?,
+            "Pending native return is not proven unsent; renewal refused"
+        );
+        if r.automatic_retry_exhausted() {
+            anyhow::ensure!(
+                retry.is_none(),
+                "Multiple exhausted pending returns require selected recovery"
+            );
+            let attempt = r
+                .attempts
+                .checked_add(1)
+                .context("Native attempt counter exhausted")?;
+            retry = Some(json!({"source":r.id,"attempt":attempt}));
+        }
+    }
+    // Preserve every cursor, pending identity, retry count and next-check time.
+    // Explicit resume separately reconciles only proven-unsent generations.
+    p.contract.expires_at_unix_ms = expiry;
+    save(conn, &p)?;
+    Ok(retry)
+}
+
+/// One extra admission of a proven-unsent original, explicitly selected by the
+/// owner renewal. The lifetime attempt counter advances; no automatic reset.
+pub(in crate::store) fn owner_window_retry_on(
+    conn: &Connection,
+    r: &WorkflowReturn,
+) -> Result<bool> {
+    let Some((p, _)) = load_return(conn, &r.id)? else {
+        return Ok(false);
+    };
+    if !unsubmitted_on(conn, r)? {
+        return Ok(false);
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!(
+                "heartbeat_window_renewal:{}:{}",
+                p.human, p.session
+            )],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else { return Ok(false) };
+    let receipt: Value = serde_json::from_str(&raw)?;
+    Ok(receipt["retry"]["source"] == r.id
+        && r.attempts
+            .checked_add(1)
+            .is_some_and(|attempt| receipt["retry"]["attempt"] == attempt))
+}
+
 fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
     let Some(p) = load(conn, c.human, c.session)? else {
         return Ok(None);
@@ -903,6 +986,135 @@ mod inbox_tests {
             .unwrap();
         (f, s, e, source)
     }
+    #[test]
+    fn owner_window_renewal_preserves_pending_source_and_all_counters() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let original = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+            )
+            .unwrap()
+            .unwrap();
+        let status = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = status["generation"].as_u64().unwrap();
+        let expired = Utc::now().timestamp_millis() - 1000;
+        let renewed = Utc::now().timestamp_millis() + 3_600_000;
+        let before = {
+            let mut conn = s.conn.lock().unwrap();
+            let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+            let tx = conn.transaction().unwrap();
+            resources::reserve_on(&tx, session, 100).unwrap();
+            let mut p = load(&tx, 100, session).unwrap().unwrap();
+            p.contract.expires_at_unix_ms = expired;
+            p.native_returns[0].phase = "retained_unsent".into();
+            p.native_returns[0].attempts = 3;
+            p.native_returns[0].retry_after = None;
+            save(&tx, &p).unwrap();
+            tx.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_resources:100:{session}"),expired]).unwrap();
+            tx.commit().unwrap();
+            serde_json::to_value(p).unwrap()
+        };
+        assert!(
+            s.heartbeat_renew_window(100, e, generation + 1, expired, renewed)
+                .is_err()
+        );
+        s.heartbeat_renew_window(100, e, generation, expired, renewed)
+            .unwrap();
+        // An exact lost-ACK observation cannot renew a second time or refill.
+        s.heartbeat_renew_window(100, e, generation, expired, renewed)
+            .unwrap();
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(after["admission_paused"], true);
+        assert_eq!(after["generation"], generation);
+        assert_eq!(after["resources"]["reserved_provider_attempts"], 3);
+        assert_eq!(after["producer"]["checks"], 1);
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+        let mut expected = before;
+        expected["contract"]["expires_at_unix_ms"] = json!(renewed);
+        let actual = serde_json::to_value(load(&conn, 100, session).unwrap().unwrap()).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual["native_returns"][0]["id"], original.id);
+        drop(conn);
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        let retry = s.heartbeat_returns_recover_unsent(100, e).unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].id, original.id);
+        assert_eq!(retry[0].attempts, 4);
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, e)
+                .unwrap()
+                .is_empty()
+        );
+        s.workflow_native_outcome_attempt(&original.id, 4, "retained_unsent", None)
+            .unwrap();
+        // A failed fourth admission cannot consume the same owner permit again.
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, e)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn owner_window_renewal_rolls_back_when_producer_is_exhausted_or_uncertain() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        s.heartbeat_finish_check(
+            &c,
+            Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+        )
+        .unwrap()
+        .unwrap();
+        let status = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = status["generation"].as_u64().unwrap();
+        let expired = Utc::now().timestamp_millis() - 1000;
+        let renewed = Utc::now().timestamp_millis() + 3_600_000;
+        let session = {
+            let conn = s.conn.lock().unwrap();
+            let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.contract.expires_at_unix_ms = expired;
+            p.native_returns[0].phase = "uncertain".into();
+            save(&conn, &p).unwrap();
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_resources:100:{session}"),expired]).unwrap();
+            session
+        };
+        let before = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert!(
+            s.heartbeat_renew_window(100, e, generation, expired, renewed)
+                .is_err()
+        );
+        assert_eq!(s.heartbeat_control(100, e, H::Status).unwrap(), before);
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.native_returns[0].phase = "retained_unsent".into();
+            p.checks = p.contract.max_checks;
+            save(&conn, &p).unwrap();
+        }
+        assert!(
+            s.heartbeat_renew_window(100, e, generation, expired, renewed)
+                .is_err()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, e, H::Status).unwrap()["resources"],
+            before["resources"]
+        );
+        // Renewal is deliberately absent from the model-accessible command enum.
+        assert!(
+            serde_json::from_value::<H>(json!({"action":"renew_window","generation":generation}))
+                .is_err()
+        );
+    }
+
     #[test]
     fn heartbeat_lane_pause_fences_a_late_sdk_page_without_affecting_other_lane_changes() {
         let (_f, s, e, source) = setup();

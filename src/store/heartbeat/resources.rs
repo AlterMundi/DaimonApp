@@ -35,6 +35,33 @@ fn save(conn: &Connection, session: i64, human: i64, account: &Account) -> Resul
         params![key(session,human),serde_json::to_string(account)?])?;
     Ok(())
 }
+/// Explicit owner renewal changes only the deadline of the existing account.
+/// Call inside the same transaction as producer renewal; old native allowances
+/// retain their original absolute deadlines and all reservations stay charged.
+pub(super) fn renew_window_on(
+    conn: &Connection,
+    session: i64,
+    human: i64,
+    expected_expiry: i64,
+    expiry: i64,
+) -> Result<()> {
+    let mut account = load(conn, session, human)?.context("Heartbeat resources not configured")?;
+    anyhow::ensure!(
+        account.contract.expires_at_unix_ms == expected_expiry,
+        "Resource window changed; inspect status before renewal"
+    );
+    anyhow::ensure!(
+        account
+            .contract
+            .max_provider_attempts
+            .checked_sub(account.reserved_provider_attempts)
+            .is_some_and(|remaining| remaining >= account.contract.provider_attempts_per_execution),
+        "Heartbeat allocation exhausted; renewal cannot refill it"
+    );
+    account.contract.expires_at_unix_ms = expiry;
+    validate(&account.contract, chrono::Utc::now().timestamp_millis())?;
+    save(conn, session, human, &account)
+}
 fn validate(contract: &HeartbeatResources, now: i64) -> Result<()> {
     uuid::Uuid::parse_str(&contract.contract_id).context("Heartbeat contract requires a UUID")?;
     anyhow::ensure!(
