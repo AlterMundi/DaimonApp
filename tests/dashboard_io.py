@@ -193,6 +193,13 @@ class DashboardHTTP(unittest.TestCase):
         self.assertEqual(retained[-1][0]['transcription_profile'],'previous')
         self.assertEqual(self.client.post('/api/interaction/voice',content=b'original',headers=headers).status_code,200)
         self.assertNotIn('transcription_profile',retained[-1][0])
+        for selected in ('openai-live','previous-live'):
+            path='/api/interaction/voice/'+selected
+            self.assertTrue(permitted('POST',path));self.assertFalse(permitted('POST',path,'monitor_readonly'))
+            self.provider.receiver['voice']['transcription_profiles'][selected]={}
+            self.assertEqual(self.client.post(path,content=b'original',headers=headers).status_code,200)
+            self.assertEqual(retained[-1][0]['transcription_profile'],selected)
+
 
     def test_voice_playback_context_is_bounded_advisory_metadata(self):
         csrf=self.login();retained=[]

@@ -35,8 +35,8 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
-      if(old.schema==='telecodex.voice-recovery/v5'){
-        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous'].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
+      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6'].includes(old.schema)){
+        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous',...(old.schema.endsWith('/v6')?['openai-live','previous-live']:[])].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
         return [...old.items];
       }
       if(['telecodex.voice-recovery/v3','telecodex.voice-recovery/v4'].includes(old.schema)){
@@ -59,6 +59,7 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete(key);
+      else if(items.some(v=>['openai-live','previous-live'].includes(v.transcriptionProfile)))store.put({schema:'telecodex.voice-recovery/v6',items},key);
       else if(items.some(v=>v.transcriptionProfile!==undefined))store.put({schema:'telecodex.voice-recovery/v5',items},key);
       else if(items.some(v=>v.native_fragment===true))store.put({schema:'telecodex.voice-recovery/v4',items},key);
       else store.put(items.length===1?items[0]:{schema:items.length>2?'telecodex.voice-recovery/v3':'telecodex.voice-recovery/v2',items},key);
@@ -299,7 +300,7 @@ window.VoiceInput = (() => {
       try {
         if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
-        if(frozen.transcriptionProfile!==undefined&&!['openai','previous'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
+        if(frozen.transcriptionProfile!==undefined&&!['openai','previous','openai-live','previous-live'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
         const route=frozen.transcriptionProfile?'api/interaction/voice/'+frozen.transcriptionProfile:'api/interaction/voice';
         const response=frozen.foreground_dialogue?await fetch('api/interaction/voice/recover',{
           method:'POST',credentials:'same-origin',signal:active.signal,
@@ -377,7 +378,7 @@ window.VoiceInput = (() => {
         stream=media;
         let current,previewUnavailable=false;
         const fallbackMime=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4','audio/webm'].find(value=>window.MediaRecorder.isTypeSupported(value));
-        const openaiPreview=frozenSelection.transcriptionProfile==='openai',selectedLiveMode=openaiPreview?'captions':liveMode;
+        const liveOnly=['openai-live','previous-live'].includes(frozenSelection.transcriptionProfile),openaiPreview=['openai','openai-live'].includes(frozenSelection.transcriptionProfile),selectedLiveMode=liveOnly?'prepared':openaiPreview?'captions':liveMode;
         const canonical=selectedLiveMode==='captions'&&fallbackMime?new window.MediaRecorder(media,{mimeType:fallbackMime,audioBitsPerSecond:64000}):undefined;
         if((selectedLiveMode!=='captions'||canonical)&&(openaiPreview?openaiLiveAvailable:liveAvailable)&&window.StreamingVoice?.supported()){
           let words=false;

@@ -124,7 +124,7 @@ window.StreamingVoice=(()=>{
     };
   }
   async function create(media,{headers,binding,id,onPartial=()=>{},onUnavailable=()=>{},canonicalRecorder,transcriptionProvider='current',turnDetection=false,onEndpoint=()=>{},onDetectionUnavailable=()=>{},captureSource,initialPCM=()=>[],onFlushed=()=>{}}){
-    if(!['current','openai'].includes(transcriptionProvider)||transcriptionProvider==='openai'&&(!canonicalRecorder||captureSource||turnDetection))throw Error('OpenAI captions require a separate original recorder');
+    if(!['current','openai'].includes(transcriptionProvider)||transcriptionProvider==='openai'&&(captureSource||turnDetection))throw Error('OpenAI live transcription requires one manual capture');
     if(captureSource&&canonicalRecorder)throw Error('Shared PCM cannot split a compressed original');
     const shared=!!captureSource,capture=captureSource||await openCapture(media);
     let socket,unsubscribe;
@@ -164,7 +164,7 @@ window.StreamingVoice=(()=>{
       if(done)return;
       try{
         const values=headers(),authorization=values.Authorization||values.authorization;
-        socket.send(JSON.stringify({id,binding,...(canonicalRecorder?{mode:'captions'}:{}),...(turnDetection?{turn_detection:true}:{}),csrf:values['X-Dashboard-CSRF']||values['x-dashboard-csrf'],...(authorization?{authorization}:{})}));
+        socket.send(JSON.stringify({id,binding,...(canonicalRecorder?{mode:'captions'}:transcriptionProvider==='openai'?{mode:'prepared'}:{}),...(turnDetection?{turn_detection:true}:{}),csrf:values['X-Dashboard-CSRF']||values['x-dashboard-csrf'],...(authorization?{authorization}:{})}));
       }catch{ready=false;socket.close();}
     };
     function considerEndpoint(){

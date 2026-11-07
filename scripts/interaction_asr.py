@@ -29,6 +29,8 @@ MAX_JOB = 32 * 1024 * 1024
 DEFAULT_BUDGET = 128 * 1024 * 1024
 PREPARED_BUDGET = 64 * 1024 * 1024
 PREPARED_RECORD = 65536
+LIVE_MODELS = ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live',
+               'gemini-3.8-live', 'gpt-live-transcribe')
 
 
 def digest(data):
@@ -66,18 +68,25 @@ def probe_duration(source):
 def config(binding):
     value = json.loads(private_bytes(binding, 16384))
     if (not isinstance(value, dict)
-            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root', 'provider', 'key_file', 'model'}
+            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root', 'provider', 'key_file', 'model', 'models'}
             or value.get('schema') != 'telecodex.interaction-asr/v1'
             or any(not isinstance(value.get(k), str) or not Path(value[k]).is_absolute()
-                   for k in (('key_file', 'cache_root') if value.get('provider') == 'openai' else ('helper', 'route_binding', 'cache_root')))
+                   for k in (('cache_root','streaming_cache_root') if value.get('provider')=='live-result' else ('key_file', 'cache_root') if value.get('provider') == 'openai' else ('helper', 'route_binding', 'cache_root')))
             or type(value.get('max_cache_bytes', DEFAULT_BUDGET)) is not int
             or not MAX_JOB <= value.get('max_cache_bytes', DEFAULT_BUDGET) <= 1024**3):
         raise RenderError('invalid-interaction-asr-binding')
-    if value.get('provider') is not None:
+    if value.get('provider')=='live-result':
+        models=value.get('models')
+        if (not isinstance(models,list) or not 1<=len(models)<=4
+                or any(model not in LIVE_MODELS for model in models)
+                or len(set(models))!=len(models)
+                or any(k in value for k in ('helper','route_binding','key_file','model'))):
+            raise RenderError('live-result-reader-cannot-run-another-recognizer')
+    elif value.get('provider') is not None:
         if (value['provider'] != 'openai' or value.get('model') != 'gpt-transcribe'
-                or any(k in value for k in ('helper', 'route_binding', 'streaming_cache_root'))):
+                or any(k in value for k in ('helper', 'route_binding', 'streaming_cache_root','models'))):
             raise RenderError('invalid-explicit-openai-route-no-fallback')
-    elif any(k in value for k in ('key_file', 'model')):
+    elif any(k in value for k in ('key_file', 'model','models')):
         raise RenderError('invalid-explicit-openai-route-no-fallback')
     if 'streaming_cache_root' in value and (not isinstance(value['streaming_cache_root'],str) or not Path(value['streaming_cache_root']).is_absolute()):
         raise RenderError('invalid-streaming-cache-binding')
@@ -102,7 +111,7 @@ def streaming_result(cfg, source, source_hash):
     if (not isinstance(record,dict) or record.get('schema') != 'telecodex.streaming-transcript/v1'
             or record.get('capture_id') != ident or record.get('source_sha256') != source_hash
             or record.get('final') is not True
-            or record.get('model') not in ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live', 'gemini-3.8-live')
+            or record.get('model') not in cfg.get('models',LIVE_MODELS[:-1])
             or not re.fullmatch('[a-f0-9]{64}',str(record.get('binding','')))
             or not isinstance(record.get('text'),str) or not record['text'].strip()
             or len(record['text'].encode()) > 16000):
@@ -166,9 +175,16 @@ def final_result(state, preparation_deleted, include_retention):
     result = {'text': state['result']['text'], 'final': True}
     if state.get('preparation_kind') == 'streaming':
         model = state['result'].get('streaming_model')
-        if model not in ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live', 'gemini-3.8-live'):
+        if model not in LIVE_MODELS:
             raise RenderError('invalid-completed-streaming-transcript')
-        result['streaming_model'] = model
+        if model=='gpt-live-transcribe':
+            # The existing native reader rejects unknown streaming_model names.
+            # Its dedicated, pinned OpenAI-live profile records the configured
+            # model; the exact actual model remains in the verified receipt.
+            # Never mislabel this result as a supported Qwen/Gemini engine.
+            result['live_model']=model
+        else:
+            result['streaming_model'] = model
     if include_retention:
         result['preparation_audio_deleted'] = preparation_deleted
     return result
@@ -297,8 +313,38 @@ def process_openai(source, binding, cfg, include_retention, completed_only):
         return final_result(state, True, include_retention)
 
 
+def process_live_result(source, binding, cfg, include_retention):
+    """Read one completed live recognition; no key/helper/provider/fallback API.
+
+    Missing or uncertain completion stays held. A later exact receipt can be
+    adopted on a status/retry read without retranscribing any acoustic original.
+    """
+    binding_bytes=private_bytes(binding,16384)
+    source_hash=digest(private_bytes(source,MAX_SOURCE))
+    identity={'schema':'telecodex.interaction-asr-result/v1',
+              'source_sha256':source_hash,'route_sha256':digest(binding_bytes),
+              'helper_sha256':digest(Path(__file__).read_bytes())}
+    root=directory(cfg['cache_root']);job=directory(root/digest(canonical(identity)))
+    with lock(job/'.lock'):
+        state_path=job/'state.json'
+        if state_path.exists() or state_path.is_symlink():
+            state=verified_state(json.loads(private_bytes(state_path,2*1024*1024)),identity)
+        else:
+            prepared=streaming_result(cfg,source,source_hash)
+            if prepared is None:
+                raise RenderError('live-transcript-not-complete-no-second-asr')
+            if private_bytes(binding,16384)!=binding_bytes:
+                raise RenderError('live-transcript-binding-changed')
+            state={**identity,'phase':'completed','preparation_kind':'streaming',
+                   'result':prepared,'result_sha256':digest(canonical(prepared))}
+            reserve(root,job,state,cfg.get('max_cache_bytes',DEFAULT_BUDGET))
+        return final_result(state,True,include_retention)
+
+
 def process(source, binding, include_retention=False, completed_only=False):
     cfg = config(binding)
+    if cfg.get('provider')=='live-result':
+        return process_live_result(source,binding,cfg,include_retention)
     if cfg.get('provider') == 'openai':
         return process_openai(source, binding, cfg, include_retention, completed_only)
     source_hash = digest(private_bytes(source, MAX_SOURCE))

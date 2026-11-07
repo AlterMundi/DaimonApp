@@ -74,6 +74,40 @@ class Retention(unittest.TestCase):
             'model':'qwen-audio-3.0-realtime-plus','text':'Live final words','final':True}
         record=root/(self.source.name+'.json');record.write_text(json.dumps(value))
         return record,value
+    def live_only(self, model='gpt-live-transcribe'):
+        record,value=self.streaming_fixture();value['model']=model;record.write_text(json.dumps(value))
+        self.cfg={'schema':'telecodex.interaction-asr/v1','provider':'live-result',
+            'models':[model],'cache_root':str(self.root/'cache'),
+            'streaming_cache_root':str(record.parent)};self.write_config()
+        return record,value
+    def test_live_only_reuses_exact_words_and_never_calls_another_recognizer(self):
+        record,value=self.live_only();original=self.source.read_bytes()
+        with patch.object(asr,'openai_recognizer',side_effect=AssertionError('Second recognition forbidden')), \
+             patch.object(asr,'process_cached',side_effect=AssertionError('File fallback forbidden')):
+            result=asr.process(self.source,self.binding,include_retention=True)
+            self.assertEqual(result,{'text':value['text'],'final':True,'live_model':'gpt-live-transcribe','preparation_audio_deleted':True})
+            record.unlink()
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],value['text'])
+        self.assertEqual(self.source.read_bytes(),original);self.assertEqual(self.calls(),0)
+    def test_live_only_missing_or_late_result_cannot_trigger_file_asr(self):
+        record,value=self.live_only();record.unlink()
+        with patch.object(asr,'openai_recognizer',side_effect=AssertionError('No second model')):
+            for completed in (False,True):
+                with self.assertRaisesRegex(asr.RenderError,'no-second-asr'):
+                    asr.process(self.source,self.binding,completed_only=completed)
+            record.write_text(json.dumps(value))
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],value['text'])
+        self.assertEqual(self.calls(),0)
+    def test_live_only_qwen_and_gemini_keep_their_actual_live_model(self):
+        record,value=self.live_only('gemini-3.5-transcribe-live')
+        result=asr.process(self.source,self.binding)
+        self.assertEqual(result['streaming_model'],'gemini-3.5-transcribe-live');self.assertEqual(self.calls(),0)
+    def test_live_only_rejects_wrong_model_and_fallback_configuration(self):
+        record,value=self.live_only();value['model']='qwen-audio-3.0-realtime-plus';record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'invalid-completed-streaming-transcript'):self.run_asr()
+        self.cfg['key_file']=str(self.root/'forbidden-key');self.write_config()
+        with self.assertRaisesRegex(asr.RenderError,'cannot-run-another-recognizer'):self.run_asr()
+        self.assertEqual(self.calls(),0)
     def test_exact_completed_stream_skips_file_provider_and_retains_recovery(self):
         record,_=self.streaming_fixture()
         result=asr.process(self.source,self.binding,include_retention=True)

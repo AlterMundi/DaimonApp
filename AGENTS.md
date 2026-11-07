@@ -405,13 +405,16 @@ Same-actor device/Alerts/menu/Traffic requalification remains required when the
 native receiving profile changes. Native work/provider identity is unchanged.
 
 
-OpenAI Conversation live captions use a separately configured captions-only
-`gpt-live-transcribe` route. Keep the original compressed recorder and named final
-file-ASR profile unchanged. Caption text is provisional, not canonical/work input;
-reuse the existing authenticated WebSocket and maintenance fence, preserve audio
-on preview failure, and never fall back to another provider or replay the stream.
-Caption and final-file usage are separate. See docs/interaction-speech.md.
-
+Live microphone transcription is the sole recognition for that capture. New
+OpenAI and previous-provider captures freeze `openai-live` / `previous-live`;
+these named profiles only read the same live session's completed receipt. They
+have no recognizer, credential or file fallback. Missing completion keeps the
+original held; do not verify/correct it with another ASR. File-only Telegram and
+historical originals retain their original profiles and outcomes. Recovery v6
+freezes live-only selection; older readers must refuse it. Qualify exact native
+receipt ingestion and Home/device admission. Public Avatar's independently
+imported live-window path requires its own source-bound live integration; do not
+claim that updating ordinary recordings completes that path.
 
 New voice routes must be qualified through the actual shared Home/device access
 path, not only an administrative test cookie. Home and enrolled devices share

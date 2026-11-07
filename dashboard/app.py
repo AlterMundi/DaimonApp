@@ -185,7 +185,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if request.headers.get('origin') not in allowed:
                 return JSONResponse({'detail': 'Wrong request origin'}, status_code=403)
             # Bound chunked bodies as well as Content-Length before parsing them.
-            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
+            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/openai-live','/api/interaction/voice/openai-live/limited','/api/interaction/voice/previous-live','/api/interaction/voice/previous-live/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
                 try:
                     selected = await authorize_async(request)
                     if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), selected['csrf']):
@@ -636,6 +636,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'voice_services_default':services_default,
                 'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
+                'can_openai_live_result':bool(can_openai_stream_transcribe and config.get('streaming_transcription_openai',{}).get('mode')=='prepared' and 'openai-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
+                'can_previous_live_result':bool(can_stream_transcribe and config.get('streaming_transcription',{}).get('mode','prepared')=='prepared' and 'previous-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'can_stream_speech':bool(default_speech and default_speech.streaming),
                 'can_speak_live_response':bool(default_speech and default_speech.live_response),
                 'previous_can_stream_speech':bool(speech and speech.streaming),
@@ -881,6 +883,10 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     @app.post('/api/interaction/voice/openai/limited')
     @app.post('/api/interaction/voice/previous')
     @app.post('/api/interaction/voice/previous/limited')
+    @app.post('/api/interaction/voice/openai-live')
+    @app.post('/api/interaction/voice/openai-live/limited')
+    @app.post('/api/interaction/voice/previous-live')
+    @app.post('/api/interaction/voice/previous-live/limited')
     async def conversation_voice(request: Request):
         session = await authorize_async(request)
         if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), session['csrf']):
@@ -888,10 +894,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         metadata = {key:request.headers.get(header, '') for key, header in
                     (('binding', 'x-input-binding'), ('id', 'x-input-id'),
                      ('audio_sha256', 'x-audio-sha256'), ('mime', 'content-type'))}
-        profile = 'openai' if '/voice/openai' in request.url.path else 'previous' if '/voice/previous' in request.url.path else None
+        selected_profile=request.url.path.split('/voice/',1)[-1].split('/')[0]
+        profile=selected_profile if selected_profile in ('openai','previous','openai-live','previous-live') else None
         if profile:
             if profile not in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}):
-                raise HTTPException(409,'OpenAI transcription is unavailable; no fallback')
+                raise HTTPException(409,'Selected transcription is unavailable; no fallback')
             metadata['transcription_profile']=profile
         capture_stop = request.headers.get('x-recording-stop')
         if request.url.path.endswith('/limited') and capture_stop not in ('duration_limit','audio_flush_unconfirmed'):
