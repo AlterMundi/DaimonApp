@@ -5,9 +5,26 @@
     if(value.error || value.attention_engine==='error' || value.producer?.state==='error' || value.resources?.state==='error')return 'error';
     if(value.admission_paused)return 'paused';
     if(['not_configured','not_implemented'].includes(value.attention_engine) || value.producer?.state==='not_configured' || value.resources?.state==='not_configured')return 'unconfigured';
+    if(value.producer?.state==='expired')return 'observation_expired';
+    if(['stopped','check_capacity','cursor_capacity','receipt_capacity','binding_retired','purpose_retired'].includes(value.producer?.state))return 'observation_stopped';
+    if(value.resources?.state==='expired')return 'inference_expired';
+    if(value.resources?.state==='exhausted')return 'inference_exhausted';
     // An open admission gate or running execution is not operational proof.
-    if(value.producer?.state==='unavailable' || value.resources?.state==='unavailable')return 'unavailable';
+    if((value.producer?.state && value.producer.state!=='configured') || (value.resources?.state && value.resources.state!=='available'))return 'unavailable';
     return value.operational===true?'operational':'unavailable';
+  }
+  function observation(value) {
+    function time(ms){if(!Number.isSafeInteger(ms) || ms<=0 || ms>8640000000000000)return null;return new Date(ms).toISOString();}
+    const producer=value?.producer,check=producer?.last_check;
+    if(!check || !['in_progress','succeeded','failed'].includes(check.outcome))return '';
+    const completed=time(check.completed_at_unix_ms),started=time(check.started_at_unix_ms);
+    if(check.outcome==='in_progress')return started?'Source check started '+started+'; completion not observed.':'';
+    if(!completed)return '';
+    const different=check.generation!==value.generation || typeof check.activation?.lane!=='string' || !Number.isSafeInteger(check.activation?.generation) || check.activation.generation!==value.lanes?.[check.activation.lane]?.generation;
+    let text='Last source check '+check.outcome+' at '+completed+(different?' (different or unconfirmed control generation).':'.');
+    const success=time(producer.last_success_at_unix_ms);
+    if(check.outcome==='failed')text+=' Last successful source check: '+(success || 'not observed')+'.';
+    return text;
   }
   function action(value,id) {
     const caps=value?.controls,global=Number.isSafeInteger(value?.generation)&&value.generation>=0;
@@ -21,14 +38,14 @@
     const button=root.querySelector('#heartbeat-toggle'),menu=root.querySelector('#heartbeat-menu');
     if(!button || !menu)return;
     const status=root.querySelector('#heartbeat-status'),generation=root.querySelector('#heartbeat-generation'),lanes=root.querySelector('#heartbeat-lanes');
-    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational'};
+    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational',observation_expired:'Observation window expired',observation_stopped:'Source observation stopped',inference_expired:'Inference window expired',inference_exhausted:'Inference allocation exhausted'};
     let last=-Infinity,pending=false,hold,held=false,epoch=0,expiry,writing=false,current=null,notice="";
     function render(value){
       current=value;clearTimeout(expiry);
       const selected=state(value);button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+labels[selected]);button.title='Heartbeat · '+labels[selected];
       if(selected==='operational')expiry=setTimeout(()=>render(null),15000);
       status.textContent='Heartbeat · '+labels[selected];
-      generation.textContent=(Number.isSafeInteger(value?.generation)?'Generation '+value.generation:'')+(notice?' · '+notice:'');
+      generation.textContent=[Number.isSafeInteger(value?.generation)?'Generation '+value.generation:'',notice,observation(value)].filter(Boolean).join(' · ');
       lanes.replaceChildren();
       for(const [id,name] of [['global','All heartbeat lanes'],['messaging','Messaging'],['issues','Issues'],['sensory','Sensory'],['tasks','Tasks'],['bitacora','Bitácora']]){
         const row=root.createElement('div'),control=root.createElement('button'),reason=root.createElement('span');
@@ -70,5 +87,5 @@
     function reset(){epoch++;notice="";render(null);menu.hidden=true;button.setAttribute('aria-expanded','false');}
     render(null);return {refresh,reset};
   }
-  window.InteractionHeartbeat={mount,state,action};
+  window.InteractionHeartbeat={mount,state,action,observation};
 })();
