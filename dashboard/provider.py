@@ -1033,8 +1033,10 @@ class Provider:
 
     def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
         import re
-        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop'}:
+        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile'}:
             raise ValueError('Select one original voice recording')
+        if metadata.get('transcription_profile') not in (None,'openai','previous'):
+            raise ValueError('Unknown transcription profile; no fallback')
         self.input_id(metadata['id'])
         if foreground_dialogue is not None:
             self.input_id(foreground_dialogue)

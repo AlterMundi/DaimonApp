@@ -65,6 +65,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     speech = Speech(config['speech']) if config.get('speech') else None
     if speech:
         speech.media_retention = MediaRetention(config['media_retention']) if config.get('media_retention') else None
+    openai_speech = Speech(config['speech_openai']) if config.get('speech_openai') else None
+    if openai_speech:
+        from scripts.speech_render import route
+        if not speech or route(openai_speech.binding)['provider'] != 'openai-realtime' or openai_speech.streaming or openai_speech.word_timestamps:
+            raise ValueError('Explicit OpenAI speech requires its own bounded Realtime route')
+        openai_speech.capacity = speech.capacity
+        openai_speech.media_retention = speech.media_retention
+    services_default = config.get('voice_services_default','current')
+    if services_default not in ('current','openai') or services_default=='openai' and openai_speech is None:
+        raise ValueError('Configured default voice services unavailable; no fallback')
+    default_speech = openai_speech if services_default=='openai' else speech
     origin = config['origin']
     prefix = config.get('prefix', '/sessions')
     additional_origins = config.get('additional_origins', [])
@@ -174,7 +185,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if request.headers.get('origin') not in allowed:
                 return JSONResponse({'detail': 'Wrong request origin'}, status_code=403)
             # Bound chunked bodies as well as Content-Length before parsing them.
-            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
+            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
                 try:
                     selected = await authorize_async(request)
                     if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), selected['csrf']):
@@ -620,9 +631,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return {**result, 'csrf':session['csrf'],
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),
                 'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
-                'can_listen':speech is not None,
-                'can_stream_speech':bool(speech and speech.streaming),
-                'can_speak_live_response':bool(speech and speech.live_response),
+                'can_listen':default_speech is not None,
+                'voice_services_default':services_default,
+                'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
+                'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
+                'can_stream_speech':bool(default_speech and default_speech.streaming),
+                'can_speak_live_response':bool(default_speech and default_speech.live_response),
+                'previous_can_stream_speech':bool(speech and speech.streaming),
+                'previous_can_speak_live_response':bool(speech and speech.live_response),
                 'can_download_files':can_files,'artifacts':files,
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
@@ -639,7 +655,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True
                     and dict(session).get('scope') != 'monitor_readonly'),
                 'streaming_transcription_mode':config.get('streaming_transcription',{}).get('mode','prepared'),
-                'can_stream_transcribe':can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
+                'previous_can_stream_transcribe':can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly',
+                'can_stream_transcribe':services_default!='openai' and can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
 
     @app.get('/api/interaction/inputs')
     async def conversation_inputs(request: Request, before: int = 0, direction: str = 'before'):
@@ -858,6 +875,10 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.post('/api/interaction/voice')
     @app.post('/api/interaction/voice/limited')
+    @app.post('/api/interaction/voice/openai')
+    @app.post('/api/interaction/voice/openai/limited')
+    @app.post('/api/interaction/voice/previous')
+    @app.post('/api/interaction/voice/previous/limited')
     async def conversation_voice(request: Request):
         session = await authorize_async(request)
         if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), session['csrf']):
@@ -865,8 +886,13 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         metadata = {key:request.headers.get(header, '') for key, header in
                     (('binding', 'x-input-binding'), ('id', 'x-input-id'),
                      ('audio_sha256', 'x-audio-sha256'), ('mime', 'content-type'))}
+        profile = 'openai' if '/voice/openai' in request.url.path else 'previous' if '/voice/previous' in request.url.path else None
+        if profile:
+            if profile not in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}):
+                raise HTTPException(409,'OpenAI transcription is unavailable; no fallback')
+            metadata['transcription_profile']=profile
         capture_stop = request.headers.get('x-recording-stop')
-        if request.url.path.endswith('/voice/limited') and capture_stop not in ('duration_limit','audio_flush_unconfirmed'):
+        if request.url.path.endswith('/limited') and capture_stop not in ('duration_limit','audio_flush_unconfirmed'):
             raise HTTPException(400, 'Limited recording stop reason required')
         if capture_stop is not None:
             if capture_stop not in ('duration_limit','audio_flush_unconfirmed'):raise HTTPException(400, 'Invalid recording stop reason')
@@ -1225,23 +1251,29 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise HTTPException(503, 'Speech output is not configured')
         try:
             body = await request.json()
-            if (not isinstance(body, dict) or set(body) not in ({'source','revision','offset'},{'source','revision','offset','stream'})
+            if (not isinstance(body, dict) or not {'source','revision','offset'}<=set(body) or set(body)-{'source','revision','offset','stream','speech_provider'}
                     or type(body.get('stream',False)) is not bool):
                 raise ValueError()
+            profile = body.get('speech_provider',services_default)
+            if profile not in ('current', 'openai'):
+                raise ValueError('Unknown speech profile; no fallback')
+            engine = openai_speech if profile == 'openai' else speech
+            if engine is None:
+                raise ValueError('Selected speech profile unavailable; no fallback')
             from starlette.concurrency import run_in_threadpool
             canonical = await run_in_threadpool(provider.presentation_part, body['source'], body['revision'], body['offset'])
-            if canonical.get('kind')=='integrator_live' and not speech.live_response:
+            if canonical.get('kind')=='integrator_live' and not engine.live_response:
                 raise ValueError('Live speech is not selected')
-            selected = speech_part(canonical) if speech.incremental else canonical
+            selected = speech_part(canonical) if engine.incremental else canonical
         except (ProviderUnavailable, OSError, ValueError, KeyError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
         await authorize_async(request)
         if body.get('stream'):
-            if not speech.streaming or selected.get('kind')=='native_question':
+            if not engine.streaming or selected.get('kind')=='native_question':
                 raise HTTPException(409,'Streaming speech unavailable; use the ordinary reader')
             async def audio_frames():
                 try:
-                    async with aclosing(speech.stream(selected)) as frames:
+                    async with aclosing(engine.stream(selected)) as frames:
                         async for frame in frames:
                             await authorize_async(request)
                             latest=await run_in_threadpool(provider.presentation_part,body['source'],body['revision'],body['offset'])
@@ -1254,14 +1286,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     yield json.dumps({'type':'error','message':'Speech stopped. Text remains available; no automatic retry.'})+'\n'
             return StreamingResponse(audio_frames(),media_type='application/x-ndjson',headers={
                 'Cache-Control':'no-store','X-Accel-Buffering':'no',
-                'X-Presentation-Source':body['source'],'X-Presentation-Revision':body['revision'],
+                'X-Speech-Provider':profile or 'default','X-Presentation-Source':body['source'],'X-Presentation-Revision':body['revision'],
                 'X-Presentation-Offset':str(body['offset']),
                 'X-Presentation-Next-Offset':str(selected['next_offset']) if selected['next_offset'] is not None else '',
                 'X-Presentation-End-Offset':str(body['offset']+len(selected['text'])),
                 'X-Presentation-Text-Sha256':hashlib.sha256(selected['text'].encode()).hexdigest(),
                 'X-Presentation-Prefetch':'true','X-Audio-Encoding':'mp3','X-Playback-Observation':'not_observed'})
         try:
-            data, rendered = await speech.render(selected)
+            data, rendered = await engine.render(selected)
             # Retained text, bindings and correction state are rechecked after synthesis.
             latest = await run_in_threadpool(provider.presentation_part, body['source'], body['revision'], body['offset'])
             if latest != canonical:
@@ -1272,13 +1304,13 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise HTTPException(409, 'Speech outcome retained; refresh before continuing') from None
         await authorize_async(request)
         return Response(data, media_type='audio/wav', headers={
-            'X-Presentation-Source':body['source'], 'X-Presentation-Revision':body['revision'],
+            'X-Speech-Provider':profile or 'default','X-Presentation-Source':body['source'], 'X-Presentation-Revision':body['revision'],
             'X-Presentation-Offset':str(body['offset']),
             'X-Presentation-Next-Offset':str(selected['next_offset']) if selected['next_offset'] is not None else '',
             'X-Audio-Sha256':rendered['audio_sha256'], 'X-Playback-Observation':'not_observed',
-            'X-Presentation-End-Offset':str(body['offset']+len(selected['text'])) if speech.incremental and selected.get('kind')!='native_question' else '',
-            'X-Presentation-Text-Sha256':hashlib.sha256(selected['text'].encode()).hexdigest() if speech.incremental and selected.get('kind')!='native_question' else '',
-            'X-Presentation-Prefetch':'true' if speech.incremental and selected.get('kind')!='native_question' else 'false'})
+            'X-Presentation-End-Offset':str(body['offset']+len(selected['text'])) if engine.incremental and selected.get('kind')!='native_question' else '',
+            'X-Presentation-Text-Sha256':hashlib.sha256(selected['text'].encode()).hexdigest() if engine.incremental and selected.get('kind')!='native_question' else '',
+            'X-Presentation-Prefetch':'true' if engine.incremental and selected.get('kind')!='native_question' else 'false'})
 
     @app.post('/api/alerts/attention')
     async def launcher_attention(request: Request):

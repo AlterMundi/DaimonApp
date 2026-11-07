@@ -2,6 +2,7 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
@@ -17,14 +18,66 @@ pub struct VoiceConfig {
     /// Read an already completed, source-bound transcript. Must never initiate ASR.
     #[serde(default)]
     pub completed_transcription_command: Option<Vec<String>>,
+    /// Explicit per-original alternatives; omission keeps the existing route.
+    #[serde(default)]
+    pub transcription_profiles: BTreeMap<String, TranscriptionProfile>,
+    #[serde(default)]
+    pub default_transcription_profile: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptionProfile {
+    pub transcription_command: Vec<String>,
+    pub transcriber_label: String,
+    #[serde(default)]
+    pub completed_transcription_command: Option<Vec<String>>,
 }
 fn default_timeout() -> u64 {
     60
 }
 impl VoiceConfig {
+    pub fn select_profile(&self, profile: Option<&str>) -> Result<Self> {
+        let Some(name) = profile else {
+            return Ok(self.clone());
+        };
+        let selected = self
+            .transcription_profiles
+            .get(name)
+            .context("Selected transcription profile is unavailable; no fallback")?;
+        let mut config = self.clone();
+        config.transcription_command = selected.transcription_command.clone();
+        config.transcriber_label = selected.transcriber_label.clone();
+        config.completed_transcription_command = selected.completed_transcription_command.clone();
+        config.transcription_profiles.clear();
+        config.default_transcription_profile = None;
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if self
+            .default_transcription_profile
+            .as_ref()
+            .is_some_and(|name| !self.transcription_profiles.contains_key(name))
+        {
+            bail!("Default transcription profile is unavailable; no fallback");
+        }
+        if self.transcription_profiles.len() > 4 {
+            bail!("Bounded transcription profile selection required");
+        }
+        for name in self.transcription_profiles.keys() {
+            if name.is_empty()
+                || name.len() > 32
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            {
+                bail!("Invalid transcription profile identity");
+            }
+            self.select_profile(Some(name))?;
+        }
         if self.transcription_command.is_empty()
             || self.transcription_command.len() > 32
             || self
@@ -133,7 +186,8 @@ pub async fn transcribe(
     path: &Path,
     file_id: &str,
 ) -> Result<(String, TranscriptSource)> {
-    transcribe_committed(config, path, Some(file_id), None, None).await
+    let selected = config.select_profile(config.default_transcription_profile.as_deref())?;
+    transcribe_committed(&selected, path, Some(file_id), None, None).await
 }
 
 pub async fn transcribe_committed(
@@ -534,5 +588,38 @@ mod public_interpretation_tests {
         std::fs::write(&path, &data).unwrap();
         let changed = format!("{:x}", Sha256::digest(&data));
         assert!(public_interpretation_source(&path, "capture", &changed, 200, 30).is_err());
+    }
+    #[test]
+    fn explicit_transcription_profile_preserves_default_and_refuses_fallback() {
+        let mut config: VoiceConfig = serde_json::from_value(serde_json::json!({
+            "transcription_command":["legacy"],"transcriber_label":"existing",
+            "transcription_profiles":{"openai":{
+                "transcription_command":["openai-final"],"transcriber_label":"OpenAI gpt-transcribe",
+                "completed_transcription_command":["openai-read-only"]}}
+        })).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.select_profile(None).unwrap().transcription_command,
+            ["legacy"]
+        );
+        let selected = config.select_profile(Some("openai")).unwrap();
+        assert_eq!(selected.transcription_command, ["openai-final"]);
+        assert_eq!(
+            selected.completed_transcription_command.unwrap(),
+            ["openai-read-only"]
+        );
+        assert!(config.select_profile(Some("missing")).is_err());
+        assert_eq!(config.transcription_command, ["legacy"]);
+        config.default_transcription_profile = Some("openai".into());
+        config.validate().unwrap();
+        assert_eq!(
+            config
+                .select_profile(config.default_transcription_profile.as_deref())
+                .unwrap()
+                .transcription_command,
+            ["openai-final"]
+        );
+        config.default_transcription_profile = Some("missing".into());
+        assert!(config.validate().is_err());
     }
 }

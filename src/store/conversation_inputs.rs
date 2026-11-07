@@ -121,6 +121,10 @@ pub struct ConversationInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationVoice {
+    /// Frozen for this original, including recovery. Older strict readers must
+    /// not be selected after a profiled capture has been admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription_profile: Option<String>,
     /// Server-selected archive protection; a transcript alone cannot retire it.
     /// Omission preserves ordinary ephemeral media behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,7 +139,13 @@ pub struct ConversationVoice {
 }
 impl ConversationVoice {
     pub fn validate(&self) -> Result<()> {
-        if self
+        if self.transcription_profile.as_ref().is_some_and(|v| {
+            v.is_empty()
+                || v.len() > 32
+                || !v
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        }) || self
             .capture_stop
             .as_deref()
             .is_some_and(|v| !matches!(v, "duration_limit" | "audio_flush_unconfirmed"))
@@ -1019,6 +1029,7 @@ impl Store {
                             || a.audio_sha256 != b.audio_sha256
                             || a.mime != b.mime
                             || a.capture_stop != b.capture_stop
+                            || a.transcription_profile != b.transcription_profile
                     }
                     _ => true,
                 }
@@ -2347,6 +2358,7 @@ mod tests {
         let id = Uuid::now_v7().to_string();
         let dialogue = Uuid::now_v7().to_string();
         let voice = ConversationVoice {
+            transcription_profile: None,
             preserve_original: None,
             audio_sha256: "a".repeat(64),
             mime: "audio/wav".into(),
@@ -2696,6 +2708,7 @@ mod tests {
 
     fn clip() -> ConversationVoice {
         ConversationVoice {
+            transcription_profile: None,
             preserve_original: None,
             audio_sha256: "a".repeat(64),
             mime: "audio/wav".into(),
@@ -2925,6 +2938,28 @@ mod tests {
                         ..hint
                     })
                 )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn voice_transcription_profile_is_part_of_the_immutable_original() {
+        let (_file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let mut voice = clip();
+        voice.transcription_profile = Some("openai".into());
+        let (original, fresh) = store
+            .conversation_voice_capture(100, key, &binding, &id, voice.clone(), true)
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(
+            original.voice.unwrap().transcription_profile.as_deref(),
+            Some("openai")
+        );
+        voice.transcription_profile = None;
+        assert!(
+            store
+                .conversation_voice_capture(100, key, &binding, &id, voice, true)
                 .is_err()
         );
     }

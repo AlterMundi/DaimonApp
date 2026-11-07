@@ -1,7 +1,7 @@
 # Speech rendering component
 
 `scripts/speech_render.py` renders exact selected text to a private WAV using an
-owner-configured NVIDIA Magpie or Qwen TTS endpoint. This is a provider component for #118
+owner-configured NVIDIA Magpie, Qwen TTS or OpenAI Realtime endpoint. This is a provider component for #118
 and AlterMundi/daimon-matrix#313. The receiving presentation API below connects it
 to canonical results; device buttons and client playback remain separate work.
 The helper itself does not authenticate a human or authorize access to a conversation. Do not expose this CLI as a public
@@ -409,3 +409,85 @@ Install the maintained scripts/requirements-speech.lock alongside the renderer;
 the dashboard lock includes it. No runtime CDN or extra model performs rendering.
 Tests cover unsafe markup/URL rejection, no image fetch, source preservation,
 batch/streaming provider payloads and immutable digests/cache behavior.
+
+
+## Explicit OpenAI-only comparison profile
+
+The optional `[speech_openai]` dashboard section uses the same `Speech` adapter,
+canonical part checks, media retention and two-slot synthesis semaphore as the
+ordinary `[speech]` route. Its private `binding` must select
+`provider: "openai-realtime"`, model `gpt-realtime-2.1-mini` or
+`gpt-realtime-2.1`, and an allowed Realtime voice (for example `cedar`). Use the
+existing approved `credential_file`, `language: "es-AR"`, bounded timeout and
+cache quotas; the same cache root shares accounting with the ordinary route.
+`instruction` can specify Argentine/Río de la Plata pronunciation. This profile
+returns a complete 24kHz mono PCM WAV; `streaming_output` and `word_timestamps`
+remain false. It does not claim certified alignment or physical hearing.
+
+The renderer opens one Realtime socket, verifies `session.updated`, and creates
+one out-of-band audio response with no tools, microphone input or conversation
+mutation. The existing render intent records response ID, completion, usage,
+first-PCM latency and generation/audio duration. Uncertain results never fall
+back to another vendor or automatically repeat the provider call. Cached reads
+are distinguishable from a new generation. Realtime instructions request exact
+reading; actual wording/pronunciation still needs hearing acceptance.
+
+The authenticated audio API accepts `speech_provider: "openai"` alongside the
+canonical source/revision/offset. Missing or unsupported profiles refuse. A
+client requires the matching `X-Speech-Provider` receipt. Under the hood exposes
+an explicit Conversation services choice only where both the speech route and
+native `voice.transcription_profiles.openai` are configured. The default remains
+the existing service. Selecting OpenAI also selects the existing GPT-Live +
+CompAII Avatar mode when available; native Codex retains identity, memory and
+work. This creates no peer API enrollment or provider/default switch.
+
+Each ordinary recording freezes its transcription profile before microphone
+permission. OpenAI recordings bypass legacy live previews and use the explicit
+`/api/interaction/voice/openai` (or `/limited`) route for final interpretation.
+Native `[voice.transcription_profiles.openai]` chooses a named command and
+completed-only reader; the immutable original retains that name through
+recovery. Its `interaction_asr.py` binding selects `provider: "openai"`,
+`model: "gpt-transcribe"`, the approved absolute `key_file` and private
+`cache_root`. Do not add a legacy helper, route or streaming cache to this
+binding. It reuses Avatar's one-attempt OpenAI transcription/custody adapter,
+converts at most120seconds in memory, and retains text/outcome under the existing
+ASR quota. Original media, frozen destinations, replies and attachments stay on
+the ordinary native path. Completed-only reads never start ASR.
+
+Local recovery uses a v5 envelope for profiled recordings so older clients
+refuse it instead of resending through their default ASR route. Keep the new
+native reader/configuration when rolling back web assets: older strict native
+readers cannot parse profiled originals. Do not roll back or delete originals to
+clear that incompatibility.
+
+Comparison records separate cold/cached generation, first provider PCM, complete
+WAV delivery, browser playback and hearing. Realtime token usage is retained;
+provider captions are not word timestamps. Current official pricing is at
+<https://developers.openai.com/api/docs/pricing>; GPT-Live per-second sessions,
+file transcription and Realtime synthesis are separate charges. A configured
+route or fixture is not actual API access, organization credit attribution,
+latency, device or quality acceptance. Source qualification does not establish
+receiving deployment.
+
+
+An owner may explicitly set dashboard `voice_services_default = "openai"`.
+Then omitted audio API profile selects OpenAI, new clients initially select
+OpenAI Conversation and GPT-Live + CompAII Avatar, and explicit `current` keeps
+the previous speech route. Configure native `voice.default_transcription_profile
+= "openai"` for new Telegram recordings, plus named
+`previous` commands for the retained legacy route. New Conversation clients
+freeze their selected default explicitly. Classic unprofiled client captures keep
+the legacy route, including local recordings awaiting Send across an update;
+they must not start another ASR call for a completed legacy interpretation.
+Exact retries/recovery first retain an existing
+original's profile; historical originals without one keep the legacy completed
+reader. Changing a default never changes a captured original or repeats ASR.
+The prior profile uses `/api/interaction/voice/previous` and recovery v5 too.
+This explicit default selection requires owner receiving-profile requalification
+for existing device grants, Alerts/menu and Traffic; retain their state through
+the maintained same-human adoption route in interaction-companion.md. Receiver
+configuration without API access is not authorization to enable peer billing.
+
+The presentation capability flags describe the selected default engine. Explicit
+previous-provider flags retain its streaming/preview availability. A client must
+not infer progressive OpenAI WAV support from the previous engine configuration.

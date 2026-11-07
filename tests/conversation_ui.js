@@ -164,7 +164,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -187,7 +187,7 @@ function boot(readOnly=false,standalone=false,options={}) {
           const text=chars.slice(selected.offset,end).join(''),sha=require('node:crypto').createHash('sha256').update(text).digest('hex');
           return Promise.resolve(new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'','x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}}));
         }
-        return Promise.resolve(new Response(data,{headers:{'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':multipart&&selected.offset===0?'1600':'','x-audio-sha256':hash}}));
+        return Promise.resolve(new Response(data,{headers:{...(selected.speech_provider?{'x-speech-provider':selected.speech_provider}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':multipart&&selected.offset===0?'1600':'','x-audio-sha256':hash}}));
       }
       return new Promise((_resolve, reject) => {
       options.signal.addEventListener("abort", () => reject(new Error("Aborted")), {once:true});
@@ -277,6 +277,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     show(){document.hidden=false;for(const fn of documentEvents.get('visibilitychange')||[])fn();},
     playbackContext(){return capture.getPlayback();},
     microphoneSelection(){return capture.getReply();},
+    transcriptionProfile(){return capture.getTranscriptionProfile();},
     capture(){capture.pauseAudio();capture.onActivity(true);},
     finishCapture(){capture.onActivity(false);},
     capturedInput(value){capture.onInput(value);},
@@ -594,6 +595,19 @@ function boot(readOnly=false,standalone=false,options={}) {
   await follow.ui.refresh();
   assert.equal(live.scrollTop,live.scrollHeight,'The committed transcript cannot silently leave following mode');
   const until=async check=>{for(let n=0;n<100;n++){if(check())return;await new Promise(resolve=>setTimeout(resolve,5));}throw Error("Voice transition did not finish");};
+  const openaiOnly=boot(false,true,{capture:true,openaiConversation:true,progressive:true,immediateHash:true});openaiOnly.audio();await openaiOnly.ui.refresh();
+  assert.equal(openaiOnly.nodes.get('#conversation-services-choice').hidden,false);
+  const services=openaiOnly.nodes.get('#conversation-services-engine');services.value='openai';services.handlers.change();
+  assert.equal(openaiOnly.transcriptionProfile(),'openai');
+  const openaiCard=openaiOnly.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');await openaiCard.children[3].children[1].handlers.click();
+  await until(()=>openaiOnly.audioCalls.length===1);
+  assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
+  services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
+  const openaiDefault=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true});await openaiDefault.ui.refresh();
+  assert.equal(openaiDefault.transcriptionProfile(),'openai','Selected server default applies before first capture');
+  assert.equal(openaiDefault.nodes.get('#conversation-services-engine').value,'openai');
+  openaiDefault.nodes.get('#conversation-services-engine').value='current';openaiDefault.nodes.get('#conversation-services-engine').handlers.change();
+  assert.equal(openaiDefault.transcriptionProfile(),'previous','Explicit previous mode freezes its route despite the OpenAI default');
   const directOptions={capture:true,continuous:true,playback:true,immediateHash:true};
   const direct=boot(false,true,directOptions);direct.audio();await direct.ui.refresh();
   const bridge=direct.continuous();direct.nodes.get('#conversation-message').value='Keep this ordinary draft';bridge.mode.open();

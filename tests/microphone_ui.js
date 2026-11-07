@@ -17,7 +17,7 @@ function boot(live=false,recovery,status404=false,cues=false){
  const nodes=new Map(),events={},timers=[],uploads=[],originals=new Map(),received=[],devices=[],activities=[],statusReads=[];
  const document={hidden:false,addEventListener(name,fn){events[name]=fn;},querySelector(name){if(!nodes.has(name))nodes.set(name,{hidden:false,disabled:false,textContent:'',handlers:{},setAttribute(k,v){this[k]=v;},addEventListener(n,f){this.handlers[n]=f;}});return nodes.get(name);}};
  let fileReferences,mediaFailure,visual,visualFailure,mediaRequests=0,confirmDiscard=true;const confirmations=[];
- let captureQuestions,playback,selection, binding='original-binding',mode,permission,receiptHold,uploadHold,capturePhase='preparing',captureRetired=false,paused=0,unauthorized=0;
+ let transcriptionProfile,captureQuestions,playback,selection, binding='original-binding',mode,permission,receiptHold,uploadHold,capturePhase='preparing',captureRetired=false,paused=0,unauthorized=0;
  class Recorder{
   static isTypeSupported(type){return type==='audio/webm;codecs=opus';}
   constructor(stream){this.stream=stream;this.events={};this.state='inactive';devices.push(this);}
@@ -60,9 +60,9 @@ function boot(live=false,recovery,status404=false,cues=false){
  const context=vm.createContext({Date:{now:()=>now},window,document,Blob,Uint8Array,fetch,AbortController,
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
- return {cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
+ return {profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
   confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
@@ -70,6 +70,15 @@ function boot(live=false,recovery,status404=false,cues=false){
  };
 }
 (async()=>{
+ const openaiRecovery=memoryRecovery(),openai=boot(true,openaiRecovery);await until(()=>!openai.button().disabled);openai.profile('openai');
+ const openaiPermission=openai.permission(),openaiStarting=openai.click();openai.profile(undefined);openaiPermission.resolve(openai.media());await openaiStarting;
+ assert.equal(openai.preparation(),undefined,'OpenAI must never open a legacy Qwen/Gemini preview');
+ openai.mode('after');await openai.click();await until(()=>openai.uploads.length===1&&openai.state().includes('unconfirmed'));
+ assert.equal(openai.uploads[0].route,'api/interaction/voice/openai','Freeze provider before microphone permission');
+ const stored=openaiRecovery.values.get('pending');assert.equal(stored.schema,'telecodex.voice-recovery/v5');
+ assert.equal(stored.items[0].transcriptionProfile,'openai','Rollback reader must refuse unknown envelope rather than silently use legacy ASR');
+ await openai.click();await until(()=>openai.received.length===1);
+ assert.equal(openai.uploads[1].route,'api/interaction/voice/openai','Retry retains the same provider despite changed UI choice');
  const prepared=boot(true);await prepared.click();prepared.preparation().onPartial('Live caption without a prior error');
  assert.equal(prepared.nodes.get('#conversation-voice-state')['data-live-caption'],'true');
  prepared.devices[0].preparationTiming={provider_final_ms:123};

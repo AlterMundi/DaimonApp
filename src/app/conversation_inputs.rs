@@ -468,6 +468,21 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         {
             result["foreground_interpretation"] = json!("gpt-transcribe/v1");
         }
+        result["voice_default_transcription_profile"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .and_then(|voice| voice.default_transcription_profile.as_deref())
+        );
+        result["voice_transcription_profiles"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .map(|v| v.transcription_profiles.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
         result["foreground_context"] = json!("v1");
         result["foreground_public_live_transcripts"] = json!("v1");
         result["foreground_audio_observations"] = json!("v1");
@@ -512,6 +527,9 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         let voice = input.voice.context("Original voice capture unavailable")?;
         let mut payload = json!({"binding":selected.binding,"id":selected.id,
             "audio_sha256":voice.audio_sha256,"mime":voice.mime,"capture_stop":voice.capture_stop,"files":input.files,"visual":input.visual,"reply":input.reply,"playback":input.playback,"capture_questions":input.capture_questions});
+        if let Some(profile) = voice.transcription_profile {
+            payload["transcription_profile"] = json!(profile);
+        }
         if let Some(dialogue) = input.foreground_dialogue {
             payload["foreground_dialogue"] = json!(dialogue);
         }
@@ -1011,6 +1029,8 @@ fn enqueue(
 #[serde(deny_unknown_fields)]
 struct VoiceSubmit {
     #[serde(default)]
+    transcription_profile: Option<String>,
+    #[serde(default)]
     preserve_original: bool,
     binding: String,
     #[serde(default)]
@@ -1042,7 +1062,21 @@ async fn voice_submit(
     recover: bool,
 ) -> Result<Value> {
     use crate::store::ConversationVoice;
-    let request: VoiceSubmit = serde_json::from_str(body)?;
+    let mut request: VoiceSubmit = serde_json::from_str(body)?;
+    // Classic clients and unfinished local recordings carry no profile. Keep
+    // their original route; new clients freeze the selected default explicitly.
+    if request.transcription_profile.is_none() {
+        let existing = app
+            .shared
+            .store
+            .conversation_input_read(human, entry, &request.id)
+            .ok();
+        request.transcription_profile = if let Some(original) = existing {
+            original.voice.and_then(|voice| voice.transcription_profile)
+        } else {
+            None
+        };
+    }
     if request.defer_foreground && request.foreground_dialogue.is_none() {
         bail!("Deferred completion requires a foreground capture");
     }
@@ -1050,8 +1084,9 @@ async fn voice_submit(
         .shared
         .config
         .voice
-        .clone()
-        .context("Voice input is not configured")?;
+        .as_ref()
+        .context("Voice input is not configured")?
+        .select_profile(request.transcription_profile.as_deref())?;
     if recover || request.foreground_dialogue.is_some() {
         config.transcription_command = config
             .completed_transcription_command
@@ -1065,6 +1100,7 @@ async fn voice_submit(
         bail!("Invalid voice capture identity");
     }
     let voice = ConversationVoice {
+        transcription_profile: request.transcription_profile,
         preserve_original: request.preserve_original.then_some(true),
         audio_sha256: request.audio_sha256,
         mime: request.mime,
