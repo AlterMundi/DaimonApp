@@ -1035,7 +1035,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   await skipButton.handlers.click();await until(()=>skipping.audioCalls.some(call=>call.source==='native:10')&&!skipPlayer.paused);
   assert.equal(skipping.audioCalls.filter(call=>call.source==='native:9').length,2,'Already prepared continuation is cancelled rather than played or retried');
   assert.equal(skipButton.textContent,'Resume audio','Skip preserves the actual heard cursor for a later explicit resume');
-  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();skipping.clock.fire(450);
+  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();
+  // Refresh/ended may still be preparing the owned next source. Fire only once
+  // its silence timer exists, or continue if its next segment is already ready.
+  await until(()=>skipping.clock.pending().includes(450)||skipping.audioCalls.some(call=>call.source==='native:11'));
+  skipping.clock.fire(450);
   await until(()=>skipping.audioCalls.some(call=>call.source==='native:11'));
   assert.deepEqual([...new Set(skipping.audioCalls.map(call=>call.source))],['native:9','native:10','native:11']);
   assert.equal(skipping.nativePosts.length,0,'Skipping audio does not answer or change native work');skipping.ui.stop();
