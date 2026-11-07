@@ -71,15 +71,59 @@ class NativeOwnerClient:
         ).invoke(method, params)
 
 
+@dataclass(frozen=True)
+class EnrolledOwnerClient:
+    """Existing signed messaging enrollment plus authenticated native responses."""
+
+    messaging: object
+    verified_source: dict
+    timeout_seconds: float = 10
+    deadline_ns: int | None = None
+
+    @property
+    def config(self):
+        return self.messaging.config
+
+    def invoke(self, method, params):
+        if method not in {"messaging.send", "messaging.reply", "messaging.inbox", "messaging.delivery"}:
+            raise MatrixExecutionError("Unsupported technical host operation")
+        return replace(self.messaging, timeout_seconds=self.timeout_seconds,
+                       deadline_ns=self.deadline_ns).invoke(method, params)
+
+
+def verified_enrollment(client, source, enrollment):
+    """Verify public enrollment; never load a runtime, custody or private ledger."""
+    from daimon_matrix.canonical import unb64url
+    from daimon_matrix.messaging_config import protected_read, verify_public_binding
+
+    value = closed(enrollment, ("application", "binding", "identity", "public_key"))
+    for field in ("application", "binding"):
+        if not isinstance(value[field], str) or not Path(value[field]).is_absolute():
+            raise MatrixExecutionError("Owner-local absolute enrollment reference required")
+    identity = value["identity"]
+    if (not isinstance(identity, dict)
+            or identity.get("runtime_id") != client.config.runtime_id
+            or identity.get("runtime_label") != client.config.runtime_label
+            or identity.get("origin") != dict(client.config.expected_server)
+            or {"being_ref": identity.get("being_ref"),
+                "embodiment_id": identity.get("origin", {}).get("embodiment_id")} != source):
+        raise MatrixExecutionError("Signed enrollment differs from selected owner")
+    application = strict_json(protected_read(value["application"]))
+    binding = strict_json(protected_read(value["binding"]))
+    verify_public_binding(identity, unb64url(value["public_key"], length=32), application, binding)
+    if application.get("client", {}).get("descriptor") != client.config.capability.descriptor:
+        raise MatrixExecutionError("Signed enrollment differs from active messaging client")
+    return dict(source)
+
+
 def configured_client(path, source, *, required_methods=("messaging.send",)):
     from daimon_matrix.client import ClientConfig, LocalClient
     from daimon_matrix.messaging_config import protected_read
 
-    binding = closed(
-        strict_json(protected_read(path)),
-        ("schema", "messaging", "observation", "source"),
-    )
-    if binding["schema"] != "telecodex.matrix-host-binding/v1":
+    raw = strict_json(protected_read(path))
+    enrolled = raw.get("schema") == "telecodex.matrix-host-binding/v2" if isinstance(raw, dict) else False
+    binding = closed(raw, ("schema", "messaging", "enrollment" if enrolled else "observation", "source"))
+    if binding["schema"] not in {"telecodex.matrix-host-binding/v1", "telecodex.matrix-host-binding/v2"}:
         raise MatrixExecutionError("Explicit owner Matrix host binding required")
     if binding["source"] != source:
         raise MatrixExecutionError("Owner binding differs from selected source")
@@ -100,7 +144,7 @@ def configured_client(path, source, *, required_methods=("messaging.send",)):
         )
         return LocalClient(Path(value["socket"]), config)
 
-    messaging, observation = load(binding["messaging"]), load(binding["observation"])
+    messaging = load(binding["messaging"])
     methods = set(messaging.config.capability.methods)
     if not set(required_methods) <= methods or not methods <= {
         "messaging.send",
@@ -109,6 +153,9 @@ def configured_client(path, source, *, required_methods=("messaging.send",)):
         "messaging.delivery",
     }:
         raise MatrixExecutionError("Existing messaging-only capability required")
+    if enrolled:
+        return EnrolledOwnerClient(messaging, verified_enrollment(messaging, source, binding["enrollment"]))
+    observation = load(binding["observation"])
     if "runtime.status" not in observation.config.capability.methods:
         raise MatrixExecutionError("Existing source observation capability required")
     return NativeOwnerClient(messaging, observation)
@@ -178,15 +225,18 @@ def inbox(value, client, *, timeout=10):
     if client.deadline_ns is not None:
         deadline = min(deadline, client.deadline_ns)
     selected = replace(client, timeout_seconds=timeout, deadline_ns=deadline)
-    _, observed = selected.invoke("runtime.status", {})
-    runtime = observed.get("result", {}) if observed.get("ok") is True else {}
-    if (
-        runtime.get("schema") != "dm.runtime.status/v1"
-        or runtime.get("being_ref") != source["being_ref"]
-        or runtime.get("local_origin", {}).get("embodiment_id")
-        != source["embodiment_id"]
-    ):
-        raise MatrixExecutionError("Authenticated inbox owner changed")
+    if isinstance(selected, EnrolledOwnerClient):
+        if selected.verified_source != source:
+            raise MatrixExecutionError("Authenticated inbox owner changed")
+    else:
+        _, observed = selected.invoke("runtime.status", {})
+        runtime = observed.get("result", {}) if observed.get("ok") is True else {}
+        if (
+            runtime.get("schema") != "dm.runtime.status/v1"
+            or runtime.get("being_ref") != source["being_ref"]
+            or runtime.get("local_origin", {}).get("embodiment_id") != source["embodiment_id"]
+        ):
+            raise MatrixExecutionError("Authenticated inbox owner changed")
     _, response = selected.invoke(
         "messaging.inbox",
         {
@@ -318,14 +368,15 @@ def respond(value, client, *, timeout=10, inspect_only=False):
     else:
         # Inspection cannot author or replay, including after the authoring
         # deadline. Still bind the observation to the actual current body.
-        _, observed = selected.invoke("runtime.status", {})
-        status = observed.get("result", {}) if observed.get("ok") is True else {}
-        if (
-            status.get("being_ref") != value["source"]["being_ref"]
-            or status.get("local_origin", {}).get("embodiment_id")
-            != value["source"]["embodiment_id"]
-        ):
-            raise MatrixExecutionError("Authenticated response owner changed")
+        if isinstance(selected, EnrolledOwnerClient):
+            if selected.verified_source != value["source"]:
+                raise MatrixExecutionError("Authenticated response owner changed")
+        else:
+            _, observed = selected.invoke("runtime.status", {})
+            status = observed.get("result", {}) if observed.get("ok") is True else {}
+            if (status.get("being_ref") != value["source"]["being_ref"]
+                    or status.get("local_origin", {}).get("embodiment_id") != value["source"]["embodiment_id"]):
+                raise MatrixExecutionError("Authenticated response owner changed")
         method = "messaging.delivery"
         params = {"channel_id": value["channel_id"], "send_id": value["send_id"]}
     _, response = selected.invoke(method, params)

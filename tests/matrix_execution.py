@@ -1463,6 +1463,51 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 with self.assertRaisesRegex(MatrixExecutionError, "differs from retained intent"):
                     operator_respond(changed, host, timeout=5, inspect_only=True)
 
+                # The existing signed enrollment binds this same messaging-only
+                # client without a separate legacy runtime.status capability.
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+                from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+                from daimon_matrix.canonical import b64url, canonical_bytes
+                from daimon_matrix.messaging_config import BINDING_DOMAIN, MessagingConfigError, config_digest
+                signer = Ed25519PrivateKey.generate()
+                application = {"client": {"descriptor": messaging.descriptor}}
+                identity = {"being_ref": source["being_ref"], "origin": dict(group.ledger.local_origin),
+                            "runtime_id": service.runtime_id, "runtime_label": service.runtime_label}
+                signed_body = {**identity, "application_sha256": config_digest(application)}
+                document = {"schema": "dm.messaging.operator-binding/v1", "body": signed_body,
+                            "signature": b64url(signer.sign(BINDING_DOMAIN + canonical_bytes(signed_body)))}
+                application_path = Path(directory) / "application.json"
+                signed_path = Path(directory) / "signed-binding.json"
+                application_path.write_text(canonical(application)); application_path.chmod(0o600)
+                signed_path.write_text(canonical(document)); signed_path.chmod(0o600)
+                enrolled_path = Path(directory) / "enrolled-host.json"
+                enrolled_document = {"schema": "telecodex.matrix-host-binding/v2", "source": source,
+                    "messaging": references["messaging"], "enrollment": {
+                        "application": str(application_path), "binding": str(signed_path),
+                        "identity": identity, "public_key": b64url(signer.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))}}
+                enrolled_path.write_text(canonical(enrolled_document)); enrolled_path.chmod(0o600)
+                enrolled = configured_client(enrolled_path, source)
+                enrolled = replace(enrolled, messaging=replace(enrolled.messaging, clock=group.lane.clock))
+                self.assertEqual(operator_send({"status": status, "source": source}, enrolled)
+                                 ["submission"]["message_id"], sent["message_id"])
+                self.assertEqual(operator_inbox({"source": source, "channel_id": "tribe",
+                    "after": 0, "limit": 3}, enrolled, timeout=5)["items"][0]["message_id"], returned["message_id"])
+                enrolled_intent = intent | {"send_id": str(uuid.uuid4()), "text": "Signed enrollment reply."}
+                enrolled_reply = operator_respond(enrolled_intent, enrolled, timeout=5)
+                self.assertEqual(operator_respond(enrolled_intent, enrolled, timeout=5, inspect_only=True)
+                                 ["delivery"]["message_id"], enrolled_reply["delivery"]["message_id"])
+                # Neither a tampered signed application nor a different live
+                # native client can inherit this public enrollment identity.
+                application_path.write_text(canonical(application | {"tampered": True}))
+                with self.assertRaises(MessagingConfigError): configured_client(enrolled_path, source)
+                application_path.write_text(canonical(application))
+                wrong = copy.deepcopy(enrolled_document)
+                wrong["enrollment"]["identity"]["runtime_id"] = "unselected-runtime"
+                enrolled_path.write_text(canonical(wrong))
+                with self.assertRaisesRegex(MatrixExecutionError, "differs from selected owner"):
+                    configured_client(enrolled_path, source)
+                enrolled_path.write_text(canonical(enrolled_document))
+
                 # A genuinely group-authored original must stay a group reply;
                 # source text naming a person never silently narrows its audience.
                 public = sdk.fixture.send_and_settle(
