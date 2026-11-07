@@ -141,8 +141,12 @@ selected breathing, retarget/fade, atomic invalid controls and a PCM SHA256 from
 the actual existing Java BeaconSynth. The two-second reference includes six
 components, breathing, retargeting, duplicate controls and fade. Java generation
 used only disposable local classes, removed after producing the digest; no audio
-artifact, mic, provider or live observer was retained. Actual Swift/macOS SDK
-qualification remains required before claiming this port passed.
+artifact, mic, provider or live observer was retained. Sourceb7b7155 passed23XCTest cases and the actual iOS app build in
+CI42386636123, including the Java/Swift PCM digest. The runtime journey then
+failed after an unconfirmed90second launch and no page receipt; cause remains
+unknown. Termination was unconfirmed, but shutdown/delete/server stop were
+acknowledged. That journey did not exercise this unwired DSP core and is not
+recorded as a native Beacon playback pass.
 
 This is the DSP core only, not advertised or wired into the iOS audio device.
 Continue with one bounded foreground native output owner, the existing shared
@@ -152,3 +156,10 @@ own holder; speech/capture and Beacon cannot abandon one another. Route/backgrou
 stop must close it without replay or automatic resume. Qualify actual native
 playback, stale silence, fresh resume, ducking and lifecycle before advertisement;
 physical phone/music/hearing and the full original goal remain open.
+
+The common simulator fixture also reuses the90second observation bound for its
+single CA-admission operation, already qualified in PR728source816fd9a andd1f1f4b.
+The previous30seconds had timed out before app installation; actual successful
+admission needed84.88seconds. This carries only that tested fixture correction,
+not the separate capture implementation/review. No uncertain CA operation is
+retried and no production TLS policy or existing device trust is changed.
