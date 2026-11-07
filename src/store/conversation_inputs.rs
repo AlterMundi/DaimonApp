@@ -2176,7 +2176,7 @@ mod tests {
                     &later,
                     &Uuid::now_v7().to_string(),
                     "Interpret sources",
-                    &[later.clone()],
+                    std::slice::from_ref(&later),
                     text,
                     proof
                 )
