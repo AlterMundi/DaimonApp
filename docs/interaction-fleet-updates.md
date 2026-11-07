@@ -82,12 +82,26 @@ bounds execution to180seconds by default, at most300, with5seconds to terminate
 owned children. No deployment target, service, source or provider is chosen here.
 
 ```sh
-python scripts/interaction_web_maintenance.py \
+SERVING_PYTHON scripts/interaction_web_maintenance.py \
   --config SELECTED_PRIVATE_CONFIG \
   --health-url SELECTED_LOCAL_HEALTH_URL \
   --owner-uid SERVICE_UID --seconds 150 \
-  -- python EXISTING_SCOPED_WEB_OPERATOR
+  -- SERVING_PYTHON EXISTING_SCOPED_WEB_OPERATOR
 ```
+
+Before stopping the web, run the candidate imports and application-constructor
+qualification with the interpreter and locked environment from the actual service
+ExecStart, as its consuming user. The maintenance wrapper's interpreter does not
+select the interpreter of the command after `--`; use the explicit serving Python
+there too. Complete dependency/constructor checks before the stop. If a new owner
+binding requires a post-migration constructor check, preflight the unchanged
+imports before stopping and retain the exact migration phase separately.
+
+If an operator fails after stopping the web, inspect its retained phase, current
+selector, unit, process and configuration before acting. Continue only the missing
+steps with the serving interpreter; never rerun completed authority, grant or
+journal migrations. Restore service availability before unrelated qualification
+or fleet work. Preserve the original failure and a separate recovery outcome.
 
 Exit75 means voice owned the lock and the operator was not started. Exit78 means
 reader/state/config qualification failed before execution; inspect that mismatch.
