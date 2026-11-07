@@ -171,9 +171,9 @@ Its receipt is required before the existing PCM WebView journey. This exercises
 host foreground-exit policy, not an actual OS background transition or physical
 hearing/music/route acceptance. SDK/runtime outcomes must be recorded separately.
 
-The normal JS bridge and native Beacon capability stay off. Continue with the
-closed per-document adapter and actual capture/duplex compatibility before
-advertisement. Physical phone/music/hearing, shared login, distribution/signing
+The native Beacon capability stays off. The prepared closed per-document adapter
+now reuses the existing beacon_begin/frame/level/stop contract. Continue actual
+bridge/runtime and capture/duplex compatibility qualification before advertisement. Physical phone/music/hearing, shared login, distribution/signing
 and the full original goal remain open.
 
 Historical CA provisioning used a90second observation bound, qualified in
@@ -234,3 +234,31 @@ shutdown/delete/server stop were acknowledged. Cause remains unknown; do not
 classify this as a TLS or audio failure, retry the terminal launch or advertise
 native capability. PR731 remains open pending actual new output qualification.
 The earlier successful PCM baseline does not cover this new Beacon driver/probe.
+
+
+## Prepared closed Beacon bridge
+
+The existing `audio` handler now accepts only the closed Beacon commands from the
+same exact main-frame origin/page/document checks as PCM. Beacon UUIDs are canonical
+and separate from PCM IDs. One controller admits at most128distinct starts and
+never reuses an accepted ID, including across document changes. A duplicate/new
+begin cannot replace another current owner. Explicit Stop, page navigation,
+WebContent loss and foreground exit close the exact Beacon owner without replay.
+Speech and Beacon continue to use independent holders in the existing shared
+session; no extra login, provider, observer or entitlement is introduced.
+
+A frame is at most4096UTF8 bytes, six strict finite non-boolean numeric vectors,
+normalized active weights, valid frequencies/ramp/depth/level and an exact safe
+integer absolute uptime deadline in milliseconds. It is converted to seconds
+without manufacturing a new lifetime. The native driver enforces its20second
+maximum and stale fade. Gain commands cannot include or renew a deadline. Replies
+bind to the accepted owner and document; played events still require actual device
+callbacks. The existing adapter is reused unchanged; normal capability is false.
+
+Three additional Foundation tests exercise independent identities/closed fields,
+absolute expiry/numeric refusal and deadline-free gain. The actual simulator
+fixture additionally requires JS Beacon played/stale-quiet/fresh/duck-quiet events,
+PCM completion while Beacon remains selected, and a native refusal of a previously
+closed ID. This is a new required journey, not a claim that it has passed. The old
+srcdoc iframe probe remains non-proof of frame-handler admission; actual receiving
+frame/capture qualification and independent boundary review remain required.

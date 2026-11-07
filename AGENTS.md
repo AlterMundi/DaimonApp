@@ -1,3 +1,11 @@
+Prepared iOS Beacon IPC reuses the existing Android beacon_begin/frame/level/stop
+contract under the exact main origin/frame/document fence. Strict canonical UUID
+owners stay separate from PCM; at most128starts/controller, no accepted ID reuse.
+Frames retain absolute monotonic milliseconds; gain cannot carry a new deadline.
+Navigation/process/background closes both outputs. Normal capability stays OFF;
+source/SDK tests do not establish actual bridge/runtime or physical acceptance.
+Independent review is required before integration of this new message boundary.
+
 Prepared iOS BeaconSynth is the six-carrier Android-compatible DSP core.
 BeaconPlaybackDriver now prepares foreground native output through the existing
 shared session; its qualification-only app probe does not advertise a capability.

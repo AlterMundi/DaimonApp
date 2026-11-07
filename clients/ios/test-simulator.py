@@ -150,6 +150,8 @@ def qualify(app):
                         'playing','stale_quiet','fresh_playing','duck_quiet','restored_playing','foreground_closed']), beacon
             assert beacon.get('tls_fixture') == {'valid_chain':True,'wrong_host_refused':True,
                     'wrong_anchor_refused':True,'system_trust_modified':False}, beacon
+            assert result.get('beacon_bridge') == {'states':['beacon_playing','beacon_quiet','beacon_playing','beacon_quiet'],
+                    'replay_refused':True,'microphone_requested':False}, result
             passed = True
         finally:
             cleanup = []
