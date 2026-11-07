@@ -220,6 +220,15 @@ function boot(fail){
   assert(!socket.sent.some(value=>typeof value==='string'&&JSON.parse(value).type==='finish'),'Captions never finalize or replace the original');
   assert(!captions.timers.some(t=>!t.cleared&&t.ms===10000),'Send never waits for a provisional final');assert(captions.contexts[0].closed);
  }
+ for(const network of ['connected','disconnected']){
+  const captions=boot(),original=new Canonical(),capture=await captions.create(original,{transcriptionProvider:'openai'});capture.start(250);const socket=captions.sockets[0];socket.open();
+  assert.equal(socket.url,'wss://example.invalid/interaction/api/interaction/voice/openai/live');socket.message({type:'ready'});
+  captions.worklets[0].emit({pcm:samples});socket.message({type:'partial',text:'Dale, CompAII'});assert.equal(captions.captions.at(-1),'Dale, CompAII');
+  if(network==='disconnected')socket.close();capture.stop();await new Promise(yes=>setImmediate(yes));
+  assert.equal(await captions.events[0].data.text(),'compressed-original');assert.equal(captions.sockets.length,1);
+  assert(!socket.sent.some(value=>typeof value==='string'&&JSON.parse(value).type==='finish'));
+ }
+ await assert.rejects(boot().create(undefined,{transcriptionProvider:'openai'}));
  for(const failure of ['resume','connect']){
   const preview=boot(failure),original=new Canonical(),capture=await preview.create(original);
   let errors=0;capture.addEventListener('error',()=>errors++);capture.start(250);

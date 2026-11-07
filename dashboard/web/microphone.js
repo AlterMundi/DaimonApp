@@ -143,7 +143,7 @@ window.VoiceInput = (() => {
     }
     function notice(text,attention=false){noticeDismissible=false;state.removeAttribute?.('data-live-caption');state.setAttribute('aria-live','polite');state.textContent=text;state.setAttribute('data-attention',String(attention));}
     function caption(text){notice(text);state.setAttribute('data-live-caption','true');state.setAttribute('aria-live','off');state.scrollLeft=state.scrollWidth;}
-    let available=false, liveAvailable=false, liveMode='prepared', generation=0, recorder, stream, parts=[], bytes=0, timer, pending, latestSaved, uploading=false, controller;
+    let available=false, liveAvailable=false, openaiLiveAvailable=false, liveMode='prepared', generation=0, recorder, stream, parts=[], bytes=0, timer, pending, latestSaved, uploading=false, controller;
     let phase='idle', commit=false, readySelection,recordingStarted,countdownTimer,conversationCapture=false;
     let cueContext,cueSeconds=new Set();
     function closeCues(){
@@ -230,8 +230,8 @@ window.VoiceInput = (() => {
       if(['permission','recording','ready','finalizing'].includes(phase))cancelRecording('Recording ended while this view was inactive. Nothing was sent.');
       controller?.abort();
     }
-    function configure(value,live=false,mode='prepared') {
-      available=!!value;liveAvailable=!!live;liveMode=mode==='captions'?'captions':'prepared';
+    function configure(value,live=false,mode='prepared',openaiLive=false) {
+      available=!!value;liveAvailable=!!live;openaiLiveAvailable=!!openaiLive;liveMode=mode==='captions'?'captions':'prepared';
       if(!available && ['permission','recording','ready','finalizing'].includes(phase))cancelRecording();
       if(available && !supported())notice('Microphone unavailable in this browser. You can keep writing.',true);
       controls();
@@ -375,15 +375,17 @@ window.VoiceInput = (() => {
         const media=await window.navigator.mediaDevices.getUserMedia({audio:true,video:false});
         if(owned!==generation || binding!==getBinding() || document.hidden){for(const track of media.getTracks())track.stop();return;}
         stream=media;
-        let current;
+        let current,previewUnavailable=false;
         const fallbackMime=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4','audio/webm'].find(value=>window.MediaRecorder.isTypeSupported(value));
-        const canonical=liveMode==='captions'&&fallbackMime?new window.MediaRecorder(media,{mimeType:fallbackMime,audioBitsPerSecond:64000}):undefined;
-        if(frozenSelection.transcriptionProfile!=='openai'&&(liveMode!=='captions'||canonical)&&liveAvailable&&window.StreamingVoice?.supported()){
+        const openaiPreview=frozenSelection.transcriptionProfile==='openai',selectedLiveMode=openaiPreview?'captions':liveMode;
+        const canonical=selectedLiveMode==='captions'&&fallbackMime?new window.MediaRecorder(media,{mimeType:fallbackMime,audioBitsPerSecond:64000}):undefined;
+        if((selectedLiveMode!=='captions'||canonical)&&(openaiPreview?openaiLiveAvailable:liveAvailable)&&window.StreamingVoice?.supported()){
           let words=false;
-          try{current=await window.StreamingVoice.create(media,{headers,binding,canonicalRecorder:canonical,id:frozenSelection.captureId,
-            turnDetection:conversational,onEndpoint:()=>{if(conversationCapture&&owned===generation&&phase==='recording'&&words)submit();},
+          try{current=await window.StreamingVoice.create(media,{headers,binding,canonicalRecorder:canonical,id:frozenSelection.captureId,transcriptionProvider:openaiPreview?'openai':'current',
+            turnDetection:!openaiPreview&&conversational,onEndpoint:()=>{if(conversationCapture&&owned===generation&&phase==='recording'&&words)submit();},
             onDetectionUnavailable:()=>{if(conversational&&owned===generation){conversationCapture=false;hold();}},
-            onPartial:text=>{if(owned===generation&&phase==='recording'){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');caption(text||'Listening…');}}});}catch{}
+            onUnavailable:()=>{previewUnavailable=true;if(owned===generation&&phase==='recording')caption('Recording… Live text unavailable.');},
+            onPartial:text=>{if(owned===generation&&phase==='recording'){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');caption(text||'Listening…');}}});}catch{previewUnavailable=true;}
         }
         if(owned!==generation||binding!==getBinding()||document.hidden){current?.discard?.();for(const track of media.getTracks())track.stop();return;}
         current=current||canonical;
@@ -397,7 +399,7 @@ window.VoiceInput = (() => {
         });
         current.addEventListener('error',()=>{if(owned===generation)cancelRecording('Recording failed. Nothing was sent.');});
         current.addEventListener('stop',()=>finish(owned,binding,mime,frozenSelection));
-        current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';recordingStarted=clock();caption('Listening…');controls();countdown();
+        current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';recordingStarted=clock();caption(previewUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();
         timer=setTimeout(()=>{if(owned===generation && current.state==='recording'){phase='finalizing';onTiming(frozenSelection.captureId,'ended');current.captureStop='duration_limit';current.stop();stopTracks();controls();}},RECORDING_MILLIS);
       } catch(error) {
         const reason={NotAllowedError:'Microphone permission was denied. Check this browser’s site permissions.',

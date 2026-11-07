@@ -81,6 +81,32 @@ class LiveTranscription(unittest.TestCase):
     def meta(self,**extra):return {'id':self.ident,'binding':self.binding,'csrf':self.csrf,**extra}
     def open(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/live',headers={'origin':origin})
+    def test_openai_caption_route_is_explicit_no_original_or_work_authority(self):
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'captions',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared'),
+            'transcription_options':{'languages':['es'],'delay':'low'}}
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            response=client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+            self.assertEqual(response.status_code,200)
+            client.cookies.set('telecodex_dashboard',client.cookies.get('telecodex_dashboard'),path='/')
+            response=client.get('/api/interaction');self.assertEqual(response.status_code,200,response.text)
+            caps=response.json();self.assertTrue(caps['openai_can_stream_transcribe'])
+            with client.websocket_connect('/api/interaction/voice/openai/live',headers={'origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta(), 'csrf':caps['csrf'],'mode':'captions'})
+                self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600)
+                self.assertEqual(ws.receive_json()['type'],'partial')
+                self.assertEqual(Stream.opened[-1].selected_provider,'openai')
+                ws.send_json({'type':'discard'})
+            self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+            self.assertFalse(Stream.opened[-1].finished)
+            self.assertFalse(list((self.root/'prepared').glob('*.json')))
+            self.assertEqual(len(Stream.opened),1,'No silent fallback or second paid stream')
+        with self.assertRaises(ValueError):
+            create_app({**self.config,'streaming_transcription_openai':{**self.config['streaming_transcription_openai'],'fallback':{'provider':'qwen'}}},self.provider)
+
     def test_streams_before_finish_retains_only_text_for_exact_wav(self):
         pcm=b'\0\0'*1600
         with self.open() as ws:

@@ -5,9 +5,12 @@ This adapter deliberately has no dialogue, tool, native-input or retry API.
 Its partials remain revisable preparation until an owning ingress commits them.
 """
 import base64
+from array import array
 import hashlib
 import json
+import re
 import threading
+import sys
 import time
 from urllib.parse import parse_qsl, urlsplit
 
@@ -24,12 +27,23 @@ class TranscriptionStream:
     max_event_bytes = 65536
     max_text_bytes = 16000
 
-    def __init__(self, endpoint, credential_file, connect=None, provider='qwen'):
+    def __init__(self, endpoint, credential_file, connect=None, provider='qwen', transcription_options=None):
         url = urlsplit(endpoint)
-        if provider not in ('qwen', 'gemini'):
+        if provider not in ('qwen', 'gemini', 'openai'):
             raise ValueError('Select a supported transcription provider')
-        model = 'gemini-3.5-transcribe-live' if provider == 'gemini' else dict(parse_qsl(url.query, strict_parsing=True)).get('model')
-        if provider == 'gemini':
+        options = {} if transcription_options is None else transcription_options
+        if (not isinstance(options,dict) or set(options)-{'languages','keywords','delay'}
+                or provider!='openai' and options
+                or 'delay' in options and options['delay'] not in ('minimal','low','medium','high','xhigh')):
+            raise ValueError('Select bounded live transcription options')
+        for key,limit,pattern in (('languages',8,r'[a-z]{2,3}(?:-[a-z]{2,4})?'),('keywords',32,r'[^<>\r\n]{1,80}')):
+            if key in options and (not isinstance(options[key],list) or not 1<=len(options[key])<=limit
+                    or any(not isinstance(v,str) or not re.fullmatch(pattern,v) for v in options[key])):
+                raise ValueError('Select bounded live transcription hints')
+        model = 'gpt-live-transcribe' if provider=='openai' else 'gemini-3.5-transcribe-live' if provider == 'gemini' else dict(parse_qsl(url.query, strict_parsing=True)).get('model')
+        if provider=='openai':
+            valid=endpoint=='wss://api.openai.com/v1/realtime?intent=transcription'
+        elif provider == 'gemini':
             valid = (endpoint == 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent')
         else:
             valid = not (url.scheme != 'wss' or not url.hostname or url.username or url.password
@@ -38,7 +52,12 @@ class TranscriptionStream:
                 or list(parse_qsl(url.query)) != [('model', 'qwen-audio-3.0-realtime-plus')])
         if not valid:
             raise ValueError('Select an exact supported transcription endpoint')
-        token = private_bytes(credential_file, 16384).decode().strip()
+        if provider=='openai':
+            from .openai_live import OpenAILive, LiveUnavailable
+            try:token=OpenAILive(credential_file)._project_key()
+            except LiveUnavailable:raise ValueError('Transcription credential unavailable') from None
+        else:
+            token = private_bytes(credential_file, 16384).decode().strip()
         if not token or any(c.isspace() for c in token):
             raise ValueError('Transcription credential unavailable')
         self._timeout_errors = (TimeoutError,)
@@ -60,6 +79,8 @@ class TranscriptionStream:
         self._lock = threading.RLock()
         self._reader = threading.Lock()
         self._socket = None
+        self._resample_count = self._resample_tick = 0
+        self._resample_tail = None
         try:
             # No redirects, auto-reconnect, provider trace or secret in arguments.
             credential = 'x-goog-api-key: ' if provider == 'gemini' else 'Authorization: Bearer '
@@ -67,7 +88,11 @@ class TranscriptionStream:
                                    timeout=10, redirect_limit=0, enable_multithread=True)
             if hasattr(self._socket,'settimeout'):
                 self._socket.settimeout(1)
-            if provider == 'gemini':
+            if provider=='openai':
+                self._send({'type':'session.update','session':{'type':'transcription','audio':{'input':{
+                    'format':{'type':'audio/pcm','rate':24000},
+                    'transcription':{'model':model,'delay':'low',**options},'turn_detection':None}}}})
+            elif provider == 'gemini':
                 self._send({'setup': {'model': 'models/' + model,
                     'generationConfig': {'responseModalities': ['TEXT']},
                     'inputAudioTranscription': {'mode': 'VERBATIM', 'languageCodes': []},
@@ -98,11 +123,34 @@ class TranscriptionStream:
                     or len(pcm) % 2 or len(pcm) > 32000
                     or self.audio_bytes + len(pcm) > self.max_audio_bytes):
                 raise ValueError('Provide bounded PCM only after stream readiness')
-            encoded = base64.b64encode(pcm).decode('ascii')
+            encoded = base64.b64encode(self._openai_pcm(pcm) if self.provider=='openai' else pcm).decode('ascii')
             self._send({'realtimeInput': {'audio': {'data': encoded, 'mimeType': 'audio/pcm;rate=16000'}}}
                        if self.provider == 'gemini' else {'type': 'input_audio_buffer.append', 'audio': encoded})
             self.audio_sha256.update(pcm)
             self.audio_bytes += len(pcm)
+
+    def _openai_pcm(self, pcm):
+        """Streaming16->24kHz preview only; original PCM/hash stay unchanged.
+
+        Integer positions and one carried sample make packet boundaries inert.
+        The browser's original recorder remains the sole acoustic original.
+        """
+        samples=array('h');samples.frombytes(pcm)
+        if sys.byteorder!='little':samples.byteswap()
+        base=self._resample_count
+        count=len(samples)
+        if self._resample_tail is not None:
+            samples.insert(0,self._resample_tail);base-=1
+        last=base+len(samples)-1;out=array('h');tick=self._resample_tick
+        while tick<=last*3:
+            index,fraction=divmod(tick,3);local=index-base
+            if fraction and index==last:break
+            out.append(samples[local] if not fraction else
+                       (samples[local]*(3-fraction)+samples[local+1]*fraction)//3)
+            tick+=2
+        self._resample_count+=count;self._resample_tick=tick;self._resample_tail=samples[-1]
+        if sys.byteorder!='little':out.byteswap()
+        return out.tobytes()
 
     def finish(self):
         """Finalize recognition only. This does not admit a human instruction."""
@@ -151,6 +199,18 @@ class TranscriptionStream:
                 self._fail('unexpected-transcription-provider-event')
             if kind == 'session.updated':
                 session = event.get('session', {})
+                if self.provider=='openai':
+                    if not isinstance(session,dict) or not isinstance(session.get('audio'),dict):
+                        self._fail('transcription-manual-mode-unconfirmed')
+                    audio=session['audio'].get('input',{})
+                    if (not isinstance(audio,dict) or not isinstance(audio.get('transcription'),dict)
+                            or self.phase!='opening' or session.get('type')!='transcription'
+                            or audio.get('format')!={'type':'audio/pcm','rate':24000}
+                            or audio.get('transcription',{}).get('model')!=self.model
+                            or audio.get('turn_detection') is not None):
+                        self._fail('transcription-manual-mode-unconfirmed')
+                    self.phase='ready'
+                    return {'type':'ready'}
                 if (self.phase != 'opening' or not isinstance(session, dict)
                         or session.get('turn_detection') is not None
                         or session.get('model', self.model) != self.model
@@ -177,7 +237,7 @@ class TranscriptionStream:
                         self._fail('transcription-final-before-finish')
                     text = event.get('transcript')
                 elif kind in (prefix + 'delta', prefix + 'text'):
-                    text, stash = event.get('text', ''), event.get('stash', '')
+                    text, stash = (self.text,event.get('delta')) if self.provider=='openai' else (event.get('text', ''),event.get('stash', ''))
                     if not isinstance(text, str) or not isinstance(stash, str):
                         self._fail('invalid-transcription-text')
                     text += stash

@@ -20,7 +20,7 @@ function boot(live=false,recovery,status404=false,cues=false){
  let transcriptionProfile,captureQuestions,playback,selection, binding='original-binding',mode,permission,receiptHold,uploadHold,capturePhase='preparing',captureRetired=false,paused=0,unauthorized=0;
  class Recorder{
   static isTypeSupported(type){return type==='audio/webm;codecs=opus';}
-  constructor(stream){this.stream=stream;this.events={};this.state='inactive';devices.push(this);}
+  constructor(stream,options={}){this.stream=stream;this.mimeType=options.mimeType;this.events={};this.state='inactive';devices.push(this);}
   addEventListener(n,fn){this.events[n]=fn;}
   start(){this.state='recording';}
   stop(){if(this.state==='inactive')return;this.state='inactive';queueMicrotask(()=>{this.events.dataavailable({data:new Blob(['synthetic finalized audio'])});this.events.stop();});}
@@ -79,6 +79,12 @@ function boot(live=false,recovery,status404=false,cues=false){
  assert.equal(stored.items[0].transcriptionProfile,'openai','Rollback reader must refuse unknown envelope rather than silently use legacy ASR');
  await openai.click();await until(()=>openai.received.length===1);
  assert.equal(openai.uploads[1].route,'api/interaction/voice/openai','Retry retains the same provider despite changed UI choice');
+ const openaiCaptions=boot(true);openaiCaptions.profile('openai');openaiCaptions.ui.configure(true,false,'prepared',true);await openaiCaptions.click();
+ assert.equal(openaiCaptions.preparation().transcriptionProvider,'openai','The selected capture must use the dedicated OpenAI caption socket');
+ assert.equal(openaiCaptions.preparation().canonicalRecorder.mimeType,'audio/webm;codecs=opus','Live captions cannot replace the original recorder');
+ openaiCaptions.preparation().onPartial('Texto mientras hablás');assert.equal(openaiCaptions.state(),'Texto mientras hablás');
+ openaiCaptions.preparation().onUnavailable();assert.equal(openaiCaptions.state(),'Recording… Live text unavailable.');assert.equal(openaiCaptions.devices.at(-1).state,'recording','Preview failure must keep the acoustic original recording');
+ openaiCaptions.cancel();
  const prepared=boot(true);await prepared.click();prepared.preparation().onPartial('Live caption without a prior error');
  assert.equal(prepared.nodes.get('#conversation-voice-state')['data-live-caption'],'true');
  prepared.devices[0].preparationTiming={provider_final_ms:123};

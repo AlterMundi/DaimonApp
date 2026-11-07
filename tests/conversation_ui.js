@@ -19,7 +19,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     return setTimeout(fn,ms);
   };
   const cancelTimeout=id=>{if(gaps.has(id))gaps.delete(id);else clearTimeout(id);};
-  let capture,intersection,pageFailure,continuousHooks,continuousMode,continuousSession,nativeHooks,nativeSession;const continuousCalls=[];const replyTexts=new Map(),partReads=[],replyHolds=new Map();
+  let capture,intersection,pageFailure,continuousHooks,continuousMode,continuousSession,nativeHooks,nativeSession;const continuousCalls=[],microphoneConfigs=[];const replyTexts=new Map(),partReads=[],replyHolds=new Map();
   function element() {
     return {
       children: [], dataset: {}, handlers: {}, classList: {toggle() {}},
@@ -164,7 +164,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -195,7 +195,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   });
   vm.runInContext(fs.readFileSync("dashboard/web/requests.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
-  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(){},reset(){},deactivate(){},observe(){},ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
+  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
     context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);},release:id=>continuousCalls.push(['release',id])};}};
     if(options.continuousDriver){
@@ -277,7 +277,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     show(){document.hidden=false;for(const fn of documentEvents.get('visibilitychange')||[])fn();},
     playbackContext(){return capture.getPlayback();},
     microphoneSelection(){return capture.getReply();},
-    transcriptionProfile(){return capture.getTranscriptionProfile();},
+    transcriptionProfile(){return capture.getTranscriptionProfile();},microphoneConfigs,
     capture(){capture.pauseAudio();capture.onActivity(true);},
     finishCapture(){capture.onActivity(false);},
     capturedInput(value){capture.onInput(value);},
@@ -603,11 +603,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>openaiOnly.audioCalls.length===1);
   assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
   services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
-  const openaiDefault=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true});await openaiDefault.ui.refresh();
+  const openaiDefault=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true,openaiCaptions:true});await openaiDefault.ui.refresh();
   assert.equal(openaiDefault.transcriptionProfile(),'openai','Selected server default applies before first capture');
   assert.equal(openaiDefault.nodes.get('#conversation-services-engine').value,'openai');
+  assert.equal(openaiDefault.microphoneConfigs.at(-1)[3],true,'Selected OpenAI enables only its explicit live caption capability');
   openaiDefault.nodes.get('#conversation-services-engine').value='current';openaiDefault.nodes.get('#conversation-services-engine').handlers.change();
   assert.equal(openaiDefault.transcriptionProfile(),'previous','Explicit previous mode freezes its route despite the OpenAI default');
+  assert.equal(openaiDefault.microphoneConfigs.at(-1)[3],false,'Previous mode cannot open the OpenAI caption route');
   const directOptions={capture:true,continuous:true,playback:true,immediateHash:true};
   const direct=boot(false,true,directOptions);direct.audio();await direct.ui.refresh();
   const bridge=direct.continuous();direct.nodes.get('#conversation-message').value='Keep this ordinary draft';bridge.mode.open();
