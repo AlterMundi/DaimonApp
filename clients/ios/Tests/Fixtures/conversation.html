@@ -11,8 +11,18 @@ window.runQualification=async()=>{
   try{
     if(!window.NativeSpeechAudio||NativeSpeechAudio.pcm!==false)throw Error('Unexpected capability advertisement');
     // Same-origin iframe knows the main document token but cannot reserve native output.
-    const iframe=document.createElement('iframe');iframe.srcdoc='<script>window.webkit.messageHandlers.audio.postMessage(JSON.stringify({command:"pcm_begin",document_id:parent.__DaimonAudioDocument,id:"pcm_999",seconds:600}));<\/script>';
-    document.body.append(iframe);await sleep(250);iframe.remove();
+    const iframe=document.createElement('iframe');
+    const audioFrameResult=new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{window.removeEventListener('message',receive);reject(Error('No audio iframe submission receipt'));},4000);
+      const receive=event=>{
+        if(event.source!==iframe.contentWindow||event.data?.kind!=='audio_iframe')return;
+        clearTimeout(timer);window.removeEventListener('message',receive);resolve(event.data.submitted);
+      };
+      window.addEventListener('message',receive);
+    });
+    iframe.src='/interaction/audio-iframe/';document.body.append(iframe);
+    if(await audioFrameResult!==true)throw Error('Audio iframe did not exercise native handler');
+    iframe.remove();
     const captureFrame=document.createElement('iframe');
     const captureResult=new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{window.removeEventListener('message',receive);reject(Error('No capture iframe refusal receipt'));},4000);
@@ -22,7 +32,7 @@ window.runQualification=async()=>{
       };
       window.addEventListener('message',receive);
     });
-    captureFrame.srcdoc='<script>window.webkit.messageHandlers.capture.postMessage(JSON.stringify({command:"capture_begin",document_id:parent.__DaimonAudioDocument,owner:crypto.randomUUID()})).then(()=>parent.postMessage({kind:"capture_iframe",refused:false},parent.location.origin),()=>parent.postMessage({kind:"capture_iframe",refused:true},parent.location.origin));<\/script>';
+    captureFrame.src='/interaction/capture-iframe/';
     document.body.append(captureFrame);
     if(await captureResult!==true)throw Error('Iframe acquired native microphone session');
     captureFrame.remove();

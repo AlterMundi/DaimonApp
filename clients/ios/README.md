@@ -170,3 +170,10 @@ session across real PCM playback/idle/pause/flush. It never requests getUserMedi
 or changes a microphone permission. This checks session/bridge coexistence only;
 actual microphone permission, audio input, duplex processing and physical hearing
 remain unqualified. Source20tests/SDK evidence is separate from this runtime result.
+
+Extended fixturea251f42 reached the actual app in CI42383442620 but received no
+capture iframe reply. Its srcdoc frame was incompatible with the shell's
+HTTPS-only navigation contract. The probes now load distinct same-origin HTTPS
+child documents and require their own submission/reply receipts before proceeding;
+no production navigation or frame authorization policy was widened. Earlier
+srcdoc non-reservation does not prove the native handler saw a frame request.

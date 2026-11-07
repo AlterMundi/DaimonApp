@@ -17,7 +17,10 @@ def serve(state):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             print(json.dumps({'fixture_get': self.path[:256]}), flush=True)
-            name = 'conversation.html' if self.path.startswith('/interaction/') else 'outside.html'
+            path = self.path.split('?',1)[0]
+            children = {'/interaction/audio-iframe/':'audio-iframe.html',
+                        '/interaction/capture-iframe/':'capture-iframe.html'}
+            name = children.get(path) or ('conversation.html' if path.startswith('/interaction/') else 'outside.html')
             body = (ROOT / 'Tests/Fixtures' / name).read_bytes()
             self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
