@@ -223,3 +223,14 @@ receipt. The current fixture removes that unnecessary prelaunch read/copy: its
 single launch carries only two bounded public DER anchors as base64 arguments,
 parsed only by the qualification source. Keys never leave disposable runner state;
 production bundles still compile no fixture helper. All old outcomes stay retained.
+
+
+Source68c7fca passed28Swift cases (zero failures,1.689s), both actual SDK app
+builds and normal-app helper absence inCI42391956558; all five general checks
+passed inCI42391956382. Runtime installed in51.62seconds, but the one launch
+observation timed out at90seconds. No page request, stage read or application log
+established launch, TLS checks or new Beacon playback. Termination was unconfirmed;
+shutdown/delete/server stop were acknowledged. Cause remains unknown; do not
+classify this as a TLS or audio failure, retry the terminal launch or advertise
+native capability. PR731 remains open pending actual new output qualification.
+The earlier successful PCM baseline does not cover this new Beacon driver/probe.
