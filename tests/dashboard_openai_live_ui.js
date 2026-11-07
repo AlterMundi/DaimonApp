@@ -4,8 +4,8 @@ const source=fs.readFileSync('dashboard/web/openai-live.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false}={}){
- const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false}={}){
+ const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
  const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;order.push('permission');return media;}}};
@@ -18,7 +18,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false}={}){
       replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
     emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
-   if(value.type==='close')emit({type:this.offered?'closed':'unconfirmed',id:this.id});
+   if(value.type==='close'&&!deferClose)emit({type:this.offered?'closed':'unconfirmed',id:this.id});
   }
   close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
  }
@@ -55,19 +55,30 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false}={}){
    audio_sha256:original.audio_sha256,audio_bytes:original.blob.size,work_replay:'never',...(options.headers['x-voice-capture-stop']?{capture_stop:'interrupted_prefix'}:{})}})};
  }
  const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch',source+';return window.PublicLiveConversation;')(
-  window,navigator,{hidden:false},crypto,Socket,Peer,class{play(){return Promise.resolve();}pause(){}},fetch);
+  window,navigator,{hidden:false},crypto,Socket,Peer,class{constructor(){this.paused=true;audios.push(this);}play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}},fetch);
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
   onState:value=>states.push(value),onItem:value=>items.push(value),onRecovery:value=>{recovered=value;}});
  async function start(){
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,
+ return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ const draining=fixture({deferClose:true});await draining.start();
+ draining.peers[0].ontrack({streams:[{id:'owned-provider-audio'}]});
+ assert.equal(draining.audios[0].paused,false);
+ const closing=draining.engine.hold('Background pause');
+ await until(()=>draining.sockets[0].sent.some(v=>v.type==='close'));
+ try{
+  assert.equal(draining.audios[0].paused,true,'Owned output must stop while final usage is still draining');
+  assert.equal(draining.audios[0].srcObject,null,'Release local audio routing without closing provider transport early');
+  assert.equal(draining.sockets[0].readyState,1,'Keep the source receiver for session.closed');
+  await draining.engine.hold();assert.equal(draining.sockets[0].sent.filter(v=>v.type==='close').length,1,'Repeated lifecycle signals share one close intent');
+ }finally{draining.sockets[0].onmessage({data:JSON.stringify({type:'closed',id:draining.sockets[0].id})});await closing;}
  const reconnect=fixture({nativeChoice:true,reviewFirst:true});
  assert.equal(await reconnect.engine.start(),false);await until(()=>!reconnect.engine.active);
  assert.equal(reconnect.permission(),0,'A review offer does not request microphone permission');

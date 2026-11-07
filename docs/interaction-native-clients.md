@@ -22,6 +22,26 @@ queue and Node engine/adapter checks are component evidence; real AudioTrack/
 WebView/provider/phone acceptance must remain separate. VersionCode6 requires
 same-key upgrade. Source or a CI APK is not a deployed/installed client.
 
+## Avatar background suspension correction —7November2026
+
+The source fullscreen controller now consumes Android's existing
+`nativecapturebackground` event even while the WebView still reports visible.
+Continuous Avatar suspends through its current engine owner; the legacy capture
+view closes. Returning to the app does not reopen the microphone. Ordinary
+explicit background reply playback retains its separate existing service grant.
+
+Public GPT-Live also silences and disconnects its local audio element as soon as
+Hold starts. It keeps WebRTC/sideband alive for the existing bounded final-usage
+drain; late native work and original recovery remain independently owned. A
+second lifecycle signal cannot issue another close intent.
+
+The shipped Android bridge plus fullscreen controller are exercised together in
+Node with a still-visible document. A delayed-finalization public Live fixture
+proves immediate local silence while the provider receiver remains open, followed
+by one confirmed close. These are synthetic lifecycle checks, not physical phone,
+background survival or hearing acceptance. Source delivery remains separate from
+selection; no APK, provider/default or service change is implied by this fix.
+
 ## First Android pilot
 
 Source: `clients/android`. This is a thin Android WebView host with a Java audio

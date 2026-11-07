@@ -128,7 +128,11 @@ window.PublicLiveConversation=(()=>{
       socket.send(JSON.stringify(receipt));
     }
     async function hold(message='Voice paused. Your original audio is kept.'){
-      if(closing)return;closing=true;active=starting=false;clearTimeout(timer);state(message);
+      if(closing)return;closing=true;active=starting=false;clearTimeout(timer);
+      // Local playback stops immediately; the provider receiver remains alive
+      // for the final usage event and independent native work keeps its owner.
+      if(audio){audio.pause();audio.srcObject=null;}
+      state(message);
       sourceBoundary?.reject(Error('Recording ended before source boundary confirmation'));sourceBoundary=undefined;
       abortOpen?.(Error('Voice activation ended'));abortOpen=undefined;
       if(capture){
