@@ -3,7 +3,7 @@
 // originals and trusted sideband sources; it never commits synthetic turns.
 window.PublicLiveConversation=(()=>{
   const supported=()=>!!(window.RTCPeerConnection&&window.StreamingVoice?.supported()&&window.VoiceInput?.recoveryStore&&window.indexedDB&&navigator.locks?.request);
-  function create({headers,getBinding,getBackend=()=>undefined,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{}}){
+  function create({headers,getBinding,getBackend=()=>undefined,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{},onUsage=()=>{}}){
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
@@ -17,6 +17,7 @@ window.PublicLiveConversation=(()=>{
     const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(message?{message}:{})});
     const notify=()=>onRecovery([...originals.values()]);
+    const usage=value=>{try{onUsage({visit,binding,...value});}catch{/* Diagnostics never fail voice cleanup. */}};
     async function request(value,path,options={}){
       if(value.binding!==getBinding())throw Error('Recording belongs to another conversation');
       const response=await fetch(new URL('api/interaction/voice/gpt-live/visits/'+value.voice_visit+path,window.location.href),{
@@ -148,6 +149,7 @@ window.PublicLiveConversation=(()=>{
         try{socket.send(JSON.stringify({type:'close'}));}catch{closedAck(false);}
         let timeout;await Promise.race([finalized,new Promise(resolve=>{timeout=setTimeout(()=>resolve(false),35000);})]);clearTimeout(timeout);
       }
+      usage({closed:true});
       ++epoch;socket?.close();socket=undefined;channel?.close();channel=undefined;peer?.close();peer=undefined;
       if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
       // Durable local originals survive slow uploads. Do not hold the media
@@ -160,6 +162,7 @@ window.PublicLiveConversation=(()=>{
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
       const backend=getBackend(),voiceParent=continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined;
+      usage({});
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
       confirmed.clear();seals.clear();
@@ -190,12 +193,16 @@ window.PublicLiveConversation=(()=>{
             if(value.type==='prepared'){voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
             else if(value.type==='context_preparing')state('Preparing previous conversation');
             else if(value.type==='answer')answerResolve(value);
-            else if(value.type==='provider_event')onItem({visit,item:value.event,public_live:true});
+            else if(value.type==='provider_event'){
+              if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
+              onItem({visit,item:value.event,public_live:true});
+            }
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
               if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.');
             });
             else if(value.type==='finishing'){if(!closing)void hold(value.message||'Finishing voice; checking pending work.');}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
+              if(value.finalization)usage({finalization:value.finalization,closed:true});
               if(backend==='native'&&value.replacement&&/^[a-f0-9-]{36}$/.test(value.replacement.id||'')
                   &&/^[a-f0-9]{64}$/.test(value.replacement.revision||''))
                 replacementReview={binding,backend,value:value.replacement};
@@ -213,6 +220,7 @@ window.PublicLiveConversation=(()=>{
         if(!current()||admission?.id!==visit||!Number.isFinite(admission.remaining_seconds)||admission.remaining_seconds<=0
             ||admission.remaining_seconds>600||admission.max_input_pcm_bytes>600*32000)throw Error('Voice admission changed');
         const deadline=Date.now()+admission.remaining_seconds*1000;
+        usage({backend:preparedValue.mode==='public_live_native_comparison'?'native':'responses'});
         // Freeze the Android output owner before provider creation. Older APKs
         // retain their existing browser path; a selected native failure never
         // silently starts another player or provider.
