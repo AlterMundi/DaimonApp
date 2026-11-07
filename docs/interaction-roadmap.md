@@ -1184,14 +1184,21 @@ successor ownership and physical device acceptance remain unfinished.
 The existing transport-neutral maintenance cycle observes only while holding its
 instance lease. `heartbeat configure-producer GENERATION CONTRACT_JSON` selects
 `interval_seconds` (30–3600), `max_checks` (1–1024), `expires_at_unix_ms` (at most
-seven days and within the existing resource contract), and `matrix_replies` and/or
+seven days, independent of inference-account expiry), and `matrix_replies` and/or
 `workflows`. Configuration requires paused exact-generation ownership, no unresolved
-execution and an existing finite resource account. It cannot replace/refill an
-existing producer contract. Default remains unconfigured and paused. An explicitly
+execution. It cannot replace/refill an
+existing producer contract. Observation can retain authenticated sources while
+execution resources are absent/expired/exhausted; it cannot reserve native work
+or advance offer cursors until execution resources are available. Default remains
+unconfigured and paused. An explicitly
 owner-selected successor window can use the owner-only `heartbeat renew-window`
 command described in [heartbeat controls](interaction-heartbeat.md#explicit-owner-renewal-of-an-expired-window).
 It changes only the expired deadlines, conserves every lifetime counter/cursor,
-and leaves admission paused. It is not a model action or automatic renewal.
+and leaves admission paused. The owner-only `heartbeat renew-observation` changes
+only a finite expired observation deadline, conserving counters and pending
+uncertainty without touching inference resources. Neither is a model action or
+automatic renewal. Producer status retains one bounded last-check observation
+and last successful source-check timestamp; neither proves execution/delivery.
 
 One existing `bot_state` parent retains cadence, counters, source-review cursors
 and the existing native-return journal. A check consumes its finite counter even

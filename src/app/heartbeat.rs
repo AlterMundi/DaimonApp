@@ -97,17 +97,26 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
-    if let Some(rest) = args.strip_prefix("renew-window ") {
+    if let Some((action, rest)) = args
+        .split_once(' ')
+        .filter(|(action, _)| matches!(*action, "renew-window" | "renew-observation"))
+    {
         let fields: Vec<_> = rest.split_whitespace().collect();
         let [generation, previous_expiry, expiry] = fields.as_slice() else {
-            bail!("Expected heartbeat renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS");
+            bail!("Expected heartbeat {action} GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS");
         };
         let cfg = super::routing::profile(&app.shared)?;
         anyhow::ensure!(
             cfg.human_id == human,
             "Heartbeat belongs to the configured paired human"
         );
-        app.shared.store.heartbeat_renew_window(
+        let renew = if action == "renew-window" {
+            crate::store::Store::heartbeat_renew_window
+        } else {
+            crate::store::Store::heartbeat_renew_observation
+        };
+        renew(
+            &app.shared.store,
             human,
             cfg.entry(),
             generation.parse()?,
@@ -176,7 +185,7 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(
