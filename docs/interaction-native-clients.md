@@ -6,6 +6,79 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
+## Native Beacon candidate0.8 —7November2026
+
+The prepared `BeaconSynth` is a bounded six-carrier PCM synthesizer for the
+existing Sonic score. It accepts normalized component weights from the existing
+observer/mapping, not session state, emotion, a new observer or executable art.
+Six fixed carriers stay phase-continuous across chunk boundaries and zero weights.
+Membership and master-level changes retarget their current envelopes; duplicate
+observations do not restart a transition. Sinusoidal breathing follows the
+configured shared/harmonic pulse frequencies. No extra partial stack or texture
+is introduced. Mix weight stays at most one; the master maximum is0.8, with
+the selected vocabulary's lower peak applied by the renderer. Unsupported
+nonzero frequencies above45%of sample rate refuse rather than alias.
+
+Six release17 JVM cases verify the exact40.4series/absent unwanted partials,
+simultaneous components/peak bound, chunk/duplicate-update equivalence, harmonic
+amplitude breathing, mid-transition retarget/fade-to-zero and atomic invalid input
+refusal/defensive copying. Output arrays are transient synthetic samples; no
+recordings, provider calls or audible device test occurred.
+
+The source now also prepares `BeaconOutput` and `SpeechService` commands. One
+audio worker keeps one latest frame/level instead of accumulating a queue.
+Six-carrier configuration is frozen per owner; numeric frame bounds and mix are
+validated before admission. Frame validity is at most20seconds and level changes
+do not renew it. Readiness stamps the native monotonic clock; the prepared frame
+contract requires an absolute deadline on that clock. The prepared JS adapter derives
+it conservatively from receipt time and the caller's remaining source validity, so delayed bridge
+delivery cannot manufacture a fresh20second allowance. Expired observations fade
+their weights to zero. The two-hour
+owner lifetime includes initialization and is not extended by refreshes. Quiet
+workers sleep until a control or deadline rather than continuously synthesizing
+silence. AudioTrack writes are nonblocking with a bounded native buffer and
+two-second stalled-head refusal. Stop/lifecycle cannot admit later frames.
+
+Speech and Beacon share the existing AudioFocusRequest with independent holders;
+ending a spoken reply cannot abandon an audible Beacon, and stopping Beacon cannot
+abandon a speaking reply. Stale focus callbacks are ignored. Quiet observations
+carry the applied control revision so they cannot release a newer frame's focus.
+One stopping owner may retain one explicitly requested next owner; UUID identities
+prevent old-page callbacks from targeting the new page. Foreground loss/noisy
+route/global audio stop cancels that pending start. Disabling spoken replies stays
+separate from Beacon. These are source mechanics, not new background permission.
+
+The seven real synth/output/service classes compile with release17 against the
+verified API36 reference jar; that isolated signature check supplies an Activity
+class-literal stub and does not compile or qualify the real Activity/WebView.
+The six synth plus five PCM JVM tests pass. The prepared `openBeacon` JS adapter
+has a separate UUID owner and five-second readiness bound; closing during readiness,
+native failure or backgrounding clears it without resetting speech. Its closed
+numeric frame contract rejects extra fields, excessive weights, invalid expiry
+and audible aliased carriers before any bridge write. Level commands carry no
+freshness. Node qualification covers a cached observation keeping its original
+absolute expiry, invalid frames with no effects, late-owner events, pending-start
+cancellation, continued speech on background and throwing diagnostic callbacks.
+The existing renderer has a native branch gated by the APK0.8
+`beacon=true` capability. It reuses the six components, equal per-session mix,
+vocabulary frequencies/pulses/peak, source-age validity and capture/speech ducking;
+no browser AudioContext is created after native selection. Node fixtures cover
+the normalized mix, no freshness renewal by ducking, late starts and owner failure
+without browser fallback. Older clients keep the browser renderer.
+The preparation065691d passed mainCI42373895476 and Android42373895620:
+release/debug/test builds, lint, JVM cases, exact test-only asset packaging and
+all eight real API35 emulator instrumentation cases. Beacon's production
+WebView/bridge/service/AudioTrack path showed playback-head progress, stale
+silence despite level changes, fresh-state resume, duck-to-zero/recovery and
+native background closure. The separate-UID music probe also verified that
+speech completion cannot release Beacon's retained focus. These are synthetic
+score/device observations, with no microphone, provider call or hearing claim.
+
+APK0.8 now advertises the qualified native branch. Exact final-source CI, signing
+and receiving delivery remain required; until selected, served clients and
+signed APK0.7 remain unchanged. Physical phone/hearing, background voice and the
+complete original goal remain separate.
+
 ## Public Live native output candidate0.7 —7November2026
 
 The0.7 Android bridge advertises `webrtcPcm` and a600second maximum. Public

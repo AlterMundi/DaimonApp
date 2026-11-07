@@ -123,6 +123,16 @@ public class NativePcmSpeechTest {
                     assertEquals(round, transientLosses.get());
                     assertEquals(round, losses.get()); assertEquals(round, gains.get());
                 }
+                // Beacon and speech use one focus request with independent holders.
+                scenario.onActivity(activity -> output.get().acquireBeaconFocus(() -> output.get().releaseBeaconFocus()));
+                await(() -> losses.get() == 3, error);
+                String shared = UUID.randomUUID().toString();
+                send(scenario, output, 2, shared, speech.length, speech);
+                await(() -> positions.getOrDefault(shared, 0) == speech.length, error);
+                Thread.sleep(250);
+                assertEquals("Ending speech cannot abandon Beacon's focus", 2, gains.get());
+                scenario.onActivity(activity -> output.get().releaseBeaconFocus());
+                await(() -> gains.get() == 3 && head.get() > pausedHead.get(), error);
                 // Keep the PCM session open: its idle gaps must not hold the other app paused.
                 assertNull(error.get());
             } finally {

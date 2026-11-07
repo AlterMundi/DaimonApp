@@ -6,8 +6,8 @@ android {
         applicationId 'homes.dmn.interaction.pilot'
         minSdk 26
         targetSdk 36
-        versionCode 7
-        versionName '0.7.0-pilot'
+        versionCode 8
+        versionName '0.8.0-pilot'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
@@ -23,7 +23,7 @@ dependencies {
 // Exercise the exact web conversion source in the instrumented WebView, without
 // adding qualification scripts to the installed application's asset package.
 def webAudioTestAssets = tasks.register('webAudioTestAssets', Copy) {
-    from('../../../dashboard/web') { include 'webrtc-native-audio.js', 'voice-output-pcm.js' }
+    from('../../../dashboard/web') { include 'webrtc-native-audio.js', 'voice-output-pcm.js', 'sonic.js' }
     into(layout.buildDirectory.dir('generated/webAudioTestAssets'))
 }
 android.sourceSets.androidTest.assets.srcDir(layout.buildDirectory.dir('generated/webAudioTestAssets'))

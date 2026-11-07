@@ -1,3 +1,14 @@
+Native Beacon preparation reuses the existing Sonic score/explicit activation.
+Keep six normalized phase-continuous sine carriers, bounded latest frame/level,
+20second maximum observation validity and nonrenewable two-hour owner lifetime.
+Level changes do not refresh observations. Share one native audio-focus request
+with independent speech/Beacon holders; bind quiet/focus callbacks to their owner
+and applied control. Foreground/noisy/Stop cancels pending starts, without new
+background grants. Android API35 WebView/AudioTrack and separate-UID focus qualification passed
+PR726 preparation065691d. APK0.8 now advertises the native renderer; qualify the
+exact release before delivery. Emulator success is not physical phone/hearing
+acceptance. Older APKs keep browser audio without a native-failure fallback.
+
 Public Live usage observations are page-local/bounded8, using trusted server
 usage/finalization receipts. Only explicit voice_usage_confirmed and valid final
 seconds permit a voice-only estimate; missing final usage is unconfirmed, never

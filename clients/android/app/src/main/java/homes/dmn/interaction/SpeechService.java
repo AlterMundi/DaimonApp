@@ -32,6 +32,11 @@ public final class SpeechService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final LocalBinder binder = new LocalBinder();
     private SpeechOutput output;
+    private BeaconOutput beacon;
+    private String beaconId, pendingBeaconId;
+    private long beaconControl;
+    private boolean beaconHasState;
+    private long beaconFreshUntil;
     private MediaSession media;
     private PowerManager.WakeLock awake;
     private Consumer<JSONObject> listener;
@@ -40,7 +45,7 @@ public final class SpeechService extends Service {
     private String source;
     private long position;
     private final BroadcastReceiver noisy = new BroadcastReceiver() {
-        @Override public void onReceive(Context context, Intent intent) { if (enabled) userAction("pause"); }
+        @Override public void onReceive(Context context, Intent intent) { stopBeacon(false); if (enabled) userAction("pause"); }
     };
     private final Runnable expiry = () -> userAction("stop");
 
@@ -68,7 +73,7 @@ public final class SpeechService extends Service {
     boolean enabled() { return enabled; }
     void session(boolean value) {
         if (value == enabled) return; // Status refreshes cannot extend the finite session.
-        if (!value) { shutdown(); return; }
+        if (!value) { stopSpeechSession(); return; }
         enabled = true;
         try {
             // Called only by the selected visible conversation, before backgrounding.
@@ -81,6 +86,7 @@ public final class SpeechService extends Service {
     }
     void command(JSONObject value) {
         String command = value.optString("command");
+        if (command.startsWith("beacon_")) { beaconCommand(value); return; }
         if (command.equals("session")) { session(value.optBoolean("enabled")); return; }
         if (command.equals("begin") || command.equals("stream_begin") || command.equals("pcm_begin")) {
             source = value.optString("id"); position = 0; playing = paused = false;
@@ -88,6 +94,71 @@ public final class SpeechService extends Service {
         if (!command.equals("begin") && !command.equals("stream_begin") && !command.equals("pcm_begin") && !value.optString("id").equals(source)) return;
         output.command(value);
         if (command.equals("stop")) { source = null; position = 0; playing = paused = false; updateState(); }
+    }
+    private void beaconEvent(String id, String type) {
+        try { if (listener != null) listener.accept(new JSONObject().put("id", id).put("type", type)); }
+        catch (Exception ignored) { }
+    }
+    private void beginBeacon(String id) {
+        final BeaconOutput[] owned = new BeaconOutput[1];
+        beaconId = id; beaconControl = 0; beaconHasState = false; beaconFreshUntil = 0;
+        owned[0] = new BeaconOutput(handler, value -> {
+            if (beacon != owned[0]) return;
+            String type = value.optString("type");
+            if (type.equals("beacon_quiet") && value.optLong("control", -1) == beaconControl)
+                output.releaseBeaconFocus(); // A late quiet receipt cannot release a newer control's focus.
+            if (type.equals("beacon_closed") || type.equals("beacon_error")) {
+                output.releaseBeaconFocus(); beacon = null; beaconId = null;
+                String pending = pendingBeaconId; pendingBeaconId = null;
+                if (pending != null) {
+                    if (type.equals("beacon_closed")) beginBeacon(pending);
+                    else beaconEvent(pending, "beacon_error");
+                }
+            }
+            try { value.put("id", id); if (listener != null) listener.accept(value); }
+            catch (Exception ignored) { }
+        });
+        beacon = owned[0];
+    }
+    private void stopBeacon(boolean fade) {
+        if (pendingBeaconId != null) { beaconEvent(pendingBeaconId, "beacon_closed"); pendingBeaconId = null; }
+        if (output != null) output.releaseBeaconFocus();
+        if (beacon != null) beacon.close(fade);
+    }
+    private void beaconCommand(JSONObject value) {
+        String id = value.optString("id"), command = value.optString("command");
+        try {
+            if (id.length() != 43 || !id.startsWith("beacon_")
+                || !java.util.UUID.fromString(id.substring(7)).toString().equals(id.substring(7))) return;
+            if (command.equals("beacon_begin")) {
+                if (beacon == null) beginBeacon(id);
+                else if (beacon.stopping() && pendingBeaconId == null && !id.equals(beaconId)) pendingBeaconId = id;
+                else beaconEvent(id, "beacon_error");
+                return;
+            }
+            if (command.equals("beacon_stop") && id.equals(pendingBeaconId)) {
+                pendingBeaconId = null; beaconEvent(id, "beacon_closed"); return;
+            }
+            if (beacon == null || !id.equals(beaconId)) return;
+            if (command.equals("beacon_stop")) { output.releaseBeaconFocus(); beacon.close(true); return; }
+            if (beacon.stopping()) return;
+            if (command.equals("beacon_frame")) {
+                BeaconOutput.Frame frame = new BeaconOutput.Frame(value);
+                beaconHasState = false;
+                for (double weight : frame.weights) if (weight > 0) beaconHasState = true;
+                beaconFreshUntil = frame.expires;
+                if (beaconHasState && frame.level > 0 && beaconFreshUntil > android.os.SystemClock.elapsedRealtime())
+                    output.acquireBeaconFocus(() -> stopBeacon(false));
+                beaconControl = beacon.frame(frame);
+            } else if (command.equals("beacon_level")) {
+                if (beaconHasState && beaconFreshUntil > android.os.SystemClock.elapsedRealtime() && value.optDouble("level", 0) > 0)
+                    output.acquireBeaconFocus(() -> stopBeacon(false));
+                beaconControl = beacon.level(value);
+            } else throw new IllegalArgumentException("Unknown Beacon command");
+        } catch (Exception error) {
+            if (id.equals(beaconId)) stopBeacon(false);
+            beaconEvent(id, "beacon_error");
+        }
     }
     private void receive(JSONObject value) {
         String type = value.optString("type");
@@ -138,9 +209,10 @@ public final class SpeechService extends Service {
             .setStyle(new Notification.MediaStyle().setMediaSession(media.getSessionToken()).setShowActionsInCompactView(0, 1)).build();
     }
     void leaveForeground() {
+        stopBeacon(false);
         if (output != null && output.leaveForeground()) { source = null; position = 0; playing = paused = false; updateState(); }
     }
-    void shutdown() {
+    private void stopSpeechSession() {
         enabled = playing = paused = false; source = null; position = 0;
         handler.removeCallbacks(expiry);
         if (output != null) output.stop();
@@ -148,6 +220,7 @@ public final class SpeechService extends Service {
         if (media != null) { updateState(); media.setActive(false); }
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf();
     }
+    void shutdown() { stopBeacon(false); stopSpeechSession(); }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && enabled && intent.getAction() != null) userAction(intent.getAction());
         return START_NOT_STICKY;
