@@ -124,6 +124,10 @@ class Standalone(Creation):
 class MixedStandalone(Standalone):
     def handle_extra_rpc(self,message,send):
         ident=message.get('id')
+        if self.routed and message.get('method') is None and ident=='caps':
+            value=message['result'];assert value['success'],value
+            capabilities=json.loads(value['contentItems'][0]['text'])
+            assert capabilities['operations']['create']['after_dispatch']=='retained-source/v1'
         if self.routed and message.get('method') is None and ident=='inputs':
             value=message['result'];assert value['success'],value
             rows=json.loads(value['contentItems'][0]['text'])['inputs']
