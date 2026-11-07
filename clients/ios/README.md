@@ -74,7 +74,29 @@ Three Foundation tests cover selected-home/page boundaries, closed message field
 and numeric/bool refusal. SDK compilation checks the iOS-only WKWebView types;
 actual document injection, iframe refusal and native runtime remain unqualified.
 
-This is not an installable app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
+`App/AppDelegate.swift` now prepares the scene-based UIKit application: existing
+shared-session ownership, native home entry, persistent home selection and the
+hosted Conversation controller. `build-simulator.sh OUTPUT` builds an ad-hoc
+simulator bundle with the exact existing native adapter and its checked SHA256.
+It refuses an existing output directory; bundle bytes stay below16MiB. This is
+not device signing or an IPA/TestFlight release.
+
+`--qualification` builds a separate fixture-only bundle ID and finite page-start
+hook that are absent from the normal app. `test-simulator.py --app BUNDLE` creates
+one disposable installed iOS simulator and a loopback-only HTTPS fixture. Its
+one-day test CA is added only to that simulator; production app TLS policy and
+existing device/keychains are unchanged. The fixture sends synthetic PCM through
+the actual WebView/bridge/engine, checks played receipts and pause/resume/flush,
+attempts iframe reservation, then navigates outside the application path. No
+microphone, provider, human voice original or real shared-login account is used.
+It starts the fixture once, waits at most35seconds for its terminal receipt and
+never relaunches on timeout. Teardown removes that device, server, CA and state.
+CI replaces the redundant standalone SDK library build with this application
+build and journey under the same ten-minute cap. No app/certificate/audio artifact
+is uploaded. Actual compilation and simulator acceptance of this increment remain
+pending until its current CI passes.
+
+This is not a device-distributable iOS app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
 actual WKWebView bridge/document injection and shared-login shell acceptance,
 foreground capture/route/interruption/return handling, progressive/background
 speech, native Beacon and actual simulator/device acceptance. Reuse the hosted

@@ -19,13 +19,8 @@ jobs:
       - name: Build and test the bounded native audio core
         working-directory: clients/ios
         run: swift test --jobs 2 --scratch-path "$RUNNER_TEMP/daimon-ios-build"
-      - name: Compile the same sources against the iOS Simulator SDK
-        working-directory: clients/ios
+      - name: Build the actual iOS Simulator app with the existing adapter
         run: |
-          mkdir -p "$RUNNER_TEMP/daimon-ios-sdk"
-          xcrun --sdk iphonesimulator swiftc -swift-version 5 \
-            -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-            -target arm64-apple-ios17.0-simulator -emit-library -emit-module \
-            -module-name DaimonNativeAudio Sources/DaimonNativeAudio/*.swift \
-            -o "$RUNNER_TEMP/daimon-ios-sdk/libDaimonNativeAudio.dylib" \
-            -emit-module-path "$RUNNER_TEMP/daimon-ios-sdk/DaimonNativeAudio.swiftmodule"
+          bash clients/ios/build-simulator.sh "$RUNNER_TEMP/daimon-ios-app" --qualification
+      - name: Exercise the actual WebView and native PCM bridge without capture
+        run: python3 clients/ios/test-simulator.py --app "$RUNNER_TEMP/daimon-ios-app/Daimon.app"
