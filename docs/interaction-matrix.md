@@ -604,3 +604,25 @@ Production deployment, qualified receiver execution and the selected live
 cross-body correction/renewal trial remain open in #367. One inference/token admission does not establish a global
 monetary ceiling. No existing local routing, selected runtime or paused goal is
 changed by importing this module.
+
+### Existing signed messaging enrollment as the host owner proof
+
+A receiving host can use `telecodex.matrix-host-binding/v2` with `source`, the
+existing messaging-only client reference, and `enrollment` containing absolute
+`application`/`binding` references, the signed public `identity`, and its pinned
+Ed25519 `public_key`. Keep the host binding and enrollment documents in their
+existing owner-only directories. The SDK's protected reader requires that private
+parent as well as private, single-link files; public adapter code stays separate.
+
+The host verifies the detached enrollment signature and exact application hash,
+its messaging descriptor, being/origin, and the configured native runtime ID,
+label and expected server. Each actual native call still authenticates and checks
+its current messaging authority, reader selection and destination. Tampered
+metadata or a different native client refuses before an effect. This permits the
+already-enrolled messaging role to read/reply without depending on an unrelated
+legacy `runtime.status` capability's expiry. It issues no role, renews no key or
+validity, reads no private ledger and synthesizes no runtime status. The v1 host
+binding remains compatible with its separate observation capability.
+
+Use the same finite owner-selected heartbeat/resource controls. Enrollment alone
+is neither model-execution permission nor proof of receipt, action or response.
