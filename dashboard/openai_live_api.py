@@ -207,8 +207,9 @@ def install(app, config, provider, authorize, origins):
                 if native_backend:
                     caps=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                     if (caps.get('binding')!=binding or caps.get('foreground_live_window')!='journal-input/v1'
+                            or caps.get('voice_available') is not True
                             or any(caps.get(k)!='v1' for k in ('foreground_context','foreground_resume','foreground_public_live_transcripts'))
-                            or not callable(getattr(provider,'conversation_foreground_interpret',None))
+                            or not callable(getattr(provider,'conversation_foreground_delegate',None))
                             or not callable(getattr(provider,'conversation_live_context',None))
                             or getattr(app.state,'native_history',None) is None):
                         raise LiveUnavailable('native_reader_unavailable')

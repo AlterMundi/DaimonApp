@@ -544,7 +544,9 @@ Responses-only backend settings are not used in native mode.
 Native mode requires source seals (enabled for that explicit mode), forbids
 upload-time native enrollment and managed-Responses conversation tools, and checks
 the selected native reader's `foreground_live_window="journal-input/v1"`
-capability before microphone admission or public voice creation. An older reader
+capability and configured raw voice capture before microphone admission or public
+voice creation. A deferred acoustic reservation needs no completed-ASR command.
+An older reader
 refuses before a paid creation; it never falls back to file recognition.
 
 After a confirmed nonempty acoustic window, one owned task enrolls its exact raw

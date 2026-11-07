@@ -660,7 +660,7 @@ def qualify_public_live_window(binary):
     j=ReconnectCheckpointContext(binary)
     try:
         assert '[voice]' not in j.config.read_text()
-        j.config.write_text(j.config.read_text()+'\n[voice]\ntranscription_command=["/bin/false"]\ncompleted_transcription_command=["/bin/false"]\ntranscriber_label="Forbidden second ASR in Live-window qualification"\n')
+        j.config.write_text(j.config.read_text()+'\n[voice]\ntranscription_command=["/bin/false"]\ntranscriber_label="Forbidden second ASR in Live-window qualification"\n')
         j.start();j.admit('Seed synthetic public window handoff.',topic=1)
         j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.messages.clear()
         provider=Provider({'receiver_config':str(j.config),'state_dir':str(j.root/'window-dashboard'),'bot_id':123})

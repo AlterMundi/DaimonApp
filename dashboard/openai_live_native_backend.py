@@ -45,7 +45,8 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
     del key_file, recognizer_factory
     current(False)
     caps=provider.presentation('input voice capabilities')
-    if caps.get('binding')!=owner['binding'] or caps.get('foreground_live_window')!='journal-input/v1':
+    if (caps.get('binding')!=owner['binding'] or caps.get('foreground_live_window')!='journal-input/v1'
+            or caps.get('voice_available') is not True):
         raise ValueError('Native Live-window reader is not selected; no second ASR or work requested')
     with history_lock(history.root / '.lock'):
         value = history.read(ident,human,owner)

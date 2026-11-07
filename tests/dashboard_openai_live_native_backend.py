@@ -24,7 +24,7 @@ class Backend(unittest.TestCase):
 
     def ready(self):
         self.prepare();self.delegation='native-task';self.asr=[];self.imports=[];self.writes=[];self.updates=[]
-        self.provider.presentation=lambda command:{'binding':self.owner['binding'],'foreground_interpretation':'gpt-transcribe/v1','foreground_live_window':'journal-input/v1'}
+        self.provider.presentation=lambda command:{'binding':self.owner['binding'],'foreground_interpretation':'gpt-transcribe/v1','foreground_live_window':'journal-input/v1','voice_available':True,'foreground_completed_reader':True}
         self.provider.presentation_list=lambda *args:{'binding':self.owner['binding'],
             'newest':{'native':1 if self.writes else 0},'items':([{
                 'id':'native:1','revision':'d'*64,'kind':'integrator_answer','local_turn':42}] if self.writes else []),

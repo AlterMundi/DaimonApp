@@ -29,7 +29,7 @@ from dashboard.native_history import NativeHistory
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import dashboard_native_context as context_fixtures
 
-NATIVE_CAPS={"foreground_interpretation":"gpt-transcribe/v1","foreground_live_window":"journal-input/v1",
+NATIVE_CAPS={"foreground_interpretation":"gpt-transcribe/v1","foreground_live_window":"journal-input/v1","voice_available":True,"foreground_completed_reader":True,
     "foreground_context":"v1","foreground_resume":"v1","foreground_public_live_transcripts":"v1"}
 
 
@@ -47,6 +47,8 @@ class Owner:
     def authorized(self,human):return human==100
     def assert_binding(self):pass
     def close(self):pass
+    def conversation_foreground_delegate(self,body):
+        raise AssertionError('This fixture did not select a delegation writer')
     def conversation_foreground_interpret(self,body):
         raise AssertionError('This fixture did not select an interpretation writer')
     def public_live_binding(self,binding):
@@ -314,12 +316,21 @@ class Mounted(unittest.TestCase):
 
     def test_native_choice_refuses_missing_python_adapter_even_with_current_native_capabilities(self):
         self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
-        self.owner.conversation_foreground_interpret=None
+        self.owner.conversation_foreground_delegate=None
         with self.choice_client() as client:
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                 socket.send_json({**self.meta,'backend':'native'})
                 value=socket.receive_json();self.assertEqual(value['type'],'unconfirmed')
                 self.assertIn('server update',value['message'])
+        self.assertEqual(Client.instances,[])
+        self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
+
+    def test_native_choice_refuses_unconfigured_raw_voice_before_paid_creation(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS,'voice_available':False}
+        with self.choice_client() as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                socket.send_json({**self.meta,'backend':'native'})
+                self.assertEqual(socket.receive_json()['type'],'unconfirmed')
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 

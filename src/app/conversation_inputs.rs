@@ -1127,7 +1127,10 @@ async fn voice_submit(
         .as_ref()
         .context("Voice input is not configured")?
         .select_profile(request.transcription_profile.as_deref())?;
-    if recover || request.foreground_dialogue.is_some() {
+    // A deferred acoustic reservation starts no recognizer and therefore does
+    // not require an unused completed-transcript command. Ordinary foreground
+    // recovery still selects only its configured completed reader.
+    if recover || (request.foreground_dialogue.is_some() && !request.defer_foreground) {
         config.transcription_command = config
             .completed_transcription_command
             .clone()
