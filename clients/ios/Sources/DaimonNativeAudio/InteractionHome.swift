@@ -18,10 +18,11 @@ public struct InteractionHome: Equatable {
         self.origin = origin; self.conversation = conversation
     }
     public func allowsPage(_ url: URL) -> Bool {
-        guard url.scheme == "https", url.host?.lowercased() == origin.host?.lowercased(),
-              url.port == nil || url.port == 443, url.user == nil, url.password == nil,
-              url.path.hasPrefix("/interaction/"),
-              !url.path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else { return false }
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              parts.scheme == "https", parts.host?.lowercased() == origin.host?.lowercased(),
+              parts.port == nil || parts.port == 443, parts.user == nil, parts.password == nil,
+              parts.path.hasPrefix("/interaction/"),
+              !parts.path.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else { return false }
         return true
     }
 }

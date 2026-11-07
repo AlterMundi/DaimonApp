@@ -12,7 +12,7 @@ final class InteractionBridgeTests: XCTestCase {
         let home = try InteractionHome(" https://Example.org:443/interaction/ ")
         XCTAssertEqual(home.origin.absoluteString, "https://example.org")
         XCTAssertEqual(home.conversation.absoluteString, "https://example.org/interaction/?view=conversation&client=standalone")
-        XCTAssertTrue(home.allowsPage(home.conversation))
+        XCTAssertTrue(home.allowsPage(home.conversation), "URL path=\(home.conversation.path), components path=\(URLComponents(url:home.conversation,resolvingAgainstBaseURL:true)?.path ?? "missing")")
         for value in ["http://example.org", "https://user:secret@example.org", "https://example.org:8443",
                       "https://example.org/?token=secret", "https://example.org/#other", "https://example.org/works/"] {
             XCTAssertThrowsError(try InteractionHome(value))
