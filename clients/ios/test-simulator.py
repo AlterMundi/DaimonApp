@@ -75,7 +75,8 @@ def qualify(app):
                 if server.poll() is not None: raise RuntimeError('Loopback HTTPS fixture exited before readiness: '+(state/'server.log').read_text()[-8192:])
                 time.sleep(.1)
             assert (state/'server.pid').exists(), 'Loopback HTTPS fixture did not become ready'
-            runtimes = json.loads(run(['xcrun','simctl','list','runtimes','--json']))['runtimes']
+            print('Reading installed simulator runtimes; bounded120seconds, no downloads',flush=True)
+            runtimes = json.loads(run(['xcrun','simctl','list','runtimes','--json'],timeout=120))['runtimes']
             runtimes = [r for r in runtimes if r.get('isAvailable') and '.iOS-' in r['identifier']]
             assert runtimes, 'No installed available iOS runtime; none was downloaded'
             runtime = max(runtimes,key=lambda r:tuple(map(int,r['version'].split('.'))))
