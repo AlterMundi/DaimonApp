@@ -575,7 +575,11 @@ proof/outcome contracts; new public Avatar delegations never invoke file ASR.
 
 Once grouped windows are retained, keep a window-aware native writer during web
 rollback: earlier strict readers cannot deserialize the new optional delegation
-proof. This source change is not receiving selection or physical acceptance.
+proof. The former web/native pair is a pre-window rollback only: its public
+backend starts file ASR and is not an acceptable enabled rollback for this mode.
+After window admission, recovery must retain a qualified window-aware pair or
+leave public creation unavailable, with originals and explicit alternate modes
+preserved. This source change is not receiving selection or physical acceptance.
 
 Same-turn canonical native progress/results are polled through bounded existing
 presentation pages and returned with the source/revision/append safeguards above.
