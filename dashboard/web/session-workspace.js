@@ -9,7 +9,7 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,daimonName='Daimon',onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
@@ -130,8 +130,8 @@
     function render(){
       // Visibility is separate from intent: an expired row must not silently
       // erase a selected pin or change the target of an existing recording.
-      const recent=[...inventory.values()].filter(row=>showAll||active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
-        .sort((a,b)=>Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
+      const recent=[...inventory.values()].filter(row=>row.is_entry||showAll||active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
+        .sort((a,b)=>Number(b.is_entry===true)-Number(a.is_entry===true)||Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
       const visible=new Set(recent.map(row=>row.id));
       for(const [id,row] of rows)if(!visible.has(id)){row.box.remove();rows.delete(id);}
       for(const data of recent){
@@ -167,7 +167,7 @@
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
         observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
-        inventory=new Map(value.sessions.map(row=>[row.id,row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';retryStatus.hidden=true;
+        inventory=new Map(value.sessions.map(row=>[row.id,row.is_entry?{...row,title:typeof daimonName==='string'&&daimonName.trim()?daimonName.trim():'Daimon'}:row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';retryStatus.hidden=true;
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);

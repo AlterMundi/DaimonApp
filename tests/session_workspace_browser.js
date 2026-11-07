@@ -379,7 +379,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.setViewportSize({width:1280,height:800});
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
- assert.deepEqual(await page.locator('.session-name').allTextContents(),[sessions[1].title,sessions[2].title,sessions[0].title]);
+ assert.deepEqual(await page.locator('.session-name').allTextContents(),['Daimon',sessions[1].title,sessions[0].title]);
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
  assert.equal(await page.locator('.session-rail').isVisible(),false,'Pin collapses the menu');
  assert(await page.getByRole('button',{name:'Show sessions',exact:true}).evaluate(button=>button===document.activeElement),'Pin returns focus to the toggle');
@@ -460,7 +460,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
 
  await page.setViewportSize({width:320,height:740});await bottomMenu();await compactControls();
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No horizontal overflow at 320px');
- const focused=page.locator('.session-row-actions button').first();await page.locator('.session-name').first().focus();await page.keyboard.press('Tab');
+ const focused=page.locator('.session-row-actions button:enabled').first();await page.locator('.session-name').first().focus();await page.keyboard.press('Tab');
  assert(await focused.evaluate(button=>button.matches(':focus-visible')&&getComputedStyle(button).outlineStyle!=='none'),'Keyboard focus remains visible on compact controls');
  await page.screenshot({path:path.join(output,'narrow-sessions.png')});
  await page.setViewportSize({width:390,height:844});

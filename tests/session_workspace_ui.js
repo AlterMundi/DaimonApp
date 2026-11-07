@@ -13,7 +13,7 @@ class Element{
   focus(){this.focused=true;}
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function boot({storage=new Map(),defaultFilter}={}){
+function boot({storage=new Map(),defaultFilter,daimonName='Daimon'}={}){
   const document={createElement:tag=>new Element(tag)},window={localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
@@ -32,7 +32,7 @@ function boot({storage=new Map(),defaultFilter}={}){
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:{now:()=>now}});
-  const control=window.SessionWorkspace.mount({timeline,api,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
+  const control=window.SessionWorkspace.mount({timeline,api,daimonName,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
     onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
   const all=()=>{const result=[];const visit=n=>{result.push(n);n.children.forEach(visit);};visit(root);return result;};
@@ -44,13 +44,19 @@ function boot({storage=new Map(),defaultFilter}={}){
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
+  const general=boot({daimonName:'CompAII'}),entry=general.getSessions().find(row=>row.is_entry);
+  entry.title='Daimon Interaction';entry.last_activity_at=1;
+  general.getSessions()[0].execution='working';await general.control.refresh('binding');
+  assert.equal(general.rows()[0].children[0].textContent,'CompAII','General conversation is always first, including when idle and old');
+  general.byText('CompAII').click();assert.equal(general.control.capture().reference,undefined,'Display naming preserves the integrating destination');
+  assert.equal(entry.title,'Daimon Interaction','The retained native title is not rewritten');
   const storage=new Map(),profile=boot({storage});
   const inventory=profile.getSessions().map((row,i)=>({...row,id:String(i+1).repeat(24)}));
   inventory[1].last_activity_at=Date.now()/1000-172800;
   profile.setSessions(inventory);await profile.control.refresh('binding');
   assert.equal(profile.rows().length,2,'Recent remains the ordinary default');
   profile.byLabel('Show all sessions').click();assert.equal(profile.rows().length,3);
-  profile.byLabel('Pin as the input destination').click();
+  profile.rows().find(row=>row.children[0].textContent==='Busy work').children[2].children[1].click();
   profile.byText('Earlier work').click();await tick();
   assert.equal(profile.control.capture().reference.source,'session:8');
   const restored=boot({storage});restored.setSessions(inventory.map(row=>({...row,destination:row.destination?{...row.destination,revision:'c'.repeat(64)}:null})));
@@ -64,11 +70,12 @@ function boot({storage=new Map(),defaultFilter}={}){
   const allProfile=boot({defaultFilter:'all'});allProfile.setSessions(inventory);await allProfile.control.refresh('binding');assert.equal(allProfile.rows().length,3,'Explicit receiving profile can select all registered sessions');
   const f=boot();await f.control.refresh('binding');
   assert.equal(f.control.active,true);assert.equal(f.control.capture(),undefined);
-  assert.deepEqual(f.rows().map(row=>row.children[0].textContent),['Earlier work','Busy work','Conversation']);
+  assert.deepEqual(f.rows().map(row=>row.children[0].textContent),['Daimon','Earlier work','Busy work']);
   f.getSessions()[0].execution='working';await f.control.refresh('binding');
-  assert.equal(f.rows()[0].children[0].textContent,'Busy work');
+  assert.equal(f.rows()[0].children[0].textContent,'Daimon');
+  assert.equal(f.rows()[1].children[0].textContent,'Busy work');
   f.byLabel('Show sessions').click();
-  await f.rows()[0].children[2].children[1].click();
+  await f.rows()[1].children[2].children[1].click();
   assert.equal(f.byLabel('Your sessions').hidden,true,'Pin selection collapses the menu');
   assert.equal(f.byLabel('Show sessions').focused,true,'Pin returns focus to the menu toggle');
   f.byLabel('Show sessions').click();
@@ -86,23 +93,23 @@ function boot({storage=new Map(),defaultFilter}={}){
   f.byLabel('Back to the conversation').click();
   assert.equal(f.timeline.hidden,false);assert.equal(f.control.capture().reference.source,'session:7','Back restores the explicit prior pin');
   assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'true');
-  f.byText('Conversation').click();
+  f.byText('Daimon').click();
   assert.equal(f.control.capture().reference,undefined,'Selecting Conversation temporarily overrides a worker pin');
   f.byLabel('Back to the conversation').click();assert.equal(f.control.capture().reference.source,'session:7');
   f.byLabel('Show sessions').click();
-  f.rows()[1].children[2].children[0].click();
+  f.rows()[2].children[2].children[0].click();
   assert.equal(f.byLabel('Your sessions').hidden,true,'Exact-message reply collapses the menu');
   assert.equal(f.replies[0].ref.source,'session:8/42','Reply freezes the exact clicked latest message');
   f.getSessions()[1].latest_reply={...f.reference(8),source:'session:8/99'};
   await f.control.refresh('binding');assert.equal(f.replies[0].ref.source,'session:8/42');
   f.byLabel('Show sessions').click();
-  f.rows()[0].children[2].children[2].click();
+  f.rows()[1].children[2].children[2].click();
   assert.equal(f.byLabel('Your sessions').hidden,false,'Mute keeps the menu open');
-  assert.equal(f.audioCalls[0][0],'mute');assert.equal(f.rows()[0].children[2].children[2].attrs['aria-pressed'],'true');
+  assert.equal(f.audioCalls[0][0],'mute');assert.equal(f.rows()[1].children[2].children[2].attrs['aria-pressed'],'true');
   assert.equal(f.byLabel('Hear all sessions: clear mute and solo').hidden,false);
-  f.rows()[0].children[2].children[3].click();
+  f.rows()[1].children[2].children[3].click();
   assert.equal(f.byLabel('Your sessions').hidden,false,'Solo keeps the menu open');
-  assert.equal(f.rows()[0].children[2].children[3].attrs['aria-pressed'],'true');
+  assert.equal(f.rows()[1].children[2].children[3].attrs['aria-pressed'],'true');
   assert.equal(f.byLabel('Hear all sessions: clear mute and solo').parentNode.className,'session-rail-header','Reset lives in the menu header');
   f.byLabel('Hear all sessions: clear mute and solo').click();
   assert.equal(f.byLabel('Your sessions').hidden,false,'Reset keeps the menu open');
@@ -166,7 +173,7 @@ function boot({storage=new Map(),defaultFilter}={}){
   records[0].last_activity_at=now-86399;records[1].last_activity_at=now-86401;
   records[2].last_activity_at=now-172800;records[2].execution='working';
   await aging.control.refresh('binding');
-  assert.deepEqual(aging.rows().map(row=>row.children[0].textContent),['Conversation','Busy work'],'Active now counts as activity; expired idle sessions are hidden');
+  assert.deepEqual(aging.rows().map(row=>row.children[0].textContent),['Daimon','Busy work'],'Active now counts as activity; expired idle sessions are hidden');
   aging.rows()[1].children[2].children[1].click();
   records[0].last_activity_at=now-86401;await aging.control.refresh('binding');
   assert.equal(aging.control.capture().reference.source,'session:7');
@@ -180,9 +187,9 @@ function boot({storage=new Map(),defaultFilter}={}){
   assert.equal(titles.control.pinState(worker).available,true);
   assert.equal(titles.control.pinSource(worker),true);assert.equal(titles.control.capture().reference.source,'session:7');
   assert.equal(titles.control.pinState(worker).pinned,true);
-  assert.equal(titles.rows()[1].children[2].children[1].attrs['aria-pressed'],'true','Title pin updates the menu');
+  assert.equal(titles.rows()[2].children[2].children[1].attrs['aria-pressed'],'true','Title pin updates the menu');
   assert.equal(titles.byLabel('Send to the conversation').attrs['aria-pressed'],'true','Destination unpin indicates the explicit pin');
-  titles.rows()[1].children[2].children[1].click();assert.equal(titles.control.pinState(worker).pinned,false,'Menu unpin updates the title');
+  titles.rows()[2].children[2].children[1].click();assert.equal(titles.control.pinState(worker).pinned,false,'Menu unpin updates the title');
   assert.equal(titles.control.pinState({...worker,target:{chat_id:200,thread_id:7}}).available,false,'A matching label cannot select another target');
   titles.getSessions()[0].last_activity_at=now-172800;await titles.control.refresh('binding');
   assert.equal(titles.byText('Busy work'),undefined);assert.equal(titles.control.pinSource(worker),true,'Hidden old rows still resolve through the complete exact inventory');

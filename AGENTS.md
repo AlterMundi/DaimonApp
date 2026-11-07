@@ -1,3 +1,8 @@
+The session menu always keeps its is_entry conversation visible first and uses
+the existing owner-selected daimon display name (fallback Daimon). This changes
+presentation only; preserve native session titles, references, audio keys and
+frozen input destinations. Worker activity sorting and recent/all stay intact.
+
 Image send preparation shares one bounded in-flight immutable PNG upload between
 text and voice consumers. Ordinary audio/image media POSTs have no application
 wall-clock cutoff (Nicolas503b5d76); network failure and existing explicit
