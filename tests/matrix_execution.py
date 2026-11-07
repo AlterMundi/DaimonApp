@@ -1496,6 +1496,36 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 enrolled_reply = operator_respond(enrolled_intent, enrolled, timeout=5)
                 self.assertEqual(operator_respond(enrolled_intent, enrolled, timeout=5, inspect_only=True)
                                  ["delivery"]["message_id"], enrolled_reply["delivery"]["message_id"])
+                # Initial intake can select only new native messages without
+                # changing the consumer cursor or claiming old originals read.
+                prior = operator_inbox({"source": source, "channel_id": "tribe",
+                    "after": 0, "limit": 3}, enrolled, timeout=5)
+                frontier = prior["next_cursor"]
+                window_document = enrolled_document | {"intake_after": frontier}
+                enrolled_path.write_text(canonical(window_document))
+                windowed = configured_client(enrolled_path, source)
+                windowed = replace(windowed, messaging=replace(windowed.messaging, clock=group.lane.clock))
+                empty = operator_inbox({"source": source, "channel_id": "tribe",
+                    "after": 0, "limit": 3}, windowed, timeout=5)
+                self.assertEqual(empty["items"], [])
+                self.assertEqual(empty["next_cursor"], 0)
+                self.assertIn("no review is claimed", empty["meaning"])
+                fresh = sdk.fixture.send_and_settle(sdk.receiver, client_id="test",
+                    send_id=str(uuid.uuid4()), thread_id=str(uuid.uuid4()), text="New intake-window message.")
+                for endpoint in sdk.fixture.servers: endpoint._threads.join()
+                page = operator_inbox({"source": source, "channel_id": "tribe",
+                    "after": 0, "limit": 3}, windowed, timeout=5)
+                self.assertEqual([item["message_id"] for item in page["items"]], [fresh["message_id"]])
+                self.assertGreater(page["next_cursor"], frontier)
+                self.assertEqual(sdk.sender.message(returned["message_id"])["event_id"], returned["message_id"])
+                with self.assertRaisesRegex(MatrixExecutionError, "cannot rebase"):
+                    operator_inbox({"source": source, "channel_id": "tribe",
+                        "after": max(1, frontier), "limit": 3}, replace(windowed, intake_after=frontier+10))
+                enrolled_path.write_text(canonical(enrolled_document | {"intake_after": True}))
+                with self.assertRaisesRegex(MatrixExecutionError, "initial inbox frontier"):
+                    configured_client(enrolled_path, source)
+                enrolled_path.write_text(canonical(enrolled_document))
+
                 # Neither a tampered signed application nor a different live
                 # native client can inherit this public enrollment identity.
                 application_path.write_text(canonical(application | {"tampered": True}))
