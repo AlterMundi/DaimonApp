@@ -132,7 +132,7 @@ changing Android or the hosted recorder. Before getUserMedia it acquires one
 UUID-owned native session holder. WebKit and the OS still prompt; only the selected
 HTTPS main-frame microphone request can reach that prompt, never camera/iframe or
 SSO. The closed reply handler accepts only begin/end with canonical document and
-owner UUIDs. This is ownership, not permission or proof of recording.
+owner UUIDs, with at most128 nonreusable capture identities per controller. This is ownership, not permission or proof of recording.
 
 A duplex holder selects playAndRecord/voiceChat before microphone permission.
 PCM output joins that same mode and cannot deactivate it when becoming idle.

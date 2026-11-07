@@ -12,6 +12,7 @@ import WebKit
     private let captureSource: String
     private var captureOwner: UUID?
     private var captureStopping: UUID?
+    private var captureSeen: Set<UUID> = []
     private var web: WKWebView!
     private var document: String?
     private var retired: Set<String> = []
@@ -118,7 +119,8 @@ import WebKit
             if captureOwner == value.owner { closeCapture() }
             reply(true,nil); return
         }
-        guard captureOwner == nil, UIApplication.shared.applicationState == .active else {
+        guard captureOwner == nil, captureSeen.count < 128, !captureSeen.contains(value.owner),
+              UIApplication.shared.applicationState == .active else {
             reply(nil,"Microphone request already active or app not foreground"); return
         }
         do {
@@ -127,7 +129,7 @@ import WebKit
                 guard let self, self.document == page, self.captureOwner == value.owner else { return }
                 self.closeCapture()
             }
-            captureOwner = value.owner; reply(true,nil)
+            captureSeen.insert(value.owner); captureOwner = value.owner; reply(true,nil)
         } catch { reply(nil,"Audio session unavailable; finish current playback before recording") }
     }
     public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
