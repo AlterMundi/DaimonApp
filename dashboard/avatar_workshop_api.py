@@ -14,6 +14,7 @@ from scripts.speech_render import RenderError
 
 def install(app,config,provider,authorize,origins):
     store=AvatarWorkshop(config['state_dir'])
+    app.state.avatar_workshop=store
     # Only the shipped MIT editor/modules are public. Account revisions never
     # enter this tree, and request paths cannot select arbitrary local files.
     public=Path(__file__).parent/'web/avatar-workshop'
@@ -54,6 +55,34 @@ def install(app,config,provider,authorize,origins):
     async def avatars(request:Request):
         return await call(request,store.snapshot)
 
+    @app.get('/api/interaction/avatars/voice')
+    async def voices(request:Request):
+        from .voice_studio import configured_profiles
+        value=await call(request,store.voice_snapshot)
+        profiles=configured_profiles(config)
+        return {**value,'profiles':profiles,'profile_source':'receiving_configuration',
+                'audition_available':previews.available(await owner(request)),'selection_scope':'next_logical_conversation',
+                'message':None if profiles else 'OpenAI voice is not configured for this account.'}
+
+    @app.post('/api/interaction/avatars/voice')
+    async def change_voice(request:Request):
+        from .voice_studio import configured_profiles
+        await owner(request,True)
+        raw=bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw)>8192:raise HTTPException(413,'Voice revision exceeds 8KiB')
+        try:body=json.loads(raw)
+        except ValueError:raise HTTPException(400,'Select one voice action') from None
+        if not isinstance(body,dict):raise HTTPException(400,'Select one voice action')
+        profiles=configured_profiles(config)
+        if body.get('action')=='save' and set(body)=={'action','id','profile','delivery','parentId','generation'}:
+            if body['profile'] not in profiles:raise HTTPException(400,'Voice is not configured for this service')
+            return await call(request,store.voice_save,body['id'],body['profile'],body['delivery'],body['parentId'],body['generation'],write=True)
+        if body.get('action')=='use' and set(body)=={'action','id','generation'}:
+            return await call(request,store.voice_select,body['id'],body['generation'],profiles,write=True)
+        raise HTTPException(400,'Select Save revision or Use on next conversation')
+
     @app.get('/api/interaction/avatars/{ident}')
     async def avatar(request:Request,ident:str):
         return await call(request,store.get,ident)
@@ -76,4 +105,6 @@ def install(app,config,provider,authorize,origins):
             return await call(request,select,body['id'],body['generation'],write=True)
         raise HTTPException(400,'Select a bounded save, edit or use action')
 
+    from .voice_studio_preview_api import install as install_previews
+    previews=install_previews(app,config,provider,store,owner,call)
     return store

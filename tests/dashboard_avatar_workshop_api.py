@@ -25,10 +25,30 @@ class Mounted(unittest.TestCase):
             if token not in ('actor100','actor200','monitor'):raise HTTPException(401,'Sign in')
             return {'human':200 if token=='actor200' else 100,'csrf':'fresh',
                     'scope':'monitor_readonly' if token=='monitor' else 'interaction_only'}
-        app=FastAPI();install(app,{'state_dir':str(self.root)},Owner(),authorize,['https://example.test'])
+        self.config={'state_dir':str(self.root)}
+        app=FastAPI();install(app,self.config,Owner(),authorize,['https://example.test'])
         self.client=TestClient(app,base_url='https://example.test');self.addCleanup(self.client.close)
         self.headers={'origin':'https://example.test','authorization':'actor100','x-dashboard-csrf':'fresh'}
         self.body={'action':'save','id':self.ident,'design':self.design,'parentId':None,'generation':0}
+
+    def test_voice_account_csrf_save_and_explicit_next_conversation_selection(self):
+        path='/api/interaction/avatars/voice'
+        self.config['openai_live']={'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}
+        self.assertTrue(permitted('GET',path));self.assertTrue(permitted('POST',path))
+        self.assertFalse(permitted('POST',path,'monitor_readonly'))
+        state=self.client.get(path,headers=self.headers).json();profile=state['profiles'][0]
+        body={'action':'save','id':self.ident,'profile':profile,'delivery':'Warm.', 'parentId':None,'generation':0}
+        self.assertEqual(self.client.post(path,json=body,headers={'authorization':'actor100'}).status_code,403)
+        saved=self.client.post(path,json=body,headers=self.headers)
+        self.assertEqual(saved.status_code,200,saved.text);self.assertIsNone(saved.json()['active'])
+        self.assertEqual(self.client.post(path,json=body,headers=self.headers).json(),saved.json())
+        used=self.client.post(path,json={'action':'use','id':self.ident,'generation':1},headers=self.headers)
+        self.assertEqual(used.status_code,200,used.text);self.assertEqual(used.json()['active'],self.ident)
+        foreign=self.client.get(path,headers={'authorization':'actor200'}).json()
+        self.assertEqual(foreign['versions'],[])
+        self.assertEqual(self.store.snapshot(100)['active'],None)
+        body['id']=str(__import__('uuid').uuid4());body['profile']={**profile,'voice':'unknown'}
+        self.assertEqual(self.client.post(path,json=body,headers=self.headers).status_code,400)
 
     def test_existing_grant_scope_and_csrf_are_required(self):
         path='/api/interaction/avatars'

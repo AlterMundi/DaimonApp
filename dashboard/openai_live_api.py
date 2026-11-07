@@ -194,8 +194,10 @@ def install(app, config, provider, authorize, origins):
         try:
             async with asyncio.timeout(seconds+60):
                 meta=await asyncio.wait_for(message(8192),5)
-                if set(meta)-{'id','binding','csrf','authorization','backend','replacement'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
+                if set(meta)-{'id','binding','csrf','authorization','backend','replacement','voice_continuation','voice_start'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
                     raise ValueError('Select one public voice admission')
+                if 'voice_start' in meta and (meta['voice_start']!='new' or meta.get('voice_continuation') or meta.get('replacement')):
+                    raise ValueError('Select a new voice conversation or its exact continuation')
                 if 'backend' in meta:
                     if meta['backend']!='native' or not (configured_native or native_enabled):
                         raise ValueError('This public voice backend is not enabled')
@@ -218,10 +220,19 @@ def install(app, config, provider, authorize, origins):
                 # Validate this explicitly configured project file before mic
                 # permission; never discover or reinterpret Codex credentials.
                 await asyncio.to_thread(client._project_key)
+                from .voice_studio import configured_profiles,choice,apply_choice
+                profiles=configured_profiles(config)
+                workshop=getattr(app.state,'avatar_workshop',None)
+                voice_choice=None
+                if profiles and workshop is not None:
+                    revision=await asyncio.to_thread(workshop.voice_for_conversation,human,profiles) if meta.get('voice_start')=='new' else None
+                    voice_choice=choice(revision,profiles[0])
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
-                    backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'))
+                    backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
+                    voice_choice=voice_choice,voice_continuation=meta.get('voice_continuation'))
                 admitted=True
+                if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'])
                 if native_backend:
                     await send({'type':'context_preparing','id':visit})
                     native_context=PublicLiveSessionContext(app.state.native_history,history,provider,human,visit,owner,context_operation)

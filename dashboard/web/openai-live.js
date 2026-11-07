@@ -12,7 +12,7 @@ window.PublicLiveConversation=(()=>{
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
-    let replacementReview;
+    let replacementReview,voiceContinuation;
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(message?{message}:{})});
@@ -148,12 +148,12 @@ window.PublicLiveConversation=(()=>{
       // lock or freeze navigation for a whole queue of network timeouts.
       await durable;unlock?.();unlock=undefined;closing=false;state(completionMessage||message);notify();
     }
-    async function start(){
+    async function start({continuation=false}={}){
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
-      const backend=getBackend();
+      const backend=getBackend(),voiceParent=continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
       confirmed.clear();seals.clear();
@@ -174,14 +174,14 @@ window.PublicLiveConversation=(()=>{
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
           ...(backend===undefined?{}:{backend}),
-          ...(replacementReview?.binding===binding&&replacementReview?.backend===backend?{replacement:replacementReview.value}:{}),
+          ...(replacementReview?.binding===binding&&replacementReview?.backend===backend?{replacement:replacementReview.value}:voiceParent?{voice_continuation:voiceParent}:{voice_start:'new'}),
           ...(headers().Authorization?{authorization:headers().Authorization}:{})}));};
         transport.onmessage=event=>{
           if(owned!==epoch)return;
           try{
             if(typeof event.data!=='string'||event.data.length>1024*1024)throw Error('Voice event exceeds bound');
             const value=JSON.parse(event.data);
-            if(value.type==='prepared'){replacementReview=undefined;preparedResolve(value);}
+            if(value.type==='prepared'){voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
             else if(value.type==='context_preparing')state('Preparing previous conversation');
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event')onItem({visit,item:value.event,public_live:true});
@@ -320,7 +320,7 @@ window.PublicLiveConversation=(()=>{
       catch(error){if(current()){historyFailed=selected;onHistory({loading:false,more:!!historyBefore,error:true,older});}throw error;}
       finally{restoring=undefined;}
     }
-    return {start,hold,reconnect:start,restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyVisit=historyFailed=undefined;historySeen=new Set();onHistory({loading:false,more:false});},
+    return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyVisit=historyFailed=undefined;historySeen=new Set();onHistory({loading:false,more:false});},
       retry:value=>withLock(value.voice_visit,()=>upload(value)),
       discard:value=>withLock(value.voice_visit,async()=>{if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);originals.delete(value.id);notify();}),
       setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},

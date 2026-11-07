@@ -189,7 +189,7 @@ class LiveCreations:
                     or value.get('admission',{}).get('ended') is not True):return None
             return {'id':value['id'],'revision':self._revision(value)}
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
@@ -236,6 +236,21 @@ class LiveCreations:
                     value['native_continuation_from']=parent['id']
                     if parent.get('native_return_scan'):
                         value['native_return_scan']=parent['native_return_scan']
+            if voice_choice is not None or voice_continuation is not None:
+                from .voice_studio import validate_choice
+                inherited=reviewed
+                if voice_continuation is not None:
+                    inherited=self._read(self._ident(voice_continuation))
+                    self._matches(inherited,owner)
+                    if (inherited['id']==ident or inherited.get('backend_mode')!=backend_mode
+                            or not self.return_origin_eligible(inherited) and (reviewed is None or reviewed['id']!=inherited['id'])
+                            or reviewed is not None and reviewed['id']!=inherited['id']):
+                        raise ValueError('Voice continuation needs the same closed or reviewed visit')
+                if inherited is not None and inherited.get('voice_choice') is not None:
+                    value['voice_choice']=validate_choice(inherited['voice_choice'])
+                    value['voice_continuation_from']=inherited['id']
+                else:
+                    value['voice_choice']=validate_choice(voice_choice)
             if resume_spec is not None:
                 value['continuity']='stored_fork'
                 value['configuration_sha256']=self._configuration(resume_spec)
@@ -256,7 +271,8 @@ class LiveCreations:
                 self._write(reviewed)
             self._write(value)
             return {'id':ident, 'remaining_seconds':seconds, 'max_input_pcm_bytes':seconds*32000,
-                'continuity':value.get('continuity','fresh'),'continued':value.get('continuation_from') is not None}
+                'continuity':value.get('continuity','fresh'),'continued':value.get('continuation_from') is not None,
+                **({'voice_choice':value['voice_choice']} if 'voice_choice' in value else {})}
 
 
     def end_capture(self, ident, human, binding):

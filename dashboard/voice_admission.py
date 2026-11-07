@@ -170,7 +170,9 @@ class VoiceAdmissionMiddleware:
         self.app,self.admission=app,admission
 
     async def __call__(self, scope, receive, send):
-        if scope['type']!='websocket' or not scope['path'].startswith('/api/interaction/voice/'):
+        voice_socket=scope['type']=='websocket' and scope['path'].startswith('/api/interaction/voice/')
+        preview_request=scope['type']=='http' and scope['path']=='/api/interaction/avatars/voice/previews'
+        if not (voice_socket or preview_request):
             return await self.app(scope,receive,send)
         ticket=_Ticket(self.admission);scope[SCOPE_KEY]=ticket
         try:await self.app(scope,receive,send)

@@ -25,6 +25,20 @@ class Workshop(unittest.TestCase):
     def save(self,ident=None,design=None,parent=None,expected=0,human=100):
         return self.store.save(human,ident or self.ident,design or self.design,parent,expected)
 
+    def test_visual_and_voice_share_one_document_and_capacity_without_pointer_changes(self):
+        visual=self.save()
+        profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'cedar'}
+        voice=str(uuid.uuid4())
+        self.store.voice_save(100,voice,profile,'Warm.',None,0)
+        selected=self.store.voice_select(100,voice,1,[profile])
+        self.assertEqual(visual,self.store.snapshot(100))
+        self.store.select(100,self.ident,1,activate=True)
+        self.assertEqual(selected,self.store.voice_snapshot(100))
+        self.store.max_versions=2
+        with self.assertRaises(ValueError):self.save(ident=str(uuid.uuid4()),expected=2)
+        self.assertEqual(self.store.voice_snapshot(100),selected)
+        self.assertEqual(self.store.snapshot(100)['active'],self.ident)
+
     def test_catalogue_save_reload_select_and_use_preserve_previous_avatar(self):
         saved=self.save();self.assertIsNone(saved['active']);self.assertEqual(saved['editing'],self.ident)
         first=AvatarWorkshop(self.root).get(100,self.ident)

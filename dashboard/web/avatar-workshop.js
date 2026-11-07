@@ -4,7 +4,7 @@ window.AvatarWorkshopUI=(()=>{
   const button=document.querySelector('#avatar-workshop-open'),portrait=document.querySelector('#conversation-companion pre');
   if(!button||!portrait)return;
   button.hidden=false;
-  let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,canvas,paint,frame=0,timer,paused=false;
+  let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,studio,voiceTab,canvas,paint,frame=0,timer,paused=false;
   const motion=matchMedia('(prefers-reduced-motion: reduce)'),asset=path=>new URL('assets/avatar-workshop/'+path,document.baseURI).href;
   const resize=new ResizeObserver(()=>{try{paint?.(frame);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
@@ -14,7 +14,7 @@ window.AvatarWorkshopUI=(()=>{
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
   function stop(){clearTimeout(timer);timer=undefined;}
   function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%12);run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},180);}
-  function reset(){epoch++;loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
+  function reset(){epoch++;studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
   async function prepared(record){
    const selected=epoch,key=credential(),renderer=await import(asset('renderer.mjs'));
    if(selected!==epoch||key!==credential())throw Error('Avatar account changed');
@@ -31,10 +31,11 @@ window.AvatarWorkshopUI=(()=>{
    try{const state=await api('interaction/avatars');if(selected!==epoch||key!==credential())return;if(state.active){const record=await api('interaction/avatars/'+state.active);if(selected!==epoch||key!==credential())return;use(await prepared(record));}}
    catch{if(selected===epoch)message('Your previous avatar is kept. Open the workshop to retry.');}
   }
-  function close(){if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;button.focus();run();}
+  function close(){if(studio&&!studio.mayClose())return;if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;button.focus();run();}
   button.addEventListener('click',()=>{
    if(!actor)return;
-   if(!dialog){dialog=document.createElement('dialog');dialog.className='avatar-workshop-dialog';dialog.setAttribute('aria-label','Avatar workshop');const back=document.createElement('button');back.textContent='Back to conversation';back.type='button';back.addEventListener('click',()=>{if(!editorReady)close();else iframe?.contentWindow.postMessage({kind:'daimon.workshop.close'},location.origin);});dialog.append(back);document.body.append(dialog);dialog.addEventListener('cancel',event=>{event.preventDefault();if(!editorReady)close();else iframe?.contentWindow.postMessage({kind:'daimon.workshop.close'},location.origin);});}
+   if(!dialog){dialog=document.createElement('dialog');dialog.className='avatar-workshop-dialog';dialog.setAttribute('aria-label','Avatar workshop');const back=document.createElement('button');back.textContent='Back to conversation';back.type='button';back.addEventListener('click',()=>{if(!editorReady)close();else iframe?.contentWindow.postMessage({kind:'daimon.workshop.close'},location.origin);});dialog.append(back);voiceTab=document.createElement('button');voiceTab.type='button';voiceTab.textContent='Voice';voiceTab.setAttribute('aria-expanded','false');dialog.append(voiceTab);studio=window.VoiceStudioUI?.mount({parent:dialog,api,credential});voiceTab.addEventListener('click',()=>{if(!studio)return;const opening=studio.panel.hidden;if(!opening)studio.hide();studio.panel.hidden=!opening;if(iframe)iframe.hidden=opening;voiceTab.setAttribute('aria-expanded',String(opening));voiceTab.textContent=opening?'Back to avatar':'Voice';if(opening)studio.open();});document.body.append(dialog);dialog.addEventListener('cancel',event=>{event.preventDefault();if(!editorReady)close();else iframe?.contentWindow.postMessage({kind:'daimon.workshop.close'},location.origin);});}
+   if(studio)studio.panel.hidden=true;voiceTab?.setAttribute('aria-expanded','false');if(voiceTab)voiceTab.textContent='Voice';
    editorReady=false;iframe?.remove();iframe=document.createElement('iframe');iframe.title='Personalize your avatar';iframe.src=asset('experiments/school-avatar-quest/index.html');dialog.append(iframe);dialog.showModal();stop();
   });
   window.addEventListener('message',async event=>{

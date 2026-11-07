@@ -156,6 +156,11 @@ class MatrixHostScope(unittest.TestCase):
             selected([".github/workflows/ci.yml"], previous=changed), {"matrix_host"}
         )
 
+    def test_owned_live_preview_runs_always_on_speech_checks_without_native_rebuild(self):
+        self.assertEqual(selected(['scripts/openai_live_speech.py','tests/openai_live_speech.py']),set())
+        self.assertIn('python3 -B tests/openai_live_speech.py',WORKFLOW.read_text())
+        self.assertIn('text',selected(['scripts/unqualified-new-transport.py']))
+
     def test_unrelated_native_features_and_self_check_keep_their_owning_jobs(self):
         self.assertIn("audio", selected(["src/transcribe.rs"]))
         self.assertIn("activity", selected(["activity/src/main.rs"]))
