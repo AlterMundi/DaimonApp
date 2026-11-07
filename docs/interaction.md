@@ -73,6 +73,14 @@ The ordinary Talk credential can inspect its canonical web input traces. The
 separate monitor can also read retained legacy Telegram routing originals and
 has no input, playback or session-control authority.
 
+The owner console also supports bounded original-scoped result continuation:
+`input trace-results ID INSTRUCTION BEFORE` and exact association readback with
+`input trace-result ID delivery:UUID`. Current traces advertise `result_pages=v1`
+and per-route `results_cursor`; the existing trace stays bounded to eight results
+per instruction. These are read-only native operations, not additional browser
+write grants or work admission. See the public-native voice guide for return
+cursor ownership and unchanged unknown-effect fences.
+
 The integrating conversation retains conversational continuity while independently
 running native sessions retain their own work. Native input identity, request
 relations, output identity and publication are distinct. An acknowledged steer

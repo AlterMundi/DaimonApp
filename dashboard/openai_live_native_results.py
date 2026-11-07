@@ -75,11 +75,18 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
         if part.get('current') is not True:
             raise ValueError('Worker result is not current')
         trace = provider.conversation_input_trace(intent['root'])
+        def associated(value):
+            return any(result.get('source') == source and result.get('instruction_covered') is True
+                and result.get('current') is True and result.get('correction_pending') is False
+                and result.get('revision') == revision
+                for route in value.get('routes', []) if route.get('target_available') is True
+                for result in route.get('results', []))
+        if (trace.get('id') == intent['root'] and trace.get('entry_binding') == owner['entry_binding']
+                and trace.get('result_pages') == 'v1' and not associated(trace)):
+            trace=provider.conversation_input_trace_result(intent['root'],source)
+            current()
         if (trace.get('id') != intent['root'] or trace.get('entry_binding') != owner['entry_binding']
-                or not any(result.get('source') == source and result.get('instruction_covered') is True
-                    and result.get('current') is True and result.get('correction_pending') is False
-                    for route in trace.get('routes', []) if route.get('target_available') is True
-                    for result in route.get('results', []))):
+                or not associated(trace)):
             raise ValueError('Worker result has no current original-request association')
     else:
         raise ValueError('Only associated native progress/answers and canonical worker results may return')

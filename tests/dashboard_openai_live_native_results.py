@@ -112,7 +112,7 @@ class NativeResults(unittest.TestCase):
     def test_worker_result_requires_current_covered_original_request(self):
         self.ready_result(); self.source='delivery:00000000-0000-4000-8000-000000000001'
         self.source_fields.update(kind='worker_result',current=True)
-        result={'source':self.source,'instruction_covered':False,'current':True,'correction_pending':False}
+        result={'source':self.source,'revision':self.revision,'instruction_covered':False,'current':True,'correction_pending':False}
         self.provider.conversation_input_trace=lambda root:{'id':root,'entry_binding':self.owner['entry_binding'],
             'routes':[{'target_available':True,'results':[result]}]}
         with self.assertRaises(ValueError): self.emit()

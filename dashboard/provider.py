@@ -545,6 +545,17 @@ class Provider:
     def conversation_input_trace(self, ident):
         return self.presentation(f'input trace {self.trace_id(ident)}')
 
+    def conversation_input_trace_results(self, ident, instruction, before):
+        if type(before) is not int or not 0 <= before <= 2**63-1:
+            raise ValueError('Invalid trace result cursor')
+        return self.presentation(f'input trace-results {self.trace_id(ident)} {self.input_id(instruction)} {before}')
+
+    def conversation_input_trace_result(self, ident, source):
+        if not isinstance(source,str) or not source.startswith('delivery:'):
+            raise ValueError('Select a canonical delivery')
+        selected='delivery:'+self.input_id(source.removeprefix('delivery:'))
+        return self.presentation(f'input trace-result {self.trace_id(ident)} {selected}')
+
     @classmethod
     def trace_id(cls, ident):
         if isinstance(ident,str) and ident.startswith('telegram:'):

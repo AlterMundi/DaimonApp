@@ -1,3 +1,9 @@
+Native voice older-worker returns use advertised result_pages=v1 and the existing
+owner-scoped trace-results/trace-result readers. Keep eight results per page,
+one older page per foreground poll, at most five flat instruction cursors, and
+exact current canonical revision/association rechecks before append. Legacy
+readers retain their prior behavior; no work or uncertain-append replay.
+
 Voice Studio close releases the panel and audio immediately; request at most one
 owned cancellation and ignore late responses. Preserve unknown synthesis outcomes
 without retry. Render HTTP allows45seconds; other preview writes retain20seconds.
