@@ -13,7 +13,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    URL.createObjectURL=blob=>{const url=create(blob);if(blob.type==='audio/wav')testVoiceURLs.add(url);return url;};
    URL.revokeObjectURL=url=>{testVoiceURLs.delete(url);return revoke(url);};
   });
-  const previewStates=new Map();let previewPosts=[];
+  const previewStates=new Map();let previewPosts=[],deferPreview=false,blockedPreview,lastPreviewAudio;
   await page.route('**/api/interaction/avatars/voice',async route=>{
    const response=await route.fetch(),value=await response.json();
    if(route.request().method()==='GET')value.audition_available=true;
@@ -29,11 +29,13 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
     previewState.batches.push(row);await route.fulfill({json:row});return;
    }
    const row=previewState.batches.find(r=>r.id===body.id);
+   if(body.action==='cancel'){await route.abort();return;}
    if(body.action==='render'){
+    if(deferPreview){if(row.renders[body.slot].state!=='rendered')row.renders[body.slot]={state:'intent'};blockedPreview={route,row,slot:body.slot};return;}
     if(body.slot==='B'){row.renders.B={state:'unconfirmed'};await route.abort();return;}
     row.renders.A={state:'rendered',outcome:{receipt:{provider_receipt:{usage:{seconds:2},first_pcm_millis:120}}}};
     const wav=Buffer.alloc(4844);wav.write('RIFF');wav.writeUInt32LE(4836,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(24000,24);wav.writeUInt32LE(48000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(4800,40);
-    await route.fulfill({json:{batch:row,audio:{mime:'audio/wav',data:wav.toString('base64')}}});return;
+    lastPreviewAudio={mime:'audio/wav',data:wav.toString('base64')};await route.fulfill({json:{batch:row,audio:lastPreviewAudio}});return;
    }
    throw Error('Unexpected preview write '+body.action);
   });
@@ -141,9 +143,51 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await page.evaluate(()=>{for(const [key,value] of Object.entries({background:'#101820',surface:'#17212b',text:'#f3f1e6',accent:'#82d5e7'}))document.body.style.setProperty('--dm-'+key,value);});
   assert.equal(await studio.evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(16, 24, 32)');
   if(process.env.VOICE_STUDIO_SCREENSHOT)await page.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT.replace(/\.png$/,'-dark.png')});
+  // A network-held generation cannot trap the person in the workshop. Its
+  // scoped cancellation may also lose its ACK; late audio must stay detached.
+  deferPreview=true;await studio.getByRole('button',{name:'Neutral',exact:true}).click();
+  await studio.getByRole('button',{name:'Prepare comparison',exact:true}).click();
+  await studio.getByRole('button',{name:'Generate B',exact:true}).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  const replies=await page.evaluate(()=>window.testPreviewReplies||0);
   await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
   await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
+  assert.equal(previewPosts.filter(r=>r.action==='cancel'&&r.id===blockedPreview.row.id).length,1,'Close sends only one owned stop, without waiting for its lost reply');
   assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Closing releases recorded audio URLs');
+  blockedPreview.row.renders.B={state:'rendered'};
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,replies);
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Late closed-panel audio cannot become a new playback URL');
+  assert.equal(previewPosts.filter(r=>r.action==='render'&&r.id===blockedPreview.row.id).length,1,'Late audio does not cause generation replay');
+
+  await page.locator('#avatar-workshop-open').click();await page.getByRole('button',{name:'Voice',exact:true}).click();
+  await studio.getByRole('button',{name:'Load B',exact:true}).waitFor();
+  assert.equal(await studio.getByLabel('Voice delivery instruction').inputValue(),'Use a warm, relaxed delivery with natural pauses.','Discard returns the editor to the selected saved revision');
+  const stopsBefore=previewPosts.filter(r=>r.action==='cancel').length;blockedPreview=undefined;
+  await studio.getByRole('button',{name:'Load B',exact:true}).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  const cachedReplies=await page.evaluate(()=>window.testPreviewReplies||0);
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
+  assert.equal(previewPosts.filter(r=>r.action==='cancel').length,stopsBefore,'Closing a pending cached read cannot cancel another slot');
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,cachedReplies);
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Late cached playback remains detached after closing');
+  await page.locator('#avatar-workshop-open').click();await page.getByRole('button',{name:'Voice',exact:true}).click();
+  await studio.getByRole('button',{name:'Neutral',exact:true}).click();
+  await studio.getByRole('button',{name:'Prepare comparison',exact:true}).click();
+  blockedPreview=undefined;await studio.getByRole('button',{name:'Generate B',exact:true}).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  const manualReplies=await page.evaluate(()=>window.testPreviewReplies||0);
+  await studio.getByRole('button',{name:'Stop generation',exact:true}).click();
+  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.voice-studio button')).find(b=>b.textContent==='Stop generation').disabled);
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
+  assert.equal(previewPosts.filter(r=>r.action==='cancel'&&r.id===blockedPreview.row.id).length,1,'Closing after an unconfirmed Stop cannot repeat it');
+  blockedPreview.row.renders.B={state:'rendered'};
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,manualReplies);
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0);
   await page.evaluate(()=>{testActor='100';testAvatar.bind('actor100');});
   assert.equal(await studio.getByLabel('Recorded comparison batches').locator('option').count(),0,'Actor reset clears old batch labels before the next read');
   await page.locator('#avatar-workshop-open').click();

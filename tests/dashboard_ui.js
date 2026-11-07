@@ -77,16 +77,23 @@ const hung = (options) => new Promise((resolve, reject) => {
   // writes/auth failures must preserve once-only outcomes and HTTP status.
   const apiSource=source.slice(source.indexOf("async function api("),source.indexOf("\nfunction metric("));
   async function requestCase(route,body,responses){
-    const calls=[];
-    const context=vm.createContext({AbortController,setTimeout,clearTimeout,
+    const calls=[],deadlines=[];
+    const context=vm.createContext({AbortController,setTimeout:(fn,ms)=>{deadlines.push(ms);return setTimeout(fn,ms);},clearTimeout,
       csrf:"fixture",monitorOnly:false,deviceMode:false,sharedConversationConnected:false,authorizationHeaders:()=>({}),
       fetch:async (url,options)=>{calls.push({url,options});return responses.shift();}});
     vm.runInContext(apiSource,context);context.route=route;context.body=body;
-    try{return {calls,value:await vm.runInContext("api(route,body)",context)};}
-    catch(error){return {calls,error};}
+    try{return {calls,deadlines,value:await vm.runInContext("api(route,body)",context)};}
+    catch(error){return {calls,deadlines,error};}
   }
   const cut=(status=200)=>({ok:status===200,status,json:async()=>{throw new SyntaxError("Unexpected end of JSON input");}});
   const complete={ok:true,status:200,json:async()=>({text:"Exact saved text",offset:0,next_offset:null})};
+  const audition=await requestCase("interaction/avatars/voice/previews",{action:"render"},[cut(),complete]);
+  assert.deepEqual(audition.deadlines,[45000],"The thirty-second preview plus owned close must fit the finite HTTP deadline");
+  assert.equal(audition.calls.length,1,"A cut audition response is not permission to generate again");
+  for(const action of ["prepare","cancel","retire"]){
+    const control=await requestCase("interaction/avatars/voice/previews",{action},[complete]);
+    assert.deepEqual(control.deadlines,[20000],"Metadata and stop controls keep the ordinary deadline");
+  }
   const immutableRoute="interaction/part?source=native%3A1&revision=exact-r&offset=0";
   const recovered=await requestCase(immutableRoute,undefined,[cut(),complete]);
   assert.equal(recovered.value.text,"Exact saved text");assert.equal(recovered.calls.length,2);
