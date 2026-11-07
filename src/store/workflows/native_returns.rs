@@ -45,6 +45,11 @@ pub(crate) struct WorkflowReturn {
     #[serde(default)]
     pub retry_after: Option<i64>,
 }
+impl WorkflowReturn {
+    pub(in crate::store) fn automatic_retry_exhausted(&self) -> bool {
+        self.attempts >= MAX_RETURN_ATTEMPTS
+    }
+}
 #[derive(Debug, Clone)]
 pub(crate) struct ReturnDispatch {
     pub name: &'static str,
@@ -488,11 +493,13 @@ fn recover_contexts_on(
     for mut w in contexts {
         for index in 0..w.native_returns.len() {
             let r = &w.native_returns[index];
+            let owner_retry = r.id.starts_with("heartbeat:")
+                && super::super::heartbeat::producer::owner_window_retry_on(tx, r)?;
             if selected.len() == 4
                 || r.phase != "retained_unsent"
                 || r.attempts == 0
-                || r.attempts >= MAX_RETURN_ATTEMPTS
-                || r.retry_after.is_none_or(|at| at > now)
+                || (r.automatic_retry_exhausted() && !owner_retry)
+                || (r.retry_after.is_none_or(|at| at > now) && !owner_retry)
                 || !current_on(tx, &w, index, true)?
             {
                 continue;

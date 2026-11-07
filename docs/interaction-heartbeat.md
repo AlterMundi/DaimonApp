@@ -86,6 +86,39 @@ rejects contradictory status; this preparation adds no synthetic positive proof.
 
 ## Versioned native control successor
 
+### Explicit owner renewal of an expired window
+
+The owner console additionally supports:
+
+```
+heartbeat renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS
+```
+
+Use only under an explicit owner-selected new operating window. Read status,
+pause at its exact generation, and supply the observed common resource/producer
+expiry. The predecessor must be expired and the new window must end within seven
+days. Both deadlines change in one transaction. The account ID, lifetime reserved
+attempts, request/execution limits, producer check ceiling/count, cadence, source
+bindings, cursors and pending identities remain unchanged. Exhausted capacity,
+changed bindings and unresolved/uncertain native work refuse the operation.
+
+An exhausted pending return proven never submitted can receive one additional
+admission of that same original. Its lifetime attempt count advances; the existing
+resource account charges any new native execution normally. The current renewal
+receipt identifies that source and exact next attempt. It cannot grant another
+automatic retry, refill an account or revive accepted/uncertain work.
+
+Renewal leaves global/lane pause states unchanged. Explicit resume is separate;
+it reconciles only proven-unsent pending generations. The model-accessible
+`heartbeat_control` actions cannot renew windows. The `window_renewal` status
+field retains one replaceable current receipt; inspect it after an uncertain
+console result instead of inventing another command. Exact repeats at the same
+paused generation observe the retained operation without another renewal.
+
+This source support is not receiving selection or authorization to extend a
+particular expired operating contract. Operational evidence and the useful
+message/action/reply/narration/pause journey remain separate requirements.
+
 The source successor adds `controls.schema=telecodex.heartbeat-controls/v1` with
 `conditional_global=true`, `conditional_lane=true` and explicit `actions` in
 status. These describe supported writes, not operational proof or receiving
