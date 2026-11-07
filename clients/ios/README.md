@@ -278,3 +278,23 @@ native probe and bounded JS/PCM journey. The job remains capped at ten minutes;
 there is one launch and no timeout relaunch. Retirement qualification now waits
 for the native closed receipt before testing the same ID's refusal. Normal app
 behavior and audio/provider/TTL/lifetime bounds remain unchanged.
+
+
+## Current source qualification —2c021f1
+
+CI42393667849 passed31Swift cases (zero failures,1.609s), both actual SDK app
+builds and normal-helper absence. Actual iPhone16/iOS26.2 runtime passed: native
+Beacon34560played frames with stalequiet/fresh/duckquiet/restored/host-foreground
+closure; exact valid TLS chain plus wrong-host/alien-anchor refusals; unchanged
+system trust; JS Beacon played/quiet/played/quiet; retired-ID refusal after native
+close; PCM28800played bytes with Beacon retained and pause/resume/flush; outside
+facade absent. Terminate/shutdown/delete/server cleanup were acknowledged. No
+microphone, provider, observer or human original was used. GeneralCI42393667873
+passed all five applicable checks. Earlier failed/unconfirmed outcomes stay above.
+
+The source still needs independent native-message-boundary review before merge.
+Normal capability remains off; actual OS background, physical hearing/music/routes,
+capture/duplex compatibility, shared login/account, signing and phone delivery are
+not established by this synthetic runtime. The old srcdoc non-reservation result
+still does not prove actual frame-handler admission. The full original goal stays
+open; this record does not grant production selection or peer activation.
