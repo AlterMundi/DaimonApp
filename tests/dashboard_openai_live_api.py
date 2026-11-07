@@ -1,6 +1,8 @@
 """Mounted public Live auth, source/creation loss and original recovery; zero models."""
 import asyncio
 import copy
+from contextlib import contextmanager
+import sqlite3
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +25,12 @@ from dashboard.openai_live import LiveCall, LiveUnavailable, session_spec
 from dashboard.openai_live_api import install
 from dashboard.openai_live_visits import LiveCreations
 from dashboard.provider import Provider, ProviderUnavailable
+from dashboard.native_history import NativeHistory
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import dashboard_native_context as context_fixtures
+
+NATIVE_CAPS={"foreground_interpretation":"gpt-transcribe/v1",
+    "foreground_context":"v1","foreground_resume":"v1","foreground_public_live_transcripts":"v1"}
 
 
 class Owner:
@@ -31,7 +39,9 @@ class Owner:
     retain_voice_capture=staticmethod(Provider.retain_voice_capture)
     def __init__(self,root):
         self.receiver={'db_path':str(root/'receiver.sqlite')}
+        self.journal=context_fixtures.Journal()
         self.media_retention=None;self.binding='a'*64;self.held=False
+    def conversation_live_context(self,body):return self.journal.conversation_live_context(body)
     def presentation(self,command):return {'binding':self.binding}
     def presentation_list(self,*args):return {'binding':self.binding,'items':[]}
     def authorized(self,human):return human==100
@@ -84,7 +94,7 @@ class Mounted(unittest.TestCase):
         self.config={'state_dir':str(self.state),'openai_live':{'enabled':True,
             'identity_file':str(self.root/'identity'),'backend_instructions_file':str(self.root/'backend'),
             'api_key_file':str(self.root/'key'),'backend_model':'explicit-backend','session_seconds':300}}
-        self.allowed=True;self.scope=None;self.app=FastAPI();self.app.state.voice_active=set()
+        self.allowed=True;self.scope=None;self.app=self.app_with_history()
         async def authorize(request):
             if not self.allowed:raise HTTPException(401,'Expired synthetic access')
             return {'human':100,'csrf':'fresh','scope':self.scope}
@@ -94,10 +104,25 @@ class Mounted(unittest.TestCase):
         Client.instances=[];Client.failure=None
         self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh'}
         self.headers={'origin':'https://example.test','x-dashboard-csrf':'fresh','x-voice-binding':'a'*64}
+    @contextmanager
+    def database(self):
+        db=sqlite3.connect(self.root/'native-context.sqlite',timeout=3);db.row_factory=sqlite3.Row
+        try:
+            with db:yield db
+        finally:db.close()
+    def app_with_history(self):
+        app=FastAPI();app.state.voice_active=set()
+        app.state.native_history=NativeHistory(self.database,'mounted-public-context')
+        return app
+    def prepared(self,socket):
+        value=socket.receive_json()
+        while value['type']=='context_preparing':value=socket.receive_json()
+        self.assertEqual(value['type'],'prepared')
+        return value
     def socket(self):return self.client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
     def read(self):return json.loads((self.state/'public-live-visits'/(self.ident+'.json')).read_text())
     def start(self,socket):
-        socket.send_json(self.meta);ready=socket.receive_json();self.assertEqual(ready['type'],'prepared')
+        socket.send_json(self.meta);ready=self.prepared(socket)
         self.assertEqual(Client.instances[-1].creations,0,'Admission precedes billable creation')
         socket.send_json({'type':'offer','sdp':'v=0 offer'})
         answer=socket.receive_json();self.assertEqual(answer['type'],'answer');self.assertEqual(answer['session'],'live_opaque:provider/42')
@@ -129,7 +154,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[])
 
     def choice_client(self):
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],
             'native_backend_enabled':True,'conversation_context':True}}
@@ -137,7 +162,7 @@ class Mounted(unittest.TestCase):
         return TestClient(app,base_url='https://example.test')
 
     def test_disconnected_native_visit_requires_review_then_fresh_authenticated_action_before_mic(self):
-        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
         history=LiveCreations(self.state/'public-live-visits');owner=self.owner.public_live_binding('a'*64)
         old=str(uuid.uuid4());history.prepare(old,100,owner,backend_mode='native')
         history.create(old,100,owner,'v=0 offer',session_spec('Synthetic owner',client_delegation=True),Client('synthetic'))
@@ -153,8 +178,7 @@ class Mounted(unittest.TestCase):
             self.assertEqual(sum(c.creations for c in Client.instances),1)
             self.meta={**self.meta,'id':str(uuid.uuid4()),'replacement':review['replacement']};self.ident=self.meta['id']
             with socket() as ws:
-                ws.send_json(self.meta);ready=ws.receive_json()
-                self.assertEqual(ready['type'],'prepared')
+                ws.send_json(self.meta);ready=self.prepared(ws)
                 self.assertEqual(sum(c.creations for c in Client.instances),1,'Review never performs a billable POST')
                 ws.send_json({'type':'offer','sdp':'v=0 new offer'})
                 self.assertEqual(ws.receive_json()['type'],'answer');self.assertEqual(ws.receive_json()['event']['type'],'session.started')
@@ -165,7 +189,7 @@ class Mounted(unittest.TestCase):
             self.assertEqual(sum(c.creations for c in Client.instances),2)
 
     def test_explicit_native_choice_does_not_replace_the_existing_responses_mode(self):
-        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
         with self.choice_client() as client:
             for choice,expected in (('native','client'),(None,'responses')):
                 self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
@@ -186,14 +210,35 @@ class Mounted(unittest.TestCase):
                 self.assertIn('server update',value['message'])
         self.assertEqual(Client.instances,[])
 
+    def test_native_context_contract_is_required_before_project_access_or_creation(self):
+        for missing in ('foreground_context','foreground_resume','foreground_public_live_transcripts','method','history'):
+            with self.subTest(missing=missing):
+                caps={'binding':self.owner.binding,**NATIVE_CAPS};caps.pop(missing,None)
+                self.owner.presentation=lambda command:dict(caps)
+                app=self.app_with_history()
+                if missing=='history':del app.state.native_history
+                original=self.owner.conversation_live_context
+                if missing=='method':self.owner.conversation_live_context=None
+                async def authorize(request):return {'human':100,'csrf':'fresh'}
+                config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+                try:
+                    install(app,config,self.owner,authorize,['https://example.test'])
+                    with TestClient(app,base_url='https://example.test') as client:
+                        with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                            socket.send_json(self.meta)
+                            self.assertEqual(socket.receive_json()['type'],'unconfirmed')
+                finally:self.owner.conversation_live_context=original
+                self.assertEqual(Client.instances,[])
+                self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
+
     def test_native_choice_has_its_own_frozen_capability_brief(self):
         brief=self.root/'native-identity';brief.write_text('Native session owns identity, memory and work.');brief.chmod(0o600)
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],
             'native_backend_enabled':True,'native_identity_file':str(brief)}}
         install(app,config,self.owner,authorize,['https://example.test'])
-        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
         # A file edit cannot alter a live/prepared process's selected brief.
         brief.write_text('A later profile, not selected by this application.');brief.chmod(0o600)
         with TestClient(app,base_url='https://example.test') as client:
@@ -210,14 +255,14 @@ class Mounted(unittest.TestCase):
         from scripts.speech_render import RenderError
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         for path in ('relative-native-brief',str(self.root/'missing-native-brief')):
-            app=FastAPI();app.state.voice_active=set()
+            app=self.app_with_history()
             config={**self.config,'openai_live':{**self.config['openai_live'],
                 'native_backend_enabled':True,'native_identity_file':path}}
             with self.assertRaises((ValueError,RenderError,OSError)):
                 install(app,config,self.owner,authorize,['https://example.test'])
         self.assertEqual(Client.instances,[])
     def test_optional_source_seals_use_trusted_delegations_and_confirmed_uploads_only(self):
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'source_seals':True}}
         install(app,config,self.owner,authorize,['https://example.test'])
@@ -254,11 +299,11 @@ class Mounted(unittest.TestCase):
 
     def test_source_seals_cannot_mix_upload_time_native_enrollment(self):
         for flags in ({'source_seals':'yes'},{'source_seals':True,'native_originals':True}):
-            app=FastAPI();app.state.voice_active=set()
+            app=self.app_with_history()
             config={**self.config,'openai_live':{**self.config['openai_live'],**flags}}
             with self.assertRaises(ValueError):install(app,config,self.owner,lambda _:None,['https://example.test'])
     def test_native_backend_checks_reader_before_microphone_or_paid_creation(self):
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
         install(app,config,self.owner,authorize,['https://example.test'])
@@ -268,7 +313,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[]);self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
     def test_native_choice_refuses_missing_python_adapter_even_with_current_native_capabilities(self):
-        self.owner.presentation=lambda command:{'binding':self.owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
         self.owner.conversation_foreground_interpret=None
         with self.choice_client() as client:
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
@@ -279,7 +324,7 @@ class Mounted(unittest.TestCase):
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
     def _native_backend_flow(self,slow_result=False,renew=False):
-        app=FastAPI();app.state.voice_active=set();saved={};calls={'asr':0,'work':0}
+        app=self.app_with_history();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
         def trace(root):
@@ -287,7 +332,7 @@ class Mounted(unittest.TestCase):
                 entered.set();self.assertTrue(release.wait(3),'Native result read blocked voice Close')
             return {'id':root,'entry_binding':frozen['entry_binding'],'routes':[]}
         owner.conversation_input_trace=trace
-        owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        owner.presentation=lambda command:{'binding':owner.binding,**NATIVE_CAPS}
         def capture(metadata,data,**options):
             saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
                 'foreground_dialogue':options['foreground_dialogue'],'phase':'foreground_captured',
@@ -300,6 +345,9 @@ class Mounted(unittest.TestCase):
             return copy.deepcopy(row)
         def delegate(body):
             calls['work']+=1;row=saved[body['id']]
+            self.assertIn('native semantic producer',body['formulation'])
+            self.assertIn(self.ident,body['formulation'])
+            self.assertIn(self.ident,owner.journal.producers,'Context must be retained before native work')
             row.update(phase='accepted',native_acceptance='observed',local_turn=42,foreground_delegation={
                 'intent_id':body['intent_id'],'dialogue_id':self.ident,'formulation':body['formulation'],
                 'sources':[{'id':ident,'capture_order':index+1,'text':saved[ident]['text'],
@@ -333,6 +381,9 @@ class Mounted(unittest.TestCase):
                 with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                     native=self.start(socket);self.assertEqual(native.spec['delegation']['type'],'client')
                     self.assertNotIn('responses',native.spec['delegation'])
+                    native.events.put({'type':'session.input_transcript.delta','event_id':'context-source',
+                        'delta':'Correction: Friday, not Thursday.','start_ms':0,'end_ms':50})
+                    self.assertEqual(socket.receive_json()['event']['type'],'session.input_transcript.delta')
                     audio=wav_bytes(b'\1\0'*800)
                     self.assertEqual(client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',
                         headers=self.headers,content=audio).status_code,200)
@@ -366,6 +417,9 @@ class Mounted(unittest.TestCase):
                         'kind':'worker_result','current':True,'correction_pending':False,'native_binding_current':True}
                     with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as second:
                         continued=self.start(second)
+                        seed=continued.spec['input'][-1]
+                        self.assertEqual(seed['role'],'developer')
+                        self.assertIn('Friday, not Thursday',seed['content'][0]['text'])
                         self.assertEqual(second.receive_json()['event']['type'],'session.commentary.appended')
                         delivered=next(row for row in continued.sent if row['type']=='session.commentary.append')
                         self.assertIsNone(delivered['delegation_id'])
@@ -397,7 +451,7 @@ class Mounted(unittest.TestCase):
     def test_native_backend_rejects_unqualified_continuation_or_mixed_context(self):
         for settings in ({'conversation_context':True},{'source_seals':False},
                          {'resume_mode':'stored_fork','session_options':{'store':True}}):
-            app=FastAPI();app.state.voice_active=set()
+            app=self.app_with_history()
             config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',**settings}}
             with self.assertRaises(ValueError):install(app,config,self.owner,lambda _:None,['https://example.test'])
 
@@ -412,9 +466,9 @@ class Mounted(unittest.TestCase):
         self.assertFalse(any('sensitive internal' in line for line in logs.output))
 
     def _failed_native_preparation(self,error,interpretation_state):
-        app=FastAPI();app.state.voice_active=set();saved={};attempts=[]
+        app=self.app_with_history();saved={};attempts=[]
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
-        owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        owner.presentation=lambda command:{'binding':owner.binding,**NATIVE_CAPS}
         def capture(metadata,data,**options):
             saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
                 'foreground_dialogue':options['foreground_dialogue'],'phase':'foreground_captured',
@@ -451,9 +505,9 @@ class Mounted(unittest.TestCase):
         self.assertNotIn('native_work',value['delegations']['failed-task'])
 
     def test_slow_native_preparation_keeps_close_responsive_and_preserves_late_interpretation(self):
-        app=FastAPI();app.state.voice_active=set();saved={};entered=threading.Event();release=threading.Event()
+        app=self.app_with_history();saved={};entered=threading.Event();release=threading.Event()
         self.addCleanup(release.set);owner=self.owner;frozen=owner.public_live_binding('a'*64)
-        owner.presentation=lambda command:{'binding':owner.binding,'foreground_interpretation':'gpt-transcribe/v1'}
+        owner.presentation=lambda command:{'binding':owner.binding,**NATIVE_CAPS}
         def capture(metadata,data,**options):
             saved[metadata['id']]={'id':metadata['id'],'entry_binding':frozen['entry_binding'],
                 'foreground_dialogue':options['foreground_dialogue'],'phase':'foreground_captured',
@@ -491,7 +545,7 @@ class Mounted(unittest.TestCase):
         self.assertNotIn('native_work',value['delegations']['slow-task'])
         self.assertEqual([row['type'] for row in native.sent],['session.close'])
     def test_native_original_opt_in_uses_exact_owner_and_never_repeats_lost_ack(self):
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'native_originals':True}}
         install(app,config,self.owner,authorize,['https://example.test'])
@@ -521,7 +575,7 @@ class Mounted(unittest.TestCase):
 
     def test_owner_opt_in_context_tool_returns_result_then_resumes_managed_backend(self):
         from dashboard.openai_live_context import NAME
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'conversation_context':True}}
         install(app,config,self.owner,authorize,['https://example.test'])
@@ -564,7 +618,7 @@ class Mounted(unittest.TestCase):
     def test_mounted_stored_reconnect_inherits_one_closed_call_without_resubmission(self):
         config={**self.config,'openai_live':{**self.config['openai_live'],
             'resume_mode':'stored_fork','session_options':{'store':True}}}
-        app=FastAPI();app.state.voice_active=set()
+        app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         install(app,config,self.owner,authorize,['https://example.test'])
         with TestClient(app,base_url='https://example.test') as client:

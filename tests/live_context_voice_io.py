@@ -583,9 +583,72 @@ def qualify_rollover(binary):
     finally:j.close()
 
 
+def qualify_public_context(binary):
+    """Actual native reader and startup seeds; public transport/Core are simulated."""
+    from dashboard.openai_live import LiveCall
+    from dashboard.openai_live_visits import LiveCreations
+    from dashboard.openai_live_native_session import PublicLiveSessionContext
+    j=ReconnectCheckpointContext(binary)
+    try:
+        j.start();j.admit('Seed synthetic public voice continuity.',topic=1)
+        j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle();j.messages.clear()
+        provider=Provider({'receiver_config':str(j.config),'state_dir':str(j.root/'public-dashboard'),'bot_id':123})
+        @contextmanager
+        def database():
+            db=sqlite3.connect(j.root/'public-context.sqlite3',timeout=3);db.row_factory=sqlite3.Row
+            try:
+                with db:yield db
+            finally:db.close()
+        history=NativeHistory(database,'public-native-context')
+        binding=provider.presentation_list(0,0)['binding'];frozen=provider.public_live_binding(binding)
+        caps=provider.presentation('input voice capabilities')
+        assert caps['binding']==binding and caps['foreground_interpretation']=='gpt-transcribe/v1'
+        assert all(caps.get(k)=='v1' for k in ('foreground_context','foreground_resume','foreground_public_live_transcripts'))
+        visits=LiveCreations(j.root/'public-visits')
+        baseline=j.row('SELECT count(*) FROM conversation_inputs')
+        async def owner(function,*args):return await asyncio.to_thread(function,*args)
+        async def scenario():
+            previous=None
+            texts=['The key is orange.', 'Correction: the key is violet. The bell remains unresolved.']
+            for cycle in range(3):
+                ident=str(uuid.uuid4());visits.prepare(ident,100,frozen,backend_mode='native')
+                context=PublicLiveSessionContext(history,visits,provider,100,ident,frozen,owner)
+                spec=await context.prepare({'model':'gpt-live-1','instructions':'Synthetic identity',
+                    'delegation':{'type':'client'},'store':False,'audio':{'output':{'voice':'cedar'}}})
+                assert spec['audio']['output']['voice']=='cedar'
+                assert visits.read(ident,100,frozen)['state']=='prepared'
+                if previous is not None:
+                    startup=spec['input'][-1]
+                    assert startup['role']=='developer'
+                    assert all(text in startup['content'][0]['text'] for text in texts[:cycle])
+                    doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(ident,))[0][0])
+                    assert doc['resume_source']['dialogue']==previous
+                client=type('PublicTransport',(),{'create':lambda self,*args:LiveCall('live:synthetic/'+ident,'v=0 answer')})()
+                visits.create(ident,100,frozen,'v=0 synthetic offer',spec,client)
+                if cycle<len(texts):
+                    visits.event(ident,100,frozen,{'type':'session.input_transcript.delta',
+                        'event_id':'source-'+str(cycle),'delta':texts[cycle],'start_ms':.5,'end_ms':20.25})
+                    reference=await context.sync()
+                    assert reference['dialogue']==ident
+                    await asyncio.to_thread(j.wait,lambda:j.row(
+                        "SELECT json_extract(doc,'$.incorporated')=json_extract(doc,'$.high') FROM live_context WHERE dialogue=?",(ident,))==[(1,)])
+                    await asyncio.to_thread(j.idle)
+                visits.observe_closed(ident,100,frozen,{'type':'session.closed','event_id':'closed-'+str(cycle),
+                    'reason':'close_requested','session':{'id':'live:synthetic/'+ident}})
+                await context.close();previous=ident
+            assert not j.fixture_errors,j.fixture_errors
+        asyncio.run(scenario())
+        assert j.row('SELECT count(*) FROM conversation_inputs')==baseline
+        assert j.row("SELECT count(*) FROM live_context WHERE json_extract(doc,'$.closed')=1")==[(3,)]
+        assert len(j.read_texts)>=2 and not j.messages
+        print('PASS three public visits through actual native source retention, incorporation and complete startup seeds; corrections retained, Cedar preserved, zero new human originals/ASR/work/provider calls; speech and Core reasoning simulated')
+    finally:j.close()
+
+
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
-    if '--active-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary,active=True)
+    if '--public-context' in sys.argv[2:]:qualify_public_context(binary)
+    elif '--active-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary,active=True)
     elif '--reconnect-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary)
     elif '--detached-semantic' in sys.argv[2:]:qualify(binary,detached_semantic=True)
     else:qualify(binary);qualify(binary,detached_semantic=True);qualify_rollover(binary);qualify_reconnect_compaction(binary);qualify_reconnect_compaction(binary,active=True)

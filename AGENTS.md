@@ -11,9 +11,12 @@ lost receipts followed by new deltas cannot regroup or duplicate old language.
 Metadata lives in typed language
 text that older projection readers preserve; do not add discardable document
 fields. Cursor reconciliation is idempotent native source retention, never
-permission to repeat uncertain media/ASR/work/provider writes. The admission and
-semantic startup/reconnect integration is still unfinished; do not infer that
-this prepared adapter is mounted or selected. Native builds use CI's Rust1.95;
+permission to repeat uncertain media/ASR/work/provider writes. The source lifecycle mounts capability/actor/lease checks, native producer
+registration, explicit old-visit catch-up and complete developer startup seeds
+before microphone/paid creation. Native work receives the exact retained producer
+reference after source sync. In-flight interpretation leaves the projection open;
+provider close is separate. This source is not receiving selection or real
+semantic/hearing acceptance. Native builds use CI's Rust1.95;
 verify the rustc executable actually invoked, not only cargo's version.
 
 Known-created disconnected native GPT-Live visits may use the authenticated

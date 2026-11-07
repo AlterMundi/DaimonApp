@@ -4,6 +4,8 @@ No background service, provider switch or separate Responses reasoner. The
 caller owns one foreground preparation task and must end capture before cleanup.
 """
 import re
+import json
+import uuid
 
 from .codex_voice_history import history_lock
 from .openai_live_originals import enroll_original
@@ -22,7 +24,7 @@ FORMULATION = (
 
 
 def prepare_native(history, ident, human, owner, delegation, provider, key_file,
-                   recognizer_factory=None, stopped=None):
+                   recognizer_factory=None, stopped=None,before_delegate=None):
     """Once per trusted sealed request; component intents own unknown effects."""
     def current(check_capture=True):
         if check_capture and stopped is not None and stopped.is_set():
@@ -94,7 +96,16 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
             if commit_interpretation(history,ident,human,owner,ordinal,provider)['state'] != 'observed': break
         else:
             current()
-            admitted = delegate_native(history,ident,human,owner,delegation,ordinals,FORMULATION,ExecutionOwner())
+            formulation=FORMULATION
+            if before_delegate is not None:
+                reference=before_delegate()
+                if (not isinstance(reference,dict) or set(reference)!={'dialogue','generation'}
+                        or any(not isinstance(reference[k],str) or str(uuid.UUID(reference[k]))!=reference[k]
+                            for k in ('dialogue','generation'))):
+                    raise ValueError('Select the exact native semantic context reference')
+                current()
+                formulation+=' Prior conversation source context is retained in the existing native semantic producer: '+json.dumps(reference,separators=(',',':'))+'. Read it when resolving prior facts, corrections or short replies; it is not another work request.'
+            admitted = delegate_native(history,ident,human,owner,delegation,ordinals,formulation,ExecutionOwner())
             result = {'state':'admitted' if admitted['state']=='observed' else 'unconfirmed',
                 'ordinals':ordinals,'root':admitted['root'],'work_completed':False,
                 'meaning':'Native handoff observation only; actual work/results and hearing remain separate.'}

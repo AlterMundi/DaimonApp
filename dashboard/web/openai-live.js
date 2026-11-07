@@ -182,6 +182,7 @@ window.PublicLiveConversation=(()=>{
             if(typeof event.data!=='string'||event.data.length>1024*1024)throw Error('Voice event exceeds bound');
             const value=JSON.parse(event.data);
             if(value.type==='prepared'){replacementReview=undefined;preparedResolve(value);}
+            else if(value.type==='context_preparing')state('Preparing previous conversation');
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event')onItem({visit,item:value.event,public_live:true});
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
@@ -201,7 +202,7 @@ window.PublicLiveConversation=(()=>{
         transport.onclose=()=>{if(owned!==epoch)return;closedAck?.(false);abortOpen?.(Error('Voice connection ended.'));
           if(owned===epoch&&!closing){socket=undefined;void hold('Voice connection ended. Your original audio is kept.');}};
         transport.onerror=()=>transport.close();
-        const preparedValue=await wait(prepared,10000),admission=preparedValue.admission;
+        const preparedValue=await wait(prepared,45000),admission=preparedValue.admission;
         if(backend==='native'&&preparedValue.mode!=='public_live_native_comparison')throw Error('The selected native voice comparison is unavailable.');
         if(!current()||admission?.id!==visit||!Number.isFinite(admission.remaining_seconds)||admission.remaining_seconds<=0
             ||admission.remaining_seconds>600||admission.max_input_pcm_bytes>600*32000)throw Error('Voice admission changed');

@@ -732,13 +732,30 @@ uncertain work, ASR, provider commands or context appends. Canonical assistant
 outboxes and other voice modes retain their previous path. Partial source-file
 writes keep the cursor before the incomplete record and require review.
 
-This is prepared source support, not a mounted voice lifecycle or receiving
-acceptance. The caller still needs actual native capability/actor/lease checks,
-producer registration, old-visit catch-up and complete bounded semantic startup
-seeding before microphone/POST. Native projection closure and provider voice
-closure are distinct. Unknown in-flight work and exact late-result cursors must
-survive both. Real memory/tool execution, repeated useful speech/renewal and
-physical hearing remain open. Follow OpenAI's
+The source lifecycle now mounts this adapter for the separately selected native
+backend. Admission requires the actual interpretation, context, resume and public
+transcript capabilities plus callable Python adapters and the existing native
+history. It registers the same semantic producer, catches up only explicit native
+ancestors, and supplies a complete native resume as a developer startup message
+before microphone permission or a paid creation. The existing600second clock
+includes context preparation. A frozen source reference precedes native open;
+changed or unknown opens remain held. Native preparation syncs current sources
+before its one original work handoff and carries the exact dialogue/generation
+reference. No transcription fragment becomes canonical human speech or new work.
+
+Context calls retain the authenticated voice maintenance lease through an owned
+late thread, with two concurrent calls and finite owner waits. Native closure
+waits for preparation; an unsettled interpretation leaves that projection closing
+for the next explicit owner rather than closing over its future original. This
+does not settle provider usage, replay work or reopen an uncertain provider write.
+Responses and other voice modes retain their existing lifecycle.
+
+Source and synthetic qualification are not receiving acceptance. Native startup
+seeds retain their complete existing24KiB bound and the entire creation request
+must fit32KiB; no tail is clipped to make admission pass. The provider's separate
+startup token limit still applies and needs actual semantic qualification. Real
+memory/tool execution, repeated useful speech/renewal and physical hearing remain
+open. Follow OpenAI's
 [transcript provenance](https://developers.openai.com/api/docs/guides/live-migration#preserve-context-and-apply-corrections)
 and [saved-context](https://developers.openai.com/api/docs/guides/live-delegation#keep-the-conversation-context-in-your-application)
-guidance when completing that existing lifecycle.
+guidance when qualifying the lifecycle.
