@@ -88,6 +88,22 @@ the same original: it never reruns ASR, submits speech, dispatches work or creat
 another session. Save/Discard affect local originals, not server work. Rollback
 must keep a reader that ignores foreign-engine records and preserves originals.
 
+Original-audio POSTs have no application wall-clock abort. Network failure still
+retains the same local original; only its confirmed receipt permits source sealing
+or local retirement. This extends the ordinary audio/image upload policy to the
+public voice path, keeping all byte/storage and capture bounds unchanged.
+
+A WebRTC `disconnected` transition shows reconnecting while allowing the same
+transport to recover. It does not close and replace a paid call. Explicit Stop,
+background lifecycle and the existing visit/capture limit still end capture;
+`failed` or `closed` pauses as before. No automatic ICE restart, new negotiation,
+provider call or audio replay is introduced. See the
+[WebRTC state/restart contract](https://w3c.github.io/webrtc-pc/#dom-rtcofferoptions-icerestart).
+The deterministic browser journey covers a delayed confirmed upload after all
+application network clocks expire, transient recovery on the same call, and a
+subsequent terminal failure. This is source qualification, not phone/WiFi/hearing
+acceptance or proof of the cause of each historical disconnect.
+
 The journal is limited to512records/32MiB,256KiB per receipt, two unsettled
 creations total and one per human. Admission reserves2MiB of trusted source
 capacity inside that aggregate bound. Meaningful provider events are capped at

@@ -7,6 +7,13 @@ Only a later explicit capture retries after failure; do not turn retention into
 native work admission. Reset/remove aborts only that selection's request. Preserve
 drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
 
+Public Live original-audio POSTs likewise have no application wall-clock abort.
+Keep byte/storage bounds, confirmed-source sealing and explicit recovery unchanged;
+never replay a missing original or native work automatically. WebRTC disconnected
+is recoverable on the same call: show reconnecting, retaining explicit Stop and
+existing visit/capture limits. Failed/closed still pause. This creates no new
+provider call, ICE restart, microphone grant or automatic successor admission.
+
 Public Live returns from earlier voice connections retain their original UTC
 opening date and exact canonical wording/cursors. Treat relative time and
 first-person action claims as belonging to that earlier encounter; a historical

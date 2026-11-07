@@ -5,7 +5,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
 function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false}={}){
- const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
+ const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
  const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;order.push('permission');return media;}}};
@@ -57,14 +57,18 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  async function fetch(url,options){
   if(!options.body)return readHistory(String(url),options);
   requests.push({url:String(url),sha:await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer()),bytes:options.body.size});
-  await beforeUpload();
+  let aborted;
+  try{await Promise.race([beforeUpload(),new Promise((resolve,reject)=>{
+   aborted=()=>reject(Error('Upload clock expired'));options.signal?.addEventListener('abort',aborted,{once:true});
+  })]);}finally{options.signal?.removeEventListener('abort',aborted);}
   if(failUpload)return {ok:false};
   const original=records.find(v=>v.engine==='gpt-live'&&!v.native_fragment&&String(url).endsWith('/recordings/'+v.ordinal));assert(original);
   return {ok:true,json:async()=>({visit:original.voice_visit,binding,recording:{ordinal:original.ordinal,
    audio_sha256:original.audio_sha256,audio_bytes:original.blob.size,work_replay:'never',...(options.headers['x-voice-capture-stop']?{capture_stop:'interrupted_prefix'}:{})}})};
  }
- const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch',source+';return window.PublicLiveConversation;')(
-  window,navigator,{hidden:false},crypto,Socket,Peer,class{constructor(){this.paused=true;audios.push(this);}play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}},fetch);
+ const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch','AbortSignal',source+';return window.PublicLiveConversation;')(
+  window,navigator,{hidden:false},crypto,Socket,Peer,class{constructor(){this.paused=true;audios.push(this);}play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}},fetch,
+  {timeout(ms){const controller=new AbortController();networkClocks.push({ms,controller});return controller.signal;}});
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
   onState:value=>states.push(value),onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
  async function start(){
@@ -74,9 +78,35 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
+  expireNetworkClocks:()=>{for(const clock of networkClocks)clock.controller.abort();},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ const slow=fixture();await slow.start();let releaseSlow;
+ slow.uploads(()=>new Promise(resolve=>{releaseSlow=resolve;}));slow.pcm();
+ const slowRequest=crypto.randomUUID();slow.sockets[0].onmessage({data:JSON.stringify({
+  type:'source_seal_requested',visit:slow.sockets[0].id,binding:'a'.repeat(64),request:slowRequest})});
+ await until(()=>releaseSlow);
+ try{
+  slow.expireNetworkClocks();await sleep(5);
+  assert(slow.engine.active,'A healthy slow upload must not end voice when an application request clock expires');
+  assert(!slow.sockets[0].sent.some(v=>v.type==='source_sealed'),'Only confirmed original bytes seal a source');
+  releaseSlow();await until(()=>slow.sockets[0].sent.some(v=>v.type==='source_sealed'));
+  assert.equal(slow.requests.length,1,'Waiting never creates a second upload or voice call');
+  assert.equal(slow.sockets.length,1);assert.equal(slow.recovered().length,0);
+ }finally{releaseSlow();await slow.engine.hold();}
+ const transient=fixture();await transient.start();
+ try{
+  transient.peers[0].connectionState='disconnected';transient.peers[0].onconnectionstatechange();
+  assert(transient.engine.active,'Temporary WebRTC disconnection must allow the same transport to recover');
+  assert.match(transient.states.at(-1).message,/reconnect/i);
+  assert(!transient.sockets[0].sent.some(v=>v.type==='close'));
+  transient.peers[0].connectionState='connected';transient.peers[0].onconnectionstatechange();
+  assert.equal(transient.states.at(-1).message,'Listening');assert.equal(transient.sockets.length,1);
+  assert.equal(transient.permission(),1,'Transport recovery does not reopen the microphone');
+  transient.peers[0].connectionState='failed';transient.peers[0].onconnectionstatechange();
+  await until(()=>!transient.engine.active);assert.equal(transient.stops(),1);
+ }finally{await transient.engine.hold();}
  const diagnosticFailure=fixture({usageFailure:true});await diagnosticFailure.start();await diagnosticFailure.engine.hold();
  assert(!diagnosticFailure.engine.active,'A diagnostic callback failure cannot break voice cleanup');
  const metered=fixture({nativeChoice:true});await metered.start();
