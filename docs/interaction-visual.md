@@ -124,3 +124,26 @@ single-image-only executable is not a compatible rollback for that journal.
 Preserve recorded originals rather than rewriting arrays or deleting their history.
 The receiving upgrade retains active writers/goals and reattaches collectors through
 the existing supported route; no global Stop or original replay is authorized.
+
+
+## Shared pending image uploads and interruption recovery
+
+Text and voice preparation share one in-flight upload for the same immutable
+selected PNG and binding. A second caller waits for that request; it does not
+start a duplicate write. The existing20second deadline,2MiB limit, image hashes,
+source identities and frozen destination checks remain unchanged. Another binding
+cannot adopt the pending request. Removing/resetting the selection aborts only
+its request; a late acknowledgement cannot restore a removed selection.
+
+Timeout, network failure and an unreadable acknowledgement retain the selected
+image and draft with an explicit recovery message. No retry or original/work
+submission happens automatically. A later deliberate Send can retry the same
+bytes/hash; confirmed earlier images are reused. A raw PNG retention acknowledgement
+still does not admit native work. HTTP status is checked before decoding JSON,
+so an HTML service error does not become a misleading JSON-parser message.
+
+The user-action fixture covers concurrent text/voice requests, the shared timeout,
+body-read failure, explicit same-byte retry, remove/late-ack cleanup and binding
+changes, alongside existing ordered/point/paste/camera/source preservation. This
+source regression reproduces duplicate concurrent uploads; it does not establish
+that this race caused a particular earlier human network interruption.

@@ -2,19 +2,25 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto').webcrypto;
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 function boot({photo=false}={}){
- const nodes=new Map(),uploads=[],encodings=[];let decode;
+ const nodes=new Map(),uploads=[],encodings=[],timers=new Map();let decode,network,timerID=0,binding="entry-binding";
  function element(){return {value:'',files:[],hidden:false,disabled:false,handlers:{},textContent:'',width:0,height:0,children:[],attributes:{},
   append(...children){this.children.push(...children);},replaceChildren(...children){this.children=children;},setAttribute(k,v){this.attributes[k]=v;},querySelector(){return undefined;},
   addEventListener(k,f){this.handlers[k]=f;},getContext(){return {drawImage(){},beginPath(){},arc(){},stroke(){}};},getBoundingClientRect(){return {left:0,top:0,width:200,height:100};}};}
  const document={createElement(){return element();},querySelector(name){if(!nodes.has(name))nodes.set(name,element());return nodes.get(name);}};
  const bitmap=()=>({width:photo?4000:200,height:photo?3000:100,closed:false,close(){this.closed=true;}});
  class Canvas{constructor(w,h){this.width=w;this.height=h;}getContext(){return {drawImage(){}};}async convertToBlob(){encodings.push([this.width,this.height]);return new Blob([photo?new Uint8Array(this.width*this.height*3):'synthetic image bytes'],{type:'image/png'});}}
- const context=vm.createContext({window:{},document,crypto,Blob,Uint8Array,AbortController,OffscreenCanvas:Canvas,setTimeout,clearTimeout,
+ const reply=options=>({ok:true,json:async()=>({image_sha256:options.headers['X-Image-Sha256'],width:nodes.get('#conversation-image-view').width,height:nodes.get('#conversation-image-view').height})});
+ const context=vm.createContext({window:{},document,crypto,Blob,Uint8Array,AbortController,OffscreenCanvas:Canvas,
+  setTimeout(fn,ms){const id=++timerID;timers.set(id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);},
   createImageBitmap(){if(decode){const held=decode;decode=undefined;return held.promise;}return Promise.resolve(bitmap());},
-  async fetch(route,options){uploads.push({route,options});return {ok:true,json:async()=>({image_sha256:options.headers['X-Image-Sha256'],width:nodes.get('#conversation-image-view').width,height:nodes.get('#conversation-image-view').height})};}});
+  async fetch(route,options){uploads.push({route,options});if(network){const held=network;network=undefined;return new Promise((resolve,reject)=>{const abort=()=>reject(Object.assign(Error('Aborted'),{name:'AbortError'}));options.signal.addEventListener('abort',abort,{once:true});held.promise.then(value=>{options.signal.removeEventListener('abort',abort);resolve(value);},error=>{options.signal.removeEventListener('abort',abort);reject(error);});});}return reply(options);}});
  vm.runInContext(fs.readFileSync('dashboard/web/visual.js','utf8'),context);
- const ui=context.window.VisualInput.mount({headers:()=>({}),getBinding:()=> 'entry-binding',unauthorized(){throw Error('Unexpected auth failure');}});
- return {ui,nodes,uploads,encodings,bitmap,
+ const ui=context.window.VisualInput.mount({headers:()=>({}),getBinding:()=>binding,unauthorized(){throw Error('Unexpected auth failure');}});
+ return {ui,nodes,uploads,encodings,bitmap,timers,
+  holdUpload(){network=deferred();return network;},
+  reply(index=uploads.length-1){return reply(uploads[index].options);},
+  expire(){for(const timer of [...timers.values()])timer.fn();},
+  binding(value){binding=value;},
   hold(){decode=deferred();return decode;},
   choose(){nodes.get('#conversation-image').files=[{name:'selected.png',size:100}];nodes.get('#conversation-image').value='selected.png';return nodes.get('#conversation-image').handlers.change();},
   remove(){nodes.get('#conversation-image-clear').handlers.click();},
@@ -60,5 +66,40 @@ function boot({photo=false}={}){
  multiple.ui.consumed(frozen);const remaining=await multiple.ui.capture();assert(!Array.isArray(remaining));assert.notEqual(remaining.source_id,first);assert.notEqual(remaining.source_id,second,'A later selected camera photo survives consumption of frozen recording images');
  const mixed=boot();await mixed.choose();const waiting=mixed.hold();mixed.nodes.get('#conversation-image').files=[{name:'bad.png',size:100}];const badChoice=mixed.nodes.get('#conversation-image').handlers.change();waiting.reject(Error('bad image'));await badChoice;
  await assert.rejects(mixed.ui.capture(),/selected image is unavailable/);assert.equal(mixed.nodes.get('#conversation-image-list').children.length,2,'Failed intended image stays visible');mixed.remove();assert((await mixed.ui.capture()).source_id,'Explicit removal preserves the good image');
- console.log('Visual UI: ordered multi-image text/voice, reorder/removal, later-selection preservation and held/failed decode never drops an intended image, whole image or optional point, upload only on send, filename retained and explicit removal invalidates late decoding; zero models.');
+ const simultaneous=boot();await simultaneous.choose();const heldUpload=simultaneous.holdUpload();
+ const textCapture=simultaneous.ui.capture(),voiceCapture=simultaneous.ui.captureForVoice();
+ assert.equal(simultaneous.uploads.length,1,'Concurrent text and voice must share one immutable-image upload');
+ heldUpload.resolve(simultaneous.reply());const [textRef,voiceRef]=await Promise.all([textCapture,voiceCapture]);
+ assert.equal(textRef.source_id,voiceRef.source_id);assert.equal(textRef.image_sha256,voiceRef.image_sha256);assert.equal(simultaneous.timers.size,0);
+ const timeout=boot();await timeout.choose();timeout.nodes.get('#conversation-message').value='Keep my draft';
+ timeout.holdUpload();const timed=timeout.ui.capture(),timedVoice=timeout.ui.captureForVoice();
+ const declined=Promise.all([assert.rejects(timed,/Image upload timed out/),assert.rejects(timedVoice,/Image upload timed out/)]);
+ timeout.expire();await declined;assert.equal(timeout.uploads.length,1);assert.equal(timeout.timers.size,0);
+ assert.equal(timeout.nodes.get('#conversation-message').value,'Keep my draft');assert.equal(timeout.nodes.get('#conversation-image-list').children.length,1);
+ const originalBlob=timeout.uploads[0].options.body,originalHash=timeout.uploads[0].options.headers['X-Image-Sha256'];
+ const retried=await timeout.ui.capture();assert.equal(timeout.uploads.length,2,'Only a later explicit capture retries');
+ assert.equal(timeout.uploads[1].options.body,originalBlob);assert.equal(retried.image_sha256,originalHash);
+ await timeout.ui.captureForVoice();assert.equal(timeout.uploads.length,2,'Confirmed bytes are reused');
+ const acknowledgement=boot();await acknowledgement.choose();const holdResponse=acknowledgement.holdUpload(),body=deferred();
+ const waitingBody=acknowledgement.ui.capture();const ackRefused=assert.rejects(waitingBody,/Image upload timed out/);
+ holdResponse.resolve({ok:true,json:()=>body.promise});await Promise.resolve();await Promise.resolve();
+ acknowledgement.expire();body.reject(Object.assign(Error('Aborted body'),{name:'AbortError'}));await ackRefused;
+ assert.equal(acknowledgement.uploads.length,1);assert.equal(acknowledgement.timers.size,0);
+ const networkFailure=boot();await networkFailure.choose();const broken=networkFailure.holdUpload();
+ const disconnected=networkFailure.ui.capture();const networkRefused=assert.rejects(disconnected,/Image upload not confirmed.*kept/);
+ broken.reject(new TypeError('Failed to fetch'));await networkRefused;assert.equal(networkFailure.timers.size,0);assert.equal(networkFailure.uploads.length,1);
+ const badResponse=networkFailure.holdUpload(),badCapture=networkFailure.ui.capture();
+ const HTTPRefused=assert.rejects(badCapture,/Image not confirmed/);
+ badResponse.resolve({ok:false,status:503,json:()=>{throw Error('HTML must not be parsed before checking HTTP status');}});await HTTPRefused;
+ assert.equal(networkFailure.uploads.length,2);assert.equal(networkFailure.timers.size,0);
+ const cancelled=boot();await cancelled.choose();const late=cancelled.holdUpload();const previous=cancelled.ui.capture();
+ const noPrevious=assert.rejects(previous,/selected images changed/);cancelled.remove();await noPrevious;
+ assert(cancelled.uploads[0].options.signal.aborted);assert.equal(cancelled.timers.size,0);
+ late.resolve(cancelled.reply());assert.equal(await cancelled.ui.capture(),undefined,'Late acknowledgement cannot restore a removed selection');
+ const changedBinding=boot();await changedBinding.choose();const frozenUpload=changedBinding.holdUpload();
+ const oldCapture=changedBinding.ui.capture();const oldRefused=assert.rejects(oldCapture,/selected images changed/);
+ changedBinding.binding('another-binding');await assert.rejects(changedBinding.ui.capture(),/selected images changed/);
+ assert.equal(changedBinding.uploads.length,1,'A new binding cannot share or restart an old pending upload');
+ frozenUpload.resolve(changedBinding.reply());await oldRefused;
+ console.log('Visual UI: ordered multi-image text/voice, reorder/removal, later-selection preservation and held/failed decode never drops an intended image, whole image or optional point, coalesced in-flight upload, retained timeout/network recovery, explicit same-byte retry, remove/binding fences, upload only on send, filename retained and explicit removal invalidates late decoding; zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

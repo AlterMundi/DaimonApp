@@ -1,3 +1,9 @@
+Image send preparation shares one bounded in-flight immutable PNG upload between
+text and voice consumers. Keep the20s deadline,2MiB byte cap and selection binding.
+Only a later explicit capture retries after failure; do not turn retention into
+native work admission. Reset/remove aborts only that selection's request. Preserve
+drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
+
 Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
 not native playback or an advertised capability. Preserve normalized mix,
 phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.
