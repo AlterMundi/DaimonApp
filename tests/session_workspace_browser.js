@@ -69,7 +69,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);if(recoveryCase)return json({detail:'Synthetic lost acknowledgement'},503);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:recoveryCase?[]:originals,cursor:seen,newest:seen});
-  if(recoveryCase&&route.startsWith('interaction/inputs/'))return json(originals.find(x=>x.id===route.split('/').at(-1))); 
+  if(recoveryCase&&route.startsWith('interaction/inputs/'))return json(originals.find(x=>x.id===route.split('/').at(-1)));
   if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:countdownCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
