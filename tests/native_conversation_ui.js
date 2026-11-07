@@ -22,7 +22,7 @@ function boot(android=false,pcmReady=true,overrides={}){
   const window={dispatchEvent(){return true;},crypto,AudioContext:Context,navigator:{mediaDevices:{getUserMedia:async()=>{permissionCalls++;return media;}}},StreamingVoice:{supported:()=>true,
     wav:parts=>new Blob(parts,{type:'audio/wav'}),openCapture:async(_media,options)=>{const source={options,subscribe(fn){listener=fn;return ()=>listener=undefined;},observe(){},start(){},close(){this.closed=true;},emit(value){listener?.(value);}};sources.push(source);return source;}}};
   const nativeCommands=[];
-  if(android)window.DaimonAudio={postMessage(raw){const value=JSON.parse(raw);nativeCommands.push(value);if(value.command==='pcm_begin'&&pcmReady)queueMicrotask(()=>window.DaimonAudio.onmessage({data:JSON.stringify({id:value.id,type:'pcm_ready'})}));}};
+  if(android)window.DaimonAudio={postMessage(raw){const value=JSON.parse(raw);nativeCommands.push(value);if(value.command==='pcm_begin'&&pcmReady)queueMicrotask(()=>window.DaimonAudio.onmessage({data:JSON.stringify({id:value.id,type:'pcm_ready',session_seconds:value.seconds})}));}};
   const context=vm.createContext({window,navigator:window.navigator,document:{hidden:false},crypto,WebSocket:Socket,URL,Blob,ArrayBuffer,Float32Array,Uint8Array,atob,btoa,Event,EventTarget,DOMException,
     setTimeout(fn,ms){const timer={fn,ms};timers.push(timer);return timer;},clearTimeout(timer){if(timer)timer.cleared=true;}});
   if(android)vm.runInContext(fs.readFileSync('clients/android/app/src/main/assets/native-audio.js','utf8'),context);

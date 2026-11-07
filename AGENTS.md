@@ -1,3 +1,10 @@
+Android0.7 Public Live output uses the advertised webrtcPcm bridge and existing
+single native PCM owner, reserved before microphone/provider creation. Preserve
+the zero-output Web Audio graph,600second maximum,300second legacy default,
+flush/epoch retirement and immediate native close on Hold. No HTML fallback after
+native selection. Node/JVM/desktop Chromium checks do not establish physical
+WebView/AudioTrack focus/background/hearing acceptance. See native-clients guide.
+
 Public native context sync coalesces retained trusted deltas inside the existing
 finite visit:4096bytes or128events, at least10seconds between owned syncs.
 Use the existing native continuation preparation; never invent provider token

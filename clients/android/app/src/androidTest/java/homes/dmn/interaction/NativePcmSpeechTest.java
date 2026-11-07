@@ -28,12 +28,12 @@ public class NativePcmSpeechTest {
     @Test public void nativeHeadPauseFlushAndFreshUtteranceUseOneSpeechOwner() throws Exception {
         AtomicReference<SpeechOutput> output = new AtomicReference<>(); AtomicReference<String> error = new AtomicReference<>();
         ConcurrentHashMap<String,Integer> positions = new ConcurrentHashMap<>();
-        AtomicInteger ready = new AtomicInteger(), ended = new AtomicInteger(), flushed = new AtomicInteger();
+        AtomicInteger ready = new AtomicInteger(), readySeconds = new AtomicInteger(), ended = new AtomicInteger(), flushed = new AtomicInteger();
         String first = UUID.randomUUID().toString(), interrupted = UUID.randomUUID().toString(), fresh = UUID.randomUUID().toString();
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             scenario.onActivity(activity -> output.set(new SpeechOutput(activity, new Handler(Looper.getMainLooper()), value -> {
                 String type = value.optString("type");
-                if (type.equals("pcm_ready")) ready.incrementAndGet();
+                if (type.equals("pcm_ready")) { ready.incrementAndGet(); readySeconds.set(value.optInt("session_seconds")); }
                 if (type.equals("ended")) ended.incrementAndGet();
                 if (type.equals("pcm_flushed")) flushed.incrementAndGet();
                 if (type.equals("error")) error.set(value.toString());
@@ -44,7 +44,8 @@ public class NativePcmSpeechTest {
                 }
             })));
             try {
-                command(scenario, output, "pcm_begin", new JSONObject()); assertEquals(1, ready.get());
+                command(scenario, output, "pcm_begin", new JSONObject().put("seconds", 600)); assertEquals(1, ready.get());
+                assertEquals("The native owner acknowledges the selected finite window", 600, readySeconds.get());
                 byte[] shortTone = tone(12000); send(scenario, output, 0, first, shortTone.length, shortTone);
                 await(() -> positions.getOrDefault(first, 0) > 0, error);
                 command(scenario, output, "pause", new JSONObject()); int paused = positions.getOrDefault(first, 0);
