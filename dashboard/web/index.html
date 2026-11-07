@@ -14,6 +14,7 @@
     <script src="assets/codex-conversation.js" defer></script>
     <script src="assets/webrtc-native-audio.js" defer></script>
     <script src="assets/openai-live.js" defer></script>
+    <script src="assets/live-usage.js" defer></script>
     <script src="assets/microphone.js" defer></script>
     <script src="assets/visual.js" defer></script>
     <script src="assets/files.js" defer></script>
@@ -147,6 +148,7 @@
         <div class="conversation-diagnostics-content">
           <div id="conversation-voice-choice" class="conversation-tools" hidden><label for="conversation-voice-engine">Avatar</label><select id="conversation-voice-engine" aria-label="Avatar voice provider"><option value="provider">Current voice</option><option value="codex">OpenAI · Codex voice</option><option value="gpt-live">OpenAI · GPT-Live comparison</option><option value="gpt-live-native" disabled>OpenAI · GPT-Live + CompAII</option></select></div>
           <div id="conversation-services-choice" class="conversation-tools" hidden><label for="conversation-services-engine">Conversation services</label><select id="conversation-services-engine"><option value="current">Current voice</option><option value="openai">OpenAI only · hear and speak</option></select><span class="note">OpenAI uses the API credit balance. Avatar uses GPT-Live + CompAII.</span></div>
+          <details id="conversation-live-usage" hidden><summary>OpenAI voice usage · this page</summary><ol></ol><p class="note">GPT-Live 1 voice estimate at USD 0.05/minute, checked November 7, 2026. Billed per second, including silence and backend waiting. Excludes backend models/tools, transcription and separate TTS. This is not an invoice or a credit-balance check. Muting does not close the session. Reload or changing conversation clears these eight most recent observations. <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener noreferrer">Official pricing</a></p></details>
         <section aria-labelledby="conversation-session-status-title"><h2 id="conversation-session-status-title">Session status</h2><p id="conversation-weekly-quota" class="note">Weekly quota unavailable.</p><p id="conversation-session-status-note" class="note">Waiting for an observation.</p><ol id="conversation-session-status" class="session-status-list"></ol></section>
         <details id="conversation-coordination" hidden><summary>Coordination budgets</summary>
           <p class="note">Limits apply to explicitly funded coordination. Ordinary conversation stays separate.</p>

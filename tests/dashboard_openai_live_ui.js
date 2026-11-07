@@ -4,8 +4,8 @@ const source=fs.readFileSync('dashboard/web/openai-live.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false}={}){
- const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false}={}){
+ const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
  const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;order.push('permission');return media;}}};
@@ -66,17 +66,28 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch',source+';return window.PublicLiveConversation;')(
   window,navigator,{hidden:false},crypto,Socket,Peer,class{constructor(){this.paused=true;audios.push(this);}play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}},fetch);
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
-  onState:value=>states.push(value),onItem:value=>items.push(value),onRecovery:value=>{recovered=value;}});
+  onState:value=>states.push(value),onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
  async function start(){
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,
+ return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ const diagnosticFailure=fixture({usageFailure:true});await diagnosticFailure.start();await diagnosticFailure.engine.hold();
+ assert(!diagnosticFailure.engine.active,'A diagnostic callback failure cannot break voice cleanup');
+ const metered=fixture({nativeChoice:true});await metered.start();
+ assert.equal(metered.usage.at(-1).backend,'native');
+ metered.sockets[0].onmessage({data:JSON.stringify({type:'provider_event',event:{type:'session.usage.updated',usage:{seconds:58}}})});
+ assert.equal(metered.usage.at(-1).usage.seconds,58);
+ metered.sockets[0].onmessage({data:JSON.stringify({type:'closed',id:metered.sockets[0].id,finalization:{voice_usage_confirmed:true,usage_seconds:71}})});
+ await until(()=>!metered.engine.active);
+ assert(metered.usage.some(v=>v.finalization?.usage_seconds===71));
+ assert.equal(metered.usage.at(-1).closed,true);
+ assert(metered.usage.every(v=>v.binding==='a'.repeat(64)&&v.visit===metered.sockets[0].id));
  const android=fixture({nativeOutput:true,deferClose:true});await android.start();
  assert(android.order.indexOf('native-ready')<android.order.indexOf('permission'));
  assert.equal(android.audios.length,0,'Native output never creates a second HTML Audio owner');
