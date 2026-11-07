@@ -180,3 +180,34 @@ The previous30seconds had timed out before app installation; actual successful
 admission needed84.88seconds. This carries only that tested fixture correction,
 not the separate capture implementation/review. No uncertain CA operation is
 retried and no production TLS policy or existing device trust is changed.
+
+
+### Qualification TLS isolation after PR731's CA timeout
+
+Sourceb5c440b passed28Swift cases (zero failures,1.638s), actual iOS SDK app build
+and all five general checks. RuntimeCI42390310788 failed during90second fixture
+CA admission before app install/launch; runtime listing took77.63s and boot103.1s.
+Shutdown/delete/server cleanup passed. That outcome is not Beacon playback proof
+and the terminal operation was not replayed.
+
+The disposable fixture no longer mutates the simulator trust store. Only the
+qualification bundle compiles `Qualification/FixtureTrust.swift`. After its one
+install, the fixture copies two bounded public DER anchors to that exact app's
+container. For localhost443 server-trust challenges only, the test delegate uses
+Apple's SecTrust SSL hostname/chain validation with the fixture anchor exclusively
+and network fetching off. It must first reject the same chain for another hostname
+and an unrelated anchor. Other hosts/auth methods retain default WebKit handling.
+Missing anchors, invalid chains and repeated failed challenges are refused.
+
+This is a test-only provisioning replacement, not production certificate pinning,
+a TLS bypass, login or relaxed application origin/bridge admission. CI also builds
+the normal app without that extra source and checks its symbols exclude the helper.
+No root certificate is installed in system/device trust. Both one-day public anchors,
+private signing files, container, server and disposable simulator stay within the
+existing job/deletion bounds; nothing is uploaded. The native receipt must include
+the positive chain and both negative trust results before PCM playback acceptance.
+This fixture no longer qualifies system-trust-store installation; normal shared
+SSO/account and physical device trust remain separate acceptance requirements.
+
+Apple contracts: [custom trust anchors](https://developer.apple.com/documentation/security/configuring-a-trust)
+and [WebKit authentication challenge handling](https://developer.apple.com/documentation/webkit/wknavigationdelegate/webview(_:didreceive:completionhandler:)).

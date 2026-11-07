@@ -113,7 +113,8 @@ import WebKit
             if (ready as? Bool) == true {
                 qualificationStage("fixture_start_submitted")
                 guard let session = (UIApplication.shared.delegate as? AppDelegate)?.audioSession else { return }
-                NativeBeaconProbe.run(session) { result in
+                NativeBeaconProbe.run(session) { observed in
+                    var result = observed; result["tls_fixture"] = QualificationTLS.evidence
                     let data = try! JSONSerialization.data(withJSONObject:result)
                     let text = String(data:data,encoding:.utf8)!
                     web.evaluateJavaScript("window.__nativeBeaconQualification=\(text);window.runQualification()")

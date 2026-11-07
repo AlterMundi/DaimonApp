@@ -30,8 +30,10 @@ capabilities still stay off pending real duplex/capture/account/device acceptanc
 Navigation, process loss and foreground exit close sound/capture without replay.
 The simulator app uses the exact existing adapter bytes/hash. Keep QUALIFICATION
 code and its separate bundle ID out of normal builds. Its disposable loopback TLS
-fixture may trust a one-day CA only in its own new simulator; never weaken the
-production TLS policy or existing device trust. No capture/provider/human-original
+fixture now uses only a qualification-bundle custom anchor for exact localhost443,
+with wrong-host/alien-anchor refusal and system trust unchanged. Compile the normal
+app without FixtureTrust.swift and verify its symbols contain no QualificationTLS.
+Never weaken production TLS or mutate existing device trust. No capture/provider/human-original
 fixture, automatic timeout relaunch or permanent simulator/server/cache is allowed.
 
 Native Beacon preparation reuses the existing Sonic score/explicit activation.

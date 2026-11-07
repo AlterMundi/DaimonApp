@@ -11,6 +11,7 @@ window.runQualification=async()=>{
     if(!window.NativeSpeechAudio||NativeSpeechAudio.pcm!==false||NativeSpeechAudio.beacon!==false)throw Error('Unexpected capability advertisement');
     const beacon=window.__nativeBeaconQualification;
     if(beacon?.state!=='passed'||beacon.microphone_requested!==false||!(beacon.played_frames>0))throw Error('Native Beacon probe: '+JSON.stringify(beacon));
+    if(beacon.tls_fixture?.valid_chain!==true||beacon.tls_fixture?.wrong_host_refused!==true||beacon.tls_fixture?.wrong_anchor_refused!==true||beacon.tls_fixture?.system_trust_modified!==false)throw Error('Fixture TLS evidence missing');
     // Same-origin iframe knows the main document token but cannot reserve native output.
     const iframe=document.createElement('iframe');iframe.srcdoc='<script>window.webkit.messageHandlers.audio.postMessage(JSON.stringify({command:"pcm_begin",document_id:parent.__DaimonAudioDocument,id:"pcm_999",seconds:600}));<\/script>';
     document.body.append(iframe);await sleep(250);iframe.remove();

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import ssl
+import shutil
 import subprocess
 import tempfile
 import time
@@ -66,8 +67,8 @@ def qualify(app):
     with tempfile.TemporaryDirectory(prefix='daimon-ios-', dir=os.environ.get('RUNNER_TEMP')) as temporary:
         state = Path(temporary)
         try:
-            # A one-day fixture CA is trusted only by this newly created simulator.
-            # Production app trust and every existing device/keychain stay unchanged.
+            # One-day public anchors belong only to this disposable test bundle.
+            # No simulator/system trust store mutation or production TLS override.
             (state/'ca.cnf').write_text('[req]\ndistinguished_name=dn\n[dn]\n[v3_ca]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n')
             run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-sha256','-days','1',
                  '-subj','/CN=Daimon Simulator Fixture CA','-config',str(state/'ca.cnf'),'-extensions','v3_ca',
@@ -78,6 +79,11 @@ def qualify(app):
             run(['openssl','x509','-req','-in',str(state/'server.csr'),'-CA',str(state/'ca.crt'),
                  '-CAkey',str(state/'ca.key'),'-CAcreateserial','-days','1','-sha256',
                  '-extfile',str(state/'server.ext'),'-out',str(state/'server.crt')])
+            run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-sha256','-days','1',
+                 '-subj','/CN=Unrelated Fixture CA','-config',str(state/'ca.cnf'),'-extensions','v3_ca',
+                 '-keyout',str(state/'alien.key'),'-out',str(state/'alien.crt')])
+            for name in ['ca','alien']:
+                run(['openssl','x509','-in',str(state/f'{name}.crt'),'-outform','DER','-out',str(state/f'{name}.der')])
             server_log = (state/'server.log').open('wb')
             server = subprocess.Popen(['sudo','-n','python3',str(Path(__file__).resolve()),'--serve',str(state)],
                                       stdout=server_log, stderr=server_log)
@@ -97,7 +103,6 @@ def qualify(app):
             device = run(['xcrun','simctl','create','Daimon-'+uuid.uuid4().hex[:12],phone['identifier'],runtime['identifier']]).strip()
             print(json.dumps({'device':device,'runtime':runtime['identifier'],'phone':phone['name']}),flush=True)
             run(['xcrun','simctl','boot',device]); run(['xcrun','simctl','bootstatus',device,'-b'],timeout=120)
-            run(['xcrun','simctl','keychain',device,'add-root-cert',str(state/'ca.crt')],timeout=90)
             try:
                 run(['xcrun','simctl','install',device,str(app)],timeout=90)
             except subprocess.TimeoutExpired:
@@ -107,6 +112,14 @@ def qualify(app):
                                       'homes.dmn.interaction.qualification','app'],timeout=15).strip())
                 assert (installed/'native-audio.js').read_bytes()==(app/'native-audio.js').read_bytes()
                 print('Exact installed adapter observed after lost install receipt; no reinstall',flush=True)
+            container = Path(run(['xcrun','simctl','get_app_container',device,
+                                  'homes.dmn.interaction.qualification','data'],timeout=30).strip())
+            documents = container/'Documents'; documents.mkdir(exist_ok=True)
+            for name,target in [('ca','qualification-ca'),('alien','qualification-alien-ca')]:
+                source = state/f'{name}.der'
+                assert 0 < source.stat().st_size <= 16384
+                shutil.copyfile(source,documents/f'{target}.der')
+            print('Public fixture anchors copied only to the exact disposable app container; system trust unchanged',flush=True)
             launch_attempted = True
             try:
                 run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'],timeout=90)
@@ -137,6 +150,8 @@ def qualify(app):
             assert (beacon.get('state')=='passed' and beacon.get('microphone_requested') is False
                     and beacon.get('played_frames',0)>0 and beacon.get('phases')==[
                         'playing','stale_quiet','fresh_playing','duck_quiet','restored_playing','foreground_closed']), beacon
+            assert beacon.get('tls_fixture') == {'valid_chain':True,'wrong_host_refused':True,
+                    'wrong_anchor_refused':True,'system_trust_modified':False}, beacon
             passed = True
         finally:
             cleanup = []
