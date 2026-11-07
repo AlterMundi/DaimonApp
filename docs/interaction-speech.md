@@ -474,9 +474,12 @@ An owner may explicitly set dashboard `voice_services_default = "openai"`.
 Then omitted audio API profile selects OpenAI, new clients initially select
 OpenAI Conversation and GPT-Live + CompAII Avatar, and explicit `current` keeps
 the previous speech route. Configure native `voice.default_transcription_profile
-= "openai"` for new unprofiled Conversation and Telegram recordings, plus named
-`previous` commands for the retained legacy route. New native originals store
-the effective default profile. Exact retries/recovery first retain an existing
+= "openai"` for new Telegram recordings, plus named
+`previous` commands for the retained legacy route. New Conversation clients
+freeze their selected default explicitly. Classic unprofiled client captures keep
+the legacy route, including local recordings awaiting Send across an update;
+they must not start another ASR call for a completed legacy interpretation.
+Exact retries/recovery first retain an existing
 original's profile; historical originals without one keep the legacy completed
 reader. Changing a default never changes a captured original or repeats ASR.
 The prior profile uses `/api/interaction/voice/previous` and recovery v5 too.

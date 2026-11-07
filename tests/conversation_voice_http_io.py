@@ -47,9 +47,12 @@ print(json.dumps({'text':item['text'],'final':True}))
 ''')
         j.config.write_text(j.config.read_text()+j.target_config+'\n[voice]\ntranscriber_label="synthetic/no-inference"\ntimeout_seconds=20\ntranscription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root),'--completed-only'])+'\n')
         if profile:
-            # An ignored named route cannot accidentally pass by using legacy.
-            base=j.config.read_text().replace('transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)]), 'transcription_command=["/usr/bin/false"]',1)
-            j.config.write_text(base+('default_transcription_profile="openai"\n' if default else '')+'\n[voice.transcription_profiles.openai]\ntranscriber_label="synthetic/OpenAI-profile"\ntranscription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root),'--completed-only'])+'\n')
+            # Explicit new-client profiles must not fall back. Conversely,
+            # classic captures must not acquire a new default after capture.
+            base=j.config.read_text()
+            if not default:base=base.replace('transcription_command='+json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)]), 'transcription_command=["/usr/bin/false"]',1)
+            command=['/usr/bin/false'] if default else ['/usr/bin/python3',str(transcriber),str(j.root)]
+            j.config.write_text(base+('default_transcription_profile="openai"\n' if default else '')+'\n[voice.transcription_profiles.openai]\ntranscriber_label="synthetic/OpenAI-profile"\ntranscription_command='+json.dumps(command)+'\ncompleted_transcription_command='+json.dumps(command+['--completed-only'])+'\n')
         j.start();j.wait_control_socket(j.socket);j.routing=True
         binding=j.read('presentation','list','0','0')['result']['binding'];j.messages.clear()
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
@@ -89,7 +92,8 @@ print(json.dumps({'text':item['text'],'final':True}))
         # HTTP response; inspect the retained original rather than replaying it.
         assert upload(data,original)[1].status_code==503,'A retry cannot drop the duration-limit context'
         assert status(original)['voice']['capture_stop']==stop_reason
-        if profile:assert status(original)['voice']['transcription_profile']=='openai'
+        if profile and not default:assert status(original)['voice']['transcription_profile']=='openai'
+        if default:assert 'transcription_profile' not in status(original)['voice'],'A classic capture cannot change route when the default changes'
         assert calls().count(digest)==1
         later=str(uuid.uuid4());later_response=client.post('/api/interaction/inputs',json={'binding':binding,'id':later,'text':'Later correction: requirement17.'},headers=headers)
         assert later_response.status_code==200,later_response.text
@@ -506,7 +510,7 @@ print(json.dumps({'text':'Keep this exact protected requirement.','final':True})
         j.close()
 
 if __name__=='__main__':
-    if '--openai-default' in sys.argv[2:]:qualify(sys.argv[1],profile=True,default=True)
+    if '--legacy-default-retention' in sys.argv[2:] or '--openai-default' in sys.argv[2:]:qualify(sys.argv[1],profile=True,default=True)
     elif '--openai-profile' in sys.argv[2:]:qualify(sys.argv[1],profile=True)
     elif '--archive-hold' in sys.argv[2:]:archive_hold(sys.argv[1])
     elif '--archive-legacy' in sys.argv[2:]:archive_hold(sys.argv[1],legacy=True)

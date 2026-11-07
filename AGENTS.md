@@ -396,8 +396,9 @@ See docs/interaction-speech.md. Configuration is not receiving/hearing acceptanc
 
 An explicitly selected `voice_services_default="openai"` also makes omitted audio
 API selections and new client Conversation/Avatar selections OpenAI. Native
-`voice.default_transcription_profile="openai"` freezes the effective default on
-new ordinary/Telegram originals. Existing originals retain their original route,
+`voice.default_transcription_profile="openai"` selects new Telegram ASR. New
+Conversation clients explicitly freeze their selected default; classic unprofiled
+captures retain the legacy route across updates, including unfinished local audio. Existing originals retain their original route,
 including legacy completed-only recovery. Explicit previous-provider captures
 use the named `previous` route; changing a default never changes an active capture.
 Same-actor device/Alerts/menu/Traffic requalification remains required when the

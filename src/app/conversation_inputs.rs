@@ -1063,6 +1063,8 @@ async fn voice_submit(
 ) -> Result<Value> {
     use crate::store::ConversationVoice;
     let mut request: VoiceSubmit = serde_json::from_str(body)?;
+    // Classic clients and unfinished local recordings carry no profile. Keep
+    // their original route; new clients freeze the selected default explicitly.
     if request.transcription_profile.is_none() {
         let existing = app
             .shared
@@ -1071,12 +1073,6 @@ async fn voice_submit(
             .ok();
         request.transcription_profile = if let Some(original) = existing {
             original.voice.and_then(|voice| voice.transcription_profile)
-        } else if !recover && request.foreground_dialogue.is_none() {
-            app.shared
-                .config
-                .voice
-                .as_ref()
-                .and_then(|voice| voice.default_transcription_profile.clone())
         } else {
             None
         };
