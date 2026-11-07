@@ -124,3 +124,31 @@ References:
 - [Apple playback completion types](https://developer.apple.com/documentation/avfaudio/avaudioplayernodecompletioncallbacktype)
 - [Swift Package Manager](https://docs.swift.org/main/documentation/packagemanagerdocs/)
 - [Standard GitHub runner contract](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+
+## Native Beacon DSP preparation
+
+BeaconSynth ports the existing Android six-carrier synthesis without adding
+partials, texture, a provider or a state observer. Frequencies/pulses/depth are
+fixed per owner; weights stay within one normalized mix, and level stays<=0.8.
+Transitions retarget current values. Identical observations cannot restart phase
+or an unfinished ramp. A selected fade reaches exact silence; input arrays cannot
+mutate the owner's state. Audible carriers must stay below0.45of the sample rate.
+PCM16 rounding preserves Android's half-toward-positive-infinity rule.
+
+Six new XCTest scenarios check spectrum/mix, chunk and refresh invariance,
+selected breathing, retarget/fade, atomic invalid controls and a PCM SHA256 from
+the actual existing Java BeaconSynth. The two-second reference includes six
+components, breathing, retargeting, duplicate controls and fade. Java generation
+used only disposable local classes, removed after producing the digest; no audio
+artifact, mic, provider or live observer was retained. Actual Swift/macOS SDK
+qualification remains required before claiming this port passed.
+
+This is the DSP core only, not advertised or wired into the iOS audio device.
+Continue with one bounded foreground native output owner, the existing shared
+audio session, at most one latest frame/level, unchanged cached observation expiry
+<=20seconds and a nonrenewable two-hour owner. Quiet output must release only its
+own holder; speech/capture and Beacon cannot abandon one another. Route/background/
+stop must close it without replay or automatic resume. Qualify actual native
+playback, stale silence, fresh resume, ducking and lifecycle before advertisement;
+physical phone/music/hearing and the full original goal remain open.
