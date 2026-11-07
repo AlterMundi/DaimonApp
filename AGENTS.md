@@ -10,6 +10,11 @@ selected interruptions/routes; it never resumes them automatically. Keep unknown
 session releases blocked until explicit exact-owner recovery. The spoken-output
 policy is not duplex capture/background entitlement. macOS tests and iOS SDK
 compilation do not establish simulator/device audio or shared-login acceptance.
+The prepared iOS WebView embeds the existing hosted Conversation, accepting only
+exact-origin/main-frame app commands with per-document IDs. Reuse app-bundled
+native-audio.js; never fetch executable adapter source or create another login.
+Native capabilities stay off until real injection/iframe/native journey qualifies.
+Navigation, process loss and foreground exit close sound/capture without replay.
 
 Native Beacon preparation reuses the existing Sonic score/explicit activation.
 Keep six normalized phase-continuous sine carriers, bounded latest frame/level,

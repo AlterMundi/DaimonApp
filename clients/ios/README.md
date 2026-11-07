@@ -55,8 +55,27 @@ minimum target and signing disabled (a transient library, not an application).
 This catches iOS-only API/type errors that a macOS package build cannot observe.
 Neither the dylib nor build cache is uploaded; the ten-minute job bound remains.
 
+The prepared `InteractionWebViewController` embeds the existing hosted Conversation
+and shared-auth navigation using persistent WKWebsiteDataStore. Its injected
+source must be the existing app-bundled Android `native-audio.js`, not a downloaded
+script or a new fork. The wrapper keeps native capabilities off and encoded
+playback in the existing browser path until the iOS journey is qualified.
+A valid app home is HTTPS without credentials/query/fragment/nonstandard port.
+Only exact-origin `/interaction/` main frames can send the closed PCM contract;
+SSO/external pages have no native bridge. Other HTTPS links open externally only
+from a deliberate link navigation. The server still owns login, actor and grants.
+
+Per-document UUIDs fence callbacks and commands across navigation, even when
+page-local PCM serial IDs repeat. At most16retired documents are retained per
+controller; thereafter no native admission occurs until an explicit new view.
+The controller closes output on navigation, WebContent termination and leaving
+its visible/foreground lifecycle. It never replays a page/input/media submission.
+Three Foundation tests cover selected-home/page boundaries, closed message fields
+and numeric/bool refusal. SDK compilation checks the iOS-only WKWebView types;
+actual document injection, iframe refusal and native runtime remain unqualified.
+
 This is not an installable app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
-WKWebView's exact-origin/main-frame bridge and shared-login shell,
+actual WKWebView bridge/document injection and shared-login shell acceptance,
 foreground capture/route/interruption/return handling, progressive/background
 speech, native Beacon and actual simulator/device acceptance. Reuse the hosted
 Conversation, account grants and existing wire contract; do not create another

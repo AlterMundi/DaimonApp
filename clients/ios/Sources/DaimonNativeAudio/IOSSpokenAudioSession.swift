@@ -42,7 +42,7 @@ import UIKit
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
             object: nil, queue: nil) { [weak self] _ in Task { @MainActor in self?.leaveForeground() } })
         observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification,
-            object: nil, queue: nil) { [weak self] _ in Task { @MainActor in self?.foreground = true } })
+            object: nil, queue: nil) { [weak self] _ in Task { @MainActor in self?.enterForeground() } })
     }
 
     public func makeOutput(seconds: Int = 300, emit: @escaping (PCMPlaybackDriver.Event) -> Void) throws -> PCMPlaybackDriver {
@@ -78,6 +78,7 @@ import UIKit
         ownership.cancelOwned(); cancelling = false
     }
     public func leaveForeground() { foreground = false; cancelOutputs() }
+    public func enterForeground() { foreground = UIApplication.shared.applicationState == .active }
     /// Explicit user recovery only; never called by notification/refresh/close.
     @discardableResult public func recoverRelease(owner: UUID) -> Bool {
         return ownership.recoverRelease(owner)
