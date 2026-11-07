@@ -131,7 +131,9 @@ window.VisualInput = (() => {
       }
       const controller=new AbortController(),attempt={controller,binding,timedOut:false};
       image.upload=attempt;
-      const timeout=setTimeout(()=>{attempt.timedOut=true;controller.abort();},20000);
+      // Match the finite attached-file transfer budget; a still-progressing
+      // slow uplink must not lose the attempt at the ordinary JSON deadline.
+      const timeout=setTimeout(()=>{attempt.timedOut=true;controller.abort();},120000);
       const failure=message=>Error(binding!==getBinding()||!images.includes(image)||controller.signal.aborted&&!attempt.timedOut
         ? 'Your selected images changed. Review them before sending.'
         : attempt.timedOut ? 'Image upload timed out. Your image and text are kept. Try sending again when the connection is ready.' : message);

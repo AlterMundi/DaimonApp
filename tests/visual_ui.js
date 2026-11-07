@@ -19,7 +19,7 @@ function boot({photo=false}={}){
  return {ui,nodes,uploads,encodings,bitmap,timers,
   holdUpload(){network=deferred();return network;},
   reply(index=uploads.length-1){return reply(uploads[index].options);},
-  expire(){for(const timer of [...timers.values()])timer.fn();},
+  expire(ms=Infinity){for(const timer of [...timers.values()])if(timer.ms<=ms)timer.fn();},
   binding(value){binding=value;},
   hold(){decode=deferred();return decode;},
   choose(){nodes.get('#conversation-image').files=[{name:'selected.png',size:100}];nodes.get('#conversation-image').value='selected.png';return nodes.get('#conversation-image').handlers.change();},
@@ -71,9 +71,13 @@ function boot({photo=false}={}){
  assert.equal(simultaneous.uploads.length,1,'Concurrent text and voice must share one immutable-image upload');
  heldUpload.resolve(simultaneous.reply());const [textRef,voiceRef]=await Promise.all([textCapture,voiceCapture]);
  assert.equal(textRef.source_id,voiceRef.source_id);assert.equal(textRef.image_sha256,voiceRef.image_sha256);assert.equal(simultaneous.timers.size,0);
+ const slow=boot();await slow.choose();const slowUpload=slow.holdUpload(),slowCapture=slow.ui.capture();
+ slow.expire(25000);assert.equal(slow.uploads[0].options.signal.aborted,false,'A slow active transfer may exceed20seconds');
+ slowUpload.resolve(slow.reply());await slowCapture;assert.equal(slow.uploads.length,1);assert.equal(slow.timers.size,0);
  const timeout=boot();await timeout.choose();timeout.nodes.get('#conversation-message').value='Keep my draft';
  timeout.holdUpload();const timed=timeout.ui.capture(),timedVoice=timeout.ui.captureForVoice();
  const declined=Promise.all([assert.rejects(timed,/Image upload timed out/),assert.rejects(timedVoice,/Image upload timed out/)]);
+ assert.equal([...timeout.timers.values()][0].ms,120000,'A stalled transfer still has a finite total deadline');
  timeout.expire();await declined;assert.equal(timeout.uploads.length,1);assert.equal(timeout.timers.size,0);
  assert.equal(timeout.nodes.get('#conversation-message').value,'Keep my draft');assert.equal(timeout.nodes.get('#conversation-image-list').children.length,1);
  const originalBlob=timeout.uploads[0].options.body,originalHash=timeout.uploads[0].options.headers['X-Image-Sha256'];

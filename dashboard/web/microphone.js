@@ -296,7 +296,9 @@ window.VoiceInput = (() => {
         pending={...pending,submissionRequested:true,automaticRetries:(pending.automaticRetries||0)+(automatic?1:0)};
       }
       const frozen=pending;onTiming(frozen.id,'send');uploading=true;controller=new AbortController();const active=controller;
-      const deadline=setTimeout(()=>active.abort(),20000);if(frozen.preparedText)caption(frozen.preparedText);else notice('Saving your recording…');controls();
+      // A media transfer may still be progressing on a slow uplink. Keep the
+      // same finite two-minute bound as attached files, not the JSON/read timer.
+      const deadline=setTimeout(()=>active.abort(),120000);if(frozen.preparedText)caption(frozen.preparedText);else notice('Saving your recording…');controls();
       try {
         if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;

@@ -3,6 +3,29 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Media transfer deadline —7November2026
+
+Ordinary recorded-audio and selected-PNG POSTs now allow a finite120seconds,
+matching attached-file transfers, instead of aborting at20seconds even while
+bytes may still be uploading. Read/JSON deadlines, image/audio byte caps,
+hashes, frozen targets, CSRF/authentication and recovery ownership are unchanged.
+No automatic image resend is added; audio keeps its existing receipt-first,
+limited same-original recovery. The image selector still coalesces concurrent
+text/voice requests into one upload and preserves drafts/images on failure.
+
+Shipped state-machine tests hold both uploads beyond25seconds and complete them
+once with the same original. The image journey also expires the120second bound,
+preserves its draft and selected bytes, and retries only after another explicit
+send. Existing audio recovery, target and unknown-acknowledgment cases pass.
+These are synthetic zero-provider checks, not human network acceptance.
+
+Actual receiving logs show client disconnections before body reception completed
+in both reported failure windows. They do not identify the exact browser request
+or establish whether its20second timer, network, proxy or another client action
+caused each disconnect. The hard client deadline is a verified limitation; its
+removal at20seconds is not proof of the incidents' root cause. Physical-network
+upload acceptance and the full roadmap remain open.
+
 ## Retained real voice native handoff —7November2026
 
 A read-only inspection of the already retained human public-Live/native visit

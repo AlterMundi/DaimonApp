@@ -1,5 +1,7 @@
 Image send preparation shares one bounded in-flight immutable PNG upload between
-text and voice consumers. Keep the20s deadline,2MiB byte cap and selection binding.
+text and voice consumers. Media POSTs use the bounded120s transfer deadline,
+matching attached files; ordinary read/JSON deadlines stay unchanged. Preserve
+the2MiB image/20MiB audio byte caps and selection binding.
 Only a later explicit capture retries after failure; do not turn retention into
 native work admission. Reset/remove aborts only that selection's request. Preserve
 drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
