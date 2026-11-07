@@ -107,6 +107,49 @@ class LiveTranscription(unittest.TestCase):
         with self.assertRaises(ValueError):
             create_app({**self.config,'streaming_transcription_openai':{**self.config['streaming_transcription_openai'],'fallback':{'provider':'qwen'}}},self.provider)
 
+    def test_openai_captions_accept_existing_shared_home_and_device_grants(self):
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
+        self.config['additional_origins']=['https://home.example.test']
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'captions',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared')}
+        token='h'*43;identity={'contract':'dm.home-session/v1','origin':'https://home.example.test',
+            'expires':int(time.time())+3600,'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://home.example.test') as client:
+                headers={'Host':'home.example.test','Cookie':'__Host-home='+token,'Origin':'https://home.example.test'}
+                response=client.get('/api/interaction/access',headers=headers);self.assertEqual(response.status_code,200,response.text)
+                csrf=response.json()['csrf']
+                with client.websocket_connect('/api/interaction/voice/openai/live',headers=headers) as ws:
+                    ws.send_json({**self.meta(),'csrf':csrf,'mode':'captions'})
+                    self.assertEqual(ws.receive_json()['type'],'ready')
+                    ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                    ws.send_json({'type':'discard'})
+                self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+                self.assertEqual(Stream.opened[-1].selected_provider,'openai')
+                opened=len(Stream.opened)
+                with self.assertLogs('dashboard.live_transcription',level='WARNING') as logged:
+                    with client.websocket_connect('/api/interaction/voice/openai/live',headers=headers) as ws:
+                        ws.send_json({**self.meta(),'csrf':'wrong-action','mode':'captions'})
+                        self.assertEqual(ws.receive_json()['type'],'unavailable')
+                self.assertEqual(len(Stream.opened),opened,'Bad action token cannot open a billable provider')
+                self.assertIn('HTTPException',str(logged.output));self.assertNotIn(token,str(logged.output))
+        device_file=self.root/'caption-device.json'
+        grants=Grants(self.config,self.provider);grants.enroll('Caption fixture',device_file,3600)
+        device=read_json(device_file)
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/openai/live',headers={'Origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta(),'authorization':device['authorization'],'csrf':device['csrf'],'mode':'captions'})
+                self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                ws.send_json({'type':'discard'})
+            self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+        from dashboard.companion import permitted
+        self.assertTrue(permitted('POST','/api/interaction/voice/openai/live'))
+        self.assertFalse(permitted('POST','/api/interaction/voice/openai/live','monitor_readonly'))
+        self.assertFalse(permitted('POST','/api/interaction/voice/openai/live/extra'))
+
     def test_streams_before_finish_retains_only_text_for_exact_wav(self):
         pcm=b'\0\0'*1600
         with self.open() as ws:

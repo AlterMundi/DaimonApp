@@ -67,7 +67,7 @@ login, change providers or activate an avatar during software delivery. See
 
 The current web reader uses one persistent empty owner-only lock at
 `<state_dir>/voice-admission/.lock`. After the existing actor/CSRF/binding checks,
-all five voice WebSocket modes take a shared OS lock before opening a provider,
+all voice WebSocket modes take a shared OS lock before opening a provider,
 preparing microphone admission or submitting work. Unauthenticated transports
 cannot reserve it. The lock follows the connection and its owned late setup/
 cleanup; it is not a model lease, scheduler or native work cancellation.
