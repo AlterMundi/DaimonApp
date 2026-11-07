@@ -89,8 +89,10 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     if (actual.get('model')!=config['model'] or audio.get('format')!={'type':'audio/pcm','rate':24000}
                             or audio.get('output',{}).get('voice')!=config['voice']):raise ValueError()
                     report({'stage':'session_started','model':config['model'],'session_id':session})
-                    send({'type':'session.commentary.append','event_id':str(uuid.uuid4()),
-                          'delegation_id':None,'content':fields['greeting']})
+                    if cancel is not None and cancel.is_set():failure=failure or 'audition-cancelled'
+                    if failure or clock()>=generation_end:close()
+                    else:send({'type':'session.commentary.append','event_id':str(uuid.uuid4()),
+                               'delegation_id':None,'content':fields['greeting']})
                 elif kind=='session.output_audio.delta':
                     if session is None:raise ValueError()
                     data=base64.b64decode(event['delta'],validate=True)

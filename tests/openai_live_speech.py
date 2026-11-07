@@ -69,6 +69,17 @@ class Preview(unittest.TestCase):
         self.assertEqual(receipts[-1]['stage'],'session_closed');self.assertTrue(receipts[-1]['finalized'])
         self.assertTrue(self.socket.closed);self.assertEqual(self.connects,1)
 
+    def test_cancel_during_start_never_requests_greeting(self):
+        cancel=threading.Event();receive=self.socket.recv
+        def cancelled_start():
+            raw=receive()
+            if json.loads(raw)['type']=='session.started':cancel.set()
+            return raw
+        self.socket.recv=cancelled_start
+        with self.assertRaisesRegex(live.SpeechError,'cancelled'):self.run_preview(cancel=cancel)
+        self.assertFalse(any(e['type']=='session.commentary.append' for e in self.socket.sent))
+        self.assertEqual(sum(e['type']=='session.close' for e in self.socket.sent),1)
+
     def test_wrong_voice_is_closed_and_never_used_as_another_identity(self):
         self.socket=Socket(self.clock,voice='other')
         with self.assertRaisesRegex(live.SpeechError,'mismatch'):self.run_preview()
@@ -116,6 +127,21 @@ class Preview(unittest.TestCase):
         self.socket.send=without_usage
         with self.assertRaisesRegex(live.SpeechError,'finalization-unconfirmed'):self.run_preview()
         self.assertTrue(self.socket.closed)
+
+    def test_explicit_retirement_reuses_exact_cache_and_preserves_unknown_jobs(self):
+        actual=live.render
+        with patch.object(live,'render',lambda *a,**kw:actual(*a,**kw,connector=self.connect,clock=self.clock)):
+            result=speech.render(self.config,self.request,allow_regenerate=False)
+        ident=result['render_id'];job=Path(self.config['cache_root'])/ident
+        state_path=job/'state.json';state=json.loads(state_path.read_text())
+        outcome={'state':'rendered','receipt':result}
+        state['phase']='intent';state_path.write_text(json.dumps(state))
+        with self.assertRaises(speech.RenderError):speech.retire_preview_job(self.config,ident,outcome)
+        self.assertTrue((job/'audio.wav').exists())
+        state['phase']='rendered';state_path.write_text(json.dumps(state))
+        self.assertTrue(speech.retire_preview_job(self.config,ident,outcome)['retired'])
+        self.assertFalse(job.exists());self.assertTrue(speech.retire_preview_job(self.config,ident,outcome)['already_absent'])
+        self.assertEqual(self.connects,1)
 
     def test_passage_endpoint_deadline_bounds_refuse_without_a_connection(self):
         with self.assertRaises(speech.RenderError):speech.render_plan(self.config,{**self.request,'text':'word '*41})

@@ -74,13 +74,36 @@ References: [GPT-Live conversations](https://developers.openai.com/api/docs/guid
 
 ## Remaining comparison and acceptance
 
-The preview transport is not exposed by the workshop yet. Before enabling it,
-retain bounded frozen A/B batch intents under the existing account document;
-reuse the existing speech cache and reservation/cleanup, with an explicit cap
-on preview receipts/jobs. Preserve unknown outcomes and generation-fence retired
-batches. Wire the existing scoped voice exclusion and owned subprocess
-cancellation/deadline into the authenticated route and UI. Do not enable a
-button that can accumulate unbounded metadata or replay an expired/unknown job.
+The preview transport is not exposed by the workshop yet. The account-document
+batch layer now freezes A/B and the same passage before any attempt, with at
+most4batches/2slots per actor. Existing64actor and document/audio limits remain;
+new preview job metadata therefore has at most512jobs. Batch identity includes
+its monotonic generation. Exact prepare readback never replans or changes A;
+a started slot can only be observed after restart, never launched again.
+Cancel preserves in-flight attempts and marks unstarted slots as unsent.
+
+Retirement first persists its claim, then removes only the exact known-completed
+preview cache bytes/job. Unknown or active attempts remain. A partial deletion
+or final metadata failure retains `retiring`; only that cleanup can continue.
+Old generation requests cannot reallocate retired batches or regenerate audio.
+The cleanup reuses the speech job locks, verifies source/header/audio hashes and
+never touches human originals, ordinary speech jobs or selected voice revisions.
+
+The internal preview CLI reuses the speech renderer and the existing capacity
+semaphore. Its runner bounds stdout at64KiB and owns only its isolated process
+group, with a35second wait and5second termination drain. SIGTERM cooperatively
+requests a graceful Live close; an unresponsive owned process is terminated.
+The runner validates the returned cache ID, source hash, WAV bytes/format and
+30second duration. Tests exercise the actual subprocess/cache-hit and cancellation
+while an unrelated process remains alive. No real provider was contacted.
+
+The remaining work is the authenticated preview adapter and panel controls:
+connect these bounded batch/process components to explicit Generate, cached
+Play, Stop and Retire actions. Reuse the existing voice admission ticket and
+actor voice lease; shared speech capacity must remain shared with ordinary TTS.
+Preserve exact cached outcomes and status-only reconciliation on lost ACKs.
+Do not expose arbitrary renderer configurations or regenerate expired/unknown
+jobs. Comparison generation and playback stay separate user actions.
 
 Paid comparison remains explicit and bounded: two compatible identities at most,
 the same passage of at most40words,30seconds/16MiB each, retained uncertain result

@@ -557,6 +557,48 @@ def render(binding, request, *, cancel=None, allow_regenerate=True):
 
 
 
+def retire_preview_job(binding,ident,outcome):
+    """Delete only this explicitly claimed disposable Live preview job.
+
+    The workshop must persist its exact batch retirement claim first. Missing
+    bytes may then be an already completed cleanup step, never synthesis/retry.
+    Original media, ordinary speech and unknown provider attempts are excluded.
+    """
+    config=route(binding)
+    if (config['provider']!='openai-live' or not isinstance(ident,str)
+            or not re.fullmatch('[a-f0-9]{64}',ident) or not isinstance(outcome,dict)
+            or outcome.get('state') not in ('prepared','rendered','not_started','cancelled_verified')):
+        raise RenderError('preview-retirement-proof-required')
+    root=directory(config['cache_root']);job=root/ident
+    if not job.exists() and not job.is_symlink():return {'retired':True,'already_absent':True}
+    directory(job)
+    with lock(job/'.lock'):
+        entries={p.name:p for p in job.iterdir()}
+        if set(entries)-{'.lock','state.json','audio.wav'}:raise RenderError('preview-job-needs-review')
+        state_path=job/'state.json';state=None
+        if state_path.exists() or state_path.is_symlink():
+            state=json.loads(private_bytes(state_path,32768))
+            if (state.get('identity_sha256')!=ident or state.get('provider')!='openai-live'
+                    or state.get('phase') not in ('rendered','audio_expired','unconfirmed')
+                    or state.get('provider_receipt',{}).get('finalized') is not True
+                    or outcome['state'] in ('prepared','not_started')):
+                raise RenderError('uncertain-preview-is-kept')
+        audio=job/'audio.wav'
+        if audio.exists() or audio.is_symlink():
+            data=private_bytes(audio,MAX_AUDIO);audio_info(data)
+            expected=(state or {}).get('audio_sha256') or outcome.get('receipt',{}).get('audio_sha256')
+            if not expected or sha(data)!=expected:raise RenderError('preview-audio-proof-changed')
+        # Validate the full known set before removing any part of it.
+        for path in entries.values():
+            info=path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077 or info.st_nlink!=1:
+                raise RenderError('unsafe-preview-retirement')
+        for path in (audio,state_path,job/'.lock'):
+            if path.exists():path.unlink()
+        job.rmdir();sync_directory(root)
+    return {'retired':True,'already_absent':False}
+
+
 def word_alignment(spoken, sentences):
     """Reconcile provider words to spoken Unicode text; never trust word indices.
 
@@ -766,12 +808,15 @@ def result(state, audio_file, cached):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binding', type=Path, required=True)
+    selection=parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--binding', type=Path)
+    selection.add_argument('--preview-route',action='store_true',help='Read an internal frozen Live preview route and request from stdin')
     parser.add_argument('--stream', action='store_true', help='Emit bounded encoded audio frames from one durable SSE attempt')
     parser.add_argument('--prune', action='store_true', help='Expire completed cached audio without provider calls')
     args = parser.parse_args()
     os.umask(0o077)
     try:
+        if args.preview_route and (args.stream or args.prune):raise RenderError('invalid-preview-mode')
         if args.prune:
             print(json.dumps(prune_audio(route(args.binding))))
             return 0
@@ -781,7 +826,18 @@ def main():
         if args.stream:
             stream_render(args.binding,json.loads(raw),lambda value: print(json.dumps(value,separators=(',',':')),flush=True))
             return 0
-        value = render(args.binding, json.loads(raw))
+        if args.preview_route:
+            import signal
+            import threading
+            body=json.loads(raw)
+            if not isinstance(body,dict) or set(body)!={'route','request'}:raise RenderError('invalid-preview-request')
+            selected=route(body['route'])
+            if selected['provider']!='openai-live':raise RenderError('preview-provider-mismatch')
+            cancelled=threading.Event()
+            signal.signal(signal.SIGTERM,lambda *_:cancelled.set())
+            signal.signal(signal.SIGINT,lambda *_:cancelled.set())
+            value=render(selected,body['request'],cancel=cancelled,allow_regenerate=False)
+        else:value = render(args.binding, json.loads(raw))
         print(json.dumps(value))
         return 0
     except RenderError as error:

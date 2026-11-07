@@ -16,6 +16,7 @@ import uuid
 
 from .codex_voice_history import history_lock
 from .avatar_workshop_voice import WorkshopVoiceRevisions,voice_state
+from .voice_studio_batches import WorkshopPreviewBatches,preview_state
 from .private_state import private_directory
 from scripts.speech_render import atomic, private_bytes
 
@@ -51,7 +52,7 @@ def validate_design(design):
     finally:_validators.release()
 
 
-class AvatarWorkshop(WorkshopVoiceRevisions):
+class AvatarWorkshop(WorkshopVoiceRevisions,WorkshopPreviewBatches):
     """One atomic actor document: revisions and pointers commit together.
 
     The configured App state root belongs to one receiving being. Actor IDs
@@ -87,6 +88,7 @@ class AvatarWorkshop(WorkshopVoiceRevisions):
                 or not isinstance(value.get('versions'),list) or len(value['versions'])>self.max_versions):
             raise ValueError('Workshop state needs review; no reset was performed')
         if 'voice' in value:voice_state(value)
+        if 'voice_previews' in value:preview_state(value)
         return value
 
     def _write(self,human,value):
