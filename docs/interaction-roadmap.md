@@ -15,8 +15,9 @@ real71second native-backend visit has confirmed terminal voice usage. Read-only
 qualification now also matches two accepted native work roots to their three exact
 acoustic sources, one provider-acknowledged canonical progress return, and a current
 canonical final available after the voice visit closed. The existing episodic
-curation/readback separately matches its genuine voice original. These are partial
-handoff/work-continuity facts, not in-voice memory lookup, audible final return,
+curation/readback separately matches its genuine voice original. That historical
+clip-input visit does not qualify the current live-window input path. These are
+partial handoff/work-continuity facts, not in-voice memory lookup, audible final return,
 repeated physical renewal, useful speech latency or phone/hearing acceptance.
 See [the exact qualification scope](interaction-qualification.md#retained-real-voice-native-handoff--7november2026). Android0.8 adds native Beacon and has passed eight
 actual API35 WebView/bridge/service/AudioTrack/focus instrumentation cases plus

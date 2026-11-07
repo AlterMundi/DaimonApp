@@ -6,7 +6,9 @@ Design: [integrating conversation](interaction.md).
 ## Retained real voice native handoff —7November2026
 
 A read-only inspection of the already retained human public-Live/native visit
-verifies the following bounded chain through the current consuming owner reader:
+verifies the following bounded chain through the current consuming owner reader.
+That historical visit used the then-selected clip interpretation path; it does
+not qualify the subsequently selected live-window/continuous-ASR input path:
 
 - Two accepted native work roots retain three exact acoustic originals. Their
   original IDs, audio/text hashes, formulation, chronological capture order and
