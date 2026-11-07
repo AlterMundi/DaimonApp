@@ -103,6 +103,22 @@ steps with the serving interpreter; never rerun completed authority, grant or
 journal migrations. Restore service availability before unrelated qualification
 or fleet work. Preserve the original failure and a separate recovery outcome.
 
+Receiving-profile reconciliation must respect disabled optional services. A
+receiver without companion device access has `Grants.root is None`; it has no
+device grants to enumerate or reauthorize. Likewise, absent Traffic configuration
+has no Traffic journal to migrate. Verify the actual enabled components before
+stopping, preserve disabled settings, and reconcile only their existing same-actor
+journals. Do not create a grants directory or enable a service to satisfy an
+operator assumption.
+
+If reconciliation already adopted Alerts/menu fingerprints before encountering a
+disabled component, verify those exact new fingerprints and compare preserved
+menu fields with the retained preimage. Skip the absent component and continue
+the missing constructor/start/health steps. Keep the failed receipt and a separate
+forward-recovery receipt; do not rerun the completed journal migration. The
+7November peer delivery exercised this case with companion disabled and no
+Traffic configuration; native work and receiver provider choices were preserved.
+
 Exit75 means voice owned the lock and the operator was not started. Exit78 means
 reader/state/config qualification failed before execution; inspect that mismatch.
 A deadline/nonzero result after execution is the operator's actual outcome, not
