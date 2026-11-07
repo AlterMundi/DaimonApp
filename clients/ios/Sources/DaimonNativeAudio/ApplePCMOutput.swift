@@ -3,7 +3,7 @@ import Foundation
 
 /// AVAudioEngine ownership only. The app owns AVAudioSession, capture, shared
 /// login and lifecycle policy; constructing this graph requests none of those.
-final class ApplePCMOutput: PCMOutputDevice {
+@MainActor final class ApplePCMOutput: PCMOutputDevice {
     enum Refusal: Error { case invalidPCM, bufferUnavailable, offlinePlayback }
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -30,7 +30,7 @@ final class ApplePCMOutput: PCMOutputDevice {
         engine.attach(player); engine.connect(player, to: engine.mainMixerNode, format: format)
         engine.prepare(); prepared = true
     }
-    func schedule(_ data: Data, completion: @escaping () -> Void) throws {
+    func schedule(_ data: Data, completion: @escaping @Sendable () -> Void) throws {
         guard !engine.isInManualRenderingMode else { throw Refusal.offlinePlayback }
         let pcm = try Self.buffer(data)
         player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack) { type in
@@ -40,5 +40,4 @@ final class ApplePCMOutput: PCMOutputDevice {
     func start() throws { if !engine.isRunning { try engine.start() }; if !player.isPlaying { player.play() } }
     func pause() { player.pause(); engine.pause() }
     func stop() { player.stop(); engine.stop() }
-    deinit { player.stop(); engine.stop() }
 }

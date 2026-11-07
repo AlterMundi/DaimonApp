@@ -3,12 +3,12 @@ import Foundation
 import XCTest
 @testable import DaimonNativeAudio
 
-private final class OutputFixture: PCMOutputDevice {
-    var completions: [() -> Void] = []
+@MainActor private final class OutputFixture: PCMOutputDevice {
+    var completions: [@Sendable () -> Void] = []
     var starts = 0, pauses = 0, stops = 0
     var fail = false
     func prepare() throws {}
-    func schedule(_ data: Data, completion: @escaping () -> Void) throws {
+    func schedule(_ data: Data, completion: @escaping @Sendable () -> Void) throws {
         if fail { throw PCMPlaybackQueue.Refusal.invalidSpan }
         completions.append(completion)
     }
@@ -75,7 +75,7 @@ final class PCMPlaybackDriverTests: XCTestCase {
         XCTAssertThrowsError(try append(other, 0, id)); failed.fail = false
         XCTAssertThrowsError(try append(other, 0, id)); XCTAssertEqual(failed.completions.count, 0)
     }
-    func testActualApplePCMBufferPreservesSignedLittleEndianSamples() throws {
+    @MainActor func testActualApplePCMBufferPreservesSignedLittleEndianSamples() async throws {
         let buffer = try ApplePCMOutput.buffer(Data([0, 128, 0, 0, 255, 127]))
         XCTAssertEqual(buffer.format.sampleRate, 24000); XCTAssertEqual(buffer.frameLength, 3)
         let channel = try XCTUnwrap(buffer.floatChannelData?[0])

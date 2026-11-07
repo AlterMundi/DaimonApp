@@ -1,8 +1,8 @@
 import Foundation
 
-protocol PCMOutputDevice: AnyObject {
+@MainActor protocol PCMOutputDevice: AnyObject, Sendable {
     func prepare() throws
-    func schedule(_ data: Data, completion: @escaping () -> Void) throws
+    func schedule(_ data: Data, completion: @escaping @Sendable () -> Void) throws
     func start() throws
     func pause()
     func stop()
@@ -20,8 +20,8 @@ protocol PCMOutputDevice: AnyObject {
     private struct Ticket { let id: UUID; let end: Int; var complete = false }
     private let queue: PCMPlaybackQueue
     private let device: PCMOutputDevice
-    private let activate: () throws -> Void
-    private let deactivate: () -> Void
+    private let activate: @MainActor () throws -> Void
+    private let deactivate: @MainActor () -> Void
     private let emit: (Event) -> Void
     private let clock: () -> TimeInterval
     private let expires: TimeInterval
@@ -33,13 +33,13 @@ protocol PCMOutputDevice: AnyObject {
     private var closed = false
     private var reportedPlaying = false
 
-    public convenience init(seconds: Int = 300, activate: @escaping () throws -> Void,
-                            deactivate: @escaping () -> Void, emit: @escaping (Event) -> Void) throws {
+    public convenience init(seconds: Int = 300, activate: @escaping @MainActor () throws -> Void,
+                            deactivate: @escaping @MainActor () -> Void, emit: @escaping (Event) -> Void) throws {
         try self.init(seconds: seconds, device: ApplePCMOutput(), activate: activate,
                       deactivate: deactivate, clock: { ProcessInfo.processInfo.systemUptime }, emit: emit)
     }
-    init(seconds: Int, device: PCMOutputDevice, activate: @escaping () throws -> Void,
-         deactivate: @escaping () -> Void, clock: @escaping () -> TimeInterval,
+    init(seconds: Int, device: PCMOutputDevice, activate: @escaping @MainActor () throws -> Void,
+         deactivate: @escaping @MainActor () -> Void, clock: @escaping () -> TimeInterval,
          emit: @escaping (Event) -> Void) throws {
         queue = try PCMPlaybackQueue(seconds: seconds)
         self.device = device; self.activate = activate; self.deactivate = deactivate
