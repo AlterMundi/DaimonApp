@@ -563,7 +563,10 @@ Each window starts after the prior frozen window. Late fragments stay in the
 journal for the next window and semantic context; they never rewrite a frozen
 work intent. Missing input language holds the originals without another recognizer.
 A source window reads at most4MiB/8192 journal records, with the unchanged64KiB
-language and eight-original bounds. Existing visit/store quotas still apply.
+language bound. A Live-only grouped handoff may include all32 retained raw
+recordings in the existing600second visit; the legacy per-clip interpreted
+delegate retains its eight-source limit. The existing192KiB native document and
+visit/store quotas still apply, so capacity failure holds the exact originals.
 Native overlap checks reject reuse by another work intent; exact retries observe
 one retained outcome, and uncertain writes never resubmit automatically.
 

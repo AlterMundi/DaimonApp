@@ -20,7 +20,7 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
     No ASR, provider turn, fallback, question answer or native replay is performed.
     """
     if (not isinstance(delegation, str) or not delegation or len(delegation.encode()) > 1024
-            or not isinstance(ordinals, list) or not 1 <= len(ordinals) <= 8
+            or not isinstance(ordinals, list) or not 1 <= len(ordinals) <= (32 if live_window is not None else 8)
             or any(type(n) is not int or not 0 <= n < 32 for n in ordinals)
             or ordinals != sorted(set(ordinals))
             or not isinstance(formulation, str) or not formulation.strip()

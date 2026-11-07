@@ -97,6 +97,7 @@ class NativeWork(unittest.TestCase):
         self.ready_work()
         with self.assertRaises(ValueError): self.delegate(delegation='only-a-transcript-fragment')
         with self.assertRaises(ValueError): self.delegate(ordinals=[True])
+        with self.assertRaises(ValueError): self.delegate(ordinals=list(range(9)))
         with self.assertRaises(ValueError): self.delegate(ordinals=[0,0])
         value = self.visits.read(self.ident,100,self.owner)
         value['native_originals']['0']['native_commit']['state'] = 'intent'

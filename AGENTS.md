@@ -1,3 +1,8 @@
+Public Live grouped work supports up to32 raw originals from one sealed window,
+within the existing600second visit,64KiB language and192KiB native document
+bounds. Keep the legacy interpreted delegate at eight sources. A capacity refusal
+retains the window and originals without truncation, second ASR or work retry.
+
 # Interaction development boundaries
 
 Prepared public Live context uses the existing native semantic producer, through
