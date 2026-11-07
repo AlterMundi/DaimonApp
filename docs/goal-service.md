@@ -367,3 +367,25 @@ this dependency's source-only qualification.
 Qualification: `cargo test --no-default-features scoped_maintenance` and
 `tests/scoped_maintenance_io.py` exercise private synthetic SQLite/native peers
 through the real owner socket. No real session, provider or service is operated.
+
+## Oversized legacy start recovery
+
+Native objectives are limited to 4000 Unicode characters; retain detailed task
+requirements in their existing attributed context and reference them from a compact
+objective. `goal_prepare` validates the limit before retaining a new intent.
+
+For a legacy start with a retained terminal native -32600 rejection specifically
+for that objective limit and no native receipt or replacement effect, inspect
+`goal_status` and a fresh `goal_inspect`. Reuse `goal_prepare` with the same
+original `input_ref`, selector, inspected binding, action, expected snapshot,
+budget and follow-up. Only the compact objective and explanatory reason may change.
+One correction is retained under the original control ID, preserving the full
+failed plan/result, source, original deadline and attribution. The corrected
+interpretation has one fresh 900-second submission window; it may outlive an
+expired rejected interpretation, never a later command or changed binding.
+The phase becomes known_unsent;
+execute that same control ID through `goal_execute`, then read actual outcome.
+No native mutation occurs during correction. The receiving interpreter must own
+the original; a helper cannot borrow its controller lease. Later direction,
+expiry, changed binding/revision and Stop/maintenance still refuse execution.
+Other rejected, uncertain, partial or acknowledged outcomes remain immutable.
