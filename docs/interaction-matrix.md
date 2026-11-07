@@ -286,7 +286,7 @@ releases the same watcher. Only confirmed `handoffReady` plus observed old-proce
 exit permits stopped installation and snapshot-preserving restoration in the
 same persistent cgroup. Compare all package files/resources and the installer's
 fixed `codex -> bin/codex` compatibility link; CLI equality alone is insufficient.
-Pin the complete previous tree and release path independently. A known old package can be restored after refused
+Pin the complete previous tree and release path independently. Inventory is bounded at64regular files,128total entries and1GiB, covering the actual44-file stock0.167 predecessor without copying it. A known old package can be restored after refused
 installation; this is software recovery, never a history restore or input replay.
 
 Uncertain maintenance/exit/restore is retained, never resent or converted into
