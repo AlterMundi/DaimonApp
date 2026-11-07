@@ -8,13 +8,14 @@ parallel-work attention coordination as one coherent delivery.
 ## Current comparison receiving —7November2026
 
 Shared Resources `interaction-current.md` and its named current record own the
-actual selected composition. App724 now serves the mounted public GPT-Live routes
+actual selected composition. App726 now serves the mounted public GPT-Live routes
 on all three living receivers, preserving each pair's provider/Avatar choices;
 software availability does not activate the disabled peer comparisons. Root's
 real71second native-backend visit has confirmed terminal voice usage. This does
 not prove real memory lookup, repeated physical renewal, useful speech latency
-or phone/hearing acceptance. Android0.7 has passed actual integrated API35
-WebView/bridge/service/AudioTrack qualification and private same-key publication;
+or phone/hearing acceptance. Android0.8 adds native Beacon and has passed eight
+actual API35 WebView/bridge/service/AudioTrack/focus instrumentation cases plus
+private same-key publication;
 human download/install remains unobserved. The full original goal remains open.
 
 The dated component/preparation records below retain their original qualification

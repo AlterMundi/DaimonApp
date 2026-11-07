@@ -1,3 +1,27 @@
+iOS preparation is in clients/ios. Keep the Android-compatible verified PCM span
+contract, one serial owner, bounded queue/source metadata and nonrenewable lifetime
+across flush. Submission is not playback; the prepared audio driver fences stale owner/epoch
+callbacks and stops outside Apple completion threads. Its host must supply owned
+AVAudioSession activation/release and close on lifecycle/route/interruption. Swift package tests are not an installable app,
+WKWebView/shared-login, AVAudioSession, simulator or physical iPhone acceptance.
+Reuse the hosted Conversation/grants; no new login/editor/server or provider work.
+The iOS spoken-session host closes both prepared/active owners on background or
+selected interruptions/routes; it never resumes them automatically. Keep unknown
+session releases blocked until explicit exact-owner recovery. The spoken-output
+policy is not duplex capture/background entitlement. macOS tests and iOS SDK
+compilation do not establish simulator/device audio or shared-login acceptance.
+The prepared iOS WebView embeds the existing hosted Conversation, accepting only
+exact-origin/main-frame app commands with per-document IDs. Reuse app-bundled
+native-audio.js; never fetch executable adapter source or create another login.
+The synthetic simulator injection/iframe/PCM journey passedCI42380042745; native
+capabilities still stay off pending real duplex/capture/account/device acceptance.
+Navigation, process loss and foreground exit close sound/capture without replay.
+The simulator app uses the exact existing adapter bytes/hash. Keep QUALIFICATION
+code and its separate bundle ID out of normal builds. Its disposable loopback TLS
+fixture may trust a one-day CA only in its own new simulator; never weaken the
+production TLS policy or existing device trust. No capture/provider/human-original
+fixture, automatic timeout relaunch or permanent simulator/server/cache is allowed.
+
 Native Beacon preparation reuses the existing Sonic score/explicit activation.
 Keep six normalized phase-continuous sine carriers, bounded latest frame/level,
 20second maximum observation validity and nonrenewable two-hour owner lifetime.
