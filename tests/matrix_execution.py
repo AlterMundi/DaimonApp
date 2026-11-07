@@ -1340,6 +1340,8 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
             ),
         )
 
+        # Functional delivery has a bounded five-second transport deadline;
+        # it is not a one-second latency assertion on a shared CI runner.
         # Real owner-UID, frame/HMAC, service authorization and signed native
         # delivery; only the keys, recipient and operational clock are synthetic.
         class Handler(socketserver.BaseRequestHandler):
@@ -1431,35 +1433,35 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 retained = status | {"phase": "submitted", "claimed_source": source,
                                      "submission": outcome["submission"]}
                 read = operator_receive({"status": retained, "source": source,
-                                         "after": 0, "limit": 3}, host, timeout=1)
+                                         "after": 0, "limit": 3}, host, timeout=5)
                 self.assertEqual([r["message_id"] for r in read["results"]],
                                  [returned["message_id"]])
                 self.assertEqual(read["results"][0]["text"], "Authenticated owner read.")
                 incoming = operator_inbox({"source": source, "channel_id": "tribe",
-                                           "after": 0, "limit": 3}, host, timeout=1)
+                                           "after": 0, "limit": 3}, host, timeout=5)
                 self.assertEqual(incoming["items"][0]["message_id"], returned["message_id"])
                 self.assertEqual(incoming["items"][0]["text"],
                                  sdk.sender.message(returned["message_id"])["payload"]["body"]["text"])
                 self.assertEqual(operator_receive({"status": retained, "source": source,
                                                    "after": read["next_cursor"], "limit": 3},
-                                                  host, timeout=1)["results"], [])
+                                                  host, timeout=5)["results"], [])
 
                 intent = {"source": source, "channel_id": "tribe",
                           "parent": incoming["items"][0], "send_id": str(uuid.uuid4()),
                           "text": "Same-being integrator responds to the exact native parent.",
                           "effect_not_after_ms": now + 5000}
-                answer = operator_respond(intent, host, timeout=1)
+                answer = operator_respond(intent, host, timeout=5)
                 self.assertEqual(answer["delivery"]["response_context"]["message_id"],
                                  returned["message_id"])
                 self.assertEqual(answer["delivery"]["destination"]["kind"], "body")
-                self.assertEqual(operator_respond(intent, host, timeout=1, inspect_only=True)
+                self.assertEqual(operator_respond(intent, host, timeout=5, inspect_only=True)
                                  ["delivery"]["message_id"], answer["delivery"]["message_id"])
                 changed = copy.deepcopy(intent)
                 changed["parent"]["message_hash"] = "0" * 64
                 with self.assertRaisesRegex(MatrixExecutionError, "differs from retained parent"):
-                    operator_respond(changed, host, timeout=1)
+                    operator_respond(changed, host, timeout=5)
                 with self.assertRaisesRegex(MatrixExecutionError, "differs from retained intent"):
-                    operator_respond(changed, host, timeout=1, inspect_only=True)
+                    operator_respond(changed, host, timeout=5, inspect_only=True)
 
                 # A genuinely group-authored original must stay a group reply;
                 # source text naming a person never silently narrows its audience.
@@ -1473,7 +1475,7 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                                 if row["message"]["event_id"] == public["message_id"])
                 public_page = operator_inbox(
                     {"source": source, "channel_id": "tribe",
-                     "after": original["inbox_sequence"] - 1, "limit": 1}, host, timeout=1)
+                     "after": original["inbox_sequence"] - 1, "limit": 1}, host, timeout=5)
                 group_intent = intent | {"parent": public_page["items"][0],
                                          "send_id": str(uuid.uuid4()),
                                          "text": "An attributed group response."}
@@ -1482,7 +1484,7 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 group_reply = operator_respond(group_intent, host, timeout=5)
                 self.assertIsNone(group_reply["delivery"].get("destination"))
                 self.assertEqual(group_reply["delivery"]["thread_id"], public["thread_id"])
-                self.assertEqual(operator_respond(group_intent, host, timeout=1, inspect_only=True)
+                self.assertEqual(operator_respond(group_intent, host, timeout=5, inspect_only=True)
                                  ["delivery"]["message_id"], group_reply["delivery"]["message_id"])
 
                 # Native delivery-only authority can inspect an already
@@ -1497,7 +1499,7 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 inspector = replace(loaded,
                     messaging=replace(loaded.messaging, clock=group.lane.clock),
                     observation=replace(loaded.observation, clock=group.lane.clock))
-                self.assertEqual(operator_respond(group_intent, inspector, timeout=1, inspect_only=True)
+                self.assertEqual(operator_respond(group_intent, inspector, timeout=5, inspect_only=True)
                                  ["delivery"]["message_id"], group_reply["delivery"]["message_id"])
 
                 # The new read-only mode consumes an actual inbox-only grant;
@@ -1519,7 +1521,7 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                 only_read = operator_inbox(
                     {"source": source, "channel_id": "tribe", "after": 0, "limit": 3},
                     reader,
-                    timeout=1,
+                    timeout=5,
                 )
                 self.assertEqual(
                     only_read["items"][0]["message_id"], returned["message_id"]
