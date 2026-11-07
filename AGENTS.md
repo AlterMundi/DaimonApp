@@ -48,6 +48,17 @@ return is not newly executed work. Keep useful late answers without interrupting
 an unrelated new topic with old progress. The brief is behavior guidance, not
 proof of spoken uptake. Do not replay work or unknown appends to repair phrasing.
 
+Public-native Avatar entry reads the current integrating thread through the
+existing read-only native observer AND raw owner-scoped original/result readers;
+visible ledger updates may not yet be incorporated into native history. Merge
+them with the prior voice checkpoint by source timestamps/capture order, never
+by modality or read/append order. A native item read now can predate voice.
+Preserve whole source text, explicit earlier-history/unknown-order markers,
+source revisions and machine-transcription attribution within existing setup
+bounds. Do not use media-retiring convenience readers, expose private analysis,
+start work or enable another provider to obtain startup context. Source/transport
+qualification is not proof of useful speech or physical continuity.
+
 Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
 not native playback or an advertised capability. Preserve normalized mix,
 phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.

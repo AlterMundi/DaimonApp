@@ -24,6 +24,10 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
     owner=fixtures.Context.owner
 
     def prepare(self):
+        self.provider.public_live_integrator_context=lambda frozen,budget: {
+            'kind':'current_integrator_conversation','thread':frozen['native_thread'],
+            'messages':[{'role':'user','text':'Latest integrator correction: Saturday.'}],
+            'earlier_history_available':True}
         self.frozen={'binding':self.binding,'native_thread':'native',
             'entry_binding':[100,{'chat_id':100,'thread_id':1},1,'native']}
         self.visits=LiveCreations(Path(self.tmp.name)/'visits')
@@ -151,7 +155,8 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         seeded=await context.prepare(original)
         self.assertEqual(seeded['audio'],original['audio']);self.assertEqual(seeded['instructions'],original['instructions'])
         self.assertNotIn('input',original)
-        self.assertIn('Actually Friday',seeded['input'][-1]['content'][0]['text'])
+        self.assertIn('Actually Friday',seeded['input'][-2]['content'][0]['text'])
+        self.assertIn('Latest integrator correction: Saturday.',seeded['input'][-1]['content'][0]['text'])
         self.assertEqual(seeded['input'][-1]['role'],'developer')
         self.assertEqual(self.visits.read(current,100,self.frozen)['state'],'prepared')
         self.assertNotIn('call',self.visits.read(current,100,self.frozen))

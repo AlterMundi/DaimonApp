@@ -643,6 +643,26 @@ class Provider:
         """Resolve the integrating owner without borrowing Codex voice entitlement."""
         return self._voice_binding(binding, native=False)
 
+    def public_live_integrator_context(self, frozen, max_bytes=16384):
+        """Fresh current integrator conversation; existing observer, no work start."""
+        if self.public_live_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Current integrator context owner changed')
+        from .integrator_startup import read, integrating_sources
+        if type(max_bytes) is not int or not 3072<=max_bytes<=24576:
+            raise ValueError('Current integrator context needs semantic preparation')
+        deadline=time.monotonic()+12
+        def check():
+            if time.monotonic()>=deadline:
+                raise ProviderUnavailable('Current integrator context preparation deadline reached')
+        native=Native(self.receiver['codex'].get('binary','codex'))
+        try:
+            result=read(native,frozen['native_thread'],max_bytes=max_bytes//2,check=check)
+        finally:native.close()
+        result['integrating_sources']=integrating_sources(self,frozen,max_bytes=max_bytes//2-256,check=check)
+        if self.public_live_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Current integrator context owner changed during read')
+        return result
+
     def heartbeat_status(self):
         """Read the existing configured owner console; never activate attention."""
         self.assert_binding()
