@@ -3,6 +3,45 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Retained real voice native handoff —7November2026
+
+A read-only inspection of the already retained human public-Live/native visit
+verifies the following bounded chain through the current consuming owner reader.
+That historical visit used the then-selected clip interpretation path; it does
+not qualify the subsequently selected live-window/continuous-ASR input path:
+
+- Two accepted native work roots retain three exact acoustic originals. Their
+  original IDs, audio/text hashes, formulation, chronological capture order and
+  dialogue/intent references match the separate native admission records. Both
+  roots used the existing integrating native execution; no new being/thread/work
+  was created by this verification. Raw capture receipts alone still do not admit
+  work: the distinct retained work admissions supply this evidence.
+- One canonical native progress part matches the exact retained append content,
+  revision and cursor and has its trusted provider acknowledgement. This proves
+  context transport, not task completion, semantic incorporation or human hearing.
+- The retained voice journal is closed with capture ended. Its last filesystem
+  write precedes the native final observation; this is a local retained-state
+  ordering, not a provider invoice or audio-duration-derived clock. That final
+  still reads completely through the current owner-bound canonical presentation
+  API with the original native binding. The separate existing DMK curation/readback
+  matches the genuine voice original. This supports native work surviving the
+  voice connection, without claiming that the late final was spoken in that visit.
+
+The verifier used raw read-only presentation/status operations and an SQLite
+read-only connection. It did not invoke status/list convenience paths with media
+retirement, repeat ASR, open a provider/voice connection, append context, replay
+originals/work, curate again or modify the real visit journal. Its bytes were
+checked unchanged. Private IDs, language, memory content and bounded evidence
+stay in the owning operator checkpoint; no human episode is published here.
+
+Still unqualified: a fresh voice connection actually returning that late final,
+lookup/pagination from inside the live conversation, useful speech after repeated
+physical replacement, semantic listening/latency/noise/interruption, real account/
+phone/background/hearing and the remaining full roadmap. The next real trial is
+already requested; do not synthesize a human input, re-run a terminal paid trial
+or infer acceptance from this read-only chain. Existing unknown provider outcomes
+retain their own journals and billing uncertainty.
+
 ## Native waveform timing observations —1November2026
 
 One distinct three-phrase Spanish Chromium/CPU/Gemini session on **ec883adf**

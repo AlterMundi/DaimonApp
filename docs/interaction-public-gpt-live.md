@@ -237,6 +237,12 @@ is enlarged by this option.
 
 ## Qualification boundary
 
+The current [retained real-voice chain](interaction-qualification.md#retained-real-voice-native-handoff--7november2026)
+adds two actual source-bound native admissions, one acknowledged canonical progress
+return and a current canonical final after the closed voice visit. Existing memory
+curation/readback matches its original. This is partial work continuity, not an
+audible final return or memory lookup from inside a fresh live connection.
+
 Mounted authorization/upload/cancellation tests and Chromium synthetic desktop/
 mobile journeys cover wiring and original recovery. They make no public provider
 request, use no human microphone and prove no hearing quality. Public access,
