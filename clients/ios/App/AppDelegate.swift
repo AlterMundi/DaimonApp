@@ -3,6 +3,16 @@ import Foundation
 import UIKit
 import WebKit
 
+#if QUALIFICATION
+@MainActor private func qualificationStage(_ stage: String) {
+    NSLog("DaimonQualification %@", stage)
+    // Fixture-only bounded, nonsecret startup observations, readable even when
+    // WebKit has not reached the loopback HTTPS server. Never present in pilot.
+    let url = URL(fileURLWithPath:NSHomeDirectory()).appendingPathComponent("Documents/qualification-stage.txt")
+    try? Data(stage.prefix(512).utf8).write(to:url,options:.atomic)
+}
+#endif
+
 @main @MainActor final class AppDelegate: UIResponder, UIApplicationDelegate {
     let audioSession = IOSSpokenAudioSession()
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
@@ -19,6 +29,9 @@ import WebKit
         let window = UIWindow(windowScene: scene)
         window.rootViewController = UINavigationController(rootViewController: HomeController())
         self.window = window; window.makeKeyAndVisible()
+        #if QUALIFICATION
+        qualificationStage("scene_connected")
+        #endif
     }
     func sceneDidBecomeActive(_ scene: UIScene) {
         (UIApplication.shared.delegate as? AppDelegate)?.audioSession.enterForeground()
@@ -57,6 +70,7 @@ import WebKit
         #if QUALIFICATION
         let args = ProcessInfo.processInfo.arguments
         if let index = args.firstIndex(of: "--qualification-home"), index + 1 < args.count {
+            qualificationStage("opening_fixture_home")
             address.text = args[index + 1]; openHome()
         }
         #endif
@@ -74,9 +88,15 @@ import WebKit
             navigationController?.pushViewController(controller,animated:false)
             UserDefaults.standard.set(home.origin.absoluteString,forKey:"home"); error.text = nil
             #if QUALIFICATION
+            qualificationStage("controller_created")
             QualificationStart.run(controller)
             #endif
-        } catch { self.error.text = "Use an HTTPS home address without credentials, query or fragment." }
+        } catch {
+            self.error.text = "Use an HTTPS home address without credentials, query or fragment."
+            #if QUALIFICATION
+            qualificationStage("home_open_refused: \(error)")
+            #endif
+        }
     }
 }
 
@@ -85,12 +105,15 @@ import WebKit
 /// enters the normal application build or simulates a human voice original.
 @MainActor private enum QualificationStart {
     static func run(_ controller: UIViewController, attempt: Int = 0) {
-        guard attempt < 200 else { return }
+        guard attempt < 200 else { qualificationStage("page_readiness_expired"); return }
         guard UIApplication.shared.applicationState == .active, let web = controller.view as? WKWebView else {
             DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { run(controller,attempt:attempt+1) }; return
         }
         web.evaluateJavaScript("typeof window.runQualification==='function'") { ready,error in
-            if (ready as? Bool) == true { web.evaluateJavaScript("window.runQualification()") }
+            if (ready as? Bool) == true {
+                qualificationStage("fixture_start_submitted")
+                web.evaluateJavaScript("window.runQualification()")
+            }
             else { DispatchQueue.main.asyncAfter(deadline:.now()+0.1) { run(controller,attempt:attempt+1) } }
         }
     }

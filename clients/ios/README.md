@@ -103,6 +103,13 @@ remain off for normal users until those missing paths qualify. CI also follows
 changes to the shared Android adapter; documentation-only changes need no new
 native execution.
 
+Final head9fa7cfc did not reproduce that journey in CI42380585273: launch
+observation timed out and no terminal fixture receipt arrived. Device/server
+cleanup passed; the failure remains unresolved. The fixture now allows90seconds
+for the one launch observation and retains a bounded test-only startup stage,
+loopback request observations and a three-minute native log on failure. It never
+relaunches an uncertain start. These diagnostics are absent from pilot builds.
+
 This is not a device-distributable iOS app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
 actual WKWebView bridge/document injection and shared-login shell acceptance,
 foreground capture/route/interruption/return handling, progressive/background

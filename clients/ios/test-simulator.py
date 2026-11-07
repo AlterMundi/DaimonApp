@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 def serve(state):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            print(json.dumps({'fixture_get': self.path[:256]}), flush=True)
             name = 'conversation.html' if self.path.startswith('/interaction/') else 'outside.html'
             body = (ROOT / 'Tests/Fixtures' / name).read_bytes()
             self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -108,7 +109,7 @@ def qualify(app):
                 print('Exact installed adapter observed after lost install receipt; no reinstall',flush=True)
             launch_attempted = True
             try:
-                run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'])
+                run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'],timeout=90)
             except subprocess.TimeoutExpired:
                 print('Launch receipt unconfirmed; observing this same fixture result without relaunch',flush=True)
             until = time.monotonic()+35
@@ -116,8 +117,19 @@ def qualify(app):
                 if server.poll() is not None: raise RuntimeError('HTTPS fixture stopped during the journey: '+(state/'server.log').read_text()[-8192:])
                 time.sleep(.2)
             if not (state/'result.json').exists():
-                print(run(['xcrun','simctl','spawn',device,'log','show','--last','1m','--style','compact',
-                           '--predicate','process == "Daimon"'],timeout=10)[-16384:])
+                print('Loopback fixture observations: '+(state/'server.log').read_text()[-8192:],flush=True)
+                try:
+                    container = Path(run(['xcrun','simctl','get_app_container',device,
+                                          'homes.dmn.interaction.qualification','data'],timeout=15).strip())
+                    stage = container/'Documents/qualification-stage.txt'
+                    print(json.dumps({'qualification_stage':stage.read_text()[:512] if stage.exists() else 'not_observed'}),flush=True)
+                except (subprocess.TimeoutExpired,RuntimeError,OSError) as error:
+                    print(json.dumps({'stage_read':'unconfirmed','error':str(error)[-512:]}),flush=True)
+                try:
+                    print(run(['xcrun','simctl','spawn',device,'log','show','--last','3m','--style','compact',
+                               '--predicate','process == "Daimon"'],timeout=10)[-16384:])
+                except (subprocess.TimeoutExpired,RuntimeError) as error:
+                    print(json.dumps({'native_log':'unconfirmed','error':str(error)[-512:]}),flush=True)
                 raise RuntimeError('No terminal WebView/native receipt within35seconds; no relaunch')
             result = json.loads((state/'result.json').read_text()); print(json.dumps(result),flush=True)
             assert result.get('state')=='passed' and result.get('played_bytes')==28800, result
