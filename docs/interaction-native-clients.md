@@ -369,20 +369,26 @@ speech works; an older receiver will retain its web behavior.
 
 ## Next increments and acceptance
 
-The first iOS source increment lives in `clients/ios`: a dependency-free Swift
-package (system Foundation/CryptoKit) ports the bounded PCM span queue with the
-same default300/explicit600second lifetime,30second pending audio, source/sequence
-and SHA256 fences. Flush cannot replenish its lifetime. A separate macOS CI job
-builds/tests it with two workers and a ten-minute deadline. This prepares the
-audio core only. Its prepared AVAudioEngine driver adds eight-buffer scheduling,
-main-actor ownership and contiguous played callbacks fenced across flush/close.
-Its iOS-only spoken-session host also prepares independent holders, retained
-unknown-release refusal, foreground/prepared-output cancellation and no automatic
-resume after interruptions/routes. The same sources compile against the iOS
-Simulator SDK separately from macOS tests. Actual device/session acceptance is
-missing; no installable iOS app, WebView bridge,
-shared-login acceptance, signing or physical-device delivery is claimed. The
-complete iOS increment below remains open.
+The iOS implementation lives in `clients/ios`: verified bounded PCM queue,
+main-actor AVAudioEngine playback, independent audio-session holders, exact-origin
+Conversation WebView and a scene-based UIKit simulator app. It reuses existing
+hosted Conversation/shared SSO and the exact bundled native-audio.js; no separate
+login/editor/store/backend. Queue30s/default300/explicit600s/source/sequence/hash
+and owner/epoch/lifecycle bounds remain. Unconfirmed release blocks new owners
+until explicit exact-owner recovery. The spoken-output session does not grant
+capture, duplex or background audio.
+
+App code e8eac0a passed17macOS cases and the actual iPhone16/iOS26.2 simulator
+WebView/native PCM journey inCI42380042745:28800played bytes, pause/resume/flush,
+iframe unable to reserve output and native facade absent outside the app path.
+Ad-hoc simulator build, exact adapter, install/launch and complete scoped fixture/
+device/CA cleanup passed. Earlier timeout/cleanup failures retain their outcomes;
+the supported fixture observes unknown install/launch without replay. A bounded
+one-day CA is trusted only on the new disposable simulator, never production.
+These are synthetic source/device observations, not physical hearing or shared
+login/passkey/capture acceptance. Native capabilities stay off pending those paths.
+Normal device packaging/signing, real account, duplex/progressive/background,
+Beacon and physical iPhone acceptance remain open. No iOS distribution is claimed.
 
 1. Build/sign/install the pilot; qualify shared login, complete text/voice input,
    reply/source binding, copy/files, native speech and music recovery on Android.

@@ -72,7 +72,7 @@ The controller closes output on navigation, WebContent termination and leaving
 its visible/foreground lifecycle. It never replays a page/input/media submission.
 Three Foundation tests cover selected-home/page boundaries, closed message fields
 and numeric/bool refusal. SDK compilation checks the iOS-only WKWebView types;
-actual document injection, iframe refusal and native runtime remain unqualified.
+the current receiving qualification below owns actual injection/iframe/native runtime evidence.
 
 `App/AppDelegate.swift` now prepares the scene-based UIKit application: existing
 shared-session ownership, native home entry, persistent home selection and the
@@ -93,8 +93,15 @@ It starts the fixture once, waits at most35seconds for its terminal receipt and
 never relaunches on timeout. Teardown removes that device, server, CA and state.
 CI replaces the redundant standalone SDK library build with this application
 build and journey under the same ten-minute cap. No app/certificate/audio artifact
-is uploaded. Actual compilation and simulator acceptance of this increment remain
-pending until its current CI passes.
+is uploaded. App code e8eac0a passed macOSCI42380042745 (17cases) and the actual iPhone16/
+iOS26.2 simulator journey:28800played bytes, pause/resume/flush, iframe unable to
+reserve native output, and native facade absent outside the app path. App build,
+exact adapter, install/launch and scoped terminate/shutdown/delete/server cleanup
+all passed. This is synthetic PCM/device evidence, not physical hearing, capture,
+duplex voice or real shared-login/passkey acceptance. The native capabilities
+remain off for normal users until those missing paths qualify. CI also follows
+changes to the shared Android adapter; documentation-only changes need no new
+native execution.
 
 This is not a device-distributable iOS app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
 actual WKWebView bridge/document injection and shared-login shell acceptance,

@@ -1,10 +1,10 @@
 name: iOS native audio preparation
 on:
   pull_request:
-    paths: ['clients/ios/**', '.github/workflows/ios-client.yml']
+    paths: ['clients/ios/**', '!clients/ios/**/*.md', 'clients/android/app/src/main/assets/native-audio.js', '.github/workflows/ios-client.yml']
   push:
     branches: [master]
-    paths: ['clients/ios/**', '.github/workflows/ios-client.yml']
+    paths: ['clients/ios/**', '!clients/ios/**/*.md', 'clients/android/app/src/main/assets/native-audio.js', '.github/workflows/ios-client.yml']
 permissions:
   contents: read
 concurrency:
