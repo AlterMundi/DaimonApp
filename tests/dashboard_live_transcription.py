@@ -128,6 +128,13 @@ class LiveTranscription(unittest.TestCase):
                     ws.send_json({'type':'discard'})
                 self.assertTrue(Stream.opened[-1].closed_event.wait(2))
                 self.assertEqual(Stream.opened[-1].selected_provider,'openai')
+                opened=len(Stream.opened)
+                with self.assertLogs('dashboard.live_transcription',level='WARNING') as logged:
+                    with client.websocket_connect('/api/interaction/voice/openai/live',headers=headers) as ws:
+                        ws.send_json({**self.meta(),'csrf':'wrong-action','mode':'captions'})
+                        self.assertEqual(ws.receive_json()['type'],'unavailable')
+                self.assertEqual(len(Stream.opened),opened,'Bad action token cannot open a billable provider')
+                self.assertIn('HTTPException',str(logged.output));self.assertNotIn(token,str(logged.output))
         device_file=self.root/'caption-device.json'
         grants=Grants(self.config,self.provider);grants.enroll('Caption fixture',device_file,3600)
         device=read_json(device_file)

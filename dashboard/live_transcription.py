@@ -517,6 +517,9 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
         finally:
             # One metadata-only line under the existing bounded system journal.
             # Never include provider events, exception messages, speech or keys.
+            if mode=='captions' and diagnostic.get('error_type'):
+                logging.getLogger(__name__).warning('voice_captions_closed %s',
+                    json.dumps(diagnostic,sort_keys=True))
             if (mode == 'prepared' and diagnostic['audio_bytes']
                     and not diagnostic['prepared_saved'] and not diagnostic.get('discarded')):
                 logging.getLogger(__name__).warning('voice_preparation_closed %s',
