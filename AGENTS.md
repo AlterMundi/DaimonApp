@@ -1,3 +1,10 @@
+Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
+not native playback or an advertised capability. Preserve normalized mix,
+phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.
+Future output must reuse the shared session,<=20s observation expiry without
+cached-refresh renewal, two-hour nonrenewable owner and bounded latest controls.
+No provider, observer, background activation or automatic resumption is implied.
+
 iOS preparation is in clients/ios. Keep the Android-compatible verified PCM span
 contract, one serial owner, bounded queue/source metadata and nonrenewable lifetime
 across flush. Submission is not playback; the prepared audio driver fences stale owner/epoch
