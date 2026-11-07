@@ -114,6 +114,7 @@ pub(super) fn admit_on(
     {
         return Err(anyhow!("Invalid interaction input"));
     }
+    let mut creation_target = false;
     {
         let reference = source
             .update_id
@@ -121,9 +122,25 @@ pub(super) fn admit_on(
             .unwrap_or_else(|| {
                 crate::interaction::InputReference::Conversation(source.event_id.clone())
             });
-        let reserved:Option<(String,Option<i64>,i64)>=tx.query_row("SELECT phase,topic,entry_chat FROM interaction_creations WHERE human_id=?1 AND input_update=?2",params![source.human_id,reference],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-        if let Some((phase, topic, chat)) = reserved {
-            if !matches!(phase.as_str(), "topic_known" | "ready")
+        let reserved:Option<(String,Option<i64>,i64,String)>=tx.query_row("SELECT phase,topic,entry_chat,doc FROM interaction_creations WHERE human_id=?1 AND input_update=?2",params![source.human_id,reference],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if let Some((phase, topic, chat, raw)) = reserved {
+            let intent: serde_json::Value = serde_json::from_str(&raw)?;
+            if let Some(prior) = intent.get("prior_dispatch") {
+                use sha2::{Digest, Sha256};
+                if prior["source_sha256"]
+                    != format!(
+                        "{:x}",
+                        Sha256::digest(serde_json::to_string(source)?.as_bytes())
+                    )
+                {
+                    bail!("Creation cannot replace the retained dispatch source");
+                }
+                // Existing destinations keep their exact immutable source.
+                // Only the operation's confirmed topic may be added to it.
+                creation_target = matches!(phase.as_str(), "topic_known" | "ready")
+                    && topic == Some(target.thread_id)
+                    && chat == target.chat_id;
+            } else if !matches!(phase.as_str(), "topic_known" | "ready")
                 || topic != Some(target.thread_id)
                 || chat != target.chat_id
                 || source.target_sessions.len() != 1
@@ -132,6 +149,7 @@ pub(super) fn admit_on(
             }
         }
     }
+
     if let Some(transcription) = &source.transcription
         && source.channel != "conversation"
     {
@@ -199,7 +217,7 @@ pub(super) fn admit_on(
             &source.event_id,
         )?;
     }
-    if !source.target_sessions.contains(&session) {
+    if !source.target_sessions.contains(&session) && !creation_target {
         return Err(anyhow!(
             "Destination is outside the immutable selected target plan"
         ));

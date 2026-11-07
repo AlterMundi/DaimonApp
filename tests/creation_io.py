@@ -121,8 +121,29 @@ class Standalone(Creation):
         return super().handle_extra_rpc(message, send)
 
 
-def standalone_destination(binary):
-    j = Standalone(binary)
+class MixedStandalone(Standalone):
+    def handle_extra_rpc(self,message,send):
+        ident=message.get('id')
+        if self.routed and message.get('method') is None and ident=='inputs':
+            value=message['result'];assert value['success'],value
+            rows=json.loads(value['contentItems'][0]['text'])['inputs']
+            current=next(row for row in rows if 'NATURAL-ROUTE' in row['text_excerpt'])
+            self.input_ref=current.get('input_ref') or current['input_update']
+            self.source_text=current['text_excerpt']
+            self.call('split-dispatch','dispatch',{'input_ref':self.input_ref,
+                'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
+            return True
+        if message.get('method') is None and ident=='split-dispatch':
+            assert message['result']['success'],message
+            self.prior_sources=self.row('SELECT id,doc FROM interaction_sources ORDER BY id')
+            self.prior_instruction=self.instructions(7)[0][0]
+            self.call('create','create',self.create_args())
+            return True
+        return super().handle_extra_rpc(message,send)
+
+
+def standalone_destination(binary,mixed=False):
+    j = MixedStandalone(binary) if mixed else Standalone(binary)
     try:
         j.prepare(seed_entry=True)
         j.stop()
@@ -148,6 +169,14 @@ def standalone_destination(binary):
         assert j.row('SELECT count(*) FROM sessions WHERE thread_id=76') == [(0,)]
         assert j.row('SELECT count(*) FROM interaction_enrollments') == [(1,)]
         assert json.loads(j.instructions(77)[0][2])['text'] == j.source_text
+        if mixed:
+            j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
+            assert j.instructions(7)[0][0]==j.prior_instruction
+            assert j.row('SELECT id,doc FROM interaction_sources ORDER BY id')==j.prior_sources
+            assert j.row('SELECT count(*) FROM interaction_instructions')==[(2,)]
+            assert j.instructions(77)[0][0]!=j.prior_instruction
+            context=json.loads(j.row('SELECT doc FROM interaction_creations')[0][0])['context']
+            assert context['creation_scope']['kind']=='additional_creation_from_same_original'
         j.stop(); j.start()
         assert j.topic_calls == 0 and j.row('SELECT count(*) FROM interaction_creations') == [(1,)]
         print('PASS standalone original creates one local worker without Telegram API/token, reserves uninitialized targets and retains enrollment across restart')
@@ -246,6 +275,7 @@ def retired_before_send(binary):
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     standalone_destination(binary)
+    standalone_destination(binary,mixed=True)
     created_destination(binary)
     created_destination(binary,"Diamond Badge")
     invalid_title_then_corrected(binary)

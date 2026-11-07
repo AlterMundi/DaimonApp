@@ -5,6 +5,7 @@ use crate::interaction::{
 };
 use anyhow::bail;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 impl Store {
     pub const CREATION_CONTEXT_MAX_BYTES: usize = 48_000;
@@ -144,7 +145,7 @@ impl Store {
         if let Some(source) = tribu_source {
             doc["tribu_source"] = serde_json::to_value(source)?;
         }
-        if let Some(transcription) = transcription {
+        if let Some(transcription) = &transcription {
             doc["transcription"] = serde_json::to_value(transcription)?;
         }
         if let Some(existing) = tx
@@ -155,10 +156,53 @@ impl Store {
             )
             .optional()?
         {
-            if serde_json::from_str::<Value>(&existing)? != doc {
+            let frozen: Value = serde_json::from_str(&existing)?;
+            // An exact retry reuses the pre-RPC scope. A normal creation may
+            // itself have since enrolled this source; do not reinterpret that
+            // as a new prior dispatch or replace an existing split's scope.
+            if let Some(prior) = frozen.get("prior_dispatch") {
+                doc["prior_dispatch"] = prior.clone();
+                if let Some(object) = doc["context"].as_object_mut() {
+                    object
+                        .entry("creation_scope")
+                        .or_insert_with(|| frozen["context"]["creation_scope"].clone());
+                }
+            }
+            if frozen != doc {
                 return Err(anyhow!("Creation intent is immutable"));
             }
             return Ok((creation_on(&tx, &id, human)?, false));
+        }
+        // A mixed original may already have an immutable dispatch. Creation
+        // adds exactly its confirmed topic; it never rewrites that source plan.
+        let prior: Option<(String, String)> = tx.query_row(
+            "SELECT id,doc FROM interaction_sources WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))",
+            params![human, update.update(), update.event()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        if let Some((source_id, raw)) = prior {
+            let prior: SourceInput = serde_json::from_str(&raw)?;
+            if prior.human_id != human
+                || prior.text != doc["original_text"]
+                || serde_json::to_value(&prior.origin)? != doc["origin"]
+                || prior.transcription != transcription
+                || prior.target_sessions.len() >= 64
+            {
+                bail!("Creation must preserve the exact routed original and target bound");
+            }
+            doc["prior_dispatch"] = json!({"source_id":source_id,
+                "source_sha256":format!("{:x}",Sha256::digest(raw.as_bytes())),
+                "meaning":"Existing dispatch and accepted work remain unchanged; this creation adds only its distinct new topic."});
+            let scope = json!({"kind":"additional_creation_from_same_original",
+                "name":name,"reason":reason,"prior_dispatch":doc["prior_dispatch"],
+                "authority":"Owner-selected scope for the remaining distinct clause, not new human speech. Existing dispatched work remains with its receivers and must not be replayed."});
+            doc["context"]
+                .as_object_mut()
+                .context("Scoped creation needs an object context")?
+                .insert("creation_scope".into(), scope);
+            if doc["context"].to_string().len() > Self::CREATION_CONTEXT_MAX_BYTES {
+                bail!("Scoped creation context exceeds its existing bound");
+            }
         }
         let duplicate: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND lower(json_extract(doc,'$.name'))=lower(?4))",
@@ -172,14 +216,6 @@ impl Store {
         let reserved:i64=tx.query_row("SELECT count(*) FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3",params![human,key.chat_id,key.thread_id],|r|r.get(0))?;
         if reserved >= capacity as i64 {
             return Err(anyhow!("Creation capacity is already reserved"));
-        }
-        let routed: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL)))",
-            params![human, update.update(),update.event()],
-            |r| r.get(0),
-        )?;
-        if routed {
-            return Err(anyhow!("Original input already has a selected plan"));
         }
         tx.execute("INSERT INTO interaction_creations(id,human_id,entry_chat,entry_topic,input_update,phase,doc,instance_id) VALUES(?1,?2,?3,?4,?5,'prepared',?6,?7)",params![id,human,key.chat_id,key.thread_id,update,doc.to_string(),self.instance_id])?;
         if closed.is_cancelled() {
@@ -336,6 +372,24 @@ impl Store {
                 .context("Missing original text")?
                 .into(),
         };
+        let source = if let Some(prior) = d.get("prior_dispatch") {
+            let raw: String = tx.query_row(
+                "SELECT doc FROM interaction_sources WHERE id=?1 AND human_id=?2",
+                params![
+                    prior["source_id"]
+                        .as_str()
+                        .context("Missing prior dispatch")?,
+                    human
+                ],
+                |r| r.get(0),
+            )?;
+            if prior["source_sha256"] != format!("{:x}", Sha256::digest(raw.as_bytes())) {
+                bail!("Prior dispatch changed; preserve creation without another topic RPC");
+            }
+            serde_json::from_str::<SourceInput>(&raw)?
+        } else {
+            source
+        };
         let (instruction, _) = super::interaction::admit_on(
             &tx,
             &source,
@@ -401,6 +455,21 @@ fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
         "",
         true,
     )?;
+    if let Some(prior) = d.get("prior_dispatch") {
+        let raw: String = conn.query_row(
+            "SELECT doc FROM interaction_sources WHERE id=?1 AND human_id=?2",
+            params![
+                prior["source_id"]
+                    .as_str()
+                    .context("Missing prior dispatch")?,
+                d["human"].as_i64().context("Missing human")?
+            ],
+            |r| r.get(0),
+        )?;
+        if prior["source_sha256"] != format!("{:x}", Sha256::digest(raw.as_bytes())) {
+            bail!("Prior dispatch changed before creation effect");
+        }
+    }
     let origin: ReturnRoute = serde_json::from_value(d["origin"].clone())?;
     if Some(original.text.as_str()) != d["original_text"].as_str()
         || serde_json::to_value(original.transcription)?
@@ -657,6 +726,166 @@ mod tests {
             vec![SessionKey::new(100, Some(100))]
         );
         assert_eq!(profile.resolve("Gamma"), vec![key]);
+    }
+
+    #[test]
+    fn creation_after_dispatch_preserves_source_and_only_adds_its_topic() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let entry = SessionKey::new(100, Some(1));
+        let source = store.ensure_session(entry, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(entry, "entry-native")
+            .unwrap();
+        let update:crate::telegram::Update=serde_json::from_value(json!({"update_id":20,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"text":"Start a distinct new task"}})).unwrap();
+        store.admit_update(&update).unwrap();
+        store.begin_update(20).unwrap();
+        store.mark_update_queued(20).unwrap();
+        let turn = store
+            .record_turn_started(
+                source.id,
+                &TurnRequest {
+                    session_key: entry,
+                    from_user_id: 100,
+                    prompt: "Runtime envelope differs from original".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(turn, "entry-native")
+            .unwrap();
+        store.link_update_turn(20, turn).unwrap();
+
+        let old = SessionKey::new(100, Some(7));
+        let oldrow = store.ensure_session(old, 100, &defaults).unwrap();
+        store.set_session_codex_thread(old, "old-native").unwrap();
+        let input = SourceInput {
+            tribu_source: None,
+            transcription: None,
+            channel: "telegram:fixture".into(),
+            event_id: "20".into(),
+            update_id: Some(20),
+            human_id: 100,
+            target_sessions: vec![oldrow.id],
+            origin: ReturnRoute {
+                chat_id: 100,
+                thread_id: 1,
+                message_id: Some(20),
+            },
+            text: "Start a distinct new task".into(),
+        };
+        let (first, fresh) = store
+            .interaction_admit(&input, old, RequestRelation::New)
+            .unwrap();
+        assert!(fresh);
+        let frozen: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT doc FROM interaction_sources WHERE id=?1",
+                [&first.input_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let prepare = || {
+            store.interaction_prepare_creation(
+                entry,
+                100,
+                "entry-native",
+                20,
+                "Identidad",
+                "Distinct remaining identity clause; existing routed work stays put",
+                &json!({"sources":[]}),
+                2,
+                &token,
+            )
+        };
+        let (operation, fresh) = prepare().unwrap();
+        assert!(fresh);
+        let id = operation["id"].as_str().unwrap();
+        assert!(operation["intent"]["prior_dispatch"].is_object());
+        assert!(!prepare().unwrap().1);
+        assert_eq!(
+            store
+                .interaction_admit(&input, old, RequestRelation::New)
+                .unwrap()
+                .0
+                .id,
+            first.id
+        );
+        let topic = store
+            .interaction_creation_local_topic(id, 100, &[100])
+            .unwrap();
+        let key = SessionKey::new(100, Some(topic));
+        store.ensure_session(key, 100, &defaults).unwrap();
+        let mut template = source;
+        template.codex_thread_id = None;
+        template.force_fresh_thread = true;
+        template.session_title = Some("Identidad".into());
+        store
+            .apply_empty_session_template(key, &template, 100)
+            .unwrap();
+        let added = store
+            .interaction_creation_finish(id, 100, "telegram:fixture")
+            .unwrap();
+        assert_eq!(added.input_id, first.input_id);
+        assert_eq!(added.text, first.text);
+        assert_eq!(added.target, SessionKey::new(100, Some(topic)));
+        assert_ne!(added.id, first.id);
+        assert_eq!(
+            store
+                .interaction_admit(&input, old, RequestRelation::New)
+                .unwrap()
+                .0
+                .id,
+            first.id
+        );
+        assert!(
+            store
+                .interaction_creation_finish(id, 100, "telegram:fixture")
+                .is_err()
+        );
+        let outside = SessionKey::new(100, Some(999));
+        let other = store.ensure_session(outside, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(outside, "outside-native")
+            .unwrap();
+        assert!(
+            store
+                .interaction_admit(&input, outside, RequestRelation::New)
+                .is_err()
+        );
+        let changed = SourceInput {
+            target_sessions: vec![oldrow.id, other.id],
+            ..input
+        };
+        assert!(
+            store
+                .interaction_admit(&changed, outside, RequestRelation::New)
+                .is_err()
+        );
+        let after: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT doc FROM interaction_sources WHERE id=?1",
+                [&first.input_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, frozen);
+        assert_eq!(
+            store.interaction_creation(id, 100).unwrap()["phase"],
+            "ready"
+        );
     }
 
     #[test]
