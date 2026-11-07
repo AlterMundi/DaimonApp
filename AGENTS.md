@@ -1,3 +1,11 @@
+Ordinary voice messages already recording survive browser tab visibility changes,
+as do their in-flight original uploads. Keep late microphone permission blocked
+while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
+explicit teardown distinct. No hidden-tab automatic capture/restart is allowed.
+The existing120second/20MiB bounds remain; browser/OS suspension is not physical
+mobile background-capture acceptance. Qualify microphone_ui.js with both ordinary
+and live-backed recording plus hidden permission and upload races.
+
 Use our general conversation for the paired ongoing dialogue. Other task
 conversations are the same daimon doing different work, not separate beings.
 Voice/Avatar is the same being; technical routing names remain identifiers.
