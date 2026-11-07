@@ -819,7 +819,10 @@ The separate `codex_voice` recovery key shares the existing combined20MiB and
 128record browser budget with ordinary capture, enforced transactionally.
 Chunks are normally30seconds; server limits are32chunks,120seconds per chunk,
 and600seconds cumulatively per visit. Two uploads can be admitted concurrently,
-with30second and3,840,044byte streaming limits each. Metadata limits are512visits,
+with3,840,044byte streaming limits each. Original uploads have no application
+wall-clock abort on client or server; network failure retains the same original.
+Read/control deadlines, fresh actor/CSRF checks and slot/byte bounds remain.
+Metadata limits are512visits,
 32MiB overall,64KiB and256transcripts per visit. Existing protected-original and
 selected-archive bounds are unchanged. No automatic original retirement.
 

@@ -246,7 +246,7 @@ window.PublicLiveConversation=(()=>{
         let sessionId,started=false,connected=false;
         const listening=()=>{if(current()&&started&&connected){starting=false;active=true;state('Listening');readyResolve();}};
         channel.onmessage=event=>{
-          try{const value=JSON.parse(event.data);if(value.type==='session.started'&&value.session?.id===sessionId){started=true;listening();}}catch{}
+          try{const value=JSON.parse(event.data);if(value.type==='session.started'&&(value.session_id||value.session?.id)===sessionId){started=true;listening();}}catch{}
         };
         if(!nativeOutput){audio=new Audio();audio.autoplay=!paused;audio.muted=!audible;}
         peer.ontrack=event=>{
@@ -305,6 +305,9 @@ window.PublicLiveConversation=(()=>{
         transport.send(JSON.stringify({type:'offer',sdp:peer.localDescription.sdp}));
         const result=await wait(answer,60000);sessionId=result.session;
         if(!current()||result.id!==visit||typeof sessionId!=='string'||!sessionId)throw Error('Voice answer changed');
+        // WebRTC HTTP creation starts the session. Do not impose the separate
+        // WebSocket startup event on an already negotiated, connected call.
+        started=true;
         await wait(peer.setRemoteDescription({type:'answer',sdp:result.sdp}),10000);
         await wait(ready,15000);return true;
       }catch(error){if(owned===epoch&&!closing)await hold(error.name==='NotAllowedError'?'Microphone access was denied.':'Voice paused. Your original audio is kept.');return false;}

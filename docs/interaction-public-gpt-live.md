@@ -77,7 +77,12 @@ Server admission acquires the existing cross-mode voice lease before microphone
 permission. One monotonic admission covers negotiation/capture: at most600seconds
 and19,200,000input PCM bytes. Configuration may reduce this to300–600seconds;
 reconnect cannot enlarge an existing admission. Local recording starts before the
-WebRTC offer. Listening requires a connected peer and matching `session.started`.
+WebRTC offer. Listening requires the validated HTTP creation answer and a connected
+peer. The HTTP request starts a WebRTC session; an optional frontend data-channel
+startup event is not another admission gate. The WebSocket transport's separate
+`session.started` requirement must not be imposed on WebRTC. Backend events still
+retain their exact session/source ownership. See the
+[official transport startup contract](https://developers.openai.com/api/docs/guides/live-conversations#prepare-a-session-for-forking).
 
 Originals reuse the browser20MiB/128-record budget and receiving original store.
 Engine tags isolate recovery in the historical `codex_voice` store; its name does
@@ -92,6 +97,10 @@ Original-audio POSTs have no application wall-clock abort. Network failure still
 retains the same local original; only its confirmed receipt permits source sealing
 or local retirement. This extends the ordinary audio/image upload policy to the
 public voice path, keeping all byte/storage and capture bounds unchanged.
+The public and native capture-only server routes also omit an absolute body-read
+deadline; the two upload slots, byte ceiling, fresh authentication/CSRF and
+post-read owner recheck remain. Disconnect or network failure retains the
+unconfirmed local original. Provider/capture/cleanup deadlines are unchanged.
 
 A WebRTC `disconnected` transition shows reconnecting while allowing the same
 transport to recover. It does not close and replace a paid call. Explicit Stop,

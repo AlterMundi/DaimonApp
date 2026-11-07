@@ -15,7 +15,8 @@ window.CodexConversation=(()=>{
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     async function request(path,options={}){
       const response=await fetch(new URL('api/interaction/voice/codex/'+path,window.location.href),{
-        ...options,headers:{...headers(),'x-voice-binding':binding,...options.headers},signal:AbortSignal.timeout(30000)});
+        ...options,headers:{...headers(),'x-voice-binding':binding,...options.headers},
+        signal:options.method==='POST'&&path.includes('/recordings/')?undefined:AbortSignal.timeout(30000)});
       if(!response.ok)throw Error('Recording could not be confirmed. Your local original is kept.');
       return response.json();
     }

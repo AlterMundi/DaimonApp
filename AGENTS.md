@@ -8,11 +8,20 @@ native work admission. Reset/remove aborts only that selection's request. Preser
 drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
 
 Public Live original-audio POSTs likewise have no application wall-clock abort.
+The public/native capture-only server routes also read through network completion
+or disconnect, retaining their2upload slots, byte caps and fresh authority checks
+before receipt/retirement. A capture/work/cleanup deadline is not an upload clock.
 Keep byte/storage bounds, confirmed-source sealing and explicit recovery unchanged;
 never replay a missing original or native work automatically. WebRTC disconnected
 is recoverable on the same call: show reconnecting, retaining explicit Stop and
 existing visit/capture limits. Failed/closed still pause. This creates no new
 provider call, ICE restart, microphone grant or automatic successor admission.
+
+Public GPT-Live WebRTC starts through its successful HTTP creation answer and
+connected peer; do not impose the WebSocket session.started gate on this path.
+Backend events remain source-bound, and frontend events use session_id with
+legacy nested-ID compatibility. Fixtures must exercise a connected valid HTTP
+creation with no frontend startup event, not only synthetic nested events.
 
 Public Live returns from earlier voice connections retain their original UTC
 opening date and exact canonical wording/cursors. Treat relative time and
