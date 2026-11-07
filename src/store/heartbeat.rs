@@ -96,6 +96,45 @@ impl Store {
         expected_expiry: i64,
         expiry: i64,
     ) -> Result<()> {
+        self.heartbeat_observation_successor(
+            human,
+            entry,
+            generation,
+            expected_expiry,
+            expiry,
+            None,
+        )
+    }
+
+    /// Explicit cumulative ceiling for a new finite model-free observation period.
+    pub fn heartbeat_renew_observation_capacity(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+        max_checks: u32,
+    ) -> Result<()> {
+        self.heartbeat_observation_successor(
+            human,
+            entry,
+            generation,
+            expected_expiry,
+            expiry,
+            Some(max_checks),
+        )
+    }
+
+    fn heartbeat_observation_successor(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+        max_checks: Option<u32>,
+    ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
@@ -109,7 +148,15 @@ impl Store {
             control.paused && control.generation == generation,
             "Pause and select the exact heartbeat generation before explicit owner renewal"
         );
-        producer::renew_observation_on(&tx, human, entry, generation, expected_expiry, expiry)?;
+        producer::renew_observation_on(
+            &tx,
+            human,
+            entry,
+            generation,
+            expected_expiry,
+            expiry,
+            max_checks,
+        )?;
         tx.commit()?;
         Ok(())
     }
