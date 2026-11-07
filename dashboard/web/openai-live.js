@@ -21,7 +21,7 @@ window.PublicLiveConversation=(()=>{
     async function request(value,path,options={}){
       if(value.binding!==getBinding())throw Error('Recording belongs to another conversation');
       const response=await fetch(new URL('api/interaction/voice/gpt-live/visits/'+value.voice_visit+path,window.location.href),{
-        ...options,headers:{...headers(),'x-voice-binding':value.binding,...options.headers},signal:AbortSignal.timeout(30000)});
+        ...options,headers:{...headers(),'x-voice-binding':value.binding,...options.headers}});
       if(!response.ok)throw Error('Original not confirmed. Keep the same local audio.');
       return response.json();
     }
@@ -256,7 +256,10 @@ window.PublicLiveConversation=(()=>{
           audio.srcObject=stream;audio.play().catch(()=>{if(!current())return;paused=true;state('Tap Resume audio to listen.');});
         };
         peer.onconnectionstatechange=()=>{if(!current())return;connected=peer.connectionState==='connected';listening();
-          if(['failed','closed','disconnected'].includes(peer.connectionState))void hold('Voice connection paused. Your original audio is kept.');};
+          // A transient ICE disconnection can recover on this same paid call.
+          // Keep the explicit Stop and existing visit/capture bounds in force.
+          if(peer.connectionState==='disconnected')state('Reconnecting audio. Your microphone recording is kept.');
+          if(['failed','closed'].includes(peer.connectionState))void hold('Voice connection paused. Your original audio is kept.');};
         const recorder=window.StreamingVoice.openCapture(media,{sessionSeconds:Math.max(300,Math.ceil((deadline-Date.now())/1000))})
           .then(value=>{if(!current()){value.close();throw Error('Voice recorder retired');}return value;});
         recorder.catch(()=>{});capture=await wait(recorder,10000);
