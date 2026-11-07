@@ -127,13 +127,21 @@ Neither configuration nor an empty check spends inference attempts.
 The owner can independently renew an expired observation deadline:
 
 ```
-heartbeat renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS
+heartbeat renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]
 ```
 
 This requires the exact paused global generation and a new deadline within seven
 days. It preserves the check ceiling/count, cadence, original sources, pending
 returns (including uncertainty), cursors, resource contract and reservations.
-Exhausted observation capacity refuses renewal. One replaceable receipt makes an
+Without `MAX_CHECKS`, exhausted observation capacity refuses renewal. An explicit
+owner-selected successor may supply a nondecreasing **absolute lifetime ceiling**,
+leaving 1–1024 remaining checks after the existing count. For example, count120
+and ceiling240 permit another120 checks; the count remains120. Unused predecessor
+capacity is included in that remaining total, never added again. The predecessor
+must be expired or check-exhausted; this can succeed a check-exhausted window before
+its deadline without clearing source/receipt capacity failures. This is an explicit
+finite model-free operating-policy grant, not inferred permission or an account
+refill. Its receipt retains the old/new ceiling. One replaceable receipt makes an
 exact lost-ACK repeat idempotent at the same paused generation. A separate Resume
 is required. This command is owner-console only and absent from model actions.
 It grants no execution permission, retries or automatic future renewal.

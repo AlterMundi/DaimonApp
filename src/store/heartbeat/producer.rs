@@ -582,6 +582,7 @@ pub(super) fn renew_observation_on(
     generation: u64,
     expected_expiry: i64,
     expiry: i64,
+    max_checks: Option<u32>,
 ) -> Result<()> {
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
     let mut p = load(conn, human, session)?.context("Heartbeat producer not configured")?;
@@ -589,27 +590,50 @@ pub(super) fn renew_observation_on(
         bound(conn, &p)? && purpose_on(conn, &p).is_ok(),
         "Heartbeat source binding changed"
     );
-    let receipt = json!({"generation":generation,"previous_expires_at_unix_ms":expected_expiry,
+    let mut receipt = json!({"generation":generation,"previous_expires_at_unix_ms":expected_expiry,
         "expires_at_unix_ms":expiry,"execution_permission_changed":false,"activated":false});
-    if p.observation_renewal.as_ref() == Some(&receipt) {
+    if p.observation_renewal.as_ref().is_some_and(|prior| {
+        prior["generation"] == generation
+            && prior["previous_expires_at_unix_ms"] == expected_expiry
+            && prior["expires_at_unix_ms"] == expiry
+            && prior["execution_permission_changed"] == false
+            && prior["activated"] == false
+            && p.contract.expires_at_unix_ms == expiry
+            && match max_checks {
+                Some(max) => prior["max_checks"] == max && p.contract.max_checks == max,
+                None => prior.get("max_checks").is_none(),
+            }
+    }) {
         return Ok(());
     }
     let now = Utc::now().timestamp_millis();
     anyhow::ensure!(
         p.contract.expires_at_unix_ms == expected_expiry
-            && expected_expiry <= now
+            && (expected_expiry <= now || p.checks == p.contract.max_checks)
             && expiry > now
             && expiry <= now + 7 * 86400 * 1000,
-        "Select the expired observation predecessor and a new finite window within seven days"
+        "Select an expired or check-exhausted observation predecessor and a finite window within seven days"
     );
+    let ceiling = max_checks.unwrap_or(p.contract.max_checks);
     anyhow::ensure!(
         p.stopped_reason.is_none()
-            && p.checks < p.contract.max_checks
+            && p.contract.max_checks > 0
+            && p.checks <= p.contract.max_checks
+            && ceiling >= p.contract.max_checks
+            && ceiling > p.checks
+            && ceiling
+                .checked_sub(p.checks)
+                .is_some_and(|remaining| remaining <= 1024)
             && p.seen.len() < 256
             && p.native_returns.len() < 16,
-        "Observation capacity exhausted; renewal cannot reset counters or evidence"
+        "Select a nondecreasing cumulative observation ceiling with1–1024 remaining checks; evidence capacity and counters cannot reset"
     );
+    if max_checks.is_some() {
+        receipt["previous_max_checks"] = json!(p.contract.max_checks);
+        receipt["max_checks"] = json!(ceiling);
+    }
     p.contract.expires_at_unix_ms = expiry;
+    p.contract.max_checks = ceiling;
     p.observation_renewal = Some(receipt);
     save(conn, &p)
 }
@@ -1277,6 +1301,96 @@ mod inbox_tests {
                 .is_err()
         );
     }
+    #[test]
+    fn observation_period_capacity_is_explicit_cumulative_and_does_not_refill_inference() {
+        let (f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        s.heartbeat_finish_check(
+            &c,
+            Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+        )
+        .unwrap()
+        .unwrap();
+        let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        let before = {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, c.session).unwrap().unwrap();
+            p.checks = p.contract.max_checks;
+            p.native_returns[0].phase = "uncertain".into();
+            save(&conn, &p).unwrap();
+            serde_json::to_value(p).unwrap()
+        };
+        let old_expiry = before["contract"]["expires_at_unix_ms"].as_i64().unwrap();
+        let expiry = old_expiry + 60_000;
+        let checks = before["checks"].as_u64().unwrap() as u32;
+        let ceiling = checks + 120;
+        // A check-exhausted period can be succeeded even before its wall-clock
+        // deadline, but a deadline-only renewal cannot mint another check.
+        assert!(
+            s.heartbeat_renew_observation(100, e, generation, old_expiry, expiry)
+                .is_err()
+        );
+        for (g, max) in [
+            (generation + 1, ceiling),
+            (generation, checks),
+            (generation, checks + 1025),
+        ] {
+            assert!(
+                s.heartbeat_renew_observation_capacity(100, e, g, old_expiry, expiry, max)
+                    .is_err()
+            );
+            let conn = s.conn.lock().unwrap();
+            assert_eq!(
+                serde_json::to_value(load(&conn, 100, c.session).unwrap().unwrap()).unwrap(),
+                before
+            );
+        }
+        s.heartbeat_renew_observation_capacity(100, e, generation, old_expiry, expiry, ceiling)
+            .unwrap();
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        s.heartbeat_renew_observation_capacity(100, e, generation, old_expiry, expiry, ceiling)
+            .unwrap();
+        assert_eq!(s.heartbeat_control(100, e, H::Status).unwrap(), after);
+        assert!(
+            s.heartbeat_renew_observation_capacity(
+                100,
+                e,
+                generation,
+                old_expiry,
+                expiry,
+                ceiling + 1
+            )
+            .is_err()
+        );
+        assert_eq!(after["resources"], paused["resources"]);
+        assert_eq!(after["admission_paused"], true);
+        assert_eq!(after["generation"], generation);
+        assert_eq!(after["producer"]["checks"], checks);
+        assert_eq!(after["producer"]["contract"]["max_checks"], ceiling);
+        assert_eq!(
+            after["producer"]["observation_window_renewal"]["previous_max_checks"],
+            checks
+        );
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut actual =
+                serde_json::to_value(load(&conn, 100, c.session).unwrap().unwrap()).unwrap();
+            actual["contract"]["expires_at_unix_ms"] = json!(old_expiry);
+            actual["contract"]["max_checks"] = before["contract"]["max_checks"].clone();
+            actual["observation_renewal"] = Value::Null;
+            assert_eq!(actual, before);
+        }
+        drop(s);
+        let restarted = Store::open(f.path(), &[100], &crate::store::tests::defaults()).unwrap();
+        assert_eq!(
+            restarted.heartbeat_control(100, e, H::Status).unwrap(),
+            after
+        );
+        assert!(serde_json::from_value::<H>(json!({"action":"renew_observation_capacity","generation":generation,"max_checks":ceiling})).is_err());
+    }
+
     #[test]
     fn owner_window_renewal_preserves_pending_source_and_all_counters() {
         let (_f, s, e, source) = setup();
