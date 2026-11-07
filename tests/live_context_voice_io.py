@@ -671,13 +671,13 @@ def qualify_public_live_window(binary):
         transport=type('Transport',(),{'create':lambda self,*args:LiveCall('live:window-synthetic','v=0 answer')})()
         visits.create(ident,100,owner,'v=0 synthetic offer',{'model':'gpt-live-1','instructions':'Synthetic only','delegation':{'type':'client'},'store':False},transport)
         tone=b''.join(struct.pack('<h',int(5000*math.sin(2*math.pi*440*n/16000))) for n in range(1600))
-        for ordinal in range(2):visits.recording(ident,100,binding,ordinal,wav_bytes(tone),provider)
+        for ordinal in range(32):visits.recording(ident,100,binding,ordinal,wav_bytes(tone),provider)
         text='Use only this Live input transcript. Keep the later correction.'
         visits.event(ident,100,owner,{'type':'session.input_transcript.delta','event_id':'input','delta':text,'start_ms':0,'end_ms':100})
         visits.event(ident,100,owner,{'type':'session.output_transcript.delta','event_id':'output','delta':'Never promote assistant output.','start_ms':0,'end_ms':100})
         visits.event(ident,100,owner,{'type':'session.delegation.created','event_id':'task','delegation':{'id':'window-task','target':'client'}})
         seal=request_seal(visits,ident,100,owner,'window-task',provider)
-        accept_seal(visits,ident,100,owner,{'type':'source_sealed','request':seal['request'],'through_ordinal':2,'capture_bytes':2*len(tone)},provider)
+        accept_seal(visits,ident,100,owner,{'type':'source_sealed','request':seal['request'],'through_ordinal':32,'capture_bytes':32*len(tone)},provider)
         capture_errors=[];capture=provider.conversation_voice_submit
         def observed_capture(*args,**kwargs):
             try:return capture(*args,**kwargs)
@@ -686,17 +686,17 @@ def qualify_public_live_window(binary):
         provider.conversation_voice_submit=observed_capture
         def forbidden(*args):raise AssertionError('Second ASR must never start')
         result=prepare_native(visits,ident,100,owner,'window-task',provider,'/no-key-required',forbidden)
-        assert result['state']=='admitted',(result,capture_errors,visits.read(ident,100,owner).get('native_originals'))
+        assert result['state']=='admitted',(result,capture_errors)
         value=visits.read(ident,100,owner);root=value['delegations']['window-task']['native_work']['root']
         j.wait(lambda:provider.conversation_input_status(root).get('native_acceptance')=='observed')
         original=provider.conversation_input_status(root);proof=original['foreground_delegation']
         assert original['text']==text and original['voice'].get('transcription') is None
-        assert proof['live_window']['input_events']==1 and len(proof['sources'])==2
+        assert proof['live_window']['input_events']==1 and len(proof['sources'])==32
         assert all(source['voice'].get('transcription') is None for source in proof['sources'])
         assert 'Never promote assistant output.' not in original['text']
         assert all('interpretation' not in slot for slot in value['native_originals'].values())
         assert prepare_native(visits,ident,100,owner,'window-task',provider,'/no-key-required',forbidden)==result
-        print('public Live window: exact journal input + two raw originals + native canonical handoff, zero ASR; synthetic Core only, no real provider/model calls')
+        print('public Live window: exact journal input + 32 raw originals + native canonical handoff, zero ASR; synthetic Core only, no real provider/model calls')
         provider.close()
     finally:j.close()
 

@@ -66,7 +66,7 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
         seal = work.get('source_seal', {})
         if seal.get('state') not in ('sealed','empty'):
             raise ValueError('Select a confirmed source window')
-        if not 1 <= len(seal['recordings']) <= 8:
+        if not 1 <= len(seal['recordings']) <= 32:
             work['native_pipeline']={'state':'held','work_completed':False,
                 'meaning':'The confirmed source window is empty or exceeds the native source bound; no inference was requested.'}
             work['state']='native_preparation_held';history._write(value)

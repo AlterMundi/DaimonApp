@@ -917,7 +917,7 @@ impl Store {
             || formulation.len() > 8192
             || formulation.contains('\0')
             || source_ids.is_empty()
-            || source_ids.len() > 8
+            || source_ids.len() > if live.is_some() { 32 } else { 8 }
             || source_ids
                 .iter()
                 .collect::<std::collections::HashSet<_>>()
@@ -2029,7 +2029,7 @@ mod tests {
         let (_file, store, key, binding) = setup();
         let dialogue = Uuid::now_v7().to_string();
         let mut ids = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..32 {
             let id = Uuid::now_v7().to_string();
             store
                 .conversation_foreground_voice_capture(
@@ -2057,6 +2057,37 @@ mod tests {
         };
         let intent = Uuid::now_v7().to_string();
         let root = ids.last().unwrap();
+        // Extending Live must not expand the independent legacy source contract.
+        assert!(
+            store
+                .conversation_foreground_delegate(
+                    100,
+                    key,
+                    &binding,
+                    root,
+                    &intent,
+                    "Interpret sources",
+                    &ids
+                )
+                .is_err()
+        );
+        let mut oversized = ids.clone();
+        oversized.push(Uuid::now_v7().to_string());
+        assert!(
+            store
+                .conversation_foreground_live_delegate(
+                    100,
+                    key,
+                    &binding,
+                    root,
+                    &intent,
+                    "Interpret sources",
+                    &oversized,
+                    text,
+                    proof.clone()
+                )
+                .is_err()
+        );
         assert!(
             store
                 .conversation_foreground_live_delegate(

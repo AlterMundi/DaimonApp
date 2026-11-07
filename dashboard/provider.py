@@ -772,7 +772,7 @@ class Provider:
                 or not isinstance(body['binding'],str) or not re.fullmatch('[a-f0-9]{64}',body['binding'])
                 or not isinstance(body['formulation'],str) or not body['formulation'].strip()
                 or len(body['formulation'].encode())>8192 or '\0' in body['formulation']
-                or not isinstance(body['source_ids'],list) or not 1<=len(body['source_ids'])<=8
+                or not isinstance(body['source_ids'],list) or not 1<=len(body['source_ids'])<=(32 if 'live_window' in body else 8)
                 or any(not isinstance(i,str) for i in body['source_ids'])
                 or len(set(body['source_ids']))!=len(body['source_ids']) or body['id'] not in body['source_ids']):
             raise ValueError('Select a bounded attributed foreground formulation')

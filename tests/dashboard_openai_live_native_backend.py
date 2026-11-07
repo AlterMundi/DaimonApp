@@ -22,8 +22,10 @@ class Backend(unittest.TestCase):
     success=fixtures.NativeWork.success
     prepare=fixtures.NativeWork.prepare
 
-    def ready(self):
+    def ready(self, count=1):
         self.prepare();self.delegation='native-task';self.asr=[];self.imports=[];self.writes=[];self.updates=[]
+        for ordinal in range(1,count):
+            self.visits.recording(self.ident,100,self.owner['binding'],ordinal,self.audio,self.provider)
         self.provider.presentation=lambda command:{'binding':self.owner['binding'],'foreground_interpretation':'gpt-transcribe/v1','foreground_live_window':'journal-input/v1','voice_available':True,'foreground_completed_reader':True}
         self.provider.presentation_list=lambda *args:{'binding':self.owner['binding'],
             'newest':{'native':1 if self.writes else 0},'items':([{
@@ -44,8 +46,8 @@ class Backend(unittest.TestCase):
             native['text']=window['text']
             native.update(phase='accepted',local_turn=42,native_acceptance='observed',foreground_delegation={
                 'intent_id':body['intent_id'],'dialogue_id':self.ident,'formulation':body['formulation'],'live_window':body['live_window']['proof'],
-                'sources':[{'id':source,'capture_order':index+1,'text':self.provider.retained[source]['text'],
-                    'text_sha256':hashlib.sha256(self.provider.retained[source]['text'].encode()).hexdigest(),
+                'sources':[{'id':source,'capture_order':index+1,'text':self.provider.retained[source].get('text',''),
+                    'text_sha256':hashlib.sha256(self.provider.retained[source].get('text','').encode()).hexdigest(),
                     'voice':copy.deepcopy(self.provider.retained[source]['voice'])} for index,source in enumerate(body['source_ids'])]})
             return copy.deepcopy(native)
         self.provider.conversation_foreground_interpret=interpret
@@ -61,7 +63,7 @@ class Backend(unittest.TestCase):
             'event_id':'native-request','delegation':{'id':self.delegation,'target':'client'}})
         request=request_seal(self.visits,self.ident,100,self.owner,self.delegation,self.provider)
         accept_seal(self.visits,self.ident,100,self.owner,{'type':'source_sealed','request':request['request'],
-            'through_ordinal':1,'capture_bytes':len(self.audio)-44},self.provider)
+            'through_ordinal':count,'capture_bytes':count*(len(self.audio)-44)},self.provider)
 
     def recognizer(self, key):
         test=self
@@ -75,6 +77,19 @@ class Backend(unittest.TestCase):
     def run_pipeline(self, history=None, factory=None):
         return prepare_native(history or self.visits,self.ident,100,self.owner,
             self.delegation,self.provider,self.key,factory or self.recognizer)
+
+    def test_full_recording_window_retains_all_sources_without_second_asr(self):
+        self.ready(count=32)
+        result=self.run_pipeline()
+        self.assertEqual(result['state'],'admitted')
+        self.assertEqual(self.provider.submissions,32)
+        self.assertEqual(len(self.writes),1)
+        self.assertEqual(len(self.writes[0]['source_ids']),32)
+        self.assertEqual(self.asr,[])
+        self.assertEqual(self.imports,[])
+        self.assertEqual(self.run_pipeline(LiveCreations(self.root)),result)
+        self.assertEqual(len(self.writes),1)
+        self.assertEqual(self.provider.submissions,32)
 
     def test_whole_source_to_native_and_current_result_once(self):
         self.ready();result=self.run_pipeline()
