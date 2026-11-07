@@ -49,7 +49,38 @@ Opening/editing/saving requests no microphone or audio. Existing connections
 cannot change through a workshop pointer update. Studio changes are not yet
 served and no per-pair defaults or provider flags were changed by preparation.
 
+## Preview transport source
+
+The source renderer now supports the same GPT-Live API through one primary
+WebSocket, using the existing speech intent/cache/audio reservation. It sends
+only synthetic silence and developer-attributed preview text, with client
+delegation and no native work or Responses tools. It never opens a microphone.
+A greeting is seeded and appended once after startup as the official guide
+recommends. Input/output share PCM16/24kHz; model, voice and final session ID
+must match. The deadline is30seconds including finalization, with at most5seconds
+of close drain,40words and the existing8MiB audio bound. Wave output is at most
+30seconds. Captions are not certified word alignment or human hearing.
+
+There is no per-utterance completion event. A full passage caption plus a quiet
+audio interval requests close; otherwise the generation deadline requests close.
+A valid `session.closed` with final usage is required before a successful cached
+preview. Missing/changed output, cancellation and unknown closure never start
+another session. Expired auditions can refuse regeneration while ordinary speech
+retains its existing explicit-render contract. The transport itself creates no
+new store or provider defaults. This is source/synthetic qualification only.
+
+References: [GPT-Live conversations](https://developers.openai.com/api/docs/guides/live-conversations),
+[primary WebSocket lifecycle](https://developers.openai.com/api/docs/guides/voice-websockets?api=live).
+
 ## Remaining comparison and acceptance
+
+The preview transport is not exposed by the workshop yet. Before enabling it,
+retain bounded frozen A/B batch intents under the existing account document;
+reuse the existing speech cache and reservation/cleanup, with an explicit cap
+on preview receipts/jobs. Preserve unknown outcomes and generation-fence retired
+batches. Wire the existing scoped voice exclusion and owned subprocess
+cancellation/deadline into the authenticated route and UI. Do not enable a
+button that can accumulate unbounded metadata or replay an expired/unknown job.
 
 Paid comparison remains explicit and bounded: two compatible identities at most,
 the same passage of at most40words,30seconds/16MiB each, retained uncertain result
