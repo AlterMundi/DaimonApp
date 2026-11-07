@@ -464,6 +464,7 @@ jobs:
       - run: python -B tests/dashboard_openai_dialogue.py
       - run: python -B tests/dashboard_native_foreground.py
       - run: python -B tests/dashboard_native_context.py
+      - run: python -B tests/dashboard_public_live_native_context.py
       - run: python -B tests/dashboard_native_caption.py
       - run: python -B tests/dashboard_native_acoustic.py
       - run: python -B tests/dashboard_native_voice.py

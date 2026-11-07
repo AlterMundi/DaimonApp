@@ -692,3 +692,53 @@ journeys cover review before permission/POST, stale/foreign/unknown refusal,
 partial admission, genuine later usage and once-only late results across another
 replacement. They do not establish semantic history restoration, real repeated
 speech, physical reconnect/hearing or settlement of an older provider bill.
+
+### Prepared native semantic-context source adapter
+
+The native `foreground_public_live_transcripts=v1` capability admits the optional
+`live_transcript` provenance on existing context-sync sources. Input and output
+fragments keep distinct `transcript_input`/`transcript_output` roles. They retain
+the original text, speaker, provider event/session identity, exact event hash and
+fractional provider timestamps, with `transcript_context_only` authority and an
+explicit partial/interrupted disposition. They create no canonical human original,
+ASR request, work admission or playback/hearing receipt. Their complete typed
+envelope stays in the existing language field so older projection readers keep
+its bytes instead of dropping an unknown document field. The existing native
+source revisions,64KiB batch,2MiB document/64MiB aggregate and4096source bounds
+include this evidence. A changed source refuses atomically; a late source changes
+the reconnect revision without reopening work or authorizing a stale seed.
+
+For ordinary subword deltas, compact `transcript_context` journal blocks preserve
+the exact concatenated language and a flat span table: speaker, provider start/end
+times, cumulative UTF8 text end, and exact source-record end offset. One immutable
+journal range/revision/hash references original event IDs and individual hashes;
+the raw source journal remains authoritative. Boundaries are storage chunks, not
+inferred utterance ends. The actual71second trial contained146transcript deltas
+for798UTF8 text bytes; copying a full session/event envelope per delta would cause
+context pressure from bookkeeping. A matching synthetic146delta case retains all
+spans in three blocks below16KiB. Block validation rejects UTF8 splits, omitted
+text, reordered source offsets, mixed authority and changed immutable evidence.
+
+`PublicLiveContextHistory` wraps the existing NativeHistory/NativeContext outbox
+interface and public visit source journal. It supplies one bounded complete
+source block per native sync and counts escaping/provenance within the language
+budget. Before native retention, one constant batch intent freezes its byte range,
+hash and source ID; only matching native receipts commit the source-offset cursor.
+A lost receipt followed by new deltas reconciles the old block first, then admits
+a distinct block. No second transcript database or copied archive is
+created. Lost native source-retention receipts can reconcile the same immutable
+IDs, as in the existing NativeContext contract; this is not replay permission for
+uncertain work, ASR, provider commands or context appends. Canonical assistant
+outboxes and other voice modes retain their previous path. Partial source-file
+writes keep the cursor before the incomplete record and require review.
+
+This is prepared source support, not a mounted voice lifecycle or receiving
+acceptance. The caller still needs actual native capability/actor/lease checks,
+producer registration, old-visit catch-up and complete bounded semantic startup
+seeding before microphone/POST. Native projection closure and provider voice
+closure are distinct. Unknown in-flight work and exact late-result cursors must
+survive both. Real memory/tool execution, repeated useful speech/renewal and
+physical hearing remain open. Follow OpenAI's
+[transcript provenance](https://developers.openai.com/api/docs/guides/live-migration#preserve-context-and-apply-corrections)
+and [saved-context](https://developers.openai.com/api/docs/guides/live-delegation#keep-the-conversation-context-in-your-application)
+guidance when completing that existing lifecycle.

@@ -150,6 +150,133 @@ pub(crate) struct LiveAssistantSource {
     audio_without_transcript: Option<AudioWithoutTranscript>,
     #[serde(default)]
     derived_caption: Option<DerivedCaption>,
+    #[serde(default)]
+    live_transcript: Option<LiveTranscript>,
+}
+
+/// App-reported trusted-sideband language, never a canonical human original,
+/// utterance boundary, execution request or measurement of played/heard words.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveTranscriptFragment {
+    model: String,
+    session_id: String,
+    provider_event_id: String,
+    event_sha256: String,
+    speaker: String,
+    start_ms: serde_json::Number,
+    end_ms: serde_json::Number,
+    authority: String,
+}
+
+impl LiveTranscriptFragment {
+    fn validate(&self) -> Result<()> {
+        bounded(&self.session_id, 1024)?;
+        bounded(&self.provider_event_id, 1024)?;
+        let start = self.start_ms.as_f64().unwrap_or(f64::NAN);
+        let end = self.end_ms.as_f64().unwrap_or(f64::NAN);
+        if self.model != "gpt-live-1"
+            || !matches!(self.speaker.as_str(), "input" | "output")
+            || self.authority != "transcript_context_only"
+            || self.event_sha256.len() != 64
+            || !self
+                .event_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !start.is_finite()
+            || !end.is_finite()
+            || start < 0.
+            || end < start
+            || end > 86_400_000.
+        {
+            bail!("Select bounded attributed Live transcript context, never human authority");
+        }
+        Ok(())
+    }
+}
+
+/// Compact flat spans reference the immutable public journal instead of copying
+/// session/event/hash envelopes for every few characters of voice transcription.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveTranscriptBlock {
+    model: String,
+    session_id: String,
+    authority: String,
+    journal_revision: String,
+    journal_from: usize,
+    journal_after: usize,
+    journal_sha256: String,
+    spans: Vec<(String, serde_json::Number, serde_json::Number, usize, usize)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum LiveTranscript {
+    Fragment(LiveTranscriptFragment),
+    Block(LiveTranscriptBlock),
+}
+
+impl LiveTranscript {
+    fn validate(&self, text: &str) -> Result<()> {
+        match self {
+            Self::Fragment(fragment) => fragment.validate(),
+            Self::Block(block) => {
+                bounded(&block.session_id, 1024)?;
+                let digest = |s: &str| {
+                    s.len() == 64
+                        && s.bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                };
+                if block.model != "gpt-live-1"
+                    || block.authority != "transcript_context_only"
+                    || !digest(&block.journal_revision)
+                    || !digest(&block.journal_sha256)
+                    || block.journal_from >= block.journal_after
+                    || block.journal_after > MAX_DOCUMENT
+                    || block.spans.is_empty()
+                    || block.spans.len() > 256
+                {
+                    bail!("Select bounded public transcript journal evidence");
+                }
+                let mut through = 0;
+                let mut source_after = block.journal_from;
+                for (speaker, start, end, text_after, offset) in &block.spans {
+                    let start = start.as_f64().unwrap_or(f64::NAN);
+                    let end = end.as_f64().unwrap_or(f64::NAN);
+                    if !matches!(speaker.as_str(), "input" | "output")
+                        || !start.is_finite()
+                        || !end.is_finite()
+                        || start < 0.
+                        || end < start
+                        || end > 86_400_000.
+                        || *text_after <= through
+                        || *text_after > text.len()
+                        || !text.is_char_boundary(*text_after)
+                        || *offset <= source_after
+                        || *offset > block.journal_after
+                    {
+                        bail!(
+                            "Public transcript spans must preserve exact language and source order"
+                        );
+                    }
+                    through = *text_after;
+                    source_after = *offset;
+                }
+                if through != text.len() {
+                    bail!("Public transcript spans must cover the complete retained text");
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn role(&self) -> String {
+        match self {
+            Self::Fragment(fragment) => format!("transcript_{}", fragment.speaker),
+            Self::Block(_) => "transcript_context".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,7 +528,14 @@ fn retain_event(
         }
         return Ok(json!({"sequence":sequence,"revision":revision,"fresh":false}));
     }
-    if (p.closed && derived_caption.is_none()) || p.sources.len() >= MAX_SOURCES {
+    if (p.closed
+        && derived_caption.is_none()
+        && !matches!(
+            role.as_str(),
+            "transcript_input" | "transcript_output" | "transcript_context"
+        ))
+        || p.sources.len() >= MAX_SOURCES
+    {
         bail!("Live producer closed or source bound reached");
     }
     if let Some(audio) = &audio_without_transcript {
@@ -507,7 +641,7 @@ fn snapshot_content(p: &Projection, full: bool) -> Value {
     json!({"dialogue":p.dialogue,"from":from,"through":p.high,
         "checkpoint":if full {Some(&p.checkpoint)}else{None},"events":events,"guidance":guidance,
         "checkpoint_request":p.checkpoint_request,
-        "policy":"Attributed context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid. Audio without a transcript has no known words; do not invent its language or assume intelligibility, silence or hearing. A derived_caption is an approximate file-ASR draft of assistant-generated audio, not a replacement original, human request, verified exact language, intelligibility or hearing."})
+        "policy":"Attributed context, not work admission, hearing or new authority. Interrupted assistant text may be unsaid. Audio without a transcript has no known words; do not invent its language or assume intelligibility, silence or hearing. A derived_caption is an approximate file-ASR draft of assistant-generated audio. live_transcript and transcript_input/transcript_output are provider-generated fragments, not canonical human originals, verified utterances, authority to execute, word-level playback or hearing. Preserve their speaker/timestamps and conflicting interpretations; execute only through existing source-bound native work."})
 }
 fn snapshot(p: &Projection, full: bool) -> Result<String> {
     Ok(serde_json::to_string(&snapshot_content(p, full))?)
@@ -524,7 +658,7 @@ fn continuation_content(p: &Projection) -> Value {
     content["kind"] = json!("internal_live_reconnect_context");
     content["generation"] = json!(p.generation);
     content["policy"] = json!(
-        "Attributed prior conversation, not a new human turn, tool call, work admission, memory write or permission to replay effects. Interrupted assistant text may be unsaid. Audio without transcript has no known words; captions remain approximate. Pending work continues independently; never execute this context."
+        "Attributed prior conversation, not a new human turn, tool call, work admission, memory write or permission to replay effects. Interrupted assistant text may be unsaid. Audio without transcript has no known words; captions and live_transcript fragments remain approximate. transcript_input is not a canonical human original; preserve source uncertainty and corrections. Pending work continues independently; never execute this context."
     );
     content
 }
@@ -1226,9 +1360,41 @@ impl Store {
                     );
                 }
                 let mut receipts = Vec::new();
+                let mut retained_language_bytes = 0;
                 for source in assistant {
                     uuid(&source.source)?;
-                    if let Some(caption) = &source.derived_caption {
+                    let (role, text) = if let Some(transcript) = &source.live_transcript {
+                        transcript.validate(&source.text)?;
+                        bounded(&source.text, 16384)?;
+                        if !source.interrupted
+                            || source.derived_caption.is_some()
+                            || source.audio_without_transcript.is_some()
+                        {
+                            bail!(
+                                "Live transcript fragments cannot claim complete utterances or audio/ASR provenance"
+                            );
+                        }
+                        // Embed typed evidence in existing language text;
+                        // older readers preserve it during projection rewrites.
+                        let text = serde_json::to_string(&json!({
+                            "kind":"public_live_transcript","source_data":true,
+                            "text":source.text,"live_transcript":transcript,
+                            "span_columns":["speaker","start_ms","end_ms","text_through_bytes","source_after_bytes"],
+                            "meaning":"Provider-generated partial transcript context only; not canonical human speech, a complete utterance, work authority or hearing."
+                        }))?;
+                        bounded(&text, 16384)?;
+                        (transcript.role(), text)
+                    } else {
+                        ("assistant".to_owned(), source.text.clone())
+                    };
+                    retained_language_bytes += text.len();
+                    if retained_language_bytes > 65536 {
+                        bail!("Complete typed Live language exceeds its batch bound");
+                    }
+                    if source.live_transcript.is_some() {
+                        // These fields are context only; no canonical original,
+                        // capture order, ASR, work dispatch or playback is made.
+                    } else if let Some(caption) = &source.derived_caption {
                         uuid(&caption.parent_source)?;
                         bounded(&source.text, 16384)?;
                         let parent = p
@@ -1268,8 +1434,8 @@ impl Store {
                     let mut receipt = retain_event(
                         &mut p,
                         source.source,
-                        "assistant".into(),
-                        source.text,
+                        role,
+                        text,
                         source.interrupted,
                         None,
                         Some(SourceEvidence {
@@ -1790,6 +1956,224 @@ mod tests {
                 "request_revision":basis["checkpoint_request"]["revision"],
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    fn transcript(f: &Fixture, speaker: &str, text: &str) -> Value {
+        json!({"action":"sync","dialogue":f.dialogue,"generation":f.generation,
+            "assistant":[{"source":Uuid::now_v7().to_string(),"text":text,"interrupted":true,
+                "live_transcript":{"model":"gpt-live-1","session_id":"live:synthetic",
+                    "provider_event_id":"provider-fragment","event_sha256":"e".repeat(64),
+                    "speaker":speaker,"start_ms":10.5,"end_ms":20.75,
+                    "authority":"transcript_context_only"}}]})
+    }
+
+    #[test]
+    fn public_live_fragments_keep_roles_times_and_uncertainty_without_human_admission() {
+        let f = Fixture::new();
+        for (speaker, text) in [
+            ("input", "Thursday"),
+            ("output", "Did you mean Thursday?"),
+            ("input", "Friday, not Thursday"),
+        ] {
+            let command = transcript(&f, speaker, text);
+            let first = f.call(command.clone()).unwrap();
+            assert_eq!(first["assistant_receipts"][0]["fresh"], true);
+            assert_eq!(
+                f.call(command).unwrap()["assistant_receipts"][0]["fresh"],
+                false
+            );
+        }
+        let page = f.read_all(true);
+        let body = &page["range"]["content"];
+        let events = body["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0]["role"], "transcript_input");
+        assert_eq!(events[1]["role"], "transcript_output");
+        let correction: Value = serde_json::from_str(events[2]["text"].as_str().unwrap()).unwrap();
+        let fragment: Value = serde_json::from_str(events[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(correction["text"], "Friday, not Thursday");
+        assert_eq!(fragment["live_transcript"]["start_ms"], 10.5);
+        assert_eq!(fragment["live_transcript"]["end_ms"], 20.75);
+        assert_eq!(events[0]["capture_order"], Value::Null);
+        assert!(events.iter().all(|e| e["interrupted"] == true));
+        assert!(
+            body["policy"]
+                .as_str()
+                .unwrap()
+                .contains("not canonical human originals")
+        );
+        let conn = f.store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM conversation_inputs", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn public_live_metadata_and_text_cannot_be_rewritten_or_promoted_to_human_speech() {
+        let f = Fixture::new();
+        let command = transcript(&f, "input", "An uncertain provider interpretation");
+        f.call(command.clone()).unwrap();
+        for (field, value) in [
+            ("speaker", json!("output")),
+            ("event_sha256", json!("f".repeat(64))),
+            ("start_ms", json!(11)),
+        ] {
+            let mut changed = command.clone();
+            changed["assistant"][0]["live_transcript"][field] = value;
+            assert!(f.call(changed).is_err());
+        }
+        let mut changed = command.clone();
+        changed["assistant"][0]["text"] = json!("Changed words");
+        assert!(f.call(changed).is_err());
+        assert!(f.call(json!({"action":"append","dialogue":f.dialogue,"generation":f.generation,
+            "source":command["assistant"][0]["source"],"role":"human","text":"An uncertain provider interpretation","interrupted":false})).is_err());
+        assert_eq!(f.read(true)["high"], 1);
+    }
+
+    #[test]
+    fn public_live_fragments_refuse_mixed_authority_and_invalid_evidence() {
+        let f = Fixture::new();
+        let original = transcript(&f, "input", "Partial words");
+        for (field, value) in [
+            ("authority", json!("human_request")),
+            ("speaker", json!("human")),
+            ("model", json!("other-provider")),
+            ("event_sha256", json!("bad")),
+            ("start_ms", json!(-1)),
+            ("end_ms", json!(5)),
+            ("provider_event_id", json!("")),
+        ] {
+            let mut bad = original.clone();
+            bad["assistant"][0]["live_transcript"][field] = value;
+            assert!(f.call(bad).is_err(), "invalid {field} accepted");
+        }
+        let mut bad = original.clone();
+        bad["assistant"][0]["interrupted"] = json!(false);
+        assert!(f.call(bad).is_err());
+        let mut bad = original.clone();
+        bad["assistant"][0]["audio_without_transcript"] =
+            json!({"pcm_sha256":"a".repeat(64),"generated_bytes":2});
+        assert!(f.call(bad).is_err());
+        assert!(
+            f.store
+                .live_context(200, f.entry, serde_json::from_value(original).unwrap())
+                .is_err()
+        );
+        assert_eq!(f.read(true)["high"], 0);
+    }
+
+    #[test]
+    fn late_public_live_fragment_changes_closed_resume_revision_without_reopening_work() {
+        let f = Fixture::new();
+        f.call(transcript(&f, "input", "Thursday")).unwrap();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let read = json!({"action":"resume_read","dialogue":f.dialogue,"generation":f.generation});
+        let before = f.call(read.clone()).unwrap();
+        f.call(transcript(&f, "input", "Friday, not Thursday"))
+            .unwrap();
+        let after = f.call(read).unwrap();
+        assert_eq!(after["closed"], true);
+        assert_ne!(before["resume"]["revision"], after["resume"]["revision"]);
+        assert_eq!(
+            after["resume"]["content"]["events"][1]["role"],
+            "transcript_input"
+        );
+        assert_eq!(after["work_admission"], "not_requested");
+        assert!(f.call(json!({"action":"open","dialogue":Uuid::now_v7().to_string(),
+            "generation":Uuid::now_v7().to_string(),"binding":f.binding,
+            "resume":{"dialogue":f.dialogue,"generation":f.generation,"revision":before["resume"]["revision"]}})).is_err());
+    }
+
+    #[test]
+    fn public_live_provenance_counts_toward_the_unchanged_language_batch_bound() {
+        let f = Fixture::new();
+        let mut command = transcript(&f, "input", &"x".repeat(10000));
+        let sources = (0..6)
+            .map(|_| {
+                let mut source = command["assistant"][0].clone();
+                source["source"] = json!(Uuid::now_v7().to_string());
+                source["live_transcript"]["session_id"] = json!("s".repeat(1024));
+                source["live_transcript"]["provider_event_id"] = json!("e".repeat(1024));
+                source
+            })
+            .collect::<Vec<_>>();
+        command["assistant"] = json!(sources);
+        assert!(f.call(command).is_err());
+        assert_eq!(f.read(true)["high"], 0, "The complete batch must be atomic");
+    }
+
+    fn transcript_block(f: &Fixture) -> Value {
+        json!({"action":"sync","dialogue":f.dialogue,"generation":f.generation,
+            "assistant":[{"source":Uuid::now_v7().to_string(),"text":"SíNo","interrupted":true,
+                "live_transcript":{"model":"gpt-live-1","session_id":"live:synthetic",
+                    "authority":"transcript_context_only","journal_revision":"d".repeat(64),
+                    "journal_from":0,"journal_after":200,"journal_sha256":"e".repeat(64),
+                    "spans":[["input",0,1.5,3,100],["output",1.5,2.5,5,200]]}}]})
+    }
+
+    #[test]
+    fn compact_public_spans_preserve_speakers_utf8_and_source_ranges_without_new_human_work() {
+        let f = Fixture::new();
+        let command = transcript_block(&f);
+        let receipt = f.call(command.clone()).unwrap();
+        assert_eq!(receipt["assistant_receipts"][0]["fresh"], true);
+        assert_eq!(
+            f.call(command.clone()).unwrap()["assistant_receipts"][0]["fresh"],
+            false
+        );
+        let page = f.read(true);
+        let event = &page["range"]["content"]["events"][0];
+        assert_eq!(event["role"], "transcript_context");
+        assert_eq!(event["capture_order"], Value::Null);
+        let body: Value = serde_json::from_str(event["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["text"], "SíNo");
+        assert_eq!(
+            body["live_transcript"]["spans"][0],
+            json!(["input", 0, 1.5, 3, 100])
+        );
+        assert_eq!(body["span_columns"][3], "text_through_bytes");
+        let mut changed = command.clone();
+        changed["assistant"][0]["live_transcript"]["journal_sha256"] = json!("f".repeat(64));
+        assert!(f.call(changed).is_err());
+        assert_eq!(
+            f.store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM conversation_inputs", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn compact_public_spans_reject_gaps_bad_boundaries_and_authority_atomically() {
+        let f = Fixture::new();
+        let command = transcript_block(&f);
+        for (index, field, value) in [
+            (0, 3, json!(2)),
+            (1, 3, json!(4)),
+            (1, 4, json!(99)),
+            (1, 4, json!(201)),
+            (0, 0, json!("human")),
+            (0, 1, json!(-1)),
+        ] {
+            let mut bad = command.clone();
+            bad["assistant"][0]["live_transcript"]["spans"][index][field] = value;
+            assert!(f.call(bad).is_err());
+        }
+        let mut bad = command.clone();
+        bad["assistant"][0]["live_transcript"]["authority"] = json!("human_request");
+        assert!(f.call(bad).is_err());
+        let mut bad = command;
+        bad["assistant"][0]["live_transcript"]["journal_revision"] = json!("invalid");
+        assert!(f.call(bad).is_err());
+        assert_eq!(f.read(true)["high"], 0);
     }
 
     fn continuation_request(f: &Fixture) -> Value {

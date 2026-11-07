@@ -245,7 +245,7 @@ class NativeContext:
         for _ in range(self.max_sources+1):
             sources=await asyncio.to_thread(self.history.context_pending,record)
             if not sources and sent:return
-            payload=[{k:s[k] for k in ('source','text','interrupted','audio_without_transcript','derived_caption') if k in s} for s in sources]
+            payload=[{k:s[k] for k in ('source','text','interrupted','audio_without_transcript','derived_caption','live_transcript') if k in s} for s in sources]
             result=await self._call(record,'sync',assistant=payload,
                 prepare_continuation=record is self.record and not self.stopping)
             receipts=result.get('assistant_receipts')

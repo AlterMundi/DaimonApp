@@ -543,7 +543,7 @@ class LiveCreations:
             self._write(current)
             return dict(selected)
 
-    def source_page(self,ident,human,binding,*,after=0,revision=None):
+    def source_page(self,ident,human,binding,*,after=0,revision=None,with_offsets=False,with_raw_records=False):
         value=self.owned(ident,human,binding)
         if type(after) is not int or after<0:raise ValueError('Select an exact source cursor')
         path=self.root/(self._ident(ident)+'.events')
@@ -561,13 +561,17 @@ class LiveCreations:
             if after:
                 stream.seek(after-1)
                 if stream.read(1)!=b'\n':raise ValueError('Select an exact source boundary')
-            stream.seek(after);items=[];used=0
+            stream.seek(after);items=[];offsets=[];raw_records=[];used=0
             while stream.tell()<info.st_size and len(items)<64 and used<65536:
                 start=stream.tell();raw=stream.readline(32769)
-                if len(raw)>32768 or not raw.endswith(b'\n'):break
+                if len(raw)>32768 or not raw.endswith(b'\n'):
+                    stream.seek(start);break
                 if used+len(raw)>65536:stream.seek(start);break
-                items.append(json.loads(raw));used+=len(raw)
-            return {'items':items,'after':stream.tell(),'revision':current,'more':stream.tell()<info.st_size}
+                items.append(json.loads(raw));offsets.append(stream.tell());used+=len(raw)
+                if with_raw_records:raw_records.append(raw)
+            return {'items':items,'after':stream.tell(),'revision':current,'more':stream.tell()<info.st_size,
+                **({'offsets':offsets} if with_offsets else {}),
+                **({'raw_records':raw_records} if with_raw_records else {})}
 
     def attach(self, ident, human, frozen, client, *, connect=None):
         value = self.read(ident, human, frozen)
