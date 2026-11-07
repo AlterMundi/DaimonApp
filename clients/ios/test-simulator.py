@@ -51,6 +51,7 @@ def run(argv, *, timeout=30):
 def qualify(app):
     device = None
     server = None
+    server_log = None
     with tempfile.TemporaryDirectory(prefix='daimon-ios-', dir=os.environ.get('RUNNER_TEMP')) as temporary:
         state = Path(temporary)
         try:
@@ -66,11 +67,12 @@ def qualify(app):
             run(['openssl','x509','-req','-in',str(state/'server.csr'),'-CA',str(state/'ca.crt'),
                  '-CAkey',str(state/'ca.key'),'-CAcreateserial','-days','1','-sha256',
                  '-extfile',str(state/'server.ext'),'-out',str(state/'server.crt')])
+            server_log = (state/'server.log').open('wb')
             server = subprocess.Popen(['sudo','-n','python3',str(Path(__file__).resolve()),'--serve',str(state)],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                      stdout=server_log, stderr=server_log)
             until = time.monotonic()+10
             while not (state/'server.pid').exists() and time.monotonic()<until:
-                if server.poll() is not None: raise RuntimeError('Loopback HTTPS fixture exited before readiness')
+                if server.poll() is not None: raise RuntimeError('Loopback HTTPS fixture exited before readiness: '+(state/'server.log').read_text()[-8192:])
                 time.sleep(.1)
             assert (state/'server.pid').exists(), 'Loopback HTTPS fixture did not become ready'
             runtimes = json.loads(run(['xcrun','simctl','list','runtimes','--json']))['runtimes']
@@ -88,7 +90,7 @@ def qualify(app):
             run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'])
             until = time.monotonic()+35
             while not (state/'result.json').exists() and time.monotonic()<until:
-                if server.poll() is not None: raise RuntimeError('HTTPS fixture stopped during the journey')
+                if server.poll() is not None: raise RuntimeError('HTTPS fixture stopped during the journey: '+(state/'server.log').read_text()[-8192:])
                 time.sleep(.2)
             if not (state/'result.json').exists():
                 print(run(['xcrun','simctl','spawn',device,'log','show','--last','1m','--style','compact',
@@ -107,6 +109,7 @@ def qualify(app):
                     if (state/'server.pid').exists():
                         subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],capture_output=True,timeout=10)
                     server.wait(timeout=10)
+                if server_log: server_log.close()
     print('Owned simulator, HTTPS fixture, one-day CA and temporary state removed',flush=True)
 
 

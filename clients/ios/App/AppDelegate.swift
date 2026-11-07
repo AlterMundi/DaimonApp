@@ -76,7 +76,7 @@ import WebKit
             #if QUALIFICATION
             QualificationStart.run(controller)
             #endif
-        } catch { error.text = "Use an HTTPS home address without credentials, query or fragment." }
+        } catch { self.error.text = "Use an HTTPS home address without credentials, query or fragment." }
     }
 }
 
