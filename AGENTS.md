@@ -384,3 +384,12 @@ interpretation method as well as native gpt-transcribe/v1 capability. Constructo
 health and synthetic owner fixtures do not prove that this cross-file adapter
 was selected. Preserve local adapters when adding the exact qualified method;
 refuse before billing rather than creating a doomed interpretation intent.
+
+
+OpenAI-only Conversation is an explicit optional speech + named native ASR
+profile. Freeze it with each original before microphone permission; no legacy
+Qwen/Gemini preview or fallback. Keep profiled originals on a compatible native
+reader during web rollback (local recovery v5 refuses older clients). Reuse
+canonical part authentication, shared speech capacity/media quotas and the
+existing one-attempt OpenAI transcription adapter; no second work/session store.
+See docs/interaction-speech.md. Configuration is not receiving/hearing acceptance.

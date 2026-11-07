@@ -167,6 +167,30 @@ class DashboardHTTP(unittest.TestCase):
         records[meta['id']]['phase']='preparing'
         self.assertNotIn('command',provider.conversation_voice_recover(meta,raw,dialogue),'An already active completion is observed only')
 
+    def test_explicit_openai_recording_route_refuses_missing_configuration_and_keeps_pin(self):
+        from dashboard.companion import permitted
+        csrf=self.login();retained=[]
+        self.provider.conversation_voice_submit=lambda meta,data: retained.append((meta,data)) or {'id':meta['id'],'phase':'preparing'}
+        self.provider.receiver={'voice':{}}
+        headers={**self.headers,'x-dashboard-csrf':csrf,'content-type':'audio/webm',
+                 'x-input-binding':'a'*64,'x-input-id':'10000000-0000-4000-8000-000000000001','x-audio-sha256':'b'*64}
+        path='/api/interaction/voice/openai'
+        self.assertTrue(permitted('POST',path))
+        self.assertFalse(permitted('POST',path,'monitor_readonly'))
+        self.assertEqual(self.client.post(path,content=b'original',headers=headers).status_code,409)
+        self.assertEqual(retained,[])
+        self.provider.receiver['voice']['transcription_profiles']={'openai':{}}
+        self.assertEqual(self.client.post(path,content=b'original',headers={**headers,'x-dashboard-csrf':'wrong'}).status_code,403)
+        self.assertEqual(self.client.post(path,content=b'original',headers=headers).status_code,200)
+        self.assertEqual(retained[-1][0]['transcription_profile'],'openai')
+        self.assertEqual(retained[-1][1],b'original')
+        self.assertEqual(self.client.post(path+'/limited',content=b'original',headers=headers).status_code,400)
+        self.assertEqual(self.client.post(path+'/limited',content=b'original',headers={**headers,'x-recording-stop':'duration_limit'}).status_code,200)
+        self.assertEqual(retained[-1][0]['transcription_profile'],'openai')
+        self.assertEqual(retained[-1][0]['capture_stop'],'duration_limit')
+        self.assertEqual(self.client.post('/api/interaction/voice',content=b'original',headers=headers).status_code,200)
+        self.assertNotIn('transcription_profile',retained[-1][0])
+
     def test_voice_playback_context_is_bounded_advisory_metadata(self):
         csrf=self.login();retained=[]
         self.provider.conversation_voice_submit=lambda metadata,data: retained.append((metadata,data)) or {'id':metadata['id'],'phase':'preparing'}

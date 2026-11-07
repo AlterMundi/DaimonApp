@@ -414,6 +414,35 @@ class Companion(unittest.TestCase):
         self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'text':'unowned words'},headers=self.headers).status_code,409)
         self.assertEqual(len(self.speech.calls),0)
 
+    def test_explicit_speech_profile_has_no_default_fallback_and_reuses_capacity(self):
+        from unittest.mock import AsyncMock
+        from dashboard.speech import Speech
+        selected={**self.body,'speech_provider':'openai'}
+        self.assertEqual(self.client.post('/api/interaction/audio',json=selected,headers=self.headers).status_code,409)
+        self.assertEqual(self.speech.calls,[])
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
+        self.client.close();self.client=self.client_for()
+        engines=[]
+        async def render(engine,source):
+            engines.append(engine)
+            return b'qualified synthetic audio',{'audio_sha256':'c'*64}
+        with patch.object(Speech,'render',render):
+            response=self.client.post('/api/interaction/audio',json=selected,headers=self.headers)
+            self.assertEqual(response.status_code,200);self.assertEqual(response.headers['x-speech-provider'],'openai')
+            self.assertEqual(engines[-1].binding,binding)
+            self.assertEqual(self.client.post('/api/interaction/audio',json=self.body,headers=self.headers).status_code,200)
+            self.assertIs(engines[0].capacity,engines[1].capacity)
+            self.assertEqual(engines[1].binding,self.speech.binding)
+            self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'speech_provider':'missing'},headers=self.headers).status_code,409)
+            self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'stream':True},headers=self.headers).status_code,409)
+        self.assertEqual(len(engines),2)
+        self.assertEqual(self.speech.calls,[])
+
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

@@ -65,6 +65,24 @@ window.Conversation = (() => {
     let voiceEnabled=false,voiceSuspended=false,captureBusy=false,voiceBusy=false,voiceContext,voiceMode,conversationOnly=false,voiceModePrevious,voiceSession,continuousEnabled=false,nativeEnabled=false,nativeVoiceSession,legacyVoiceSession;
     let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,publicLiveNativeEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
     const voiceEngine=$('#conversation-voice-engine'),voiceChoiceBox=$('#conversation-voice-choice');
+    let conversationServices='current',openaiConversationAvailable=false,lastVoiceCapabilities;
+    const servicesEngine=$('#conversation-services-engine'),servicesChoice=$('#conversation-services-choice');
+    function applyConversationServices(){
+      const useOpenAI=conversationServices==='openai';
+      if(lastVoiceCapabilities){
+        canStreamSpeech=canListen&&!useOpenAI&&!!lastVoiceCapabilities.can_stream_speech;
+        canSpeakLive=canListen&&(useOpenAI?lastVoiceCapabilities.openai_speech_live_response:lastVoiceCapabilities.can_speak_live_response)===true;
+        microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&lastVoiceCapabilities.can_stream_transcribe,lastVoiceCapabilities.streaming_transcription_mode);
+      }
+      if(servicesChoice)servicesChoice.hidden=!openaiConversationAvailable&&conversationServices==='current';
+      if(servicesEngine){servicesEngine.value=conversationServices;servicesEngine.disabled=captureBusy||voiceBusy||!!active||!!speechWait||!!voiceSession?.active||!!microphone?.ownsSend();}
+    }
+    servicesEngine?.addEventListener('change',()=>{
+      if(captureBusy||voiceBusy||active||speechWait||voiceSession?.active||microphone?.ownsSend()||!['current','openai'].includes(servicesEngine.value)||servicesEngine.value==='openai'&&!openaiConversationAvailable){servicesEngine.value=conversationServices;return;}
+      stop();conversationServices=servicesEngine.value;
+      if(conversationServices==='openai'&&publicLiveNativeEnabled){voiceChoice='gpt-live-native';selectVoiceEngine();}
+      applyConversationServices();
+    });
     const isPublicLive=()=>voiceChoice==='gpt-live'||voiceChoice==='gpt-live-native';
     function selectVoiceEngine(){
       const publicEnabled=publicLiveEnabled&&(voiceChoice!=='gpt-live-native'||publicLiveNativeEnabled);
@@ -285,7 +303,7 @@ window.Conversation = (() => {
     }
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?'openai':undefined,getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
       const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
       if(!card)return;
@@ -1754,7 +1772,8 @@ window.Conversation = (() => {
       else {filesConnected=true;fileJobs=value.artifacts?.jobs||[];files.clear();for(const card of cards.values())for(const file of card.source.artifacts||[])files.set(file.id,file);for(const file of value.artifacts?.items||[])files.set(file.id,file);}
       refreshFiles();
       await goalControls?.observe(value.goal_controls);
-      microphone?.configure(value.can_speak,value.can_stream_transcribe,value.streaming_transcription_mode);
+      lastVoiceCapabilities=value;openaiConversationAvailable=value.can_openai_conversation===true;
+      microphone?.configure(value.can_speak,conversationServices!=='openai'&&value.can_stream_transcribe,value.streaming_transcription_mode);
       providerNativeEnabled=value.can_converse_native===true&&window.NativeConversation?.supported()===true;
       providerContinuousEnabled=value.can_converse_continuous===true;providerVoiceAvailable=value.can_converse===true;
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
@@ -1766,6 +1785,7 @@ window.Conversation = (() => {
       setCsrf(value.csrf);void foregroundHistory();
       canListen = !readOnly && value.can_listen;canStreamSpeech=canListen && !!value.can_stream_speech;
       canSpeakLive=canListen && value.can_speak_live_response===true;
+      applyConversationServices();
       if(!canSpeakLive)liveSpeech?.reset();
       else liveSpeech?.observe(value.response_draft,binding);
       if(!canListen && !nativeEnabled && (voiceEnabled || active || speechWait))pause("capability");
@@ -1999,15 +2019,16 @@ window.Conversation = (() => {
       }
     }
     async function requestAudio(source,offset,controller){
-      const deadline=setTimeout(()=>controller.abort(),145000);
+      const deadline=setTimeout(()=>controller.abort(),145000),speechProvider=conversationServices==='openai'?'openai':undefined;
       try{
         const response = await fetch("api/interaction/audio", {method:"POST",credentials:"same-origin",
-          headers:headers(),signal:controller.signal,body:JSON.stringify({source:source.id,revision:source.revision,offset,...(canStreamSpeech && window.NativeSpeechAudio?.progressive!==false && source.kind!=="native_question" && window.SpeechStream?.available()?{stream:true}:{})})});
+          headers:headers(),signal:controller.signal,body:JSON.stringify({source:source.id,revision:source.revision,offset,...(speechProvider?{speech_provider:speechProvider}:{}),...(canStreamSpeech && window.NativeSpeechAudio?.progressive!==false && source.kind!=="native_question" && window.SpeechStream?.available()?{stream:true}:{})})});
         if (!response.ok) {
           const value = await response.json();
           const error = new Error(value.detail || "Audio unavailable. Continue reading or refresh.");
           error.status = response.status; throw error;
         }
+        if(speechProvider && response.headers.get("x-speech-provider")!==speechProvider)throw Error("Selected speech provider unavailable; no fallback");
         if (response.headers.get("x-presentation-source") !== source.id
             || response.headers.get("x-presentation-revision") !== source.revision
             || response.headers.get("x-presentation-offset") !== String(offset)) throw new Error("Audio source mismatch");

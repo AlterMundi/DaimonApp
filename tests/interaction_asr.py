@@ -366,4 +366,44 @@ class Retention(unittest.TestCase):
         with self.assertRaises(asr.RenderError):self.run_asr()
         self.assertEqual(self.calls(),0)
 
+class OpenAIOriginal(unittest.TestCase):
+    tearDown=Retention.tearDown
+    write_config=Retention.write_config
+    run_asr=Retention.run_asr
+    def setUp(self):
+        Retention.setUp(self)
+        self.cfg={'schema':'telecodex.interaction-asr/v1','provider':'openai',
+                  'model':'gpt-transcribe','key_file':str(self.root/'key'),
+                  'cache_root':str(self.root/'cache')}
+        self.write_config()
+
+    def test_explicit_route_once_cached_recovery_without_other_vendors(self):
+        from unittest.mock import Mock
+        recognizer=Mock();recognizer.transcribe.return_value='Dale, Compai.'
+        with patch.object(asr,'openai_recognizer',return_value=recognizer), \
+             patch.object(asr,'probe_duration',return_value=(1,b'\1\0'*16000)), \
+             patch.object(asr.importlib.util,'spec_from_file_location',side_effect=AssertionError('No legacy provider')):
+            before=self.source.read_bytes()
+            self.assertEqual(self.run_asr()['text'],'Dale, Compai.')
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Dale, Compai.')
+            self.assertEqual(self.run_asr()['text'],'Dale, Compai.')
+            self.assertEqual(recognizer.transcribe.call_count,1)
+            self.assertEqual(self.source.read_bytes(),before)
+            self.assertFalse(list((self.root/'cache').rglob('*.wav')))
+
+    def test_unknown_call_is_not_replayed_and_completed_only_never_calls(self):
+        from unittest.mock import Mock
+        recognizer=Mock();recognizer.transcribe.side_effect=OSError('Lost response')
+        with patch.object(asr,'openai_recognizer',return_value=recognizer), \
+             patch.object(asr,'probe_duration',return_value=(1,b'\1\0'*16000)):
+            with self.assertRaisesRegex(asr.RenderError,'no-completed'):asr.process(self.source,self.binding,completed_only=True)
+            self.assertEqual(recognizer.transcribe.call_count,0)
+            with self.assertRaisesRegex(asr.RenderError,'asr-unconfirmed'):self.run_asr()
+            with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome'):self.run_asr()
+            self.assertEqual(recognizer.transcribe.call_count,1)
+
+    def test_explicit_route_cannot_select_legacy_previews_or_helper(self):
+        self.cfg['streaming_cache_root']=str(self.root/'legacy');self.write_config()
+        with self.assertRaisesRegex(asr.RenderError,'no-fallback'):self.run_asr()
+
 if __name__=='__main__':unittest.main()

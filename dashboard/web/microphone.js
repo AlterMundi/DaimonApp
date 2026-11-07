@@ -35,6 +35,10 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
+      if(old.schema==='telecodex.voice-recovery/v5'){
+        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&v.transcriptionProfile!=='openai')||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
+        return [...old.items];
+      }
       if(['telecodex.voice-recovery/v3','telecodex.voice-recovery/v4'].includes(old.schema)){
         if(!Array.isArray(old.items)||old.items.length<(old.schema.endsWith('/v4')?1:3)||old.items.length>128||
             old.items.some(v=>!v.id||!v.blob||!Number.isFinite(v.blob.size))||
@@ -55,6 +59,7 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete(key);
+      else if(items.some(v=>v.transcriptionProfile!==undefined))store.put({schema:'telecodex.voice-recovery/v5',items},key);
       else if(items.some(v=>v.native_fragment===true))store.put({schema:'telecodex.voice-recovery/v4',items},key);
       else store.put(items.length===1?items[0]:{schema:items.length>2?'telecodex.voice-recovery/v3':'telecodex.voice-recovery/v2',items},key);
     }
@@ -121,7 +126,7 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
@@ -294,12 +299,14 @@ window.VoiceInput = (() => {
       try {
         if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
+        if(frozen.transcriptionProfile!==undefined&&frozen.transcriptionProfile!=='openai')throw Error('Recording provider unavailable; no fallback');
+        const route=frozen.transcriptionProfile==='openai'?'api/interaction/voice/openai':'api/interaction/voice';
         const response=frozen.foreground_dialogue?await fetch('api/interaction/voice/recover',{
           method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,
             'X-Audio-Sha256':frozen.audio_sha256,'X-Foreground-Dialogue':frozen.foreground_dialogue,
             ...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{})},body:frozen.blob
-        }):await fetch(frozen.captureStop?'api/interaction/voice/limited':'api/interaction/voice',{method:'POST',credentials:'same-origin',signal:active.signal,
+        }):await fetch(route+(frozen.captureStop?'/limited':''),{method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),...(frozen.reply?{'X-Reply-Source':(frozen.reply.context_only?'context:':'')+frozen.reply.source,'X-Reply-Revision':frozen.reply.revision}:{}),...(frozen.visual?{'X-Visual-Reference':JSON.stringify(frozen.visual)}:{}),...(frozen.playback?{'X-Playback-Context':JSON.stringify(frozen.playback)}:{}),...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{}),...(frozen.captureStop?{'X-Recording-Stop':frozen.captureStop}:{}),...(frozen.files?.length?{'X-File-References':encodeURIComponent(JSON.stringify(frozen.files))}:{}),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,'X-Audio-Sha256':frozen.audio_sha256},body:frozen.blob});
         const value=await response.json();
         if(!response.ok){const error=new Error('Recording not confirmed');error.status=response.status;if(response.status===507)error.retentionFull=true;if(value.code==='visual_reselection'&&value.submission_attempted===false)error.visualReselection=true;throw error;}
@@ -334,7 +341,7 @@ window.VoiceInput = (() => {
         if(owned!==generation || binding!==getBinding())return;
         const audio_sha256=Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('');
         const needsReview=!commit || captureStop==='audio_flush_unconfirmed' && !selection?.captureReviewed;
-        pending={captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
+        pending={transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
         try{if(recovery){await recovery.put(pending);pending.localRecovery=true;}}catch{pending.localRecovery=false;}
         if(owned!==generation || binding!==getBinding())return;
         if(needsReview){
@@ -354,7 +361,7 @@ window.VoiceInput = (() => {
       if(!available || !getBinding() || !supported() || restoring || ownsSend() || document.hidden)return false;
       prepareCues();
       conversationCapture=conversational;
-      const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;
+      const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={transcriptionProfile:getTranscriptionProfile(),...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;
       notice('Allow microphone access to begin.');pauseAudio();controls();
       try {
         let selectedVisual;
@@ -371,7 +378,7 @@ window.VoiceInput = (() => {
         let current;
         const fallbackMime=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4','audio/webm'].find(value=>window.MediaRecorder.isTypeSupported(value));
         const canonical=liveMode==='captions'&&fallbackMime?new window.MediaRecorder(media,{mimeType:fallbackMime,audioBitsPerSecond:64000}):undefined;
-        if((liveMode!=='captions'||canonical)&&liveAvailable&&window.StreamingVoice?.supported()){
+        if(frozenSelection.transcriptionProfile!=='openai'&&(liveMode!=='captions'||canonical)&&liveAvailable&&window.StreamingVoice?.supported()){
           let words=false;
           try{current=await window.StreamingVoice.create(media,{headers,binding,canonicalRecorder:canonical,id:frozenSelection.captureId,
             turnDetection:conversational,onEndpoint:()=>{if(conversationCapture&&owned===generation&&phase==='recording'&&words)submit();},

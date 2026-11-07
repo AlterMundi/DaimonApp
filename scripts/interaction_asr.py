@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import wave
 import uuid
 from contextlib import nullcontext
@@ -65,13 +66,19 @@ def probe_duration(source):
 def config(binding):
     value = json.loads(private_bytes(binding, 16384))
     if (not isinstance(value, dict)
-            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root'}
+            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root', 'provider', 'key_file', 'model'}
             or value.get('schema') != 'telecodex.interaction-asr/v1'
             or any(not isinstance(value.get(k), str) or not Path(value[k]).is_absolute()
-                   for k in ('helper', 'route_binding', 'cache_root'))
+                   for k in (('key_file', 'cache_root') if value.get('provider') == 'openai' else ('helper', 'route_binding', 'cache_root')))
             or type(value.get('max_cache_bytes', DEFAULT_BUDGET)) is not int
             or not MAX_JOB <= value.get('max_cache_bytes', DEFAULT_BUDGET) <= 1024**3):
         raise RenderError('invalid-interaction-asr-binding')
+    if value.get('provider') is not None:
+        if (value['provider'] != 'openai' or value.get('model') != 'gpt-transcribe'
+                or any(k in value for k in ('helper', 'route_binding', 'streaming_cache_root'))):
+            raise RenderError('invalid-explicit-openai-route-no-fallback')
+    elif any(k in value for k in ('key_file', 'model')):
+        raise RenderError('invalid-explicit-openai-route-no-fallback')
     if 'streaming_cache_root' in value and (not isinstance(value['streaming_cache_root'],str) or not Path(value['streaming_cache_root']).is_absolute()):
         raise RenderError('invalid-streaming-cache-binding')
     return value
@@ -231,8 +238,69 @@ def retire_preparation(job, state):
         sync_directory(path.parent)
 
 
+def openai_recognizer(key_file):
+    # Same custody reader and single-attempt HTTP implementation as Avatar.
+    # Imports are deferred so the unchanged legacy CLI keeps its dependencies.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from dashboard.openai_live_transcription import OriginalTranscription
+    return OriginalTranscription(key_file)
+
+
+def process_openai(source, binding, cfg, include_retention, completed_only):
+    binding_bytes = private_bytes(binding, 16384)
+    source_hash = digest(private_bytes(source, MAX_SOURCE))
+    identity = {'schema': 'telecodex.interaction-asr-result/v1',
+                'source_sha256': source_hash, 'route_sha256': digest(binding_bytes),
+                'helper_sha256': digest(Path(__file__).read_bytes())}
+    root = directory(cfg['cache_root'])
+    job = directory(root / digest(canonical(identity)))
+    state_path = job / 'state.json'
+    with lock(job / '.lock'):
+        if state_path.exists() or state_path.is_symlink():
+            state = verified_state(json.loads(private_bytes(state_path, 2*1024*1024)), identity)
+        else:
+            if completed_only:
+                raise RenderError('no-completed-transcript-no-asr-attempted')
+            recognizer = openai_recognizer(cfg['key_file'])
+            _, pcm = probe_duration(source)
+            if pcm is None:
+                pcm = subprocess.check_output(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(source),
+                    '-t', '121', '-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1'],
+                    timeout=15, stderr=subprocess.DEVNULL)
+            if not pcm or len(pcm) % 2 or len(pcm) > 120*32000:
+                raise RenderError('interaction-asr-duration-bound')
+            output = io.BytesIO()
+            with wave.open(output, 'wb') as audio:
+                audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(16000)
+                audio.writeframes(pcm)
+            # No derivative audio is written. Preserve the caller's exact raw
+            # original, its intent and outcome under the existing cache quota.
+            state = {**identity, 'phase': 'intent', 'preparation_kind': 'openai',
+                     'model': cfg['model'], 'audio_millis': len(pcm)*1000//32000}
+            reserve(root, job, state, cfg.get('max_cache_bytes', DEFAULT_BUDGET))
+            started = time.monotonic()
+            try:
+                text = recognizer.transcribe(output.getvalue())
+                if (not isinstance(text, str) or not text.strip() or '\0' in text
+                        or len(text.encode()) > 16000
+                        or private_bytes(binding, 16384) != binding_bytes
+                        or digest(private_bytes(source, MAX_SOURCE)) != source_hash):
+                    raise RenderError('invalid-final-interaction-transcript')
+                result = {'text': text.strip()}
+                state.update(phase='completed', result=result, result_sha256=digest(canonical(result)),
+                             transcription_millis=int((time.monotonic()-started)*1000))
+                atomic(state_path, canonical(state))
+            except Exception:
+                state['phase'] = 'unconfirmed'
+                atomic(state_path, canonical(state))
+                raise RenderError('asr-unconfirmed-no-automatic-retry') from None
+        return final_result(state, True, include_retention)
+
+
 def process(source, binding, include_retention=False, completed_only=False):
     cfg = config(binding)
+    if cfg.get('provider') == 'openai':
+        return process_openai(source, binding, cfg, include_retention, completed_only)
     source_hash = digest(private_bytes(source, MAX_SOURCE))
     route_bytes = private_bytes(cfg['route_binding'], 16384)
     selected_route = json.loads(route_bytes)
