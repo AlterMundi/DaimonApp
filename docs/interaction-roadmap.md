@@ -1195,8 +1195,10 @@ owner-selected successor window can use the owner-only `heartbeat renew-window`
 command described in [heartbeat controls](interaction-heartbeat.md#explicit-owner-renewal-of-an-expired-window).
 It changes only the expired deadlines, conserves every lifetime counter/cursor,
 and leaves admission paused. The owner-only `heartbeat renew-observation` changes
-only a finite expired observation deadline, conserving counters and pending
-uncertainty without touching inference resources. Neither is a model action or
+only a finite expired observation deadline by default. Its optional cumulative
+`MAX_CHECKS` selects a finite successor after expiry/check exhaustion, conserving
+the lifetime check count and pending uncertainty, with at most1024 remaining
+checks and no inference-account change. Neither is a model action or
 automatic renewal. Producer status retains one bounded last-check observation
 and last successful source-check timestamp; neither proves execution/delivery.
 
