@@ -142,13 +142,17 @@ class DashboardHTTP(unittest.TestCase):
         db=Path(self.tmp.name)/'recovery.sqlite3';conn=sqlite3.connect(db)
         conn.execute('CREATE TABLE conversation_inputs(id TEXT)');conn.commit();conn.close()
         provider=Provider.__new__(Provider);provider.human=100
-        provider.receiver={'db_path':str(db),'voice':{'transcription_command':['/usr/bin/python3','/synthetic/interaction_asr.py','--binding','/synthetic/adapter.json'],'timeout_seconds':2}}
+        base=['/usr/bin/python3','/synthetic/interaction_asr.py','--binding','/synthetic/adapter.json']
+        binding=Path(self.tmp.name)/'live-reader.json';binding.write_text(json.dumps({'provider':'live-result'}));binding.chmod(0o600)
+        live=['/usr/bin/python3','/live/interaction_asr.py','--binding',str(binding)]
+        provider.receiver={'db_path':str(db),'voice':{'transcription_command':base,'completed_transcription_command':base+['--completed-only'],'timeout_seconds':2,
+            'transcription_profiles':{'previous-live':{'transcription_command':live,'completed_transcription_command':live+['--completed-only']}}}}
         provider.assert_binding=lambda:None;provider.authorized=lambda human:human==100
         provider.presentation=lambda command:{'binding':'a'*64}
         records={};admissions=[]
         provider.conversation_input_status=lambda ident:records[ident]
         def admit(meta,data,**kwargs):
-            admissions.append(kwargs);ident=meta['id'];current={'id':ident,'phase':'foreground_captured','foreground_dialogue':kwargs['foreground_dialogue'],'voice':{'audio_sha256':meta['audio_sha256']}}
+            admissions.append(kwargs);ident=meta['id'];current={'id':ident,'phase':'foreground_captured','foreground_dialogue':kwargs['foreground_dialogue'],'voice':{'audio_sha256':meta['audio_sha256'],'transcription_profile':meta.get('transcription_profile')}}
             records[ident]=current
             with sqlite3.connect(db) as conn:conn.execute('INSERT INTO conversation_inputs VALUES(?)',(ident,))
             return current
@@ -157,8 +161,17 @@ class DashboardHTTP(unittest.TestCase):
         plan=provider.conversation_voice_recover(meta,raw,dialogue)
         self.assertEqual(admissions,[{'foreground_dialogue':dialogue,'defer_foreground':True}])
         self.assertEqual(plan['media'].read_bytes(),raw);self.assertEqual(plan['timeout'],2)
+        self.assertEqual(plan['command'],live+['--completed-only'],'Retry cannot run the base file ASR')
         self.assertEqual(provider.conversation_voice_recover(meta,raw,dialogue)['media'],plan['media'])
         self.assertEqual(len(admissions),1,'Stored identity is not admitted twice or changed to ordinary input')
+        binding.write_text(json.dumps({'provider':'openai','key_file':'/synthetic/forbidden'}))
+        with self.assertRaises(ProviderUnavailable):provider.conversation_voice_recover(meta,raw,dialogue)
+        binding.write_text(json.dumps({'provider':'live-result'}))
+        records[meta['id']]['voice'].pop('transcription_profile')
+        self.assertEqual(provider.conversation_voice_recover(meta,raw,dialogue)['command'],base+['--completed-only'])
+        provider.receiver['voice'].pop('completed_transcription_command')
+        with self.assertRaises(ProviderUnavailable):provider.conversation_voice_recover(meta,raw,dialogue)
+        provider.receiver['voice']['completed_transcription_command']=base+['--completed-only']
         for changed in (dict(meta,audio_sha256='b'*64),dict(meta,binding='b'*64)):
             with self.assertRaises((ValueError,ProviderUnavailable)):provider.conversation_voice_recover(changed,raw,dialogue)
         with self.assertRaises(ValueError):provider.conversation_voice_recover(meta,raw,meta['id'])

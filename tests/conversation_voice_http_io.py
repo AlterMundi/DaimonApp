@@ -193,6 +193,10 @@ with (root/'completed-calls').open('a') as out:out.write('read\\n')
 print(json.dumps({'text':'Synthetic native foreground interpretation.','final':True,'streaming_model':'gemini-3.8-live'}))
 """)
         j.config.write_text(j.config.read_text()+'\n[voice]\ntranscriber_label="synthetic/no-inference"\ntimeout_seconds=20\ntranscription_command='+json.dumps(['/usr/bin/python3',str(helper),str(j.root)])+'\ncompleted_transcription_command='+json.dumps(['/usr/bin/python3',str(helper),str(j.root),'--completed-only'])+'\n')
+        # Direct bridge retention uses the same live-only profile as mounted
+        # Avatar. Its reader cannot start the synthetic base recognizer.
+        live_command=['/usr/bin/python3',str(helper),str(j.root),'--completed-only']
+        j.config.write_text(j.config.read_text()+'\n[voice.transcription_profiles.previous-live]\ntranscriber_label="synthetic/same-live-result"\ntranscription_command='+json.dumps(live_command)+'\ncompleted_transcription_command='+json.dumps(live_command)+'\n')
         j.start();j.wait_control_socket(j.socket)
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
         provider=Provider(config);binding=j.read('presentation','list','0','0')['result']['binding']
