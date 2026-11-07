@@ -487,3 +487,7 @@ This explicit default selection requires owner receiving-profile requalification
 for existing device grants, Alerts/menu and Traffic; retain their state through
 the maintained same-human adoption route in interaction-companion.md. Receiver
 configuration without API access is not authorization to enable peer billing.
+
+The presentation capability flags describe the selected default engine. Explicit
+previous-provider flags retain its streaming/preview availability. A client must
+not infer progressive OpenAI WAV support from the previous engine configuration.

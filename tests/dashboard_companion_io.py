@@ -442,7 +442,12 @@ class Companion(unittest.TestCase):
             self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'stream':True},headers=self.headers).status_code,409)
         self.assertEqual(len(engines),2)
         self.config['voice_services_default']='openai'
+        self.config['speech']['streaming_output']=True
         self.client.close();self.client=self.client_for()
+        caps=self.client.get('/api/interaction',headers=self.headers).json()
+        self.assertEqual(caps['voice_services_default'],'openai')
+        self.assertFalse(caps['can_stream_speech'])
+        self.assertTrue(caps['previous_can_stream_speech'])
         with patch.object(Speech,'render',render):
             default=self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
             self.assertEqual(default.status_code,200);self.assertEqual(default.headers['x-speech-provider'],'openai')

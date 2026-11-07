@@ -75,6 +75,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     services_default = config.get('voice_services_default','current')
     if services_default not in ('current','openai') or services_default=='openai' and openai_speech is None:
         raise ValueError('Configured default voice services unavailable; no fallback')
+    default_speech = openai_speech if services_default=='openai' else speech
     origin = config['origin']
     prefix = config.get('prefix', '/sessions')
     additional_origins = config.get('additional_origins', [])
@@ -630,12 +631,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return {**result, 'csrf':session['csrf'],
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),
                 'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
-                'can_listen':speech is not None,
+                'can_listen':default_speech is not None,
                 'voice_services_default':services_default,
                 'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
-                'can_stream_speech':bool(speech and speech.streaming),
-                'can_speak_live_response':bool(speech and speech.live_response),
+                'can_stream_speech':bool(default_speech and default_speech.streaming),
+                'can_speak_live_response':bool(default_speech and default_speech.live_response),
+                'previous_can_stream_speech':bool(speech and speech.streaming),
+                'previous_can_speak_live_response':bool(speech and speech.live_response),
                 'can_download_files':can_files,'artifacts':files,
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
@@ -652,7 +655,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True
                     and dict(session).get('scope') != 'monitor_readonly'),
                 'streaming_transcription_mode':config.get('streaming_transcription',{}).get('mode','prepared'),
-                'can_stream_transcribe':can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
+                'previous_can_stream_transcribe':can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly',
+                'can_stream_transcribe':services_default!='openai' and can_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
 
     @app.get('/api/interaction/inputs')
     async def conversation_inputs(request: Request, before: int = 0, direction: str = 'before'):

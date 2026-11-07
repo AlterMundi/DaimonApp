@@ -70,9 +70,9 @@ window.Conversation = (() => {
     function applyConversationServices(){
       const useOpenAI=conversationServices==='openai';
       if(lastVoiceCapabilities){
-        canStreamSpeech=canListen&&!useOpenAI&&!!lastVoiceCapabilities.can_stream_speech;
-        canSpeakLive=canListen&&(useOpenAI?lastVoiceCapabilities.openai_speech_live_response:lastVoiceCapabilities.can_speak_live_response)===true;
-        microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&lastVoiceCapabilities.can_stream_transcribe,lastVoiceCapabilities.streaming_transcription_mode);
+        canStreamSpeech=canListen&&!useOpenAI&&!!(lastVoiceCapabilities.previous_can_stream_speech??lastVoiceCapabilities.can_stream_speech);
+        canSpeakLive=canListen&&(useOpenAI?lastVoiceCapabilities.openai_speech_live_response:(lastVoiceCapabilities.previous_can_speak_live_response??lastVoiceCapabilities.can_speak_live_response))===true;
+        microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&(lastVoiceCapabilities.previous_can_stream_transcribe??lastVoiceCapabilities.can_stream_transcribe),lastVoiceCapabilities.streaming_transcription_mode);
       }
       if(servicesChoice)servicesChoice.hidden=!openaiConversationAvailable&&conversationServices==='current';
       const previousOption=servicesEngine?.querySelector?.('option[value="current"]');if(previousOption)previousOption.textContent=lastVoiceCapabilities?.voice_services_default==='openai'?'Previous voice':'Current voice';
