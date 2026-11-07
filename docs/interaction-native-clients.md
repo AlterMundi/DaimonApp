@@ -28,8 +28,14 @@ JVM tests exercise the queue lifetime across flush. The optional
 `tests/dashboard_webrtc_native_audio_browser.cjs` uses Playwright/Chromium with
 a synthetic48kHz oscillator to verify actual24kHz conversion, pause/resume and
 closure without an audible browser destination. It uses no provider or mic.
-Android WebView/AudioTrack integration, physical focus/background behavior and
-hearing acceptance remain required; desktop Web Audio evidence cannot prove them.
+The API35 instrumentation additionally loads these exact two web assets inside
+the real host WebView at an intercepted HTTPS test origin. An actual button
+gesture starts a synthetic stream through the production bridge/service and
+AudioTrack; native frame-head progress, paused append exclusion, fresh resumed
+audio and single closure are asserted. This test has no provider or microphone.
+Its execution result must be retained separately from preparation. Physical
+focus/background behavior and hearing acceptance remain required; desktop or
+emulator evidence cannot prove them.
 
 ## Native conversation candidate0.6 —1November2026
 
