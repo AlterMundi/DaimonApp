@@ -6,6 +6,33 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
+## Native Beacon preparation —7November2026
+
+The prepared `BeaconSynth` is a bounded six-carrier PCM synthesizer for the
+existing Sonic score. It accepts normalized component weights from the existing
+observer/mapping, not session state, emotion, a new observer or executable art.
+Six fixed carriers stay phase-continuous across chunk boundaries and zero weights.
+Membership and master-level changes retarget their current envelopes; duplicate
+observations do not restart a transition. Sinusoidal breathing follows the
+configured shared/harmonic pulse frequencies. No extra partial stack or texture
+is introduced. Mix weight stays at most one; the master maximum is0.8, with
+the selected vocabulary's lower peak applied by the eventual caller. Unsupported
+nonzero frequencies above45%of sample rate refuse rather than alias.
+
+Six release17 JVM cases verify the exact40.4series/absent unwanted partials,
+simultaneous components/peak bound, chunk/duplicate-update equivalence, harmonic
+amplitude breathing, mid-transition retarget/fade-to-zero and atomic invalid input
+refusal/defensive copying. Output arrays are transient synthetic samples; no
+recordings, provider calls or audible device test occurred.
+
+This is not yet wired to the native bridge or `SpeechService`; APK0.7 and current
+served audio remain unchanged. Finish one service-owned audio worker with finite
+lifetime and stale-observation expiry, the existing explicit Beacon controls,
+capture/speech ducking, foreground lifecycle/focus/noisy-route teardown and real
+WebView/AudioTrack qualification before claiming native Beacon delivery. Preserve
+the established opt-in behavior and existing browser lifecycle. Background voice
+playback, physical acceptance and the complete original goal remain separate.
+
 ## Public Live native output candidate0.7 —7November2026
 
 The0.7 Android bridge advertises `webrtcPcm` and a600second maximum. Public
