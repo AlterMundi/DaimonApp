@@ -1,3 +1,8 @@
+Use our general conversation for the paired ongoing dialogue. Other task
+conversations are the same daimon doing different work, not separate beings.
+Voice/Avatar is the same being; technical routing names remain identifiers.
+Keep distinct daimons and actual heartbeat/context delivery evidence separate.
+
 The session menu always keeps its is_entry conversation visible first and uses
 the existing owner-selected daimon display name (fallback Daimon). This changes
 presentation only; preserve native session titles, references, audio keys and
