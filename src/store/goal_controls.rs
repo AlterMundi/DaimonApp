@@ -37,6 +37,15 @@ impl GoalPlan {
     }
     pub fn validate(&self) -> Result<()> {
         use GoalAction::*;
+        if self
+            .objective
+            .as_ref()
+            .is_some_and(|v| v.chars().count() > 4000)
+        {
+            bail!(
+                "Goal objective must be at most 4000 characters; retain full task context separately"
+            );
+        }
         if self.expected.revision.is_empty()
             || self.expected.revision.len() > 512
             || !self
@@ -45,10 +54,7 @@ impl GoalPlan {
                 .bytes()
                 .all(|v| (33..=126).contains(&v))
             || self.token_budget.is_some_and(|v| v <= 0)
-            || self
-                .objective
-                .as_ref()
-                .is_some_and(|v| v.trim().is_empty() || v.len() > 12000)
+            || self.objective.as_ref().is_some_and(|v| v.trim().is_empty())
             || self
                 .followup
                 .as_ref()
@@ -86,6 +92,34 @@ impl GoalPlan {
         }
         Ok(())
     }
+}
+
+// One bounded compatibility repair for legacy oversized start intents. Other
+// native rejections, partial effects and missing/uncertain receipts stay immutable.
+fn repairable_objective_rejection(value: &Value, next: &Value) -> bool {
+    let d = &value["intent"];
+    let old = &d["plan"];
+    let r = &value["result"];
+    value["phase"] == "rejected"
+        && d["proposal"] == false
+        && d["delegation"].is_null()
+        && d["recovery"].is_null()
+        && d["objective_validation_repair"].is_null()
+        && r["native_error_code"] == -32600
+        && r["error"] == "goal objective must be at most 4000 characters | code -32600"
+        && r["native_receipt"].is_null()
+        && r["replacement_clear"].is_null()
+        && old["action"] == "start"
+        && old["expected"]["goal"].is_null()
+        && old["objective"]
+            .as_str()
+            .is_some_and(|s| s.chars().count() > 4000)
+        && next["objective"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= 4000)
+        && ["action", "expected", "token_budget", "followup"]
+            .iter()
+            .all(|k| old[*k] == next[*k])
 }
 
 pub(super) fn unclaimed_on(conn: &Connection, human: i64, kind: &str, event: &str) -> Result<()> {
@@ -482,7 +516,60 @@ impl Store {
         if existing {
             let value = read_on(&tx, actor.human, actor.key, &id)?;
             let d = &value["intent"];
-            if d["plan"] != serde_json::to_value(plan)?
+            let next_plan = serde_json::to_value(plan)?;
+            if let Some(reference) = reference
+                && repairable_objective_rejection(&value, &next_plan)
+                && d["target"] == serde_json::to_value(target)?
+                && d["entry_binding"] == entry_binding
+                && d["target_binding"] == actual_binding
+            {
+                // The native peer definitively rejected validation before any
+                // effect. Preserve the original authority, key, deadline and
+                // complete failed plan. Fresh interpretation has one bounded
+                // submission window; expired payloads cannot execute unchanged.
+                let mut checked = value.clone();
+                checked["intent"]["expires_at"] = json!(Utc::now().timestamp() + 900);
+                eligible_on(&tx, actor.human, actor.key, &checked)?;
+                let held: String = tx.query_row(
+                    "SELECT control_id FROM interaction_goal_inputs WHERE human_id=?1 AND source_kind=?2 AND source_event=?3",
+                    params![actor.human, if reference.update().is_some() { "telegram" } else { "conversation" }, reference.event()],
+                    |r| r.get(0),
+                )?;
+                let (source, _) = super::dialogue::original_owned_on(
+                    &tx,
+                    actor.key,
+                    actor.human,
+                    actor.native,
+                    reference,
+                    "",
+                    false,
+                )?;
+                let order = super::dialogue::original_order_on(&tx, &source)?;
+                if held != id
+                    || d["original"]["source"] != serde_json::to_value(source)?
+                    || d["original"]["capture_order"] != serde_json::to_value(order)?
+                {
+                    bail!("Original goal authority changed");
+                }
+                let mut revised = d.clone();
+                revised["objective_validation_repair"] = json!({
+                    "plan":d["plan"], "reason":d["reason"], "result":value["result"],
+                    "attempt":d["attempt"], "actor":d["actor"], "expires_at":d["expires_at"], "at":now_string()
+                });
+                revised["expires_at"] = checked["intent"]["expires_at"].clone();
+                revised["plan"] = next_plan;
+                revised["reason"] = json!(reason);
+                revised["repair_actor"] =
+                    json!({"native":actor.native,"physical":actor.physical,"local":actor.local});
+                if closed.is_cancelled() {
+                    bail!("Goal controller expired before validation repair");
+                }
+                tx.execute("UPDATE interaction_goal_controls SET phase='known_unsent',doc=?2,instance_id=?3 WHERE id=?1 AND phase='rejected'", params![id,revised.to_string(),self.instance_id])?;
+                let repaired = read_on(&tx, actor.human, actor.key, &id)?;
+                tx.commit()?;
+                return Ok((repaired, false));
+            }
+            if d["plan"] != next_plan
                 || d["target"] != serde_json::to_value(target)?
                 || d["reason"] != reason
                 || d["entry_binding"] != entry_binding
@@ -781,5 +868,60 @@ impl Store {
         super::topic_publications::goal_control_on(&tx, id, phase)?;
         tx.commit()?;
         Ok(changed == 1)
+    }
+}
+
+#[cfg(test)]
+mod objective_repair_tests {
+    use super::*;
+
+    #[test]
+    fn unicode_limit_and_exact_effect_free_legacy_rejection() {
+        let mut plan = GoalPlan {
+            action: GoalAction::Start,
+            expected: NativeGoalSnapshot {
+                goal: None,
+                revision: "original:0".into(),
+            },
+            objective: Some("😀".repeat(4000)),
+            token_budget: None,
+            followup: None,
+        };
+        assert!(plan.validate().is_ok());
+        plan.objective = Some("x".repeat(4001));
+        assert!(plan.validate().is_err());
+        let old = serde_json::to_value(&plan).unwrap();
+        plan.objective = Some("Compact complete task; preserve its retained context".into());
+        let next = serde_json::to_value(&plan).unwrap();
+        let v = json!({"phase":"rejected","intent":{"proposal":false,"plan":old},
+            "result":{"native_error_code":-32600,"error":"goal objective must be at most 4000 characters | code -32600","native_receipt":null,"replacement_clear":null}});
+        assert!(repairable_objective_rejection(&v, &next));
+        for phase in [
+            "submitted",
+            "uncertain",
+            "partial",
+            "acknowledged",
+            "known_unsent",
+        ] {
+            let mut changed = v.clone();
+            changed["phase"] = json!(phase);
+            assert!(!repairable_objective_rejection(&changed, &next));
+        }
+        for field in ["native_receipt", "replacement_clear"] {
+            let mut changed = v.clone();
+            changed["result"][field] = json!({"effect":true});
+            assert!(!repairable_objective_rejection(&changed, &next));
+        }
+        for field in ["expected", "token_budget", "followup", "action"] {
+            let mut changed = next.clone();
+            changed[field] = json!("changed");
+            assert!(!repairable_objective_rejection(&v, &changed));
+        }
+        let mut changed = v.clone();
+        changed["intent"]["objective_validation_repair"] = json!({});
+        assert!(!repairable_objective_rejection(&changed, &next));
+        let mut changed = v.clone();
+        changed["result"]["error"] = json!("another validation failure");
+        assert!(!repairable_objective_rejection(&changed, &next));
     }
 }

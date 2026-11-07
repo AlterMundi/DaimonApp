@@ -1,5 +1,21 @@
 # Original conversation input
 
+## Recording while reading another browser tab
+
+An ordinary voice message that the human has already started keeps its recorder
+and original upload when `visibilitychange` hides this page. Switching back does
+not open another microphone, send the recording or replay an upload. The human
+can return and press Send. The existing120second capture and20MiB byte limits
+remain. A permission result arriving after the tab becomes hidden is cancelled.
+
+This does not enable background Avatar conversation. Direct voice, native app
+background events, page navigation/closure and explicit teardown retain their
+existing suspension behavior. A browser or mobile OS can suspend a background
+page independently; source/Node qualification does not establish phone capture
+or a platform background entitlement. Keep the recording page foreground on a
+phone until actual device acceptance establishes its supported behavior.
+
+
 The owner-local controller accepts non-Telegram text into the configured native
 integrating entry. It reuses the existing queue, native writer and active steer;
 there is no second model session or fabricated Telegram update. The selected entry can be empty. Its first ordinary human message creates the

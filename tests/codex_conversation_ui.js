@@ -47,6 +47,8 @@ async function fixture(){
  listener({pcm:new Uint8Array(32000).buffer});listener({pcm:new Uint8Array(32000).buffer});
  await engine.hold();assert.equal(engine.active,false);assert.equal(records.length,0);
  assert.equal(requests.filter(r=>r.url.includes('/recordings/')).length,1);assert(requests[0].url.includes('/voice/codex/visits/'));
+ assert(requests.filter(r=>r.url.includes('/recordings/')).every(r=>r.options.signal===undefined),
+  'Native original uploads have no application lifetime abort; read/control requests retain their clocks');
  assert(!requests.some(r=>/transcrib|\/inputs/.test(r.url)));
  assert.deepEqual(sockets[0].sent.map(v=>v.type||'binding'),['binding','capture','offer','ready','close']);
  assert.equal(peers[0].connectionState,'closed');assert(stops>0);

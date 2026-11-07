@@ -1,3 +1,21 @@
+Ordinary voice messages already recording survive browser tab visibility changes,
+as do their in-flight original uploads. Keep late microphone permission blocked
+while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
+explicit teardown distinct. No hidden-tab automatic capture/restart is allowed.
+The existing120second/20MiB bounds remain; browser/OS suspension is not physical
+mobile background-capture acceptance. Qualify microphone_ui.js with both ordinary
+and live-backed recording plus hidden permission and upload races.
+
+Use our general conversation for the paired ongoing dialogue. Other task
+conversations are the same daimon doing different work, not separate beings.
+Voice/Avatar is the same being; technical routing names remain identifiers.
+Keep distinct daimons and actual heartbeat/context delivery evidence separate.
+
+The session menu always keeps its is_entry conversation visible first and uses
+the existing owner-selected daimon display name (fallback Daimon). This changes
+presentation only; preserve native session titles, references, audio keys and
+frozen input destinations. Worker activity sorting and recent/all stay intact.
+
 Image send preparation shares one bounded in-flight immutable PNG upload between
 text and voice consumers. Ordinary audio/image media POSTs have no application
 wall-clock cutoff (Nicolas503b5d76); network failure and existing explicit
@@ -8,11 +26,20 @@ native work admission. Reset/remove aborts only that selection's request. Preser
 drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
 
 Public Live original-audio POSTs likewise have no application wall-clock abort.
+The public/native capture-only server routes also read through network completion
+or disconnect, retaining their2upload slots, byte caps and fresh authority checks
+before receipt/retirement. A capture/work/cleanup deadline is not an upload clock.
 Keep byte/storage bounds, confirmed-source sealing and explicit recovery unchanged;
 never replay a missing original or native work automatically. WebRTC disconnected
 is recoverable on the same call: show reconnecting, retaining explicit Stop and
 existing visit/capture limits. Failed/closed still pause. This creates no new
 provider call, ICE restart, microphone grant or automatic successor admission.
+
+Public GPT-Live WebRTC starts through its successful HTTP creation answer and
+connected peer; do not impose the WebSocket session.started gate on this path.
+Backend events remain source-bound, and frontend events use session_id with
+legacy nested-ID compatibility. Fixtures must exercise a connected valid HTTP
+creation with no frontend startup event, not only synthetic nested events.
 
 Public Live returns from earlier voice connections retain their original UTC
 opening date and exact canonical wording/cursors. Treat relative time and

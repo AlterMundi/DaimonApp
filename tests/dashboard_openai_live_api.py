@@ -811,6 +811,28 @@ class Mounted(unittest.TestCase):
         self.assertEqual(changed.status_code,409)
         self.assertEqual(Client.instances[0].creations,0)
         self.assertEqual(self.client.post(path,headers={**self.headers,'x-dashboard-csrf':'stale'},content=audio).status_code,403)
+
+    def test_original_body_outlives_application_clock_without_replay_or_larger_bounds(self):
+        import httpx
+        with self.socket() as socket:
+            socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'prepared')
+        audio=wav_bytes(b'\0\0'*800);clock=asyncio.timeout;scheduled=[]
+        def expiry(seconds):
+            scheduled.append(seconds)
+            return clock(.001 if seconds==30 else seconds)
+        async def body():
+            yield audio[:44]
+            await asyncio.sleep(.02)
+            yield audio[44:]
+        async def send():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://example.test') as client:
+                return await client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',headers=self.headers,content=body())
+        with patch('dashboard.openai_live_api.asyncio.timeout',side_effect=expiry):
+            result=asyncio.run(send())
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertNotIn(30,scheduled,'Transport body reads have no application lifetime cutoff')
+        self.assertEqual(result.json()['recording']['audio_bytes'],len(audio))
+        self.assertEqual(Client.instances[0].creations,0)
     def test_mid_visit_revocation_releases_media_lease_but_never_cancels_backend(self):
         with self.socket() as socket:
             native=self.start(socket);self.allowed=False

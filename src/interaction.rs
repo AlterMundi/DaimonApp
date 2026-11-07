@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::SessionKey;
 
+/// Keep one entry plus local destinations within the existing 128-session reader.
+pub const MAX_LOCAL_TARGETS: usize = 127;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionConfig {
@@ -153,7 +156,7 @@ impl InteractionConfig {
         if self.human_id <= 0
             || self.chat_id == 0
             || self.topic_id <= 0
-            || self.targets.len() > 64
+            || self.targets.len() > MAX_LOCAL_TARGETS
             || !(1..=64).contains(&self.max_active_workers)
         {
             bail!("Invalid interaction owner, entry, target count or active worker limit");

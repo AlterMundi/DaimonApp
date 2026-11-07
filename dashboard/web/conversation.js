@@ -753,7 +753,7 @@ window.Conversation = (() => {
       $("#conversation-focus-label").textContent=`Reply to ${label}`;$("#conversation-focus").hidden=false;
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
-    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,
+    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,daimonName:$("#conversation-daimon")?.textContent,
       onTarget:()=>{clearFocus();syncTitleControls();},onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
       onAudio:(action,row)=>{

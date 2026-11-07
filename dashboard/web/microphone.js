@@ -507,7 +507,14 @@ window.VoiceInput = (() => {
       finally{if(owned===generation){checking=false;controls();scheduleStatus();}}
     }
     check.addEventListener('click',()=>checkStatus());
-    document.addEventListener('visibilitychange',()=>{if(document.hidden){clearStatusTimer();deactivate();}else scheduleStatus(true);});
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden){
+        clearStatusTimer();
+        // An explicitly started message may continue while its human reads
+        // another browser tab. Only direct voice and pending permission suspend.
+        if(conversationCapture||phase==='permission')deactivate();
+      }else scheduleStatus(true);
+    });
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});

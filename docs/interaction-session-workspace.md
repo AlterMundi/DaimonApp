@@ -6,6 +6,18 @@ current native session bindings and existing device-local Mute/Solo preferences.
 Opening a conversation or technical view performs read-only I/O; it does not
 start a native/model process, enroll a router target or acknowledge work.
 
+The integrating conversation is always visible first, ahead of active workers and
+recent sessions. Its menu label uses the existing owner-selected daimon display
+name (fallback `Daimon`). This is presentation only: native titles, IDs, history,
+audio keys and destinations remain unchanged.
+
+Human-facing language calls the integrating entry "our general conversation",
+"the general conversation" or "our conversation". Other task conversations are
+the same daimon carrying out different work. Heartbeat context is intended for
+that shared dialogue; its delivery must still be observed. Distinct daimons keep
+their own identities and paired conversations. This language does not merge
+histories, grants, destinations or pending work.
+
 ## Input and navigation
 
 - No pin sends new input to the integrating Conversation. A pin selects a current
