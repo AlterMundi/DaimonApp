@@ -97,7 +97,7 @@ def qualify(app):
             device = run(['xcrun','simctl','create','Daimon-'+uuid.uuid4().hex[:12],phone['identifier'],runtime['identifier']]).strip()
             print(json.dumps({'device':device,'runtime':runtime['identifier'],'phone':phone['name']}),flush=True)
             run(['xcrun','simctl','boot',device]); run(['xcrun','simctl','bootstatus',device,'-b'],timeout=120)
-            run(['xcrun','simctl','keychain',device,'add-root-cert',str(state/'ca.crt')])
+            run(['xcrun','simctl','keychain',device,'add-root-cert',str(state/'ca.crt')],timeout=90)
             try:
                 run(['xcrun','simctl','install',device,str(app)],timeout=90)
             except subprocess.TimeoutExpired:

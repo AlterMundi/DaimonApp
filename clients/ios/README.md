@@ -155,3 +155,10 @@ no production build, provider call, entitlement or distribution is selected.
 Apple references: [voiceChat](https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/voicechat),
 [media permission delegate](https://developer.apple.com/documentation/webkit/wkuidelegate),
 [actual capture stop](https://developer.apple.com/documentation/webkit/wkwebview/setmicrophonecapturestate(_:completionhandler:)).
+
+The first duplex source9eacc4b passed20Swift cases, Node capture races and the
+actual iOS app build in CI42382542969. Its runtime stopped before installation
+at the fixture CA admission30second timeout; shutdown/delete/server cleanup
+passed. Two consecutive runs hit this same prerequisite. The fixture now gives
+that single certificate operation90seconds, without retrying an uncertain write
+or weakening TLS/PCM assertions. Runtime capture/permission acceptance is pending.
