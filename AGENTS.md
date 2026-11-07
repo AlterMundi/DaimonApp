@@ -411,3 +411,11 @@ file-ASR profile unchanged. Caption text is provisional, not canonical/work inpu
 reuse the existing authenticated WebSocket and maintenance fence, preserve audio
 on preview failure, and never fall back to another provider or replay the stream.
 Caption and final-file usage are separate. See docs/interaction-speech.md.
+
+
+New voice routes must be qualified through the actual shared Home/device access
+path, not only an administrative test cookie. Home and enrolled devices share
+companion.permitted; add only the exact intended action and retain monitor,
+foreign actor, CSRF and unknown-path refusals. A provider socket smoke test does
+not establish browser grant admission. No grant reenrollment follows from an
+ordinary route correction.

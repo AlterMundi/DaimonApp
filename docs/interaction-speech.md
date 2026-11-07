@@ -511,7 +511,8 @@ unsupported regional language code, for Argentine Spanish input. No alternate
 provider/fallback, native dialogue or turn detection is configured on this route.
 
 The authenticated `/api/interaction/voice/openai/live` socket reuses the existing
-Origin/actor/CSRF/binding checks, fresh authorization, voice maintenance fence,
+Origin/actor/CSRF/binding checks, the exact interaction-only Home/device POST
+allowlist, fresh authorization, voice maintenance fence,
 two-capture capacity and120second audio/140second connection bounds. It streams
 only to a transcription session with no assistant response/tools. Existing mono
 16kHz preview PCM is deterministically resampled to24kHz across packet boundaries;
