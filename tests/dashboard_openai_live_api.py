@@ -242,6 +242,63 @@ class Mounted(unittest.TestCase):
                 self.assertIn('server update',value['message'])
         self.assertEqual(Client.instances,[])
 
+    def _active_context_flow(self,*,slow=False,fail=False,late=False):
+        from dashboard.openai_live_native_session import PublicLiveSessionContext
+        app=self.app_with_history();entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        original=PublicLiveSessionContext.sync
+        async def syncing(context):
+            if not context.updates_stopped:
+                entered.set()
+                if slow:await asyncio.to_thread(release.wait,3)
+                if fail:raise RuntimeError('Synthetic context adapter failure')
+            return await original(context)
+        with patch.object(PublicLiveSessionContext,'sync_interval',0.),patch.object(PublicLiveSessionContext,'sync_bytes',1),patch.object(PublicLiveSessionContext,'sync',syncing),patch('dashboard.openai_live_api.NATIVE_CONTEXT_DRAIN_SECONDS',.02 if late else 50):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket)
+                    native.events.put({'type':'session.input_transcript.delta','event_id':'active-context-input',
+                        'delta':'La corrección es viernes.','start_ms':0,'end_ms':100})
+                    self.assertEqual(socket.receive_json()['event']['type'],'session.input_transcript.delta')
+                    self.assertTrue(entered.wait(1),'No active context synchronization before work/Close')
+                    if fail:
+                        self.assertEqual(socket.receive_json()['type'],'finishing')
+                        self.assertEqual(socket.receive_json()['type'],'closed')
+                    elif slow:
+                        socket.send_json({'type':'close'})
+                        self.assertEqual(socket.receive_json()['type'],'finishing')
+                        self.assertFalse(release.is_set())
+                        self.assertEqual(socket.receive_json()['type'],'closed')
+                        self.assertIn(100,app.state.voice_active,'In-flight context still owns the actor')
+                        if late:
+                            self.assertEqual(socket.receive()['type'],'websocket.close')
+                            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as another:
+                                another.send_json({**self.meta,'id':str(uuid.uuid4())})
+                                self.assertEqual(another.receive_json()['type'],'unconfirmed')
+                            self.assertEqual(len(Client.instances),1,'Unsettled context must not admit another provider')
+                        release.set()
+                    else:
+                        deadline=time.monotonic()+2
+                        while not self.owner.journal.fresh and time.monotonic()<deadline:time.sleep(.01)
+                        self.assertTrue(self.owner.journal.fresh,'Trusted context was not retained before Close')
+                        self.close(socket)
+                deadline=time.monotonic()+2
+                while app.state.voice_active and time.monotonic()<deadline:time.sleep(.01)
+                self.assertFalse(app.state.voice_active)
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
+        self.assertEqual(self.read()['delegations'],{})
+        self.assertEqual(len(self.owner.journal.fresh),0 if fail else 1)
+        if not fail:self.assertIn('viernes',self.owner.journal.fresh[0]['text'])
+
+    def test_active_context_is_retained_before_work_or_close(self):self._active_context_flow()
+    def test_slow_active_context_keeps_close_and_provider_finalization_responsive(self):self._active_context_flow(slow=True)
+    def test_unsettled_context_retains_actor_after_handler_cleanup_deadline(self):self._active_context_flow(slow=True,late=True)
+    def test_active_context_adapter_failure_uses_owned_close_protocol(self):self._active_context_flow(fail=True)
+
     def test_native_context_contract_is_required_before_project_access_or_creation(self):
         for missing in ('foreground_context','foreground_resume','foreground_public_live_transcripts','method','history'):
             with self.subTest(missing=missing):
