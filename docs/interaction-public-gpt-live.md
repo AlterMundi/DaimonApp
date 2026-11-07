@@ -614,10 +614,10 @@ their actual outcome. Cleanup waits for the owned task with the existing finite
 50second bound; it never cancels the independent native work or reopens audio.
 
 This prototype deliberately accepts only `resume_mode="fresh"`. Native stored
-fork/semantic continuation, returns across voice visits, complete older-trace
-pagination, cross-turn native callbacks, first-marker
-question scope, long/concurrent semantic incorporation and actual memory/device/
-hearing acceptance still require integration. They remain part of the full goal;
+fork remains unsupported. Later sections describe source/receiving support for
+semantic startup, returns across visits and older-result pagination. Useful
+spoken incorporation, first-marker question scope, long/concurrent semantic
+behavior and actual memory/device/hearing acceptance remain unqualified. They remain part of the full goal;
 do not report this source prototype as a completed voice circuit or silently
 fall back to Responses to conceal the gap.
 
@@ -687,6 +687,41 @@ it to a fresh connection without another original, ASR or native dispatch. These
 checks use synthetic native/provider peers. Real first-use identity/memory/work,
 speech/interruption, repeated physical renewal and semantic checkpoints remain
 unfinished; this source extension has not been selected on a receiver.
+
+### Coalesced native context during an active visit
+
+The trusted public-native transcript receiver now feeds the existing semantic
+producer during the active voice visit, rather than waiting only for delegation
+or Close. After retained language reaches4096UTF8bytes or128delta events, the
+existing foreground loop can schedule one owned sync, no more often than once
+per10seconds. There is no idle sync, external timer or permanent listener. The
+unchanged600second capture bound limits this cadence; complete before-delegation
+and closing-tail synchronization remain supported.
+
+Each sync retains exact ordered source ranges through the same native `sync`
+operation and `prepare_continuation` contract. The native producer still owns its
+existing16KiB preparation threshold,8KiB target and bounded semantic cadence.
+These byte/event counters coalesce transport; they are not provider token usage
+or a replacement for the existing64k/48k limits. No separate model, ASR, work
+submission or guessed checkpoint is added. Trusted fragments arriving during a
+sync keep their own counter watermark and journal references.
+
+Slow metadata does not occupy browser/control handling. Close stops scheduling
+new syncs and continues provider finalization. Setup, work preparation, result
+reads and context syncs share one50second cleanup drain instead of consecutive
+waits. The existing actor and voice-admission ownership remain held until actual
+owned tasks and late native I/O settle, even after handler cleanup times out.
+A failed or unconfirmed sync stops further attempts and keeps its projection
+closing for explicit recovery; Close does not retry that source write. Independent
+native work is never cancelled by this metadata lifecycle.
+
+Synthetic mounted tests cover active retention before work/Close, slow sync with
+responsive finalization, adapter failure and actor exclusion after cleanup expiry.
+Source tests verify byte/event cadence, exact speaker ranges, late deltas and
+unknown-receipt preservation. Actual native three-visit/source/startup-seed
+qualification remains separate from real reasoning, speech and phone acceptance.
+This section describes the candidate source; current receiving selection belongs
+in the shared service record.
 
 ### Older canonical worker results
 

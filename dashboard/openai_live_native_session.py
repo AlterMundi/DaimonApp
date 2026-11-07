@@ -5,6 +5,7 @@ mounting owner supplies authenticated finite native operations and voice lease.
 """
 import asyncio
 import json
+import time
 
 from .native_context import NativeContext, ResumePending
 from .openai_live import creation_request
@@ -26,12 +27,33 @@ class _PublicProducer(NativeContext):
 
 class PublicLiveSessionContext:
     max_ancestors=64
+    sync_interval=10.
+    sync_bytes=4096
+    sync_events=128
 
     def __init__(self,canonical,visits,provider,human,visit,frozen,operation):
         self.history=PublicLiveContextHistory(canonical,visits,human,frozen)
         self.visits,self.provider,self.human,self.visit=visits,provider,human,visit
         self.frozen,self.operation=frozen,operation
         self.producer=_PublicProducer(self.history,provider,human,visit,frozen['binding'],operation)
+        self.observed_events=self.observed_bytes=self.synced_events=self.synced_bytes=0
+        self.clock=time.monotonic;self.last_sync=self.clock()
+        self.updates_stopped=False;self.sync_failed=False
+
+    def observe(self,event):
+        # Only the mounting trusted journal receiver calls this after retention.
+        if (not self.updates_stopped and event.get('type') in
+                ('session.input_transcript.delta','session.output_transcript.delta')):
+            self.observed_events+=1;self.observed_bytes+=len(event['delta'].encode())
+
+    def sync_due(self):
+        return (not self.updates_stopped and self.producer.status=='active'
+            and not self.sync_failed and self.clock()-self.last_sync>=self.sync_interval
+            and (self.observed_bytes-self.synced_bytes>=self.sync_bytes
+                 or self.observed_events-self.synced_events>=self.sync_events))
+
+    def stop_updates(self):
+        self.updates_stopped=True
 
     async def _record(self,ident):
         return await asyncio.to_thread(self.history.context_register,self.human,ident,self.frozen['binding'])
@@ -117,12 +139,21 @@ class PublicLiveSessionContext:
 
     async def sync(self):
         if self.producer.record is None:raise ValueError('Native public context is not open')
-        await self.producer._sync(self.producer.record)
+        if self.sync_failed:raise ResumePending('Native context synchronization needs review')
+        events,size=self.observed_events,self.observed_bytes
+        try:await self.producer._sync(self.producer.record)
+        except BaseException:
+            self.sync_failed=True;self.stop_updates()
+            self.producer.failed=self.producer.failed_sync=True;self.producer.status='needs_review'
+            raise
+        self.synced_events=max(self.synced_events,events);self.synced_bytes=max(self.synced_bytes,size)
+        self.last_sync=self.clock()
         return {'dialogue':self.visit,'generation':self.producer.record['generation']}
 
     async def close(self,*,settled=True):
+        self.stop_updates()
         if self.producer.record is None:return
-        if not settled:
+        if not settled or self.sync_failed:
             # An interpretation may still finish. Leave this exact projection
             # unfinished for the next explicit owner; do not close over it.
             await asyncio.to_thread(self.history.context_phase,self.producer.record,'closing')

@@ -1,3 +1,10 @@
+Public native context sync coalesces retained trusted deltas inside the existing
+finite visit:4096bytes or128events, at least10seconds between owned syncs.
+Use the existing native continuation preparation; never invent provider token
+usage or a checkpoint. Stop scheduling on Close; retain actor/admission ownership
+through actual late context I/O. Unknown syncs stay closing without automatic
+Close retry. Native work remains independent. See public GPT-Live context guide.
+
 Native voice older-worker returns use advertised result_pages=v1 and the existing
 owner-scoped trace-results/trace-result readers. Keep eight results per page,
 one older page per foreground poll, at most five flat instruction cursors, and

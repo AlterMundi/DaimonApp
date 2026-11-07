@@ -15,6 +15,8 @@ import secrets
 import threading
 import time
 
+NATIVE_CONTEXT_DRAIN_SECONDS=50
+
 from fastapi import HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
@@ -152,8 +154,13 @@ def install(app, config, provider, authorize, origins):
         if socket.headers.get('origin') not in origins:
             await socket.close(code=1008);return
         await socket.accept()
-        lease=sideband=creating=read_browser=read_provider=preparing=returning=None
-        native_context=None;context_operations=set()
+        lease=sideband=creating=read_browser=read_provider=preparing=returning=syncing=None
+        native_context=None;context_operations=set();context_syncs=set()
+        owner_cleanup_finished=False
+        def release_owner_if_settled(_=None):
+            if (owner_cleanup_finished and lease is not None and not context_operations and not context_syncs
+                    and all(task is None or task.done() for task in (creating,preparing,returning,syncing))):
+                lease.release()
         result_index=0;result_poll=0
         preparation_stopped=threading.Event()
         visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
@@ -179,14 +186,26 @@ def install(app, config, provider, authorize, origins):
             def done(future):
                 context_slots.release();context_operations.discard(future)
                 if not future.cancelled():future.exception()
+                release_owner_if_settled()
             task.add_done_callback(done)
             result=await asyncio.wait_for(asyncio.shield(task),18)
             await recheck();await current_owner()
             return result
+        async def synchronize_context():
+            task=asyncio.current_task();context_syncs.add(task)
+            from .voice_admission import hold_voice_task
+            hold_voice_task(socket.scope,task)
+            def done(future):
+                context_syncs.discard(future)
+                if not future.cancelled():future.exception()
+                release_owner_if_settled()
+            task.add_done_callback(done)
+            return await native_context.sync()
         async def begin_close():
             nonlocal closing,close_deadline
             if closing:return
             preparation_stopped.set()
+            if native_context is not None:native_context.stop_updates()
             closing=True;close_deadline=asyncio.get_running_loop().time()+30
             await asyncio.to_thread(history.end_capture,visit,human,binding)
             await send({'type':'finishing','id':visit,**({'message':
@@ -273,6 +292,7 @@ def install(app, config, provider, authorize, origins):
                                        if native_failure else {})})
                                 break
                             if await asyncio.to_thread(history.event,visit,human,owner,event):
+                                if native_context is not None:native_context.observe(event)
                                 await send({'type':'provider_event','event':event})
                             if (context and not native_backend and event['type']=='response.event'
                                     and event.get('event',{}).get('type')=='response.completed'):
@@ -294,6 +314,14 @@ def install(app, config, provider, authorize, origins):
                         completed=returning;returning=None
                         try:completed.result()
                         except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable):
+                            if not closing:native_failure=True;await begin_close()
+                    if syncing is not None and syncing.done():
+                        completed=syncing;syncing=None
+                        try:completed.result()
+                        except Exception as error:
+                            logging.getLogger(__name__).warning('Public native context sync failed: %s',type(error).__name__)
+                            native_context.sync_failed=True;native_context.stop_updates()
+                            native_context.producer.status='needs_review'
                             if not closing:native_failure=True;await begin_close()
                     if preparing is not None and preparing.done():
                         completed=preparing;preparing=None
@@ -328,10 +356,13 @@ def install(app, config, provider, authorize, origins):
                                 if pending is not None:
                                     loop=asyncio.get_running_loop()
                                     def before_delegate():
-                                        return asyncio.run_coroutine_threadsafe(native_context.sync(),loop).result(timeout=35)
+                                        return asyncio.run_coroutine_threadsafe(synchronize_context(),loop).result(timeout=35)
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
                                         stopped=preparation_stopped,before_delegate=before_delegate))
+                            if (native_context is not None and syncing is None and preparing is None
+                                    and native_context.sync_due()):
+                                syncing=asyncio.create_task(synchronize_context())
                             if native_backend and returning is None and asyncio.get_running_loop().time()>=result_poll:
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
@@ -370,6 +401,7 @@ def install(app, config, provider, authorize, origins):
             with CancelScope(shield=True):
                 try:
                     preparation_stopped.set()
+                    if native_context is not None:native_context.stop_updates()
                     if admitted:
                         with suppress(Exception):await asyncio.to_thread(history.end_capture,visit,human,binding)
                     for task in (read_browser,read_provider):
@@ -378,16 +410,14 @@ def install(app, config, provider, authorize, origins):
                             with suppress(BaseException):await task
                     # Retain one in-flight POST's actual outcome. Never reissue a lost
                     # request or send session.close as disconnected-client cleanup.
-                    if creating is not None:
-                        with suppress(BaseException):await asyncio.wait_for(asyncio.shield(creating),50)
-                    if preparing is not None:
-                        with suppress(BaseException):await asyncio.wait_for(asyncio.shield(preparing),50)
-                    if returning is not None:
-                        with suppress(BaseException):await asyncio.wait_for(asyncio.shield(returning),50)
+                    pending=list({task for task in (creating,preparing,returning,syncing) if task is not None}|context_syncs)
+                    if pending:
+                        with suppress(BaseException):
+                            await asyncio.wait_for(asyncio.shield(asyncio.gather(*pending,return_exceptions=True)),NATIVE_CONTEXT_DRAIN_SECONDS)
                     if sideband is not None:
                         with suppress(Exception):await asyncio.to_thread(sideband.detach)
                     if native_context is not None:
-                        settled=(preparing is None or preparing.done()) and not context_operations
+                        settled=(preparing is None or preparing.done()) and not context_syncs and not context_operations
                         with suppress(Exception):
                             async with asyncio.timeout(25):await native_context.close(settled=settled)
                     if admitted:
@@ -395,5 +425,10 @@ def install(app, config, provider, authorize, origins):
                     if visit:history.release_sources(visit)
                     with suppress(Exception):await asyncio.wait_for(socket.close(),1)
                 finally:
-                    if lease is not None:lease.release()
+                    if lease is not None:
+                        owner_cleanup_finished=True
+                        pending=[task for task in (creating,preparing,returning,syncing,*context_operations,*context_syncs)
+                                 if task is not None and not task.done()]
+                        for task in pending:task.add_done_callback(release_owner_if_settled)
+                        release_owner_if_settled()
     return True

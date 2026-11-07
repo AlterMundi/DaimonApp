@@ -145,4 +145,59 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.provider.producers[self.dialogue]['closed'])
 
 
+    async def active_context(self):
+        self.prepare()
+        context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,self.dialogue,self.frozen,self.owner)
+        await context.prepare({'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'}})
+        clock=[0.];context.clock=lambda:clock[0];context.last_sync=0.
+        return context,clock
+
+    async def test_active_context_coalesces_trusted_deltas_before_close(self):
+        context,clock=await self.active_context()
+        for n in range(128):
+            event=self.event('Viernes ' if n%2 else 'Friday? ',speaker='input' if n%2 else 'output')
+            context.observe(event)
+        clock[0]=9.;self.assertFalse(context.sync_due())
+        clock[0]=10.;self.assertTrue(context.sync_due())
+        await context.sync();self.assertFalse(context.sync_due())
+        calls=[c for c in self.provider.calls if c['action']=='sync']
+        self.assertTrue(calls and all(c['prepare_continuation'] for c in calls))
+        self.assertEqual(sum(len(s['live_transcript']['spans']) for s in self.provider.fresh),128)
+        self.assertEqual(context.synced_events,128)
+        with self.database() as db:self.assertEqual(db.execute('SELECT count(*) FROM foreground_utterances').fetchone()[0],0)
+        context.observe({'type':'session.usage.updated'});self.assertEqual(context.observed_events,128)
+        await context.close()
+
+    async def test_active_context_byte_threshold_and_stop_keep_exact_final_tail(self):
+        context,clock=await self.active_context();event=self.event('v'*4096);context.observe(event)
+        clock[0]=10.;self.assertTrue(context.sync_due());await context.sync()
+        context.stop_updates();late=self.event('Corrección tardía: el viernes.');context.observe(late)
+        clock[0]=30.;self.assertFalse(context.sync_due())
+        await context.close()
+        self.assertEqual(''.join(s['text'] for s in self.provider.fresh),'v'*4096+'Corrección tardía: el viernes.')
+
+    async def test_active_context_late_delta_is_not_marked_synced_by_an_earlier_snapshot(self):
+        context,clock=await self.active_context();context.observe(self.event('v'*4096));clock[0]=10.
+        sync=context.producer._sync
+        async def arriving(record):
+            context.observe(self.event('Nueva corrección'))
+            return await sync(record)
+        context.producer._sync=arriving
+        await context.sync()
+        self.assertEqual(context.observed_events,2);self.assertEqual(context.synced_events,1)
+        self.assertIn('Nueva corrección',''.join(s['text'] for s in self.provider.fresh))
+        context.producer._sync=sync;await context.close()
+
+    async def test_active_context_lost_receipt_stops_without_close_retry(self):
+        context,clock=await self.active_context();context.observe(self.event('v'*4096));clock[0]=10.
+        self.provider.lose_next=True
+        with self.assertRaises(ProviderUnavailable):await context.sync()
+        self.assertFalse(context.sync_due());self.assertTrue(context.sync_failed)
+        self.assertEqual(context.producer.status,'needs_review')
+        calls=len([c for c in self.provider.calls if c['action']=='sync'])
+        await context.close()
+        self.assertEqual(len([c for c in self.provider.calls if c['action']=='sync']),calls)
+        self.assertEqual(self.history.context_resume_record(100,self.binding,self.dialogue)['phase'],'closing')
+        self.assertNotIn('native_context_cursor',self.visits.read(self.dialogue,100,self.frozen))
+
 if __name__=='__main__':unittest.main()
