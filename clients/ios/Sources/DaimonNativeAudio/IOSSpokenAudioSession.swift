@@ -21,6 +21,7 @@ import UIKit
     private var foreground = true
     private var cancelling = false
     public var releaseUnconfirmed: Bool { ownership.unconfirmedRelease != nil }
+    public var unconfirmedReleaseID: UUID? { ownership.unconfirmedRelease }
 
     public init() {
         let center = NotificationCenter.default
@@ -78,8 +79,7 @@ import UIKit
     }
     public func leaveForeground() { foreground = false; cancelOutputs() }
     /// Explicit user recovery only; never called by notification/refresh/close.
-    @discardableResult public func recoverRelease() -> Bool {
-        guard let owner = ownership.unconfirmedRelease else { return true }
+    @discardableResult public func recoverRelease(owner: UUID) -> Bool {
         return ownership.recoverRelease(owner)
     }
     deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
