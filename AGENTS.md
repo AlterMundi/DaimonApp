@@ -1,3 +1,8 @@
+Avatar background suspension uses both document visibility and Android's existing
+nativecapturebackground event. Public Live Hold must silence its local audio
+immediately while keeping the bounded provider finalization receiver alive.
+This does not stop independent native work or enable background capture.
+
 The source preview adapter is mounted at avatars/voice/previews with existing
 owner/CSRF, voice admission, actor lease and shared TTS capacity. Unknown results
 are status-only; never regenerate them. Explicit Prepare/Generate/Play/Stop/Retire

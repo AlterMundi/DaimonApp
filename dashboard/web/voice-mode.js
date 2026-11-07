@@ -130,11 +130,15 @@ window.ConversationVoiceMode=(()=>{
     review.addEventListener('click',()=>{if(opened&&typeof onReview==='function')onReview(()=>{if(!opened)return false;(review.hidden?back:review).focus();return true;});});
     back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
     speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){armClose();onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
-    document.addEventListener('visibilitychange',()=>{
-      if(!document.hidden || !opened)return;
+    function suspend(){
+      if(!opened)return;
       if(continuous && onSuspend)onSuspend();
       else close();
-    });
+    }
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)suspend();});
+    // Android sends this before (or without) WebView visibilitychange. Ordinary
+    // background reply playback stays owned by its separate speech session.
+    window.addEventListener('nativecapturebackground',suspend);
     window.addEventListener('pagehide',close);
     return {update,attention,close,get active(){return opened;},configure(enabled,direct=false){
       if(opened&&continuous!==(direct===true))close();

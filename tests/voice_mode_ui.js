@@ -1,6 +1,6 @@
 // Shipped fullscreen controller with synthetic callbacks; no capture or models.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function boot({suspend=false,reconnect,onReview,getAttention,leaveResult}={}){
+function boot({suspend=false,reconnect,onReview,getAttention,leaveResult,bridge=false}={}){
  const timers=[],listeners={},nodes=[];
  class Node{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.events={};this.hidden=false;this.dataset={};this.classList={add(){},remove(){}};nodes.push(this);}
@@ -15,11 +15,12 @@ function boot({suspend=false,reconnect,onReview,getAttention,leaveResult}={}){
  }
  const body=new Node('body'),header=new Node('header'),portrait=new Node('pre');body.append(header);header.append(portrait);
  const document={body,hidden:false,createElement:tag=>new Node(tag),createComment:()=>new Node('comment'),addEventListener:(name,fn)=>listeners[name]=fn};
- const window={addEventListener:(name,fn)=>listeners[name]=fn};
+ const window={addEventListener:(name,fn)=>listeners[name]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
+ if(bridge){window.DaimonAudio={postMessage(){}};vm.runInNewContext(fs.readFileSync('clients/android/app/src/main/assets/native-audio.js','utf8'),{window,navigator:{mediaDevices:{}},Event});}
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document,setTimeout:(fn,ms)=>{const timer={fn,ms};timers.push(timer);return timer;},clearTimeout:t=>{if(t)t.cancelled=true;}});
  let starts=0,enters=0,leaves=0,suspends=0,resumes=0,canStart=true,canEnter=true;
  const mode=window.ConversationVoiceMode.mount({portrait,onReview,getAttention,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;return leaveResult;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
- return {mode,portrait,header,nodes,timers,document,listeners,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
+ return {mode,portrait,header,nodes,timers,document,listeners,window,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
 }
 const f=boot();f.mode.configure(false);f.portrait.events.click();assert.equal(f.counts().starts,0);
 f.mode.configure(true);f.canEnter(false);f.portrait.events.click();assert.equal(f.counts().starts,0,'An unfinished original prevents opening');
@@ -77,6 +78,22 @@ background.mode.update({continuousState:{active:false,starting:false,pending:fal
 assert.equal(background.nodes.find(n=>n.className==='voice-mode-state').textContent,'Reply playback · microphone off');
 background.document.hidden=false;background.listeners.visibilitychange();assert.equal(background.counts().starts,1,'Showing the view never reopens the microphone');
 background.listeners.pagehide();assert(!background.mode.active,'Leaving the page still closes the bounded view');assert.equal(background.counts().leaves,1);
+// MainActivity emits this native bridge event before WebView visibility can
+// change. Exercise the shipped bridge and controller together with no device.
+const nativeBackground=boot({suspend:true,bridge:true});nativeBackground.mode.configure(true,true);nativeBackground.portrait.events.click();
+nativeBackground.mode.update({continuousState:{active:true,starting:false}});
+assert.equal(nativeBackground.document.hidden,false);
+nativeBackground.window.NativeSpeechAudio.background(true);
+assert.equal(nativeBackground.suspends(),1,'Native background signal must suspend Avatar even while the WebView reports visible');
+assert(nativeBackground.mode.active,'Keep the review/reconnect view available');
+assert.equal(nativeBackground.counts().starts,1,'Backgrounding does not start another capture');
+nativeBackground.document.hidden=true;nativeBackground.listeners.visibilitychange();
+nativeBackground.document.hidden=false;nativeBackground.listeners.visibilitychange();
+assert.equal(nativeBackground.counts().starts,1,'Returning to the app still needs an explicit reconnect');
+nativeBackground.listeners.pagehide();const stoppedSuspends=nativeBackground.suspends();
+nativeBackground.window.NativeSpeechAudio.background(true);assert.equal(nativeBackground.suspends(),stoppedSuspends,'Closed Avatar ignores later background signals');
+const nativeAlternating=boot({bridge:true});nativeAlternating.mode.configure(true);nativeAlternating.portrait.events.click();
+nativeAlternating.window.NativeSpeechAudio.background(true);assert.equal(nativeAlternating.mode.active,false,'Legacy capture closes through the same owner');
 const unavailable=boot();unavailable.mode.configure(true,true);unavailable.portrait.events.click();
 unavailable.mode.update({continuousState:{active:false,starting:false,pending:false,working:false,message:'Native voice disconnected'}});
 assert.equal(unavailable.nodes.find(n=>n.className==='voice-mode-caption').textContent,'Native voice disconnected','A stopped native session without an original must still explain why it stopped');
