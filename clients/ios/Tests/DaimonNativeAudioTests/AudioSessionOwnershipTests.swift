@@ -26,7 +26,8 @@ final class AudioSessionOwnershipTests: XCTestCase {
         var cancelled = 0
         try session.acquire(owner) {
             cancelled += 1
-            XCTAssertThrowsError(try session.acquire(UUID(), cancelled: {}))
+            do { try session.acquire(UUID(), cancelled: {}); XCTFail("Cancellation admitted a new owner") }
+            catch { /* The same cancellation fence must refuse a new activation. */ }
             session.release(owner)
         }
         session.cancelOwned(); session.cancelOwned()
