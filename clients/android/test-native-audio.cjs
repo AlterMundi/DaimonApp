@@ -61,7 +61,7 @@ async function fixture(capture){
   const beacon=await fixture();let pageClock=200,unavailable=0;
   beacon.context.performance.now=()=>pageClock;
   const driver=beacon.window.NativeSpeechAudio.openBeacon({onUnavailable(){unavailable++;throw Error("Diagnostic failure");}});
-  assert.equal(beacon.window.NativeSpeechAudio.beacon,undefined,"Prepared adapter does not advertise an unqualified capability");
+  assert.equal(beacon.window.NativeSpeechAudio.beacon,true,"Qualified Android adapter advertises native Beacon");
   assert.match(driver.id,/^beacon_[a-f0-9-]{36}$/);
   assert.throws(()=>beacon.window.NativeSpeechAudio.openBeacon(),/already active/);
   const emit=(id,type,clock_ms)=>beacon.bridge.onmessage({data:JSON.stringify({id,type,clock_ms})});

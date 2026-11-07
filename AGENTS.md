@@ -4,8 +4,10 @@ Keep six normalized phase-continuous sine carriers, bounded latest frame/level,
 Level changes do not refresh observations. Share one native audio-focus request
 with independent speech/Beacon holders; bind quiet/focus callbacks to their owner
 and applied control. Foreground/noisy/Stop cancels pending starts, without new
-background grants. Source signature/JVM checks are not bridge/device acceptance;
-do not advertise the new JS capability until the actual path is qualified.
+background grants. Android API35 WebView/AudioTrack and separate-UID focus qualification passed
+PR726 preparation065691d. APK0.8 now advertises the native renderer; qualify the
+exact release before delivery. Emulator success is not physical phone/hearing
+acceptance. Older APKs keep browser audio without a native-failure fallback.
 
 Public Live usage observations are page-local/bounded8, using trusted server
 usage/finalization receipts. Only explicit voice_usage_confirmed and valid final

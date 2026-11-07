@@ -18,8 +18,7 @@ window.NativeSpeechAudio=(()=>{
     stream.getTracks().forEach(track=>track.addEventListener("ended",()=>{if(stream.getTracks().every(t=>t.readyState==="ended"))streams.delete(stream);},{once:true}));
     return stream;
   };
-  // Prepared independently of speech. Capability advertisement waits for the
-  // renderer and actual Android bridge qualification.
+  // Independent from speech; Android bridge/renderer qualification covers this owner.
   function openBeacon({onState=()=>{},onUnavailable=()=>{}}={}){
     if(beaconOwner)throw Error("Native Beacon already active");
     const id="beacon_"+crypto.randomUUID(),clock=()=>performance.now();
@@ -266,5 +265,5 @@ window.NativeSpeechAudio=(()=>{
     }
     for(const stream of streams)for(const track of stream.getTracks())track.stop();streams.clear();
   }
-  return {mount,background,openStream,openPcm,openBeacon,pcm:true,pcmMaxSeconds:600,webrtcPcm:true,progressive:true,backgroundPlayback:true,setSession,serviceLost,setControls:value=>{controls=value;}};
+  return {mount,background,openStream,openPcm,openBeacon,beacon:true,pcm:true,pcmMaxSeconds:600,webrtcPcm:true,progressive:true,backgroundPlayback:true,setSession,serviceLost,setControls:value=>{controls=value;}};
 })();

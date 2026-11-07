@@ -6,7 +6,7 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
-## Native Beacon preparation —7November2026
+## Native Beacon candidate0.8 —7November2026
 
 The prepared `BeaconSynth` is a bounded six-carrier PCM synthesizer for the
 existing Sonic score. It accepts normalized component weights from the existing
@@ -16,7 +16,7 @@ Membership and master-level changes retarget their current envelopes; duplicate
 observations do not restart a transition. Sinusoidal breathing follows the
 configured shared/harmonic pulse frequencies. No extra partial stack or texture
 is introduced. Mix weight stays at most one; the master maximum is0.8, with
-the selected vocabulary's lower peak applied by the eventual caller. Unsupported
+the selected vocabulary's lower peak applied by the renderer. Unsupported
 nonzero frequencies above45%of sample rate refuse rather than alias.
 
 Six release17 JVM cases verify the exact40.4series/absent unwanted partials,
@@ -59,16 +59,25 @@ and audible aliased carriers before any bridge write. Level commands carry no
 freshness. Node qualification covers a cached observation keeping its original
 absolute expiry, invalid frames with no effects, late-owner events, pending-start
 cancellation, continued speech on background and throwing diagnostic callbacks.
-The existing renderer now has a native branch gated by the still-unadvertised
+The existing renderer has a native branch gated by the APK0.8
 `beacon=true` capability. It reuses the six components, equal per-session mix,
 vocabulary frequencies/pulses/peak, source-age validity and capture/speech ducking;
 no browser AudioContext is created after native selection. Node fixtures cover
 the normalized mix, no freshness renewal by ducking, late starts and owner failure
 without browser fallback. Older clients keep the browser renderer.
-No JavaScript Beacon capability is advertised yet. Finish real
-WebView/AudioTrack/focus/lifecycle qualification
-before delivery. APK0.7 and current served audio remain unchanged. Physical
-hearing, background voice and the complete original goal remain separate.
+The preparation065691d passed mainCI42373895476 and Android42373895620:
+release/debug/test builds, lint, JVM cases, exact test-only asset packaging and
+all eight real API35 emulator instrumentation cases. Beacon's production
+WebView/bridge/service/AudioTrack path showed playback-head progress, stale
+silence despite level changes, fresh-state resume, duck-to-zero/recovery and
+native background closure. The separate-UID music probe also verified that
+speech completion cannot release Beacon's retained focus. These are synthetic
+score/device observations, with no microphone, provider call or hearing claim.
+
+APK0.8 now advertises the qualified native branch. Exact final-source CI, signing
+and receiving delivery remain required; until selected, served clients and
+signed APK0.7 remain unchanged. Physical phone/hearing, background voice and the
+complete original goal remain separate.
 
 ## Public Live native output candidate0.7 —7November2026
 
