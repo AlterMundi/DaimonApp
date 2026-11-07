@@ -87,6 +87,77 @@ pub(super) fn generation_current_on(
 }
 
 impl Store {
+    /// Owner-console only: not part of HeartbeatCommand or model tool actions.
+    /// Renew an expired finite window without minting capacity or activating it.
+    pub fn heartbeat_renew_window(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let control: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            control.paused && control.generation == generation,
+            "Pause and select the exact heartbeat generation before explicit owner renewal"
+        );
+        anyhow::ensure!(
+            !executions::unresolved_on(&tx, human, entry)?,
+            "Heartbeat execution unresolved"
+        );
+        let receipt_key = format!("heartbeat_window_renewal:{human}:{session}");
+        let mut receipt = json!({"generation":generation,"previous_expires_at_unix_ms":expected_expiry,
+            "expires_at_unix_ms":expiry,"resources_refilled":false,"activated":false});
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [&receipt_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if previous
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()?
+            .as_ref()
+            .is_some_and(|previous| {
+                previous["generation"] == generation
+                    && previous["previous_expires_at_unix_ms"] == expected_expiry
+                    && previous["expires_at_unix_ms"] == expiry
+            })
+        {
+            // Same command after a lost ACK observes its retained effect.
+            return Ok(());
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        anyhow::ensure!(
+            expected_expiry <= now && expiry > now && expiry <= now + 7 * 86400 * 1000,
+            "Select an expired predecessor and a new finite window within seven days"
+        );
+        resources::renew_window_on(&tx, session, human, expected_expiry, expiry)?;
+        receipt["retry"] = serde_json::to_value(producer::renew_window_on(
+            &tx,
+            human,
+            entry,
+            expected_expiry,
+            expiry,
+        )?)?;
+        // One replaceable current receipt, not an accumulating renewal journal.
+        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![receipt_key,serde_json::to_string(&receipt)?])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// One control record per existing integrating entry. Restart never resumes
     /// attention or replenishes a resource account. Default is paused.
     pub fn heartbeat_control(
@@ -267,10 +338,22 @@ impl Store {
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
         let producer = producer::status_on(&conn, human, session)
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
+        let renewal: Option<String> = conn
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [format!("heartbeat_window_renewal:{human}:{session}")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let renewal = renewal
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .unwrap_or_else(|_| Some(json!({"state":"unavailable"})));
         Ok(
             json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,"lanes":lanes::status(&control),
             "controls":{"schema":"telecodex.heartbeat-controls/v1","conditional_global":true,"conditional_lane":true,"actions":["set_paused","set_lane_paused"],"configuration_activates":false},
-            "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
+            "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"window_renewal":renewal,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
         )
     }
 }

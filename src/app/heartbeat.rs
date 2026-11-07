@@ -97,6 +97,25 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("renew-window ") {
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        let [generation, previous_expiry, expiry] = fields.as_slice() else {
+            bail!("Expected heartbeat renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS");
+        };
+        let cfg = super::routing::profile(&app.shared)?;
+        anyhow::ensure!(
+            cfg.human_id == human,
+            "Heartbeat belongs to the configured paired human"
+        );
+        app.shared.store.heartbeat_renew_window(
+            human,
+            cfg.entry(),
+            generation.parse()?,
+            previous_expiry.parse()?,
+            expiry.parse()?,
+        )?;
+        return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
+    }
     if let Some(rest) = args.strip_prefix("configure-producer ") {
         let (generation, raw) = rest
             .split_once(' ')
@@ -157,7 +176,7 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(

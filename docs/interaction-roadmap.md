@@ -1163,7 +1163,11 @@ instance lease. `heartbeat configure-producer GENERATION CONTRACT_JSON` selects
 seven days and within the existing resource contract), and `matrix_replies` and/or
 `workflows`. Configuration requires paused exact-generation ownership, no unresolved
 execution and an existing finite resource account. It cannot replace/refill an
-existing producer contract. Default remains unconfigured and paused.
+existing producer contract. Default remains unconfigured and paused. An explicitly
+owner-selected successor window can use the owner-only `heartbeat renew-window`
+command described in [heartbeat controls](interaction-heartbeat.md#explicit-owner-renewal-of-an-expired-window).
+It changes only the expired deadlines, conserves every lifetime counter/cursor,
+and leaves admission paused. It is not a model action or automatic renewal.
 
 One existing `bot_state` parent retains cadence, counters, source-review cursors
 and the existing native-return journal. A check consumes its finite counter even
