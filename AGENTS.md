@@ -380,10 +380,14 @@ the synthetic owner binding. A live binding change correctly revokes the voice
 admission; accepting that race in a fixture would weaken the real ownership check.
 
 A composed public-native voice receiver must load the qualified Provider
-interpretation method as well as native gpt-transcribe/v1 capability. Constructor
-health and synthetic owner fixtures do not prove that this cross-file adapter
-was selected. Preserve local adapters when adding the exact qualified method;
-refuse before billing rather than creating a doomed interpretation intent.
+source-window delegation method and native foreground_live_window=journal-input/v1
+capability before paid creation. New Avatar handoffs use only the input-speaker
+Live journal window, bound atomically to exact retained acoustic originals; no
+per-clip file ASR or fallback. Provider fragment timing remains approximate,
+not verified utterance alignment. Context fragments alone never authorize work;
+the existing trusted delegation/source seal still owns admission. Constructor
+health and synthetic fixtures do not establish real voice/hearing acceptance.
+Keep a window-aware native writer after these delegation proofs are retained.
 
 
 OpenAI-only Conversation is an explicit optional speech + named native ASR

@@ -9,7 +9,7 @@ import uuid
 
 from .codex_voice_history import history_lock
 from .openai_live_originals import enroll_original
-from .openai_live_transcription import OriginalTranscription, interpret_original, commit_interpretation
+from .openai_live_window import freeze_input_window
 from .openai_live_native_work import delegate_native
 from .openai_live_native_results import return_native_part, _origin_returns
 from .provider import ProviderUnavailable
@@ -41,7 +41,12 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
             current()
             return provider.conversation_foreground_delegate(body)
 
+    # The configured key and old fixture factory cannot start recognition here.
+    del key_file, recognizer_factory
     current(False)
+    caps=provider.presentation('input voice capabilities')
+    if caps.get('binding')!=owner['binding'] or caps.get('foreground_live_window')!='journal-input/v1':
+        raise ValueError('Native Live-window reader is not selected; no second ASR or work requested')
     with history_lock(history.root / '.lock'):
         value = history.read(ident,human,owner)
         work = value['delegations'].get(delegation, {})
@@ -72,31 +77,14 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
     result = {'state':'held','ordinals':ordinals,'work_completed':False,
         'meaning':'Preparation outcome needs review; originals and exact component intents are retained. Do not replay.'}
     try:
-        total = 0
         for ordinal in ordinals:
             current()
             if enroll_original(history,ident,human,owner,ordinal,provider)['state'] != 'observed': break
-            current()
-            old = history.read(ident,human,owner)['native_originals'][str(ordinal)].get('interpretation')
-            recognizer=None
-            if old is None:
-                selected=(recognizer_factory or OriginalTranscription)(key_file)
-                class OwnedRecognizer:
-                    model=selected.model
-                    def transcribe(self,data):
-                        current()
-                        return selected.transcribe(data)
-                recognizer=OwnedRecognizer()
-            derivative = interpret_original(history,ident,human,owner,ordinal,provider,
-                recognizer)
-            if derivative['state'] != 'completed': break
-            total += len(derivative['text'].encode())
-            if total > 65536: raise ValueError('Native source context exceeds its existing bound')
-            current()
-            if commit_interpretation(history,ident,human,owner,ordinal,provider)['state'] != 'observed': break
         else:
             current()
-            formulation=FORMULATION
+            window=freeze_input_window(history,ident,human,owner,delegation)
+            current()
+            formulation=FORMULATION+' Live input language belongs to the entire retained acoustic window, with approximate provider timing; never assign it verbatim to an individual audio chunk. Preserve uncertainty, missing or late fragments and later corrections.'
             if before_delegate is not None:
                 reference=before_delegate()
                 if (not isinstance(reference,dict) or set(reference)!={'dialogue','generation'}
@@ -105,7 +93,7 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
                     raise ValueError('Select the exact native semantic context reference')
                 current()
                 formulation+=' Prior conversation source context is retained in the existing native semantic producer: '+json.dumps(reference,separators=(',',':'))+'. Read it when resolving prior facts, corrections or short replies; it is not another work request.'
-            admitted = delegate_native(history,ident,human,owner,delegation,ordinals,formulation,ExecutionOwner())
+            admitted = delegate_native(history,ident,human,owner,delegation,ordinals,formulation,ExecutionOwner(),live_window=window)
             result = {'state':'admitted' if admitted['state']=='observed' else 'unconfirmed',
                 'ordinals':ordinals,'root':admitted['root'],'work_completed':False,
                 'meaning':'Native handoff observation only; actual work/results and hearing remain separate.'}

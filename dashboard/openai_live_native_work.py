@@ -12,7 +12,7 @@ from .codex_voice_history import history_lock
 from .provider import ProviderUnavailable
 
 
-def delegate_native(history, ident, human, owner, delegation, ordinals, formulation, provider):
+def delegate_native(history, ident, human, owner, delegation, ordinals, formulation, provider, *, live_window=None):
     """Retain one intent, then submit once; uncertain outcomes only read status.
 
     This admits the original/formulation to the existing integrator, not a
@@ -49,16 +49,25 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
                 raise ValueError('Native source no longer matches the acknowledged capture seal')
             if (recording is None or recording.get('capture_stop')
                     or slot.get('state') != 'observed' or slot.get('id') != recording['id']
-                    or slot.get('audio_sha256') != recording['audio_sha256']
-                    or interpreted.get('state') != 'completed' or interpreted.get('model') != 'gpt-transcribe'
-                    or interpreted.get('capture_id') != recording['id']
-                    or interpreted.get('audio_sha256') != recording['audio_sha256']
-                    or slot.get('native_commit', {}).get('state') != 'observed'
-                    or not isinstance(interpreted.get('text'), str) or not interpreted['text'].strip()):
-                raise ValueError('Each exact acoustic source needs a completed native interpretation')
+                    or slot.get('audio_sha256') != recording['audio_sha256']):
+                raise ValueError('Each exact acoustic source must be retained first')
+            if live_window is not None:
+                if work.get('live_window') != live_window or 'interpretation' in slot:
+                    raise ValueError('Live group cannot replace a retained file interpretation')
+                text = live_window['text'] if ordinal == ordinals[-1] else ''
+            else:
+                if (interpreted.get('state') != 'completed' or interpreted.get('model') != 'gpt-transcribe'
+                        or interpreted.get('capture_id') != recording['id']
+                        or interpreted.get('audio_sha256') != recording['audio_sha256']
+                        or slot.get('native_commit', {}).get('state') != 'observed'
+                        or not isinstance(interpreted.get('text'), str) or not interpreted['text'].strip()):
+                    raise ValueError('Each legacy source needs its completed native interpretation')
+                text = interpreted['text']
             sources.append({'id': recording['id'], 'audio_sha256': recording['audio_sha256'],
-                'text_sha256': hashlib.sha256(interpreted['text'].encode()).hexdigest()})
-        if sum(len(value['native_originals'][str(n)]['interpretation']['text'].encode()) for n in ordinals) > 65536:
+                'text_sha256': hashlib.sha256(text.encode()).hexdigest()})
+        total = len(live_window['text'].encode()) if live_window is not None else sum(
+            len(value['native_originals'][str(n)]['interpretation']['text'].encode()) for n in ordinals)
+        if total > 65536:
             raise ValueError('Native source context exceeds its bound')
         return work, sources
 
@@ -83,7 +92,8 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
         work, sources = select(value)
         previous = work.get('native_work')
         if previous:
-            if previous['sources'] != sources or previous['formulation'] != formulation:
+            if (previous['sources'] != sources or previous['formulation'] != formulation
+                    or previous.get('live_window') != (live_window['proof'] if live_window is not None else None)):
                 raise ValueError('A retained native work intent cannot be reformulated or replaced')
             if previous['state'] == 'observed':
                 return dict(previous)
@@ -97,6 +107,7 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
             previous = {'state': 'intent', 'intent_id': str(uuid.uuid4()),
                 'root': sources[-1]['id'], 'sources': sources, 'formulation': formulation,
                 'native_source_floor': source_floor, 'work_completed': False}
+            if live_window is not None: previous['live_window'] = live_window['proof']
             work['native_work'] = previous
             work['native_work_reserve'] = ' ' * 2048
             history._write(value)
@@ -107,6 +118,7 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
 
     body = {'binding': owner['binding'], 'id': intent['root'], 'intent_id': intent['intent_id'],
         'formulation': formulation, 'source_ids': [s['id'] for s in sources]}
+    if live_window is not None: body['live_window'] = {k:live_window[k] for k in ('path','proof')}
     authorize()
     try:
         native = (provider.conversation_foreground_delegate(body) if fresh
@@ -121,7 +133,8 @@ def delegate_native(history, ident, human, owner, delegation, ordinals, formulat
             or native.get('foreground_dialogue') != ident or not isinstance(proof, dict)
             or proof.get('intent_id') != intent['intent_id'] or proof.get('dialogue_id') != ident
             or proof.get('formulation') != formulation or not isinstance(proof.get('sources'), list)
-            or len(proof['sources']) != len(sources)):
+            or len(proof['sources']) != len(sources)
+            or proof.get('live_window') != (live_window['proof'] if live_window is not None else None)):
         raise ValueError('Native work acknowledgment does not prove this exact source-bound intent')
     by_id = {source['id']: source for source in sources}
     seen = set()

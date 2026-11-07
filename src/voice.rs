@@ -9,6 +9,131 @@ use tokio::{io::AsyncReadExt, process::Command};
 pub const MAX_BYTES: usize = 20 * 1024 * 1024;
 const MAX_SECONDS: usize = 120;
 
+/// Provider language for a group of retained acoustic originals. This is not
+/// an utterance boundary or a transcript assigned to any individual audio clip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicLiveWindow {
+    pub dialogue: String,
+    pub journal_revision: String,
+    pub journal_from: u64,
+    pub journal_after: u64,
+    pub journal_sha256: String,
+    pub text_sha256: String,
+    pub input_events: u64,
+}
+
+/// Read only the frozen private journal range. Never open a model/provider or
+/// interpret the audio again. Output-speaker text cannot become request text.
+#[cfg(unix)]
+pub fn public_live_window_source(path: &Path, expected: &PublicLiveWindow) -> Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let digest = |s: &str| {
+        s.len() == 64
+            && s.bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    };
+    if uuid::Uuid::parse_str(&expected.dialogue)
+        .ok()
+        .is_none_or(|v| v.to_string() != expected.dialogue)
+        || path.file_name().and_then(|s| s.to_str())
+            != Some(format!("{}.events", expected.dialogue).as_str())
+        || !digest(&expected.journal_revision)
+        || !digest(&expected.journal_sha256)
+        || !digest(&expected.text_sha256)
+        || expected.journal_from >= expected.journal_after
+        || expected.journal_after - expected.journal_from > 4 * 1024 * 1024
+        || !(1..=8192).contains(&expected.input_events)
+    {
+        bail!("Select one bounded source-bound Live transcript window");
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let info = file.metadata()?;
+    if !info.is_file()
+        || info.uid() != unsafe { libc::geteuid() }
+        || info.mode() & 0o077 != 0
+        || info.len() > 32 * 1024 * 1024
+        || expected.journal_after > info.len()
+        || format!(
+            "{:x}",
+            Sha256::digest(
+                format!("{}:{}:{}", expected.dialogue, info.dev(), info.ino()).as_bytes()
+            )
+        ) != expected.journal_revision
+    {
+        bail!("Live transcript journal ownership or identity changed");
+    }
+    if expected.journal_from > 0 {
+        file.seek(SeekFrom::Start(expected.journal_from - 1))?;
+        let mut boundary = [0];
+        file.read_exact(&mut boundary)?;
+        if boundary != [b'\n'] {
+            bail!("Live source window must start at an exact record boundary");
+        }
+    }
+    file.seek(SeekFrom::Start(expected.journal_from))?;
+    let mut bytes = vec![0; (expected.journal_after - expected.journal_from) as usize];
+    file.read_exact(&mut bytes)?;
+    if bytes.last() != Some(&b'\n')
+        || format!("{:x}", Sha256::digest(&bytes)) != expected.journal_sha256
+    {
+        bail!("Live source window changed or remains unconfirmed");
+    }
+    let mut text = String::new();
+    let mut inputs = 0;
+    let mut records = 0;
+    for line in bytes.split_inclusive(|c| *c == b'\n') {
+        records += 1;
+        if records > 8192 || line.len() > 32768 {
+            bail!("Live source record bound exceeded");
+        }
+        let row: serde_json::Value = serde_json::from_slice(line)?;
+        let event = &row["event"];
+        if !row["event_id"].is_string() || row["event_id"] != event["event_id"] {
+            bail!("Live source event identity changed");
+        }
+        if event["type"] != "session.input_transcript.delta" {
+            continue;
+        }
+        let delta = event["delta"]
+            .as_str()
+            .context("Live input delta missing")?;
+        let start = event["start_ms"]
+            .as_f64()
+            .context("Live input time missing")?;
+        let end = event["end_ms"]
+            .as_f64()
+            .context("Live input time missing")?;
+        if delta.is_empty()
+            || delta.contains('\0')
+            || delta.len() > 12000
+            || !start.is_finite()
+            || !end.is_finite()
+            || start < 0.
+            || end < start
+            || end > 86400000.
+        {
+            bail!("Invalid provider input transcript fragment");
+        }
+        text.push_str(delta);
+        inputs += 1;
+        if text.len() > 65536 {
+            bail!("Complete Live input window exceeds language bound");
+        }
+    }
+    if text.trim().is_empty()
+        || inputs != expected.input_events
+        || format!("{:x}", Sha256::digest(text.as_bytes())) != expected.text_sha256
+    {
+        bail!("Live input window does not match its frozen source");
+    }
+    Ok(text)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VoiceConfig {
@@ -621,5 +746,67 @@ mod public_interpretation_tests {
         );
         config.default_transcription_profile = Some("missing".into());
         assert!(config.validate().is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod live_window_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    #[test]
+    fn live_window_reads_only_input_and_keeps_the_frozen_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let dialogue = uuid::Uuid::now_v7().to_string();
+        let path = root.path().join(format!("{dialogue}.events"));
+        let rows = [
+            ("in1", "session.input_transcript.delta", "Dale, "),
+            (
+                "out",
+                "session.output_transcript.delta",
+                "Do not turn this into human speech",
+            ),
+            ("in2", "session.input_transcript.delta", "CompAII."),
+        ];
+        let bytes=rows.iter().map(|(id,kind,text)|serde_json::to_string(&serde_json::json!({"event_id":id,"sha256":"a".repeat(64),"event":{"event_id":id,"type":kind,"delta":text,"start_ms":0,"end_ms":12}})).unwrap()+"\n").collect::<String>().into_bytes();
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let info = path.metadata().unwrap();
+        let text = "Dale, CompAII.";
+        let proof = PublicLiveWindow {
+            dialogue: dialogue.clone(),
+            journal_revision: format!(
+                "{:x}",
+                Sha256::digest(format!("{dialogue}:{}:{}", info.dev(), info.ino()))
+            ),
+            journal_from: 0,
+            journal_after: bytes.len() as u64,
+            journal_sha256: format!("{:x}", Sha256::digest(&bytes)),
+            text_sha256: format!("{:x}", Sha256::digest(text)),
+            input_events: 2,
+        };
+        assert_eq!(public_live_window_source(&path, &proof).unwrap(), text);
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"late fragment not in this prefix\n")
+            .unwrap();
+        assert_eq!(public_live_window_source(&path, &proof).unwrap(), text);
+        let mut bad = proof.clone();
+        bad.text_sha256 = "b".repeat(64);
+        assert!(public_live_window_source(&path, &bad).is_err());
+        bad = proof.clone();
+        bad.journal_from = 1;
+        assert!(public_live_window_source(&path, &bad).is_err());
+        bad = proof.clone();
+        bad.input_events = 3;
+        assert!(public_live_window_source(&path, &bad).is_err());
+        let link = root.path().join("link");
+        symlink(&path, &link).unwrap();
+        assert!(public_live_window_source(&link, &proof).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(public_live_window_source(&path, &proof).is_err());
     }
 }
