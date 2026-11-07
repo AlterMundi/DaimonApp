@@ -29,7 +29,9 @@ jobs:
         run: echo '81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f  clients/android/gradle/wrapper/gradle-wrapper.jar' | sha256sum --check
       - name: Build and lint the independent client
         working-directory: clients/android
-        run: ./gradlew --no-daemon -PfocusProbe=true :focus-probe:assembleDebug :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease :app:assembleDebug :app:assembleDebugAndroidTest
+        run: |
+          ./gradlew --no-daemon -PfocusProbe=true :focus-probe:assembleDebug :app:assembleRelease :app:testReleaseUnitTest :app:lintRelease :app:assembleDebug :app:assembleDebugAndroidTest
+          python3 check-test-assets.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: interaction-android-unsigned

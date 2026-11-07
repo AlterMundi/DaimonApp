@@ -26,4 +26,7 @@ def webAudioTestAssets = tasks.register('webAudioTestAssets', Copy) {
     from('../../../dashboard/web') { include 'webrtc-native-audio.js', 'voice-output-pcm.js' }
     into(layout.buildDirectory.dir('generated/webAudioTestAssets'))
 }
-android.sourceSets.androidTest.assets.srcDir(webAudioTestAssets)
+android.sourceSets.androidTest.assets.srcDir(layout.buildDirectory.dir('generated/webAudioTestAssets'))
+tasks.configureEach {
+    if (name.startsWith('merge') && name.endsWith('AndroidTestAssets')) dependsOn(webAudioTestAssets)
+}
