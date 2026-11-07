@@ -1,6 +1,7 @@
 name: Interaction native SDK qualification
 on:
-  # Qualify each exact native pin once through the existing manual route.
+  # Qualify each exact native pin once through this existing caller.
+  # Standalone fork Actions need not be enabled to use its reusable workflow.
   # PR path filters compare the cumulative diff, causing App-only commits to
   # cancel/rebuild the same immutable native source repeatedly.
   workflow_dispatch:
@@ -8,6 +9,6 @@ permissions:
   contents: read
 jobs:
   native:
-    uses: compaii/codex/.github/workflows/interaction-goal-controls.yml@1ab0e56803cc6ac6104a07c35da97c89e347cdfd
+    uses: compaii/codex/.github/workflows/interaction-goal-controls.yml@2c374dc44df897c45eb959a157669cccb6a83977
     with:
-      source_ref: 1ab0e56803cc6ac6104a07c35da97c89e347cdfd
+      source_ref: 2c374dc44df897c45eb959a157669cccb6a83977
