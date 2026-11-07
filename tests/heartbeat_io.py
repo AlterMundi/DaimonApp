@@ -139,7 +139,12 @@ def qualify(binary):
         assert successor['producer']['observation_window_renewal']['previous_max_checks'] == 4
         assert successor['resources'] == predecessor['resources']
         assert successor['admission_paused'] and successor['generation'] == paused['generation']
-        assert j.read('heartbeat', *successor_args)['result'] == successor
+        repeated = j.read('heartbeat', *successor_args)['result']
+        # The renewal/accounting result is idempotent; readiness is a fresh
+        # observation, whose timestamp must not be frozen by an exact retry.
+        assert repeated['operational_evidence']['observed_at_unix_ms'] >= successor['operational_evidence']['observed_at_unix_ms']
+        repeated['operational_evidence']['observed_at_unix_ms'] = successor['operational_evidence']['observed_at_unix_ms']
+        assert repeated == successor
         j.stop(); j.start(); j.wait_control_socket(j.socket)
         restarted = j.read('heartbeat', 'status')['result']
         assert restarted['producer'] == successor['producer']
