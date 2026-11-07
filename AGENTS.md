@@ -1,3 +1,10 @@
+iOS preparation is in clients/ios. Keep the Android-compatible verified PCM span
+contract, one serial owner, bounded queue/source metadata and nonrenewable lifetime
+across flush. Submission is not playback; the future audio/session driver must
+fence stale owner/epoch callbacks. Swift package tests are not an installable app,
+WKWebView/shared-login, AVAudioSession, simulator or physical iPhone acceptance.
+Reuse the hosted Conversation/grants; no new login/editor/server or provider work.
+
 Native Beacon preparation reuses the existing Sonic score/explicit activation.
 Keep six normalized phase-continuous sine carriers, bounded latest frame/level,
 20second maximum observation validity and nonrenewable two-hour owner lifetime.

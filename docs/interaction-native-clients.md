@@ -369,6 +369,15 @@ speech works; an older receiver will retain its web behavior.
 
 ## Next increments and acceptance
 
+The first iOS source increment lives in `clients/ios`: a dependency-free Swift
+package (system Foundation/CryptoKit) ports the bounded PCM span queue with the
+same default300/explicit600second lifetime,30second pending audio, source/sequence
+and SHA256 fences. Flush cannot replenish its lifetime. A separate macOS CI job
+builds/tests it with two workers and a ten-minute deadline. This prepares the
+audio core only; no installable iOS app, native session/graph, WebView bridge,
+shared-login acceptance, signing or physical-device delivery is claimed. The
+complete iOS increment below remains open.
+
 1. Build/sign/install the pilot; qualify shared login, complete text/voice input,
    reply/source binding, copy/files, native speech and music recovery on Android.
 2. Implement progressive native speech and a single Android media service/session
