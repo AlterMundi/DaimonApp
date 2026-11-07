@@ -29,7 +29,11 @@ The source now also prepares `BeaconOutput` and `SpeechService` commands. One
 audio worker keeps one latest frame/level instead of accumulating a queue.
 Six-carrier configuration is frozen per owner; numeric frame bounds and mix are
 validated before admission. Frame validity is at most20seconds and level changes
-do not renew it. Expired observations fade their weights to zero. The two-hour
+do not renew it. Readiness stamps the native monotonic clock; the prepared frame
+contract requires an absolute deadline on that clock. The JS adapter must derive
+it conservatively from receipt time and existing source age, so delayed bridge
+delivery cannot manufacture a fresh20second allowance. Expired observations fade
+their weights to zero. The two-hour
 owner lifetime includes initialization and is not extended by refreshes. Quiet
 workers sleep until a control or deadline rather than continuously synthesizing
 silence. AudioTrack writes are nonblocking with a bounded native buffer and

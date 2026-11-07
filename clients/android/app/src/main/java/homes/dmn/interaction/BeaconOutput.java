@@ -34,7 +34,9 @@ final class BeaconOutput {
             depth = number(value.get("depth"), 0, .5);
             level = number(value.get("level"), 0, .8);
             transition = integer(value.get("transition_ms"), 20, 2000);
-            expires = SystemClock.elapsedRealtime() + integer(value.get("valid_for_ms"), 0, 20000);
+            double deadline = number(value.get("expires_at_ms"), 0, SystemClock.elapsedRealtime() + 20000);
+            if (deadline != Math.rint(deadline)) throw new IllegalArgumentException("Beacon expiry must be an integer");
+            expires = (long)deadline;
         }
         boolean sameConfiguration(Frame other) {
             return depth == other.depth && Arrays.equals(frequencies, other.frequencies) && Arrays.equals(pulses, other.pulses);
@@ -117,8 +119,10 @@ final class BeaconOutput {
     }
     private void event(String type, long frames) {
         long observedControl = appliedControl;
+        long observedClock = SystemClock.elapsedRealtime();
         main.post(() -> {
-            try { emit.accept(new JSONObject().put("type", type).put("played_frames", frames).put("control", observedControl)); }
+            try { emit.accept(new JSONObject().put("type", type).put("played_frames", frames)
+                .put("control", observedControl).put("clock_ms", observedClock)); }
             catch (Exception ignored) { /* Observation cannot crash the audio worker. */ }
         });
     }
