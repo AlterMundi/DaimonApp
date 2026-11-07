@@ -107,7 +107,10 @@ def qualify(app):
                 assert (installed/'native-audio.js').read_bytes()==(app/'native-audio.js').read_bytes()
                 print('Exact installed adapter observed after lost install receipt; no reinstall',flush=True)
             launch_attempted = True
-            run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'])
+            try:
+                run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'])
+            except subprocess.TimeoutExpired:
+                print('Launch receipt unconfirmed; observing this same fixture result without relaunch',flush=True)
             until = time.monotonic()+35
             while not (state/'result.json').exists() and time.monotonic()<until:
                 if server.poll() is not None: raise RuntimeError('HTTPS fixture stopped during the journey: '+(state/'server.log').read_text()[-8192:])
