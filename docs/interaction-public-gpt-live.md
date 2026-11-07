@@ -657,7 +657,7 @@ authorized finite native visit is open. Discovery stays within the existing
 closed or explicitly reviewed disconnected visits; a large retained backlog therefore increases scan latency rather
 than creating unbounded concurrent readers. No periodic/background attention is
 installed. The existing native route/result/page limits remain unchanged, including
-the outstanding older-worker-result pagination gap.
+the source-compatible older-worker pages described below.
 
 Before a historical result can return, its exact retained original/delegation,
 native acknowledgment, current canonical revision and character offset are
@@ -687,6 +687,35 @@ it to a fresh connection without another original, ASR or native dispatch. These
 checks use synthetic native/provider peers. Real first-use identity/memory/work,
 speech/interruption, repeated physical renewal and semantic checkpoints remain
 unfinished; this source extension has not been selected on a receiver.
+
+### Older canonical worker results
+
+The native source reader now advertises `result_pages: "v1"` in owned input
+traces and `foreground_trace_results: "v1"` in voice capabilities. Existing
+`input trace ID` keeps its latest-eight-per-instruction bound. Each route adds
+`results_cursor`; `input trace-results ID INSTRUCTION BEFORE` reads at most eight
+older canonical deliveries for that same original and instruction. A negative
+cursor or unrelated instruction refuses. `input trace-result ID delivery:UUID`
+rechecks one exact association independently of the latest page. All three reads
+reuse the existing owner/entry authorization, request links, canonical revisions,
+freshness and target availability. They dispatch no work or recognition.
+
+The public native return task reads at most one older instruction page per
+foreground poll after checking current results. It retains at most five flat
+instruction cursors in the original pipeline, without copying result text. A page
+advances only after its eligible fragments are acknowledged; existing unknown
+append, exact offset and historical forwarding fences still apply. A completed
+scan remains complete until the latest-page cursor changes. Each older result is
+rechecked by the exact association reader and its canonical revision before any
+context append, including after connection replacement. Older native readers
+without the advertised capability retain their existing latest-page behavior;
+there is no fallback work submission or unbounded history scan.
+
+This is source preparation, not receiving selection or proof of useful spoken
+incorporation. Actual memory/hearing, repeated physical renewal and full original
+roadmap acceptance remain open. Synthetic tests cover later-page return, exact
+revision changes, foreign bindings, nonadvancing cursors, retained cursor reads
+through a fresh journal reader, and no repeated native work.
 
 ### Explicit replacement after a disconnected native visit
 

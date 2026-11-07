@@ -1443,6 +1443,48 @@ impl Store {
         entry: SessionKey,
         id: &str,
     ) -> Result<serde_json::Value> {
+        self.conversation_input_trace_selected(human, entry, id, None, 0, None)
+    }
+
+    /// Continue one original's exact instruction results, without scanning other work.
+    pub fn conversation_input_trace_results(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        instruction: &str,
+        before: i64,
+    ) -> Result<serde_json::Value> {
+        if before < 0 {
+            bail!("Invalid trace result cursor");
+        }
+        self.conversation_input_trace_selected(human, entry, id, Some(instruction), before, None)
+    }
+
+    /// Revalidate an older result association directly, independent of page position.
+    pub fn conversation_input_trace_result(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        source: &str,
+    ) -> Result<serde_json::Value> {
+        let delivery = source
+            .strip_prefix("delivery:")
+            .context("Select a canonical delivery")?;
+        Uuid::parse_str(delivery)?;
+        self.conversation_input_trace_selected(human, entry, id, None, 0, Some(delivery))
+    }
+
+    fn conversation_input_trace_selected(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        selected_instruction: Option<&str>,
+        before: i64,
+        selected_delivery: Option<&str>,
+    ) -> Result<serde_json::Value> {
         use crate::interaction::{Delivery, Instruction};
         use serde_json::json;
         let answer = self.conversation_answer_receipt(human, entry, id)?;
@@ -1485,25 +1527,34 @@ impl Store {
         let mut result_budget = 24_000;
         for (raw, phase, available) in rows {
             let instruction: Instruction = serde_json::from_str(&raw)?;
+            if selected_instruction.is_some_and(|selected| selected != instruction.id) {
+                continue;
+            }
             if instruction.human_id != human {
                 bail!("Trace instruction owner changed");
             }
             let mut results = Vec::new();
             let mut more_results = false;
+            let mut result_cursor = None;
             if available {
                 let mut deliveries = conn.prepare(
-                    "SELECT DISTINCT d.doc,d.phase FROM interaction_request_links l
+                    "SELECT DISTINCT d.rowid,d.doc,d.phase FROM interaction_request_links l
                      JOIN interaction_delivery_requests links ON links.request_id=l.request_id
                      JOIN interaction_deliveries d ON d.id=links.delivery_id
-                     WHERE l.instruction_id=?1 ORDER BY d.rowid DESC LIMIT 9",
+                     WHERE l.instruction_id=?1 AND (?2=0 OR d.rowid<?2)
+                       AND (?3 IS NULL OR d.id=?3) ORDER BY d.rowid DESC LIMIT 9",
                 )?;
                 let selected = deliveries
-                    .query_map([&instruction.id], |r| {
-                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    .query_map(params![&instruction.id, before, selected_delivery], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 more_results = selected.len() > 8;
-                for (raw, delivery_phase) in selected.into_iter().take(8) {
+                for (sequence, raw, delivery_phase) in selected.into_iter().take(8) {
                     let delivery: Delivery = serde_json::from_str(&raw)?;
                     let (current, pending) = super::routing::delivery_freshness(&conn, &delivery)?;
                     // Use the scoped canonical reader's exact revision, never
@@ -1524,6 +1575,7 @@ impl Store {
                         break;
                     }
                     result_budget -= size;
+                    result_cursor = Some(sequence);
                     results.push(result);
                 }
             }
@@ -1533,15 +1585,18 @@ impl Store {
                 "forwarded_original":instruction.text.chars().take(2048).collect::<String>(),
                 "forwarded_next_offset":(instruction.text.chars().count()>2048).then_some(2048),"transport_phase":phase,
                 "native_acceptance":phase=="accepted","target_available":available,
-                "results":results,"more_results":more_results}),
+                "results":results,"more_results":more_results,"results_cursor":result_cursor}),
             );
+        }
+        if selected_instruction.is_some() && routes.is_empty() {
+            bail!("Instruction is outside this original");
         }
         Ok(json!({"schema":"telecodex.conversation-trace/v1","id":id,
             "entry_binding":[human,entry,session,native],"text":original["text"].as_str().unwrap_or_default().chars().take(2048).collect::<String>(),
             "text_next_offset":(original["text"].as_str().unwrap_or_default().chars().count()>2048).then_some(2048),
             "voice":original["voice"],"phase":original["phase"],"retired":original["retired"],"routing":original["routing"],
             "answer":answer.map(|a|json!({"id":a["id"],"revision":a["revision"],"recorded":true})),
-            "routes":routes,"read_only":true,
+            "routes":routes,"read_only":true,"result_pages":"v1",
             "evidence":"Forwarded originals are exact retained controller text, not reconstructed native relay envelopes. Native acceptance and worker coverage declarations are separate evidence."}))
     }
 

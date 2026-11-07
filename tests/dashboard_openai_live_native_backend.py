@@ -237,6 +237,90 @@ class Backend(unittest.TestCase):
             return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
         self.assertEqual(self.updates,[]);self.assertEqual(len(self.writes),1)
 
+    def older_worker(self):
+        route,result,channel=self.worker_result()
+        route.update(instruction='00000000-0000-4000-8000-000000000002',more_results=True,results_cursor=9,results=[])
+        self.provider.conversation_input_trace=lambda root:{'id':root,'result_pages':'v1',
+            'entry_binding':self.owner['entry_binding'],'routes':[route]}
+        self.provider.conversation_input_trace_result=lambda root,source:{'id':root,'result_pages':'v1',
+            'entry_binding':self.owner['entry_binding'],'routes':[{**route,'results':[result]}]}
+        self.pages=[]
+        def page(root,instruction,before):
+            self.pages.append(before)
+            return {'id':root,'result_pages':'v1','entry_binding':self.owner['entry_binding'],
+                'routes':[{**route,'results_cursor':1,'more_results':False,'results':[result]}]}
+        self.provider.conversation_input_trace_results=page
+        self.provider.presentation_list=lambda *args:{'binding':self.owner['binding'],'items':[],
+            'cursor':{'native':0,'delivery':0},'more':False}
+        return route,result,channel
+
+    def test_older_worker_result_rechecks_exact_revision_without_new_work(self):
+        route,result,channel=self.older_worker()
+        returned=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(returned['source'],result['source']);self.assertEqual(self.pages,[9])
+        command=self.updates[-1]
+        self.visits.event(self.ident,100,self.owner,{'type':command['type']+'ed',
+            'event_id':'older-result-ack','client_event_id':command['event_id']})
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        scan=self.visits.read(self.ident,100,self.owner)['delegations'][self.delegation]['native_pipeline']['worker_return_scan']
+        self.assertTrue(scan[route['instruction']]['complete'])
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        self.assertEqual(self.pages,[9,9]);self.assertEqual(len(self.writes),1);self.assertEqual(len(self.updates),1)
+
+    def test_older_worker_cursor_survives_reader_restart_and_continues_next_page(self):
+        route,result,channel=self.older_worker();self.pages=[]
+        def pages(root,instruction,before):
+            self.pages.append(before)
+            return {'id':root,'result_pages':'v1','entry_binding':self.owner['entry_binding'],
+                'routes':[{**route,'results_cursor':2 if before==9 else 1,
+                    'more_results':before==9,'results':[] if before==9 else [result]}]}
+        self.provider.conversation_input_trace_results=pages
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        reader=LiveCreations(self.root)
+        scan=reader.read(self.ident,100,self.owner)['delegations'][self.delegation]['native_pipeline']['worker_return_scan']
+        self.assertEqual(scan[route['instruction']]['before'],2)
+        returned=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(returned['source'],result['source']);self.assertEqual(self.pages,[9,2])
+        self.assertEqual(len(self.writes),1)
+
+    def test_legacy_reader_does_not_receive_unsupported_page_commands(self):
+        route,result,channel=self.worker_result();route.update(results=[],more_results=True)
+        self.provider.conversation_input_trace_results=lambda *args:self.fail('Legacy reader has no result-page capability')
+        self.provider.presentation_list=lambda *args:{'binding':self.owner['binding'],'items':[],
+            'cursor':{'native':0,'delivery':0},'more':False}
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        self.assertEqual(self.updates,[]);self.assertEqual(len(self.writes),1)
+
+    def test_older_worker_page_requires_advancing_cursor(self):
+        route,result,channel=self.older_worker()
+        self.provider.conversation_input_trace_results=lambda root,instruction,before:{'id':root,
+            'result_pages':'v1','entry_binding':self.owner['entry_binding'],
+            'routes':[{**route,'results_cursor':before,'more_results':True,'results':[]}]}
+        with self.assertRaises(ValueError):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(self.updates,[])
+        self.assertNotIn('worker_return_scan',self.visits.read(self.ident,100,self.owner)['delegations'][self.delegation]['native_pipeline'])
+
+    def test_older_worker_revision_change_refuses_before_append(self):
+        route,result,channel=self.older_worker()
+        exact=self.provider.conversation_input_trace_result
+        def changed(root,source):
+            value=copy.deepcopy(exact(root,source));value['routes'][0]['results'][0]['revision']='e'*64;return value
+        self.provider.conversation_input_trace_result=changed
+        with self.assertRaises(ValueError):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(self.updates,[]);self.assertEqual(len(self.writes),1)
+
+    def test_older_worker_page_foreign_binding_refuses_before_append(self):
+        route,result,channel=self.older_worker();page=self.provider.conversation_input_trace_results
+        def foreign(*args):
+            value=page(*args);value['entry_binding']=[1,2,3,4];return value
+        self.provider.conversation_input_trace_results=foreign
+        from dashboard.provider import ProviderUnavailable
+        with self.assertRaises(ProviderUnavailable):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(self.updates,[])
+
     def test_foreign_trace_cannot_select_a_worker_result(self):
         route,result,channel=self.worker_result()
         self.provider.conversation_input_trace=lambda root:{'id':root,'entry_binding':[1,2,3,4],'routes':[route]}

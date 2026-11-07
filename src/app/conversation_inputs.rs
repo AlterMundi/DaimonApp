@@ -520,6 +520,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
                 .unwrap_or_default()
         );
         result["foreground_context"] = json!("v1");
+        result["foreground_trace_results"] = json!("v1");
         result["foreground_public_live_transcripts"] = json!("v1");
         #[cfg(unix)]
         {
@@ -697,6 +698,29 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             cursor.parse()?,
             *direction == "before",
         );
+    }
+    if let Some(args) = args.strip_prefix("trace-results ") {
+        let fields: Vec<_> = args.split_whitespace().collect();
+        let [id, instruction, before] = fields.as_slice() else {
+            bail!("Expected trace original, instruction and result cursor");
+        };
+        return app.shared.store.conversation_input_trace_results(
+            human,
+            cfg.entry(),
+            id,
+            instruction,
+            before.parse()?,
+        );
+    }
+    if let Some(args) = args.strip_prefix("trace-result ") {
+        let fields: Vec<_> = args.split_whitespace().collect();
+        let [id, source] = fields.as_slice() else {
+            bail!("Expected trace original and canonical delivery");
+        };
+        return app
+            .shared
+            .store
+            .conversation_input_trace_result(human, cfg.entry(), id, source);
     }
     if let Some(id) = args.strip_prefix("trace ") {
         let mut trace = app

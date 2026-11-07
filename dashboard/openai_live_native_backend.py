@@ -111,7 +111,7 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
 
 
 def return_one_native_part(history, ident, human, owner, delegation, provider, sideband, *, stopped=None, source_visit=None):
-    """Read at most eight source pages and append one fragment per foreground poll.
+    """Read bounded native/worker pages and append one fragment per foreground poll.
 
     Current trace-associated worker deliveries use exact canonical revisions,
     even after the native turn ends or the conversation page moves on. Older
@@ -161,6 +161,53 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     and isinstance(revision,str) and re.fullmatch('[a-f0-9]{64}',revision)
                     and not any(row['source']==source and row['revision']==revision for row in updates)):
                 return emit(source,revision,0)
+    if trace.get('result_pages')=='v1':
+        # One older instruction page per foreground poll. Keep only flat cursors,
+        # not result text or another queue, at the original work owner.
+        scans=work['native_pipeline'].get('worker_return_scan',{})
+        if not isinstance(scans,dict) or len(scans)>5:raise ValueError('Worker result cursor bound exceeded')
+        for route in routes:
+            instruction=route.get('instruction');head=route.get('results_cursor')
+            if route.get('target_available') is not True or not route.get('more_results'):continue
+            if (not isinstance(instruction,str) or str(uuid.UUID(instruction))!=instruction
+                    or type(head) is not int or head<=0):raise ValueError('Worker result page cursor unavailable')
+            scan=scans.get(instruction,{})
+            if scan.get('head')!=head:scan={'head':head,'before':head,'complete':False}
+            if (set(scan)!={'head','before','complete'} or type(scan['before']) is not int
+                    or not 0<scan['before']<=head or type(scan['complete']) is not bool):
+                raise ValueError('Worker result cursor changed')
+            if scan['complete']:continue
+            before=scan['before']
+            page=provider.conversation_input_trace_results(work['native_work']['root'],instruction,before)
+            current()
+            selected=page.get('routes',[])
+            if (page.get('id')!=work['native_work']['root'] or page.get('entry_binding')!=owner['entry_binding']
+                    or page.get('result_pages')!='v1' or not isinstance(selected,list) or len(selected)!=1
+                    or selected[0].get('instruction')!=instruction):
+                raise ProviderUnavailable('Worker result page original binding changed')
+            older=selected[0];results=older.get('results',[])
+            if not isinstance(results,list) or len(results)>8:raise ValueError('Worker result page bound exceeded')
+            if older.get('target_available') is not True:return None
+            for result in reversed(results):
+                source,revision=result.get('source'),result.get('revision')
+                if (result.get('instruction_covered') is True and result.get('current') is True
+                        and result.get('correction_pending') is False and isinstance(source,str)
+                        and re.fullmatch(r'delivery:[a-f0-9-]{36}',source)
+                        and isinstance(revision,str) and re.fullmatch('[a-f0-9]{64}',revision)
+                        and not any(row['source']==source and row['revision']==revision for row in updates)):
+                    return emit(source,revision,0)
+            after=older.get('results_cursor')
+            more=older.get('more_results') is True
+            if more and (type(after) is not int or not 0<after<before):
+                raise ValueError('Worker result page did not advance')
+            with history_lock(history.root/'.lock'):
+                latest=history.read(origin,human,owner)
+                pipeline=latest['delegations'][delegation]['native_pipeline']
+                retained=pipeline.setdefault('worker_return_scan',{})
+                if len(retained)>=5 and instruction not in retained:raise ValueError('Worker result cursor capacity reached')
+                retained[instruction]={'head':head,'before':after if more else before,'complete':not more}
+                history._write(latest)
+            break
     native=provider.conversation_input_status(work['native_work']['root'])
     current()
     if type(native.get('local_turn')) is not int: return None
