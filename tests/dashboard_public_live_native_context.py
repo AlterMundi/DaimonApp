@@ -12,6 +12,7 @@ from dashboard.native_context import NativeContext
 from dashboard.openai_live import LiveCall
 from dashboard.openai_live_visits import LiveCreations
 from dashboard.openai_live_native_context import PublicLiveContextHistory
+from dashboard.openai_live_native_session import PublicLiveSessionContext
 from dashboard.provider import ProviderUnavailable
 import dashboard_native_context as fixtures
 
@@ -112,6 +113,36 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(meta['journal_from']<meta['journal_after'])
         self.assertNotIn('native_context_batch',self.visits.read(self.dialogue,100,self.frozen))
         await self.producer.close()
+
+    async def test_legacy_visit_bootstrap_seeds_startup_before_new_provider_creation(self):
+        self.prepare();old=self.dialogue;self.event('Actually Friday')
+        self.visits.observe_closed(old,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'close_requested','session':{'id':'live:synthetic'}})
+        current=str(uuid.uuid4());self.visits.prepare(current,100,self.frozen,backend_mode='native')
+        context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,current,self.frozen,self.owner)
+        original={'model':'gpt-live-1','instructions':'Synthetic owner identity','delegation':{'type':'client'},
+            'audio':{'output':{'voice':'cedar'}},'store':False}
+        seeded=await context.prepare(original)
+        self.assertEqual(seeded['audio'],original['audio']);self.assertEqual(seeded['instructions'],original['instructions'])
+        self.assertNotIn('input',original)
+        self.assertIn('Actually Friday',seeded['input'][-1]['content'][0]['text'])
+        self.assertEqual(seeded['input'][-1]['role'],'developer')
+        self.assertEqual(self.visits.read(current,100,self.frozen)['state'],'prepared')
+        self.assertNotIn('call',self.visits.read(current,100,self.frozen))
+        opens=[c for c in self.provider.calls if c['action']=='open' and c['dialogue']==current]
+        self.assertEqual(opens[0]['resume']['dialogue'],old)
+        self.assertEqual(self.visits.read(current,100,self.frozen)['native_context_seed']['resume'],opens[0]['resume'])
+        await context.close()
+
+    async def test_inflight_interpretation_keeps_projection_open_for_the_next_explicit_owner(self):
+        self.prepare();self.event()
+        context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,self.dialogue,self.frozen,self.owner)
+        await context.prepare({'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'}})
+        await context.close(settled=False)
+        record=self.history.context_resume_record(100,self.binding,self.dialogue)
+        self.assertEqual(record['phase'],'closing');self.assertFalse(self.provider.producers[self.dialogue]['closed'])
+        await context.close(settled=True)
+        self.assertTrue(self.provider.producers[self.dialogue]['closed'])
 
 
 if __name__=='__main__':unittest.main()

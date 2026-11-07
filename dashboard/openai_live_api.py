@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import threading
+import time
 
 from fastapi import HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
@@ -25,6 +26,7 @@ from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
 from .openai_live_native_backend import prepare_native, return_next_native_part
+from .openai_live_native_session import PublicLiveSessionContext
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
 
@@ -83,6 +85,7 @@ def install(app, config, provider, authorize, origins):
     seconds=selected.get('session_seconds',600)
     history=LiveCreations(Path(config['state_dir'])/'public-live-visits')
     uploads=asyncio.Semaphore(2)
+    context_slots=asyncio.Semaphore(2)
 
     async def http_owner(request, *, write=False):
         session=await authorize(request)
@@ -150,6 +153,7 @@ def install(app, config, provider, authorize, origins):
             await socket.close(code=1008);return
         await socket.accept()
         lease=sideband=creating=read_browser=read_provider=preparing=returning=None
+        native_context=None;context_operations=set()
         result_index=0;result_poll=0
         preparation_stopped=threading.Event()
         visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
@@ -165,6 +169,20 @@ def install(app, config, provider, authorize, origins):
         async def current_owner():
             if await asyncio.to_thread(provider.public_live_binding,binding)!=owner:
                 raise ValueError('Public voice owner changed')
+        async def context_operation(function,*args):
+            await recheck();await current_owner()
+            await asyncio.wait_for(context_slots.acquire(),2)
+            task=asyncio.create_task(asyncio.to_thread(function,*args))
+            context_operations.add(task)
+            from .voice_admission import hold_voice_task
+            hold_voice_task(socket.scope,task)
+            def done(future):
+                context_slots.release();context_operations.discard(future)
+                if not future.cancelled():future.exception()
+            task.add_done_callback(done)
+            result=await asyncio.wait_for(asyncio.shield(task),18)
+            await recheck();await current_owner()
+            return result
         async def begin_close():
             nonlocal closing,close_deadline
             if closing:return
@@ -189,7 +207,10 @@ def install(app, config, provider, authorize, origins):
                 if native_backend:
                     caps=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                     if (caps.get('binding')!=binding or caps.get('foreground_interpretation')!='gpt-transcribe/v1'
-                            or not callable(getattr(provider,'conversation_foreground_interpret',None))):
+                            or any(caps.get(k)!='v1' for k in ('foreground_context','foreground_resume','foreground_public_live_transcripts'))
+                            or not callable(getattr(provider,'conversation_foreground_interpret',None))
+                            or not callable(getattr(provider,'conversation_live_context',None))
+                            or getattr(app.state,'native_history',None) is None):
                         raise LiveUnavailable('native_reader_unavailable')
                 lease=AvatarVoiceLease(app.state.voice_active,human,binding,owner['native_thread'])
                 client=OpenAILive(selected['api_key_file'])
@@ -200,6 +221,14 @@ def install(app, config, provider, authorize, origins):
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'))
                 admitted=True
+                if native_backend:
+                    await send({'type':'context_preparing','id':visit})
+                    native_context=PublicLiveSessionContext(app.state.native_history,history,provider,human,visit,owner,context_operation)
+                    async def preparing_context():await send({'type':'context_preparing','id':visit})
+                    spec=await native_context.prepare(spec,notice=preparing_context,recheck=recheck)
+                    current=await asyncio.to_thread(history.read,visit,human,owner)
+                    history.check_capture(current)
+                    admission['remaining_seconds']=max(1,int(current['admission']['expires']-time.monotonic()))
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
                     'source_coverage':'sideband_before_media_answer'})
@@ -285,9 +314,12 @@ def install(app, config, provider, authorize, origins):
                                 pending=next((key for key,row in value['delegations'].items()
                                     if row.get('source_seal',{}).get('state') in ('sealed','empty') and 'native_pipeline' not in row),None)
                                 if pending is not None:
+                                    loop=asyncio.get_running_loop()
+                                    def before_delegate():
+                                        return asyncio.run_coroutine_threadsafe(native_context.sync(),loop).result(timeout=35)
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
-                                        stopped=preparation_stopped))
+                                        stopped=preparation_stopped,before_delegate=before_delegate))
                             if native_backend and returning is None and asyncio.get_running_loop().time()>=result_poll:
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
@@ -342,6 +374,10 @@ def install(app, config, provider, authorize, origins):
                         with suppress(BaseException):await asyncio.wait_for(asyncio.shield(returning),50)
                     if sideband is not None:
                         with suppress(Exception):await asyncio.to_thread(sideband.detach)
+                    if native_context is not None:
+                        settled=(preparing is None or preparing.done()) and not context_operations
+                        with suppress(Exception):
+                            async with asyncio.timeout(25):await native_context.close(settled=settled)
                     if admitted:
                         with suppress(Exception):await asyncio.to_thread(history.end_capture,visit,human,binding)
                     if visit:history.release_sources(visit)

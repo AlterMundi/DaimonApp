@@ -70,7 +70,7 @@ class Journal:
             for source in body['assistant']:
                 old=p['sources'].get(source['source'])
                 if old is None:
-                    assert not p['closed'] or 'derived_caption' in source
+                    assert not p['closed'] or 'derived_caption' in source or 'live_transcript' in source
                     p['sources'][source['source']]=source;self.fresh.append(source)
                 else:assert old==source
                 receipts.append({'source':source['source'],'sequence':list(p['sources']).index(source['source'])+1,
