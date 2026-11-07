@@ -15,7 +15,8 @@ AudioWorklet into that owner; no HTML Audio player is created on this path.
 Older APKs keep their existing browser playback. A selected native failure closes
 the visit rather than silently falling back. Hold releases native output while
 the existing bounded provider final-usage receiver drains. Late preparation is
-closed without opening the microphone. Muting/pausing flushes queued spans;
+closed without opening the microphone. Cancellation releases the native owner
+even while worklet module loading remains unresolved. Muting/pausing flushes queued spans;
 resuming starts a new source identity and cannot replay old queued audio.
 
 The legacy PCM default stays300seconds; an explicit session may select300..600.

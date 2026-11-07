@@ -5,18 +5,21 @@ window.WebRtcNativeAudio=(()=>{
   const supported=()=>window.NativeSpeechAudio?.webrtcPcm===true
     &&window.NativeSpeechAudio.pcmMaxSeconds>=600
     &&typeof window.NativeSpeechAudio.openPcm==='function';
-  async function open({sessionSeconds=600,onUnavailable=()=>{}}={}){
+  async function open({sessionSeconds=600,onUnavailable=()=>{},signal}={}){
     if(!supported()||!Number.isSafeInteger(sessionSeconds)||sessionSeconds<300||sessionSeconds>600)
       throw Error('Native WebRTC audio is unavailable');
     let context,node,source,driver,closed=false,paused=false,enabled=true,epoch=0;
-    let sourceId=crypto.randomUUID(),end=0,pending=0,chain=Promise.resolve();
+    let sourceId=crypto.randomUUID(),end=0,pending=0,chain=Promise.resolve(),rejectOpen;
+    const cancelled=new Promise((resolve,reject)=>{rejectOpen=reject;});cancelled.catch(()=>{});
+    const abort=()=>{close();rejectOpen(Error('Native audio preparation retired'));};
     function close(){
       if(closed)return;closed=true;epoch++;
+      signal?.removeEventListener('abort',abort);
       try{source?.disconnect();}catch{}source=undefined;
       if(node){node.port.postMessage('stop');node.port.onmessage=null;node.port.close();try{node.disconnect();}catch{}}
       driver?.close();if(context)void context.close().catch(()=>{});
     }
-    function fail(message){if(closed)return;close();onUnavailable(message);}
+    function fail(message){if(closed)return;close();rejectOpen(Error(message));onUnavailable(message);}
     function silence(){
       epoch++;sourceId=crypto.randomUUID();end=0;
       driver.flush();driver.pause();
@@ -34,13 +37,15 @@ window.WebRtcNativeAudio=(()=>{
       }
     };
     try{
+      if(signal?.aborted)throw Error('Native audio preparation retired');
+      signal?.addEventListener('abort',abort,{once:true});
       const Context=window.AudioContext||window.webkitAudioContext;
       context=new Context({sampleRate:24000,latencyHint:'interactive'});
       if(context.sampleRate!==24000||!context.audioWorklet)throw Error('Native output conversion unavailable');
       driver=window.NativeSpeechAudio.openPcm({sessionSeconds,onUnavailable:fail});
       // Observe readiness rejection even if module loading or Resume fails first.
       driver.ready.catch(()=>{});
-      await context.audioWorklet.addModule('assets/voice-output-pcm.js');
+      await Promise.race([context.audioWorklet.addModule('assets/voice-output-pcm.js'),cancelled]);
       node=new AudioWorkletNode(context,'interaction-output-pcm',{numberOfInputs:1,numberOfOutputs:0,
         channelCount:2,channelCountMode:'max',processorOptions:{sessionSeconds}});
       node.onprocessorerror=()=>fail('Native output conversion stopped.');
@@ -58,7 +63,7 @@ window.WebRtcNativeAudio=(()=>{
           await driver.append(id,through,bytes);
         }).catch(()=>fail('Native output could not be confirmed.')).finally(()=>{pending--;});
       };
-      await Promise.all([context.resume(),driver.ready]);
+      await Promise.race([Promise.all([context.resume(),driver.ready]),cancelled]);
       if(closed||context.state!=='running')throw Error('Native audio was not activated');
       return value;
     }catch(error){close();throw error;}

@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const crypto=require('node:crypto').webcrypto;
 const source=fs.readFileSync('dashboard/web/webrtc-native-audio.js','utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function fixture({blocked=false,rejectModule=false}={}){
+function fixture({blocked=false,rejectModule=false,blockModule=false}={}){
   const contexts=[],nodes=[],writes=[],events=[];let release;
   const stalled=blocked?new Promise(resolve=>release=resolve):Promise.resolve();
   const driver={ready:Promise.resolve(),close(){events.push('close');},flush(){events.push('flush');return [];},
@@ -11,7 +11,7 @@ function fixture({blocked=false,rejectModule=false}={}){
     async append(id,end,raw){writes.push({id,end,raw});await stalled;return true;}};
   class Context{
     constructor(options){assert.equal(options.sampleRate,24000);this.sampleRate=24000;this.state='suspended';contexts.push(this);
-      this.audioWorklet={addModule:async path=>{assert.equal(path,'assets/voice-output-pcm.js');if(rejectModule)throw Error('module unavailable');}};}
+      this.audioWorklet={addModule:async path=>{assert.equal(path,'assets/voice-output-pcm.js');if(rejectModule)throw Error('module unavailable');if(blockModule)await new Promise(()=>{});}};}
     async resume(){this.state='running';}async close(){this.state='closed';events.push('context-close');}
     createMediaStreamSource(stream){return {connect(node){assert(nodes.includes(node));events.push('attach');},disconnect(){events.push('detach');}};}
   }
@@ -41,6 +41,10 @@ function fixture({blocked=false,rejectModule=false}={}){
   const overload=fixture(),errors=[];await overload.api.open({onUnavailable:message=>errors.push(message)});
   for(let n=0;n<9;n++)overload.send();await tick();assert.equal(errors.length,1);assert.equal(overload.events.filter(v=>v==='close').length,1);
   const module=fixture({rejectModule:true});await assert.rejects(module.api.open(),/module unavailable/);assert.equal(module.events.filter(v=>v==='close').length,1);
+  const stalled=fixture({blockModule:true}),controller=new AbortController();
+  const opening=stalled.api.open({signal:controller.signal});controller.abort();
+  await assert.rejects(opening,/retired/);assert.equal(stalled.events.filter(v=>v==='close').length,1);
+  assert.equal(stalled.contexts[0].state,'closed','Abort releases native output and context even if addModule never settles');
 
   let Processor;let bytes=0,first,error;
   class Worklet{constructor(){this.port={postMessage(value){if(value.pcm){bytes+=value.pcm.byteLength;first??=value.pcm;}else error=value.error;}};}}

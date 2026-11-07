@@ -90,9 +90,10 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  failedOutput.window.WebRtcNativeAudio.open=async()=>{throw Error('Native focus unavailable');};
  assert.equal(await failedOutput.engine.start(),false);assert.equal(failedOutput.permission(),0);
  assert.equal(failedOutput.audios.length,0);assert.equal(failedOutput.peers.length,0);
- const lateOutput=fixture({nativeOutput:true});let releaseOutput;
- lateOutput.window.WebRtcNativeAudio.open=()=>new Promise(resolve=>{releaseOutput=resolve;});
+ const lateOutput=fixture({nativeOutput:true});let releaseOutput,outputSignal;
+ lateOutput.window.WebRtcNativeAudio.open=options=>{outputSignal=options.signal;return new Promise(resolve=>{releaseOutput=resolve;});};
  const lateStarting=lateOutput.engine.start();await until(()=>releaseOutput);await lateOutput.engine.hold();
+ assert.equal(outputSignal.aborted,true,'Hold also cancels the unresolved native preparation owner');
  assert.equal(await lateStarting,false);let lateCloses=0;
  releaseOutput({close(){lateCloses++;}});await until(()=>lateCloses===1);
  assert.equal(lateOutput.permission(),0);assert.equal(lateOutput.audios.length,0);

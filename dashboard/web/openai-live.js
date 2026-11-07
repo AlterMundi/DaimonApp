@@ -7,7 +7,7 @@ window.PublicLiveConversation=(()=>{
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
-    let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
+    let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,nativeAudioAbort,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
     let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
@@ -132,6 +132,7 @@ window.PublicLiveConversation=(()=>{
       // Local playback stops immediately; the provider receiver remains alive
       // for the final usage event and independent native work keeps its owner.
       if(audio){audio.pause();audio.srcObject=null;}
+      nativeAudioAbort?.abort();nativeAudioAbort=undefined;
       nativeAudio?.close();nativeAudio=undefined;
       state(message);
       sourceBoundary?.reject(Error('Recording ended before source boundary confirmation'));sourceBoundary=undefined;
@@ -218,7 +219,9 @@ window.PublicLiveConversation=(()=>{
         const nativeOutput=window.NativeSpeechAudio?.webrtcPcm===true;
         if(nativeOutput){
           if(!window.WebRtcNativeAudio?.supported())throw Error('Native voice output is unavailable');
+          nativeAudioAbort=new AbortController();
           const opening=window.WebRtcNativeAudio.open({sessionSeconds:Math.max(300,Math.ceil(admission.remaining_seconds)),
+            signal:nativeAudioAbort.signal,
             onUnavailable:message=>{if(current())void hold(message);}})
             .then(value=>{if(!current()){value.close();throw Error('Native voice output retired');}return value;});
           opening.catch(()=>{});nativeAudio=await wait(opening,10000);
