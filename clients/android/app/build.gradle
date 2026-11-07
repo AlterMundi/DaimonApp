@@ -23,7 +23,7 @@ dependencies {
 // Exercise the exact web conversion source in the instrumented WebView, without
 // adding qualification scripts to the installed application's asset package.
 def webAudioTestAssets = tasks.register('webAudioTestAssets', Copy) {
-    from('../../../dashboard/web') { include 'webrtc-native-audio.js', 'voice-output-pcm.js' }
+    from('../../../dashboard/web') { include 'webrtc-native-audio.js', 'voice-output-pcm.js', 'sonic.js' }
     into(layout.buildDirectory.dir('generated/webAudioTestAssets'))
 }
 android.sourceSets.androidTest.assets.srcDir(layout.buildDirectory.dir('generated/webAudioTestAssets'))
