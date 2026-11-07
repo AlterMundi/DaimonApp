@@ -129,14 +129,12 @@ window.VisualInput = (() => {
         if(image.upload.binding!==binding)throw Error('Your selected images changed. Review them before sending.');
         return image.upload.promise;
       }
-      const controller=new AbortController(),attempt={controller,binding,timedOut:false};
+      const controller=new AbortController(),attempt={controller,binding};
       image.upload=attempt;
-      // Match the finite attached-file transfer budget; a still-progressing
-      // slow uplink must not lose the attempt at the ordinary JSON deadline.
-      const timeout=setTimeout(()=>{attempt.timedOut=true;controller.abort();},120000);
-      const failure=message=>Error(binding!==getBinding()||!images.includes(image)||controller.signal.aborted&&!attempt.timedOut
-        ? 'Your selected images changed. Review them before sending.'
-        : attempt.timedOut ? 'Image upload timed out. Your image and text are kept. Try sending again when the connection is ready.' : message);
+      // Network failure and explicit selection cancellation own this transfer;
+      // do not impose an application-clock cutoff on media upload progress.
+      const failure=message=>Error(binding!==getBinding()||!images.includes(image)||controller.signal.aborted
+        ? 'Your selected images changed. Review them before sending.' : message);
       attempt.promise=(async()=>{
         try{
           let response;
@@ -148,7 +146,7 @@ window.VisualInput = (() => {
           if(result.image_sha256!==image.image_sha256||result.width!==image.width||result.height!==image.height)throw Error('Image changed before sending. Select it again.');
           if(binding!==getBinding()||!images.includes(image))throw Error('Your selected images changed. Review them before sending.');
           image.uploaded=true;
-        }finally{clearTimeout(timeout);if(image.upload===attempt)image.upload=undefined;}
+        }finally{if(image.upload===attempt)image.upload=undefined;}
       })();
       return attempt.promise;
     }

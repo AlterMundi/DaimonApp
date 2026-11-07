@@ -71,10 +71,9 @@ function boot(live=false,recovery,status404=false,cues=false){
 }
 (async()=>{
  const slow=boot();await slow.click();const slowHold=slow.holdUpload();slow.click();await until(()=>slow.uploads.length===1);
- for(const timer of slow.timers.filter(t=>!t.closed&&t.ms<=25000))timer.fn();
- assert.equal(slow.uploads[0].signal.aborted,false,'Do not abort a slow recording transfer at20seconds');
- const slowDeadline=slow.timers.find(t=>!t.closed&&t.ms===120000);assert(slowDeadline,'Retain a finite total transfer deadline');
- slowHold.resolve();await until(()=>slow.received.length===1);assert.equal(slow.uploads.length,1);assert(slowDeadline.closed);
+ for(const timer of slow.timers.filter(t=>!t.closed))timer.fn();
+ assert.equal(slow.uploads[0].signal.aborted,false,'No application timer may abort the recording transfer');
+ slowHold.resolve();await until(()=>slow.received.length===1);assert.equal(slow.uploads.length,1);
  const openaiRecovery=memoryRecovery(),openai=boot(true,openaiRecovery);await until(()=>!openai.button().disabled);openai.profile('openai');
  const openaiPermission=openai.permission(),openaiStarting=openai.click();openai.profile(undefined);openaiPermission.resolve(openai.media());await openaiStarting;
  assert.equal(openai.preparation(),undefined,'OpenAI must never open a legacy Qwen/Gemini preview');
