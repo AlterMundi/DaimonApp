@@ -17,13 +17,17 @@ final class PcmSpeechOutput {
     private final Runnable acquire, abandon;
     private final Consumer<JSONObject> emit;
     private final AudioTrack track;
-    private final PcmPlaybackQueue queue = new PcmPlaybackQueue();
+    private final PcmPlaybackQueue queue;
     private boolean closed, paused, playing;
     private long progressed = SystemClock.uptimeMillis();
     private final Runnable pump = this::pump;
     private final Runnable expiry = this::fail;
 
     PcmSpeechOutput(AudioAttributes attributes, Handler handler, Runnable acquire, Runnable abandon, Consumer<JSONObject> emit) {
+        this(attributes, handler, acquire, abandon, emit, 300);
+    }
+    PcmSpeechOutput(AudioAttributes attributes, Handler handler, Runnable acquire, Runnable abandon, Consumer<JSONObject> emit, int seconds) {
+        queue = new PcmPlaybackQueue(seconds);
         this.handler = handler; this.acquire = acquire; this.abandon = abandon; this.emit = emit;
         int minimum = AudioTrack.getMinBufferSize(24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
         if (minimum < 1 || minimum > PcmPlaybackQueue.MAX_QUEUED) throw new IllegalStateException("PCM output unavailable");
@@ -33,7 +37,7 @@ final class PcmSpeechOutput {
             .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(Math.max(minimum, 4800))
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY).build();
         if (track.getState() != AudioTrack.STATE_INITIALIZED) { track.release(); throw new IllegalStateException("PCM output unavailable"); }
-        handler.postDelayed(expiry, 300000);
+        handler.postDelayed(expiry, seconds * 1000L);
     }
     private void event(String type, Map<String,Integer> positions) {
         if (closed) return;
@@ -46,7 +50,7 @@ final class PcmSpeechOutput {
         emit.accept(value);
     }
     private void observe() {
-        // Playback head is unsigned frames; the five-minute bound is below wrap.
+        // Playback head is unsigned frames; the ten-minute maximum is below wrap.
         int head = (int)Math.min(queue.submitted(), Integer.toUnsignedLong(track.getPlaybackHeadPosition()) * 2);
         Map<String,Integer> positions = queue.advance(head);
         if (!positions.isEmpty()) { progressed = SystemClock.uptimeMillis(); event("pcm_progress", positions); }

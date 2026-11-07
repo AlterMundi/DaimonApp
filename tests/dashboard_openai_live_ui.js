@@ -4,7 +4,7 @@ const source=fs.readFileSync('dashboard/web/openai-live.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false}={}){
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
@@ -45,6 +45,15 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
      if(boundaryTail){const size=boundaryTail;boundaryTail=0;captureBytes+=size;listener({pcm:new Uint8Array(size).buffer});}
      listener({boundary:token,totalBytes:captureBytes});
     });},finish(){listener({finished:true});},close(){recorderCloses++;}};}}};
+ const nativeOutputs=[];
+ if(nativeOutput){
+  window.NativeSpeechAudio={webrtcPcm:true};
+  window.WebRtcNativeAudio={supported:()=>true,open:async options=>{
+   assert.equal(options.sessionSeconds,600);order.push('native-ready');
+   const output={closed:0,streams:[],close(){this.closed++;},attach(stream){this.streams.push(stream);},setEnabled(){},pause(){},resume(){}};
+   nativeOutputs.push(output);return output;
+  }};
+ }
  async function fetch(url,options){
   if(!options.body)return readHistory(String(url),options);
   requests.push({url:String(url),sha:await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer()),bytes:options.body.size});
@@ -62,12 +71,32 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,
+ return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ const android=fixture({nativeOutput:true,deferClose:true});await android.start();
+ assert(android.order.indexOf('native-ready')<android.order.indexOf('permission'));
+ assert.equal(android.audios.length,0,'Native output never creates a second HTML Audio owner');
+ const remote={id:'remote-native-output'};android.peers[0].ontrack({streams:[remote]});
+ assert.deepEqual(android.nativeOutputs[0].streams,[remote]);
+ const nativeClosing=android.engine.hold();
+ await until(()=>android.sockets[0].sent.some(v=>v.type==='close'));
+ assert.equal(android.nativeOutputs[0].closed,1,'Hold releases native output before provider final usage');
+ android.sockets[0].onmessage({data:JSON.stringify({type:'closed',id:android.sockets[0].id})});await nativeClosing;
+ const failedOutput=fixture({nativeOutput:true});
+ failedOutput.window.WebRtcNativeAudio.open=async()=>{throw Error('Native focus unavailable');};
+ assert.equal(await failedOutput.engine.start(),false);assert.equal(failedOutput.permission(),0);
+ assert.equal(failedOutput.audios.length,0);assert.equal(failedOutput.peers.length,0);
+ const lateOutput=fixture({nativeOutput:true});let releaseOutput,outputSignal;
+ lateOutput.window.WebRtcNativeAudio.open=options=>{outputSignal=options.signal;return new Promise(resolve=>{releaseOutput=resolve;});};
+ const lateStarting=lateOutput.engine.start();await until(()=>releaseOutput);await lateOutput.engine.hold();
+ assert.equal(outputSignal.aborted,true,'Hold also cancels the unresolved native preparation owner');
+ assert.equal(await lateStarting,false);let lateCloses=0;
+ releaseOutput({close(){lateCloses++;}});await until(()=>lateCloses===1);
+ assert.equal(lateOutput.permission(),0);assert.equal(lateOutput.audios.length,0);
  const draining=fixture({deferClose:true});await draining.start();
  draining.peers[0].ontrack({streams:[{id:'owned-provider-audio'}]});
  assert.equal(draining.audios[0].paused,false);

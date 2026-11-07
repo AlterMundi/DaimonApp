@@ -112,8 +112,9 @@ final class SpeechOutput {
                     try { fields.put("id", requested); } catch (Exception ignored) { }
                     emit.accept(fields);
                     if (fields.optString("type").equals("error")) stop();
-                });
-                event("pcm_ready"); return;
+                }, value.optInt("seconds", 300));
+                emit.accept(new JSONObject().put("id", requested).put("type", "pcm_ready")
+                    .put("session_seconds", value.optInt("seconds", 300))); return;
             }
             if (command.equals("stream_begin")) {
                 stop(); id = requested; liveSource = new VerifiedAudioBuffer();

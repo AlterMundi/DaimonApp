@@ -7,7 +7,7 @@ window.PublicLiveConversation=(()=>{
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
-    let binding,visit,socket,peer,channel,media,capture,audio,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
+    let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,nativeAudioAbort,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
     let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
@@ -132,6 +132,8 @@ window.PublicLiveConversation=(()=>{
       // Local playback stops immediately; the provider receiver remains alive
       // for the final usage event and independent native work keeps its owner.
       if(audio){audio.pause();audio.srcObject=null;}
+      nativeAudioAbort?.abort();nativeAudioAbort=undefined;
+      nativeAudio?.close();nativeAudio=undefined;
       state(message);
       sourceBoundary?.reject(Error('Recording ended before source boundary confirmation'));sourceBoundary=undefined;
       abortOpen?.(Error('Voice activation ended'));abortOpen=undefined;
@@ -211,6 +213,21 @@ window.PublicLiveConversation=(()=>{
         if(!current()||admission?.id!==visit||!Number.isFinite(admission.remaining_seconds)||admission.remaining_seconds<=0
             ||admission.remaining_seconds>600||admission.max_input_pcm_bytes>600*32000)throw Error('Voice admission changed');
         const deadline=Date.now()+admission.remaining_seconds*1000;
+        // Freeze the Android output owner before provider creation. Older APKs
+        // retain their existing browser path; a selected native failure never
+        // silently starts another player or provider.
+        const nativeOutput=window.NativeSpeechAudio?.webrtcPcm===true;
+        if(nativeOutput){
+          if(!window.WebRtcNativeAudio?.supported())throw Error('Native voice output is unavailable');
+          nativeAudioAbort=new AbortController();
+          const opening=window.WebRtcNativeAudio.open({sessionSeconds:Math.max(300,Math.ceil(admission.remaining_seconds)),
+            signal:nativeAudioAbort.signal,
+            onUnavailable:message=>{if(current())void hold(message);}})
+            .then(value=>{if(!current()){value.close();throw Error('Native voice output retired');}return value;});
+          opening.catch(()=>{});nativeAudio=await wait(opening,10000);
+          if(!current()){nativeAudio.close();nativeAudio=undefined;throw Error('Voice activation ended');}
+          nativeAudio.setEnabled(audible);if(paused)nativeAudio.pause();
+        }
         pendingPermission=true;
         const permission=navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
           .then(stream=>{if(!current()){for(const track of stream.getTracks())track.stop();throw Error('Microphone permission retired');}return stream;})
@@ -223,8 +240,13 @@ window.PublicLiveConversation=(()=>{
         channel.onmessage=event=>{
           try{const value=JSON.parse(event.data);if(value.type==='session.started'&&value.session?.id===sessionId){started=true;listening();}}catch{}
         };
-        audio=new Audio();audio.autoplay=!paused;audio.muted=!audible;
-        peer.ontrack=event=>{if(!current())return;audio.srcObject=event.streams[0]||new MediaStream([event.track]);audio.play().catch(()=>{if(!current())return;paused=true;state('Tap Resume audio to listen.');});};
+        if(!nativeOutput){audio=new Audio();audio.autoplay=!paused;audio.muted=!audible;}
+        peer.ontrack=event=>{
+          if(!current())return;
+          const stream=event.streams[0]||new MediaStream([event.track]);
+          if(nativeOutput){try{nativeAudio.attach(stream);}catch{void hold('Native voice output is unavailable.');}return;}
+          audio.srcObject=stream;audio.play().catch(()=>{if(!current())return;paused=true;state('Tap Resume audio to listen.');});
+        };
         peer.onconnectionstatechange=()=>{if(!current())return;connected=peer.connectionState==='connected';listening();
           if(['failed','closed','disconnected'].includes(peer.connectionState))void hold('Voice connection paused. Your original audio is kept.');};
         const recorder=window.StreamingVoice.openCapture(media,{sessionSeconds:Math.max(300,Math.ceil((deadline-Date.now())/1000))})
@@ -327,8 +349,8 @@ window.PublicLiveConversation=(()=>{
     return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyVisit=historyFailed=undefined;historySeen=new Set();onHistory({loading:false,more:false});},
       retry:value=>withLock(value.voice_visit,()=>upload(value)),
       discard:value=>withLock(value.voice_visit,async()=>{if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);originals.delete(value.id);notify();}),
-      setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},
-      pause:()=>{paused=true;audio?.pause();state();},resume:()=>{paused=false;const selected=audio;selected?.play().catch(()=>{if(selected===audio){paused=true;state();}});state();},
+      setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;nativeAudio?.setEnabled(audible);state();},
+      pause:()=>{paused=true;audio?.pause();nativeAudio?.pause();state();},resume:()=>{paused=false;nativeAudio?.resume();const selected=audio;selected?.play().catch(()=>{if(selected===audio){paused=true;state();}});state();},
       release:()=>false,get originals(){return [];},get active(){return active||starting||closing;},get hasAudio(){return active;},get paused(){return paused;},get floor(){return false;}};
   }
   return {supported,create};

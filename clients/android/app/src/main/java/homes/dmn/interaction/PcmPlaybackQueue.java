@@ -12,6 +12,12 @@ import java.util.UUID;
 /** Bounded verified PCM spans. Submitted bytes are never playback receipts. */
 final class PcmPlaybackQueue {
     static final int MAX_QUEUED = 30 * 48000, MAX_SESSION = 300 * 48000;
+    private final int maxSession;
+    PcmPlaybackQueue() { this(300); }
+    PcmPlaybackQueue(int seconds) {
+        if (seconds < 300 || seconds > 600) throw new IllegalArgumentException("Invalid PCM session bound");
+        maxSession = seconds * 48000;
+    }
     static final class Chunk {
         ByteBuffer buffer;
         final String utterance;
@@ -32,7 +38,7 @@ final class PcmPlaybackQueue {
             || next != sequence || data.length < 2 || data.length > 32768 || data.length % 2 != 0
             || !VerifiedAudioBuffer.hash(data).equals(hash) || retired.contains(utterance)
             || (!received.containsKey(utterance) && received.size() >= 128)
-            || spans.size() >= 512 || lifetime + data.length > MAX_SESSION
+            || spans.size() >= 512 || lifetime + data.length > maxSession
             || appended - played + data.length > MAX_QUEUED) throw new IllegalArgumentException("Invalid bounded PCM span");
         int previous = received.getOrDefault(utterance, 0);
         if (end != previous + data.length) throw new IllegalArgumentException("PCM source continuity changed");

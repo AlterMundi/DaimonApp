@@ -49,4 +49,17 @@ public class PcmPlaybackQueueTest {
         q.flush(); final int finalSequence = sequence;
         assertThrows(IllegalArgumentException.class, () -> append(q, finalSequence, UUID.randomUUID().toString(), 32000, 32000));
     }
+    @Test public void explicitTenMinuteOutputKeepsItsLifetimeAcrossDrainingAndFlush() throws Exception {
+        assertThrows(IllegalArgumentException.class, () -> new PcmPlaybackQueue(299));
+        assertThrows(IllegalArgumentException.class, () -> new PcmPlaybackQueue(601));
+        PcmPlaybackQueue q = new PcmPlaybackQueue(600); int source = 0, played = 0; String id = first;
+        for (int n = 0; n < 900; n++) {
+            if (n == 450) { q.flush(); id = second; source = played = 0; }
+            source += 32000; append(q, n, id, source, 32000); q.wrote(32000); played += 32000; q.advance(played);
+            assertEquals(0, q.queued());
+        }
+        final int end = source;
+        assertThrows(IllegalArgumentException.class, () -> append(q, 900, second, end + 2, 2));
+    }
+
 }

@@ -6,6 +6,38 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
+## Public Live native output candidate0.7 —7November2026
+
+The0.7 Android bridge advertises `webrtcPcm` and a600second maximum. Public
+OpenAI Live reserves the existing native PCM owner before microphone permission
+or provider offer creation. Remote WebRTC audio passes through a24kHz zero-output
+AudioWorklet into that owner; no HTML Audio player is created on this path.
+Older APKs keep their existing browser playback. A selected native failure closes
+the visit rather than silently falling back. Hold releases native output while
+the existing bounded provider final-usage receiver drains. Late preparation is
+closed without opening the microphone. Cancellation releases the native owner
+even while worklet module loading remains unresolved. Muting/pausing flushes queued spans;
+resuming starts a new source identity and cannot replay old queued audio.
+
+The legacy PCM default stays300seconds; an explicit session may select300..600.
+The30second queue bound and lifetime allowance survive draining and flush.
+This adds neither background microphone capture nor provider/default changes.
+VersionCode7 requires a same-key APK upgrade; source preparation is not delivery.
+
+Node exercises the real engine/helper and the full600second worklet allowance;
+JVM tests exercise the queue lifetime across flush. The optional
+`tests/dashboard_webrtc_native_audio_browser.cjs` uses Playwright/Chromium with
+a synthetic48kHz oscillator to verify actual24kHz conversion, pause/resume and
+closure without an audible browser destination. It uses no provider or mic.
+The API35 instrumentation additionally loads these exact two web assets inside
+the real host WebView at an intercepted HTTPS test origin. An actual button
+gesture starts a synthetic stream through the production bridge/service and
+AudioTrack; native frame-head progress, paused append exclusion, fresh resumed
+audio and single closure are asserted. This test has no provider or microphone.
+Its execution result must be retained separately from preparation. Physical
+focus/background behavior and hearing acceptance remain required; desktop or
+emulator evidence cannot prove them.
+
 ## Native conversation candidate0.6 —1November2026
 
 The0.6 source candidate connects the existing native speech foreground above Sol
