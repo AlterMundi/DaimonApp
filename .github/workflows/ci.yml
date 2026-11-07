@@ -441,6 +441,7 @@ jobs:
       - run: python -B tests/dashboard_coordination_io.py
       - run: python -B tests/dashboard_companion_io.py
       - run: python -B tests/dashboard_avatar_workshop.py
+      - run: python -B tests/dashboard_avatar_workshop_voice.py
       - run: python -B tests/dashboard_avatar_workshop_api.py
       - run: python -B tests/dashboard_media_retention.py
       - run: python -B tests/dashboard_live.py

@@ -15,6 +15,7 @@ import time
 import uuid
 
 from .codex_voice_history import history_lock
+from .avatar_workshop_voice import WorkshopVoiceRevisions,voice_state
 from .private_state import private_directory
 from scripts.speech_render import atomic, private_bytes
 
@@ -50,13 +51,14 @@ def validate_design(design):
     finally:_validators.release()
 
 
-class AvatarWorkshop:
+class AvatarWorkshop(WorkshopVoiceRevisions):
     """One atomic actor document: revisions and pointers commit together.
 
     The configured App state root belongs to one receiving being. Actor IDs
     come only from existing authentication, never an import or browser field.
     Quota refusal is the stop path; no automatic version/media deletion runs.
     """
+    conflict_error=WorkshopConflict
     max_versions=32
     max_actor_bytes=8*1024*1024
     max_actors=64
@@ -84,6 +86,7 @@ class AvatarWorkshop:
                 or type(value.get('generation')) is not int or not 0<=value['generation']<2**53
                 or not isinstance(value.get('versions'),list) or len(value['versions'])>self.max_versions):
             raise ValueError('Workshop state needs review; no reset was performed')
+        if 'voice' in value:voice_state(value)
         return value
 
     def _write(self,human,value):
@@ -140,7 +143,7 @@ class AvatarWorkshop:
                 raise KeyError('Avatar parent is unavailable for this account')
             if parent is not None and next(r for r in value['versions'] if r['id']==parent)['artId']!=normalized['artId']:
                 raise ValueError('An avatar version must preserve its design identity')
-            if len(value['versions'])>=self.max_versions:raise ValueError('Avatar version capacity reached')
+            if len(value['versions'])+len(voice_state(value)['versions'])>=self.max_versions:raise ValueError('Avatar version capacity reached')
             value['versions'].append({'id':ident,'parentId':parent,'artId':normalized['artId'],
                 'name':normalized['name'],'createdAt':int(time.time()*1000),
                 'canonical':canonical,'sha256':digest})
