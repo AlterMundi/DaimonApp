@@ -8,12 +8,17 @@ parallel-work attention coordination as one coherent delivery.
 ## Current comparison receiving —7November2026
 
 Shared Resources `interaction-current.md` and its named current record own the
-actual selected composition. App726 now serves the mounted public GPT-Live routes
+actual selected composition. App732 retains the mounted public GPT-Live routes
 on all three living receivers, preserving each pair's provider/Avatar choices;
 software availability does not activate the disabled peer comparisons. Root's
-real71second native-backend visit has confirmed terminal voice usage. This does
-not prove real memory lookup, repeated physical renewal, useful speech latency
-or phone/hearing acceptance. Android0.8 adds native Beacon and has passed eight
+real71second native-backend visit has confirmed terminal voice usage. Read-only
+qualification now also matches two accepted native work roots to their three exact
+acoustic sources, one provider-acknowledged canonical progress return, and a current
+canonical final available after the voice visit closed. The existing episodic
+curation/readback separately matches its genuine voice original. These are partial
+handoff/work-continuity facts, not in-voice memory lookup, audible final return,
+repeated physical renewal, useful speech latency or phone/hearing acceptance.
+See [the exact qualification scope](interaction-qualification.md#retained-real-voice-native-handoff--7november2026). Android0.8 adds native Beacon and has passed eight
 actual API35 WebView/bridge/service/AudioTrack/focus instrumentation cases plus
 private same-key publication;
 human download/install remains unobserved. The full original goal remains open.
