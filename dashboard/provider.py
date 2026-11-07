@@ -993,7 +993,7 @@ class Provider:
             raise ValueError('Invalid bounded capture question restriction')
 
     def conversation_voice_recover(self, metadata, data, dialogue):
-        """Prepare explicit exact-original ASR; the existing adapter owns intent."""
+        """Read an exact retained result; Avatar recovery never starts ASR."""
         self.input_id(dialogue);self.input_id(metadata.get('id'))
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Voice recovery unavailable')
@@ -1008,7 +1008,11 @@ class Provider:
             if self.presentation('input list 0 before').get('binding')!=metadata.get('binding'):
                 raise ProviderUnavailable('Original conversation binding changed')
         else:
-            current=self.conversation_voice_submit(metadata,data,foreground_dialogue=dialogue,defer_foreground=True)
+            profiles=self.receiver.get('voice',{}).get('transcription_profiles',{})
+            if 'previous-live' not in profiles:
+                raise ProviderUnavailable('Live result reader unavailable; keep the original')
+            current=self.conversation_voice_submit({**metadata,'transcription_profile':'previous-live'},data,
+                foreground_dialogue=dialogue,defer_foreground=True)
         if current.get('phase') not in ('foreground_captured','preparation_unconfirmed'):
             return {'current':current}  # Already preparing/completed: no ASR replay.
         # Restore missing server media only from the exact hash-checked local copy.
@@ -1023,13 +1027,27 @@ class Provider:
         sync_directory(directory.parent)
         self.retain_voice_capture(directory,metadata['id'],data,metadata['audio_sha256'])
         voice=self.receiver.get('voice',{})
+        profile=current.get('voice',{}).get('transcription_profile')
+        if profile is not None:
+            selected=voice.get('transcription_profiles',{}).get(profile)
+            if not isinstance(selected,dict):
+                raise ProviderUnavailable('Original result reader unavailable; no fallback')
+            voice={**voice,**selected}
         from .native_caption_recovery import CaptionRecovery
         command,_,timeout=CaptionRecovery.configuration(voice)
-        # Only the maintained identity-locked adapter has the required uncertain-
-        # outcome contract. Never replay a generic configured transcriber here.
-        if len(command)!=4 or Path(command[1]).name!='interaction_asr.py' or command[2]!='--binding':
-            raise ProviderUnavailable('Explicit recovery requires the maintained ASR adapter')
-        return {'current':current,'command':command,'media':directory/metadata['id'],'timeout':timeout}
+        # Recovery can read a completed historical result or the same live
+        # receipt. It cannot run the base file recognizer to fill a missing one.
+        completed=voice.get('completed_transcription_command')
+        if (len(command)!=4 or Path(command[1]).name!='interaction_asr.py'
+                or command[2]!='--binding' or completed!=command+['--completed-only']):
+            raise ProviderUnavailable('Recovery requires a completed-only result reader')
+        if profile in ('openai-live','previous-live'):
+            from .private_state import read_json
+            binding=read_json(Path(command[3]))
+            if (not isinstance(binding,dict) or binding.get('provider')!='live-result'
+                    or any(k in binding for k in ('key_file','helper','route_binding','model'))):
+                raise ProviderUnavailable('Live recovery cannot select a file recognizer')
+        return {'current':current,'command':completed,'media':directory/metadata['id'],'timeout':timeout}
 
     def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
         import re
