@@ -31,7 +31,8 @@ Navigation, process loss and foreground exit close sound/capture without replay.
 The simulator app uses the exact existing adapter bytes/hash. Keep QUALIFICATION
 code and its separate bundle ID out of normal builds. Its disposable loopback TLS
 fixture now uses only a qualification-bundle custom anchor for exact localhost443,
-with wrong-host/alien-anchor refusal and system trust unchanged. Compile the normal
+with bounded public launch anchors, wrong-host/alien-anchor refusal and system
+trust unchanged. No app-container read/copy is needed before the single launch. Compile the normal
 app without FixtureTrust.swift and verify its symbols contain no QualificationTLS.
 Never weaken production TLS or mutate existing device trust. No capture/provider/human-original
 fixture, automatic timeout relaunch or permanent simulator/server/cache is allowed.

@@ -384,7 +384,10 @@ iframe unable to reserve output and native facade absent outside the app path.
 Ad-hoc simulator build, exact adapter, install/launch and complete scoped fixture/
 device/CA cleanup passed. Earlier timeout/cleanup failures retain their outcomes;
 the supported fixture observes unknown install/launch without replay. A bounded
-one-day CA is trusted only on the new disposable simulator, never production.
+one-day CA was trusted only on that new disposable simulator, never production.
+The current PR731 fixture instead uses a separate qualification-only localhost
+anchor evaluator, with wrong-host/wrong-anchor refusals and no system trust store
+mutation. CI also compiles the normal app without the helper.
 These are synthetic source/device observations, not physical hearing or shared
 login/passkey/capture acceptance. Native capabilities stay off pending those paths.
 The iOS Beacon DSP now has a prepared foreground output driver and independent

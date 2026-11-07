@@ -84,8 +84,10 @@ not device signing or an IPA/TestFlight release.
 `--qualification` builds a separate fixture-only bundle ID and finite page-start
 hook that are absent from the normal app. `test-simulator.py --app BUNDLE` creates
 one disposable installed iOS simulator and a loopback-only HTTPS fixture. Its
-one-day test CA is added only to that simulator; production app TLS policy and
-existing device/keychains are unchanged. The fixture sends synthetic PCM through
+one-day public test anchors are copied only into that app's container and consumed
+by the separate qualification-only TLS helper; system trust stores and normal
+app TLS handling remain unchanged. Wrong-host and wrong-anchor validation must
+fail before accepting the exact localhost chain (details below). The fixture sends synthetic PCM through
 the actual WebView/bridge/engine, checks played receipts and pause/resume/flush,
 attempts iframe reservation, then navigates outside the application path. No
 microphone, provider, human voice original or real shared-login account is used.
@@ -174,12 +176,12 @@ closed per-document adapter and actual capture/duplex compatibility before
 advertisement. Physical phone/music/hearing, shared login, distribution/signing
 and the full original goal remain open.
 
-The common simulator fixture also reuses the90second observation bound for its
-single CA-admission operation, already qualified in PR728source816fd9a andd1f1f4b.
-The previous30seconds had timed out before app installation; actual successful
-admission needed84.88seconds. This carries only that tested fixture correction,
-not the separate capture implementation/review. No uncertain CA operation is
-retried and no production TLS policy or existing device trust is changed.
+Historical CA provisioning used a90second observation bound, qualified in
+PR728source816fd9a andd1f1f4b after a30second timeout and an84.88second successful
+admission. PR731 subsequently timed out even at90seconds before installing the
+app. That system-trust-store provisioning is now removed from this fixture as
+described below; its outcomes remain historical evidence, not a command to repeat.
+The separate capture implementation/review is not included.
 
 
 ### Qualification TLS isolation after PR731's CA timeout
@@ -192,8 +194,8 @@ and the terminal operation was not replayed.
 
 The disposable fixture no longer mutates the simulator trust store. Only the
 qualification bundle compiles `Qualification/FixtureTrust.swift`. After its one
-install, the fixture copies two bounded public DER anchors to that exact app's
-container. For localhost443 server-trust challenges only, the test delegate uses
+launch, the fixture supplies two bounded public DER anchors through qualification
+arguments. No app-container lookup/copy is needed to provision those public data. For localhost443 server-trust challenges only, the test delegate uses
 Apple's SecTrust SSL hostname/chain validation with the fixture anchor exclusively
 and network fetching off. It must first reject the same chain for another hostname
 and an unrelated anchor. Other hosts/auth methods retain default WebKit handling.
@@ -203,7 +205,7 @@ This is a test-only provisioning replacement, not production certificate pinning
 a TLS bypass, login or relaxed application origin/bridge admission. CI also builds
 the normal app without that extra source and checks its symbols exclude the helper.
 No root certificate is installed in system/device trust. Both one-day public anchors,
-private signing files, container, server and disposable simulator stay within the
+private signing files, server and disposable simulator stay within the
 existing job/deletion bounds; nothing is uploaded. The native receipt must include
 the positive chain and both negative trust results before PCM playback acceptance.
 This fixture no longer qualifies system-trust-store installation; normal shared
@@ -211,3 +213,13 @@ SSO/account and physical device trust remain separate acceptance requirements.
 
 Apple contracts: [custom trust anchors](https://developer.apple.com/documentation/security/configuring-a-trust)
 and [WebKit authentication challenge handling](https://developer.apple.com/documentation/webkit/wknavigationdelegate/webview(_:didreceive:completionhandler:)).
+
+
+Source339c266 passed28Swift cases, both actual iOS SDK builds and the normal-app
+helper-absence check. RuntimeCI42391234480 installed the app in27.74seconds but
+then timed out reading its data container in30seconds before launch. Shutdown
+and delete were unconfirmed; the server stopped. There was no TLS/audio runtime
+receipt. The current fixture removes that unnecessary prelaunch read/copy: its
+single launch carries only two bounded public DER anchors as base64 arguments,
+parsed only by the qualification source. Keys never leave disposable runner state;
+production bundles still compile no fixture helper. All old outcomes stay retained.

@@ -8,8 +8,11 @@ import WebKit
 @MainActor enum QualificationTLS {
     static var evidence: [String:Bool] = [:]
     static func anchor(_ name: String) -> SecCertificate? {
-        let path = URL(fileURLWithPath:NSHomeDirectory()).appendingPathComponent("Documents/\(name).der")
-        guard let data = try? Data(contentsOf:path), (1...16384).contains(data.count) else { return nil }
+        let arguments = ProcessInfo.processInfo.arguments, flag = "--\(name)"
+        let indices = arguments.indices.filter { arguments[$0] == flag }
+        guard indices.count == 1, let index = indices.first, index+1 < arguments.count,
+              arguments[index+1].utf8.count <= 21848,
+              let data = Data(base64Encoded:arguments[index+1]), (1...16384).contains(data.count) else { return nil }
         return SecCertificateCreateWithData(nil,data as CFData)
     }
     static func evaluate(_ trust: SecTrust, host: String, anchor: SecCertificate) -> Bool {

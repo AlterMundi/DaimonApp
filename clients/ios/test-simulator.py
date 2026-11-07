@@ -1,11 +1,11 @@
 """One disposable simulator and loopback HTTPS fixture; no capture/provider/login."""
 import argparse
+import base64
 import http.server
 import json
 import os
 from pathlib import Path
 import ssl
-import shutil
 import subprocess
 import tempfile
 import time
@@ -112,17 +112,15 @@ def qualify(app):
                                       'homes.dmn.interaction.qualification','app'],timeout=15).strip())
                 assert (installed/'native-audio.js').read_bytes()==(app/'native-audio.js').read_bytes()
                 print('Exact installed adapter observed after lost install receipt; no reinstall',flush=True)
-            container = Path(run(['xcrun','simctl','get_app_container',device,
-                                  'homes.dmn.interaction.qualification','data'],timeout=30).strip())
-            documents = container/'Documents'; documents.mkdir(exist_ok=True)
+            anchors = []
             for name,target in [('ca','qualification-ca'),('alien','qualification-alien-ca')]:
-                source = state/f'{name}.der'
-                assert 0 < source.stat().st_size <= 16384
-                shutil.copyfile(source,documents/f'{target}.der')
-            print('Public fixture anchors copied only to the exact disposable app container; system trust unchanged',flush=True)
+                public = (state/f'{name}.der').read_bytes()
+                assert 0 < len(public) <= 16384
+                anchors.extend([f'--{target}',base64.b64encode(public).decode('ascii')])
+            print('Public fixture anchors selected only for the exact qualification launch; system trust unchanged',flush=True)
             launch_attempted = True
             try:
-                run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost'],timeout=90)
+                run(['xcrun','simctl','launch',device,'homes.dmn.interaction.qualification','--qualification-home','https://localhost',*anchors],timeout=90)
             except subprocess.TimeoutExpired:
                 print('Launch receipt unconfirmed; observing this same fixture result without relaunch',flush=True)
             until = time.monotonic()+35
