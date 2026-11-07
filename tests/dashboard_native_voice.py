@@ -91,7 +91,7 @@ class Detector:
 
 class Owner(Receiver):
     def __init__(self,root):
-        super().__init__();self.root=root;self.binding='a'*64;self.compatible=True
+        super().__init__();self.root=root;self.binding='a'*64;self.compatible=True;self.live_profiles=['previous-live']
         self.receiver={'db_path':str(root/'native.sqlite3'),'voice':{'enabled':True}}
         (root/'native.sqlite3').touch();self.inputs={};self.completed=threading.Event();self.delegations=[];self.return_ready=False;self.questions=[];self.requests_seen=threading.Event()
         self.return_kind='integrator_answer';self.native_returns=[]
@@ -99,7 +99,7 @@ class Owner(Receiver):
         self.input_id=Provider.input_id
         self.contexts={};self.context_calls=[];self.context_retained=threading.Event();self.context_closed=threading.Event();self.guidance_done=threading.Event()
     def presentation(self,command):
-        if command=='input voice capabilities':return {'binding':self.binding,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_continuation':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1','foreground_resume':'v1'}
+        if command=='input voice capabilities':return {'binding':self.binding,'voice_transcription_profiles':self.live_profiles,'foreground_retention':'v1' if self.compatible else None,'foreground_completed_reader':self.compatible,'foreground_context':'v1','foreground_continuation':'v1','foreground_audio_observations':'v1','foreground_derived_captions':'v1','foreground_guidance':'v1','foreground_rollover':'v1','foreground_resume':'v1'}
         if command.startswith('input list '):return {'binding':self.binding}
         raise AssertionError(command)
     def presentation_list(self,*args):
@@ -670,6 +670,12 @@ class Mounted(unittest.TestCase):
             ws.send_json({'type':'playback','id':utterance['id'],'played_bytes':640})
             self.assertTrue(self.owner.guidance_done.wait(2));self.assertEqual(len(stream.guidance),1)
             ws.send_json({'type':'close'});self.assertTrue(self.owner.context_closed.wait(2))
+
+    def test_missing_live_only_profile_is_refused_before_provider_opening(self):
+        self.owner.live_profiles=[]
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'review')
+        self.assertEqual(Stream.opened,[]);self.assertEqual(self.owner.inputs,{})
 
     def test_context_incompatible_listener_is_refused_before_provider_opening(self):
         presentation=self.owner.presentation

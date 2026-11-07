@@ -412,9 +412,11 @@ have no recognizer, credential or file fallback. Missing completion keeps the
 original held; do not verify/correct it with another ASR. File-only Telegram and
 historical originals retain their original profiles and outcomes. Recovery v6
 freezes live-only selection; older readers must refuse it. Qualify exact native
-receipt ingestion and Home/device admission. Public Avatar's independently
-imported live-window path requires its own source-bound live integration; do not
-claim that updating ordinary recordings completes that path.
+receipt ingestion and Home/device admission. Previous-provider native Avatar requires the loaded listener to advertise
+`previous-live` before opening a provider; qualify that actual profile in native
+fixtures as well as mocks. Public Avatar's independently imported live-window
+path requires its own source-bound live integration; do not claim that updating
+ordinary recordings completes that path.
 
 New voice routes must be qualified through the actual shared Home/device access
 path, not only an administrative test cookie. Home and enrolled devices share
