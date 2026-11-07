@@ -1,3 +1,10 @@
+Public Live usage observations are page-local/bounded8, using trusted server
+usage/finalization receipts. Only explicit voice_usage_confirmed and valid final
+seconds permit a voice-only estimate; missing final usage is unconfirmed, never
+zero or a wall-clock bill. Keep the dated published rate, excluded backend/tools/
+ASR/TTS costs and lack of invoice/project-credit proof visible. No diagnostic
+callback may break voice cleanup. See public GPT-Live guide.
+
 Android0.7 Public Live output uses the advertised webrtcPcm bridge and existing
 single native PCM owner, reserved before microphone/provider creation. Preserve
 the zero-output Web Audio graph,600second maximum,300second legacy default,

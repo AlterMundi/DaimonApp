@@ -649,6 +649,27 @@ dependencies on Python3.11 and3.13; no provider/device acceptance follows.
 The result scan retains its native cursor across bounded catch-up batches; a
 tested64-item unrelated backlog does not permanently hide the later matching
 answer. Source cursors/unknown append guards still apply before any new send.
+### Page-local usage comparison
+
+The prepared Under the hood panel reads the existing trusted server usage and
+finalization messages; it creates no API, provider call, timer or persistent store.
+It retains at most eight observations on this page and clears them on reload or
+conversation reset. Backend labels follow the accepted admission, not a guessed
+default. Ordinary data-channel events cannot confirm billing duration.
+
+Only `finalization.voice_usage_confirmed=true` with a valid finite nonnegative
+`usage_seconds` supplies the final duration. An intermediate usage counter stays
+provisional; a lost final receipt stays unconfirmed, even after local Hold.
+The displayed voice-only estimate uses the checked7November2026 GPT-Live1 rate
+of USD0.05/minute, prorated by actual reported seconds. This is not an invoice,
+credit balance, project eligibility observation or total stack cost. Backend/tools,
+separate transcription and TTS remain outside it. See official
+[pricing](https://developers.openai.com/api/docs/pricing) and
+[voice cost accounting](https://developers.openai.com/api/docs/guides/voice-latency-cost#voice-session-costs).
+Display callbacks cannot break capture or finalization. Source tests distinguish
+confirmed zero from absent, malformed or partial usage and late observations.
+Source preparation is separate from receiving selection and real trial acceptance.
+
 # Native results across fresh voice connections
 
 The native client-delegation mode now has a source-prepared return path for work

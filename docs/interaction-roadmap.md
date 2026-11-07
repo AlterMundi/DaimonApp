@@ -5,6 +5,23 @@ implemented. Human selection, 2026-10-26: move from the accepted single-chat bas
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
 
+## Current comparison receiving —7November2026
+
+Shared Resources `interaction-current.md` and its named current record own the
+actual selected composition. App724 now serves the mounted public GPT-Live routes
+on all three living receivers, preserving each pair's provider/Avatar choices;
+software availability does not activate the disabled peer comparisons. Root's
+real71second native-backend visit has confirmed terminal voice usage. This does
+not prove real memory lookup, repeated physical renewal, useful speech latency
+or phone/hearing acceptance. Android0.7 has passed actual integrated API35
+WebView/bridge/service/AudioTrack qualification and private same-key publication;
+human download/install remains unobserved. The full original goal remains open.
+
+The dated component/preparation records below retain their original qualification
+limits. Their former unmounted/access gaps are historical, and must not cause a
+second provider enrollment, duplicate implementation or replay of an old trial.
+Continue the missing real acceptance from the current receiving composition.
+
 ## Project name and pending Telegram separation —4November2026
 
 Nicolas selected **DaimonApp** for the project, repository and existing development

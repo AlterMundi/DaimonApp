@@ -19,6 +19,7 @@ window.Conversation = (() => {
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
+    const liveUsage=window.PublicLiveUsage?.mount($('#conversation-live-usage'));
     let canFiles=false,filesConnected=true;
     const files=new Map(),fileDownloads=new Map(),fileStatus=new Map();let fileJobs=[];
     const fileCredential=()=>JSON.stringify(Object.entries(headers()).filter(([key])=>key.toLowerCase()==="authorization"));
@@ -819,6 +820,7 @@ window.Conversation = (() => {
         routing:[...inputs.values()].some(c=>["requested","queued","submitting","steering"].includes(c.value.routing?.phase))});
     }
     function resetInputs() {
+      liveUsage?.reset();
       voiceMode?.close();showResponseDraft();
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();graph?.reset();graphCursor=0;timeline?.replaceChildren();
@@ -2280,6 +2282,7 @@ window.Conversation = (() => {
       panel.setAttribute('aria-label','Voice original recovery');$('#conversation-compose').prepend(panel);
       let speech;const retained=[];
       publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,getBackend:()=>voiceChoice==='gpt-live-native'?'native':undefined,
+        onUsage:value=>{if(value.binding===binding)liveUsage?.observe(value);},
         onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;publicHistoryOlder.disabled=value.loading===true;
           publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
         onItem:value=>{
