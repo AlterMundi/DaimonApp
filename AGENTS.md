@@ -1,7 +1,8 @@
 iOS preparation is in clients/ios. Keep the Android-compatible verified PCM span
 contract, one serial owner, bounded queue/source metadata and nonrenewable lifetime
-across flush. Submission is not playback; the future audio/session driver must
-fence stale owner/epoch callbacks. Swift package tests are not an installable app,
+across flush. Submission is not playback; the prepared audio driver fences stale owner/epoch
+callbacks and stops outside Apple completion threads. Its host must supply owned
+AVAudioSession activation/release and close on lifecycle/route/interruption. Swift package tests are not an installable app,
 WKWebView/shared-login, AVAudioSession, simulator or physical iPhone acceptance.
 Reuse the hosted Conversation/grants; no new login/editor/server or provider work.
 

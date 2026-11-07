@@ -374,7 +374,9 @@ package (system Foundation/CryptoKit) ports the bounded PCM span queue with the
 same default300/explicit600second lifetime,30second pending audio, source/sequence
 and SHA256 fences. Flush cannot replenish its lifetime. A separate macOS CI job
 builds/tests it with two workers and a ten-minute deadline. This prepares the
-audio core only; no installable iOS app, native session/graph, WebView bridge,
+audio core only. Its prepared AVAudioEngine driver adds eight-buffer scheduling,
+main-actor ownership and contiguous played callbacks fenced across flush/close.
+Actual device/session acceptance is missing; no installable iOS app, WebView bridge,
 shared-login acceptance, signing or physical-device delivery is claimed. The
 complete iOS increment below remains open.
 

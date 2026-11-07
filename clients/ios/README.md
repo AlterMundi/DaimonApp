@@ -1,7 +1,7 @@
 # iOS native audio preparation
 
 The existing native-client plan selects an equivalent iOS client. This package
-starts its audio core with the same 24 kHz mono PCM16 span contract as Android's
+prepares its audio core with the same 24 kHz mono PCM16 span contract as Android's
 `PcmPlaybackQueue`: SHA256 integrity, exact sequence/source offsets, at most
 32768 bytes per chunk, 30 seconds queued, 128 source identities and 512 live
 spans. Default lifetime is 300 seconds; an explicit duration may reach 600.
@@ -10,17 +10,34 @@ Scheduling/submission never becomes a played receipt. The eventual native driver
 must provide its current owner's actual playback observations and fence late
 callbacks by owner and playback epoch, including after pause, flush or stop.
 
-The class belongs to one serial output owner. It performs no I/O, capture,
-provider call, authentication, lifecycle management or background activation.
-Five XCTest scenarios cover partial submission/playback, source offsets/flush,
-atomic integrity/sequence/position refusal, queue/source limits and the complete
-ten-minute lifetime across a flush. CI uses the existing public repository's
-standard macOS runner, two compiler jobs and a ten-minute deadline. No dependency
-package or signing identity is fetched. Scratch output belongs to the disposable
-runner; no generated audio or new retained cache/artifact is uploaded.
+The queue belongs to one serial output owner. `PCMPlaybackDriver` adds that
+main-actor owner, an absolute nonrenewable deadline and at most eight scheduled
+buffers. Native callback receipts advance only a contiguous completed prefix;
+flush/close invalidate the epoch before unscheduling. Pause retains the queue
+and needs explicit resume. Device failure closes without replay. The host supplies
+its owned audio-session activation/deactivation closures; a failed activation
+must clean up its own partial session change. Idle/paused/closed output releases
+its own holder. Host lifecycle/interruption/route changes must close the driver.
 
-This is not an installable app. Continue with the native AVAudioEngine/session
-driver, WKWebView's exact-origin/main-frame bridge and shared-login shell,
+`ApplePCMOutput` uses AVAudioEngine/AVAudioPlayerNode with mono24kHz float buffers
+converted from the exact signed little-endian PCM16 bytes. It requests
+`.dataPlayedBack` completion and dispatches it back to the owner; no stop or
+unscheduling occurs inside an audio-thread callback. Manual/offline playback
+cannot emit a played receipt. This package makes no microphone, provider,
+authentication or background activation request.
+
+Five queue XCTest scenarios cover partial submission/playback, source offsets,
+atomic refusal, queue/source/span bounds and ten minutes across flush. Five more
+check the actual Apple buffer conversion and synthetic device callbacks for
+ordered receipts, stale epochs, pause/eight-buffer bounds, expiry and failure
+without retry. These tests do not establish actual device playback or session
+policy. CI uses the existing public repository's standard macOS runner, two
+compiler jobs and a ten-minute deadline. No dependency package or signing identity
+is fetched. Scratch output belongs to the disposable runner; no generated audio
+or new retained cache/artifact is uploaded.
+
+This is not an installable app. Continue with actual AVAudioEngine/device and iOS AVAudioSession acceptance,
+WKWebView's exact-origin/main-frame bridge and shared-login shell,
 foreground capture/route/interruption/return handling, progressive/background
 speech, native Beacon and actual simulator/device acceptance. Reuse the hosted
 Conversation, account grants and existing wire contract; do not create another
