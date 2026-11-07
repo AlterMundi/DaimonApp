@@ -3,7 +3,9 @@
 DaimonApp owns implementation; Voces owns the attributed product candidate.
 Continue inside the existing avatar workshop and shared account authentication.
 This source adds the existing-workshop Voice panel and its authenticated adapter.
-It is not deployed or listening-qualified; bounded auditions remain unfinished.
+Resolve actual receiving selection through Shared Resources `interaction-current.md`.
+Source and synthetic qualification do not establish listening acceptance; bounded
+provider auditions remain unfinished.
 The first adapter targets public GPT-Live Avatar. Ordinary Conversation speech
 keeps its current Realtime route; API-specific voice identities are not pooled.
 
@@ -107,10 +109,17 @@ Only current configured GPT-Live profiles and the existing approved project key
 reference/cache are accepted; arbitrary renderer input is not exposed.
 
 A lost generation response only reads the retained cache/outcome. Unknown or
-expired jobs cannot regenerate. Closing waits for an active generation to stop;
-actor reset immediately clears batch labels, notices and client audio before the
-next account read. Late old-account reads cannot change current controls, and
-each server-owned attempt remains bounded.
+expired jobs cannot regenerate. Closing immediately releases the panel and client
+audio, requests at most one stop for its pending generation, and ignores late
+responses. Choosing Stop and then Close does not repeat the same cancellation.
+Closing a cached audio read does not cancel a different unstarted slot. Discarding
+an unsaved edit restores the selected saved revision. Actor reset immediately
+clears batch labels, notices and client audio before the next account read. Late
+closed-panel or old-account reads cannot change current controls, and each
+server-owned attempt remains bounded. An unconfirmed stop stays unconfirmed.
+The render HTTP deadline is45seconds to accommodate the existing30second provider
+attempt and bounded process cleanup; other preview writes retain20seconds.
+Neither timeout nor closing retries synthesis.
 Playback starts only on explicit Play, keeps at most A/B object URLs for the
 selected batch and revokes them on close, actor change or batch change. Hiding
 the panel or page stops playback. Recorded usage and first-audio timing are
@@ -122,7 +131,9 @@ responses, unknown outcome retention, configuration drift and owned cancellation
 The actual Chromium editor verifier additionally exercises synthetic preview
 routes: no generation on open/save/use, explicit A/B, recorded playback controls,
 lost B response without retry, keeping A while B is generated and refusing
-retirement of the unknown B. It also checks1200/375/320 layouts. These UI fixtures
+retirement of the unknown B. Deferred-response cases verify immediate close,
+ignored late audio, cached-load close, discarded-edit restoration and one
+cancellation for Stop followed by Close. It also checks1200/375/320 layouts. These UI fixtures
 are separate from mounted API/cache ownership tests; none contacts a provider.
 
 Paid comparison remains explicit and bounded: two compatible identities at most,

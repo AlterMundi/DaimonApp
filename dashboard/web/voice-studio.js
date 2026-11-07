@@ -3,7 +3,7 @@ window.VoiceStudioUI=(()=>{
  function mount({parent,api,credential}){
   const panel=document.createElement('section');panel.className='voice-studio';panel.hidden=true;panel.setAttribute('aria-label','Voice studio');parent.append(panel);
   let state,pendingSave,pendingUse,candidate,dirty=false,busy=false,epoch=0;
-  let previews={generation:0,batches:[]},batchId,previewBusy=false,previewEpoch=0,playing;const audioURLs=new Map();
+  let previews={generation:0,batches:[]},batchId,previewBusy=false,previewEpoch=0,playing,pendingPreview;const audioURLs=new Map(),cancelling=new Set();
   const node=(tag,text)=>{const value=document.createElement(tag);if(text)value.textContent=text;return value;};
   const title=node('h2','Avatar voice'),current=node('p'),status=node('p');status.setAttribute('role','status');
   const choices=node('select');choices.setAttribute('aria-label','Saved voice revisions');
@@ -58,7 +58,7 @@ window.VoiceStudioUI=(()=>{
   function clearAudio(){stopAudio();for(const url of audioURLs.values())URL.revokeObjectURL(url);audioURLs.clear();}
   function previewControls(){
    const row=batch();prepare.disabled=busy||previewBusy||!state?.audition_available||previews.batches.length>=4;
-   inspect.disabled=previewBusy;previewSelect.disabled=previewBusy;cancel.disabled=!row||(!previewBusy&&!Object.values(row.renders).some(r=>['intent','cancel_requested'].includes(r.state)));
+   inspect.disabled=previewBusy;previewSelect.disabled=previewBusy;cancel.disabled=!row||pendingPreview?.cancelSent===true||cancelling.has(epoch+':'+row.id+':'+row.generation)||(!(previewBusy&&pendingPreview?.mayGenerate)&&!Object.values(row.renders).some(r=>['intent','cancel_requested'].includes(r.state)));
    retire.disabled=busy||previewBusy||!row||Object.values(row.renders).some(r=>!['prepared','rendered','not_started','cancelled_verified'].includes(r.state));
    slots.replaceChildren();if(!row)return;
    for(const slot of ['A','B']){
@@ -68,7 +68,7 @@ window.VoiceStudioUI=(()=>{
     generate.type=play.type=stop.type='button';generate.disabled=busy||previewBusy||!['prepared','rendered'].includes(render.state);
     play.disabled=!audioURLs.has(slot)||previewBusy;stop.disabled=!audioURLs.has(slot);
     generate.addEventListener('click',()=>void previewWrite({action:'render',id:row.id,batch_generation:row.generation,slot}));
-    play.addEventListener('click',()=>{stopAudio();playing=new Audio(audioURLs.get(slot));playing.play().catch(()=>{previewStatus.textContent='Playback could not start. The recorded preview is kept.';});});
+    play.addEventListener('click',()=>{stopAudio();const output=playing=new Audio(audioURLs.get(slot)),turn=epoch,operation=previewEpoch;output.play().catch(()=>{if(playing===output&&turn===epoch&&operation===previewEpoch)previewStatus.textContent='Playback could not start. The recorded preview is kept.';});});
     stop.addEventListener('click',stopAudio);group.append(generate,play,stop);
     const proof=render.outcome?.receipt?.provider_receipt;
     if(proof)group.append(node('p','Recorded preview · usage '+(proof.usage?.seconds??'unknown')+' seconds · first audio '+(proof.first_pcm_millis??'unknown')+' ms. Live conversation latency and hearing are not measured.'));
@@ -80,21 +80,34 @@ window.VoiceStudioUI=(()=>{
    if(!batch()){clearAudio();batchId=previews.batches.at(-1)?.id;}previewSelect.value=batchId||'';previewControls();
   }
   async function previewRead(){const turn=epoch,key=credential();const value=await api('interaction/avatars/voice/previews');if(turn!==epoch||key!==credential())throw Error('Voice account changed');return value;}
-  async function refreshPreviews(){if(previewBusy)return;const turn=epoch;try{previews=await previewRead();showPreviews();}catch(error){if(turn===epoch)previewStatus.textContent=error.message||'Comparisons unavailable.';}}
+  async function refreshPreviews(){if(previewBusy)return;const turn=epoch,operation=previewEpoch;try{const value=await previewRead();if(turn!==epoch||operation!==previewEpoch)return;previews=value;showPreviews();}catch(error){if(turn===epoch&&operation===previewEpoch)previewStatus.textContent=error.message||'Comparisons unavailable.';}}
   async function previewWrite(body){
-   if(previewBusy)return;if(['prepare','retire'].includes(body.action))clearAudio();else stopAudio();if(body.slot&&audioURLs.has(body.slot)){URL.revokeObjectURL(audioURLs.get(body.slot));audioURLs.delete(body.slot);}previewBusy=true;const turn=epoch,key=credential(),operation=++previewEpoch;controls();
+   if(previewBusy)return;if(['prepare','retire'].includes(body.action))clearAudio();else stopAudio();if(body.slot&&audioURLs.has(body.slot)){URL.revokeObjectURL(audioURLs.get(body.slot));audioURLs.delete(body.slot);}previewBusy=true;const turn=epoch,key=credential(),operation=++previewEpoch;pendingPreview={...body,operation,cancelSent:false,mayGenerate:body.action==='render'&&batch()?.id===body.id&&batch()?.renders[body.slot]?.state==='prepared'};const current=()=>turn===epoch&&key===credential()&&operation===previewEpoch;controls();
    try{
-    const value=await api('interaction/avatars/voice/previews',body);if(turn!==epoch||key!==credential())return;
+    const value=await api('interaction/avatars/voice/previews',body);if(!current())return;pendingPreview.mayGenerate=false;
     const row=value.batch||(value.renders?value:null);if(row){batchId=row.id;previews.batches=previews.batches.filter(r=>r.id!==row.id).concat(row);}
     if(value.audio&&body.slot){const bytes=Uint8Array.from(atob(value.audio.data),c=>c.charCodeAt(0));audioURLs.set(body.slot,URL.createObjectURL(new Blob([bytes],{type:value.audio.mime})));}
-    previews=await previewRead();previewStatus.textContent='Comparison kept. Playback starts only when you choose Play.';
-   }catch(error){if(turn!==epoch||key!==credential())return;previewStatus.textContent='Action not confirmed. Reading its retained status; no generation is retried.';try{previews=await previewRead();}catch{previewStatus.textContent='Status unavailable. Refresh comparisons to inspect the same attempt.';}}
-   finally{if(turn===epoch&&operation===previewEpoch){previewBusy=false;showPreviews();controls();}}
+    const snapshot=await previewRead();if(!current())return;previews=snapshot;previewStatus.textContent='Comparison kept. Playback starts only when you choose Play.';
+   }catch(error){if(!current())return;previewStatus.textContent='Action not confirmed. Reading its retained status; no generation is retried.';try{const snapshot=await previewRead();if(current())previews=snapshot;}catch{if(current())previewStatus.textContent='Status unavailable. Refresh comparisons to inspect the same attempt.';}}
+   finally{if(current()){previewBusy=false;pendingPreview=undefined;showPreviews();controls();}}
   }
   previewSelect.addEventListener('change',()=>{clearAudio();batchId=previewSelect.value;previewControls();});
   prepare.addEventListener('click',()=>{if(!prepare.disabled)void previewWrite({action:'prepare',id:crypto.randomUUID(),profile:state.profiles[0],delivery:delivery.value,voice_generation:state.generation,generation:previews.generation});});
   inspect.addEventListener('click',()=>void refreshPreviews());
-  cancel.addEventListener('click',()=>{const row=batch();if(!row)return;const turn=epoch,key=credential();void api('interaction/avatars/voice/previews',{action:'cancel',id:row.id,batch_generation:row.generation}).then(()=>{if(turn===epoch&&key===credential())previewStatus.textContent='Stop requested. Waiting for the owned generation to close.';}).catch(()=>{if(turn===epoch)previewStatus.textContent='Stop not confirmed. Refresh to inspect; no automatic retry.';});});
+  function stopGeneration(onlyCurrent=false){
+   const job=pendingPreview?.mayGenerate?pendingPreview:undefined,row=batch();
+   if(onlyCurrent&&!job)return;
+   const id=job?.id||row?.id,generation=job?.batch_generation??row?.generation;
+   if(!id||job?.cancelSent)return;
+   const turn=epoch,key=credential(),operation=previewEpoch,scope=turn+':'+id+':'+generation;
+   if(cancelling.has(scope))return;if(job)job.cancelSent=true;cancelling.add(scope);controls();
+   const current=()=>turn===epoch&&key===credential()&&operation===previewEpoch;
+   void api('interaction/avatars/voice/previews',{action:'cancel',id,batch_generation:generation})
+    .then(()=>{if(current())previewStatus.textContent='Stop requested. Waiting for the owned generation to close.';})
+    .catch(()=>{if(current())previewStatus.textContent='Stop not confirmed. Refresh to inspect; no automatic retry.';})
+    .finally(()=>{cancelling.delete(scope);if(turn===epoch)controls();});
+  }
+  cancel.addEventListener('click',()=>stopGeneration());
   retire.addEventListener('click',()=>{const row=batch();if(!retire.disabled&&row)void previewWrite({action:'retire',id:row.id,batch_generation:row.generation,generation:previews.generation});});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAudio();});
   choices.addEventListener('change',()=>{if(busy)return;candidate=choices.value||undefined;delivery.value=selected()?.delivery||'';dirty=false;controls();});
@@ -102,9 +115,9 @@ window.VoiceStudioUI=(()=>{
   save.addEventListener('click',()=>{if(save.disabled)return;pendingSave={id:crypto.randomUUID(),profile:state.profiles[0],delivery:delivery.value,parentId:candidate||state.active||null,generation:state.generation};void write({action:'save',...pendingSave});});
   use.addEventListener('click',()=>{if(use.disabled)return;pendingUse={id:candidate,generation:state.generation};void write({action:'use',...pendingUse});});
   reload.addEventListener('click',()=>void refresh());
-  function reset(){clearAudio();previews={generation:0,batches:[]};batchId=undefined;previewBusy=false;previewEpoch++;epoch++;state=pendingSave=pendingUse=candidate=undefined;busy=dirty=false;delivery.value='';status.textContent='';previewStatus.textContent='';current.textContent='';choices.replaceChildren();previewSelect.replaceChildren();panel.hidden=true;controls();}
+  function reset(){clearAudio();pendingPreview=undefined;cancelling.clear();previews={generation:0,batches:[]};batchId=undefined;previewBusy=false;previewEpoch++;epoch++;state=pendingSave=pendingUse=candidate=undefined;busy=dirty=false;delivery.value='';status.textContent='';previewStatus.textContent='';current.textContent='';choices.replaceChildren();previewSelect.replaceChildren();panel.hidden=true;controls();}
   return {panel,hide(){stopAudio();},open(){panel.hidden=false;if(!state)void refresh();void refreshPreviews();},reset,
-   mayClose(){if(previewBusy){previewStatus.textContent='Stop generation and wait for its result before closing.';return false;}if(dirty&&!confirm('Discard the unsaved voice edit?'))return false;clearAudio();dirty=false;return true;}};
+   mayClose(){const discard=dirty;if(discard&&!confirm('Discard the unsaved voice edit?'))return false;stopGeneration(true);clearAudio();previewEpoch++;previewBusy=false;pendingPreview=undefined;dirty=false;if(discard){candidate=state?.active||undefined;delivery.value=selected()?.delivery||'';show();}controls();return true;}};
  }
  return {mount};
 })();

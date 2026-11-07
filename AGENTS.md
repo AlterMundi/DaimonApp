@@ -1,3 +1,7 @@
+Voice Studio close releases the panel and audio immediately; request at most one
+owned cancellation and ignore late responses. Preserve unknown synthesis outcomes
+without retry. Render HTTP allows45seconds; other preview writes retain20seconds.
+
 Avatar background suspension uses both document visibility and Android's existing
 nativecapturebackground event. Public Live Hold must silence its local audio
 immediately while keeping the bounded provider finalization receiver alive.

@@ -88,7 +88,10 @@ async function api(route, body) {
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    ["stop", "resume"].includes(route) ? 30000 : 20000,
+    // Preview synthesis owns a thirty-second provider attempt plus bounded
+    // process cleanup. Other writes keep their existing timeout and no retry.
+    route === "interaction/avatars/voice/previews" && body?.action === "render"
+      ? 45000 : ["stop", "resume"].includes(route) ? 30000 : 20000,
   );
   try {
     const headers = body
