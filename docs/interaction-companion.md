@@ -229,7 +229,8 @@ enabled = false
 [codex]
 binary = "/path/to/selected/codex"
 default_cwd = "/path/to/own/workspace"
-# Preserve selected model/profile/shared-App-Server options if already configured.
+shared_app_server = true
+# Required for the control socket and Interaction; preserve selected model/profile.
 
 [session_control]
 socket_path = "/private/own/control.sock"
@@ -245,7 +246,7 @@ topic_id = TOPIC
 Start the existing selected listener as its own user, with its own `CODEX_HOME`:
 `CODEX_HOME=/path/to/own/.codex /path/to/selected/telecodex /private/receiver.toml`.
 Observe readiness without a model/priming input:
-`/path/to/selected/telecodex --control /private/receiver.toml presentation list`.
+`/path/to/selected/telecodex --control /private/receiver.toml presentation list 0 0`.
 The first real human input uses the ordinary native creation/admission path;
 never seed raw session rows or manufacture a human message.
 
