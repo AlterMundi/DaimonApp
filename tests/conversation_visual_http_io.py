@@ -14,9 +14,9 @@ from conversation_cold_entry_http_io import ColdEntry,Browser
 from conversation_voice_http_io import audio
 
 
-def png(width=160,height=96,flip=False):
+def png(width=160,height=96,flip=False,variant=0):
     def chunk(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data))
-    pixels=b''.join(b'\0'+b''.join(bytes((30,80,230) if (x<width//2)^flip else (230,45,50)) for x in range(width)) for _ in range(height))
+    pixels=b''.join(b'\0'+b''.join(bytes((30+variant,80,230) if (x<width//2)^flip else (230,45,50)) for x in range(width)) for _ in range(height))
     return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',width,height,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(pixels))+chunk(b'IEND',b'')
 
 
@@ -161,6 +161,23 @@ def qualify(binary):
         j.call('route-ordered-voice-images','dispatch',{'input_ref':spoken_pair,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
         j.wait(lambda:len(j.instructions(7))==5 and j.instructions(7)[-1][1]=='accepted')
         assert [v['path'] for v in j.worker_packets['native-topic-7'][-1]['input'] if v.get('type')=='localImage']==paths
+        # Six distinct old phone photos cross the actual upload, admission,
+        # SQLite and native image boundary without refreshing their timestamps.
+        old_time=(datetime.now(timezone.utc)-timedelta(minutes=20)).isoformat()
+        six=[]
+        for index in range(6):
+            photo=png(variant=index)
+            assert upload(photo).status_code==200
+            selected=reference(photo)
+            selected['captured_at']=selected['selected_at']=old_time
+            six.append(selected)
+        six_id,r=submit('Compare these six retained photographs.',six)
+        assert r.status_code==200,r.text
+        j.wait(lambda:b.status(six_id)['phase']=='accepted')
+        assert b.status(six_id)['visual']==six
+        expected=[str(j.root/'state.sqlite.visual'/ref['image_sha256']) for ref in six]
+        assert len(set(expected))==6
+        assert [v['path'] for v in j.packets[-1][1]['input'] if v.get('type')=='localImage']==expected
         # Missing bytes cannot be replaced by a newer view already in the same entry.
         held,r=submit('Use this exact old image in Beta.',reference(data));assert r.status_code==200,r.text
         j.wait(lambda:b.status(held)['phase']=='accepted');path.unlink()
@@ -173,7 +190,8 @@ def qualify(binary):
         assert b.status(original)['visual']==ref
         assert len(j.instructions(7))==5,'Restart replayed a visual instruction'
         assert b.status(paired)['visual']==pair and b.status(spoken_pair)['visual']==pair
-        print('PASS actual HTTP/native/SQLite old attached-image selection, front and busy worker native images, exact coordinates/provenance, ASR frozen image, immutable retries, private image read, stale live-view/missing/changed/ambiguous/disconnected rejection and restart; zero models/sensors.')
+        assert b.status(six_id)['visual']==six
+        print('PASS actual HTTP/native/SQLite six distinct old attached images, front and busy worker native images, exact coordinates/provenance, ASR frozen image, immutable retries, private image read, stale live-view/missing/changed/ambiguous/disconnected rejection and restart; zero models/sensors.')
     finally:
         if b:b.client.close()
         j.close()
