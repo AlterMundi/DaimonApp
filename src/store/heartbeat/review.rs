@@ -128,8 +128,6 @@ impl Store {
         );
         anyhow::ensure!(
             producer::bound(&tx, &p)?
-                && p.review.is_none()
-                && p.contract.reports.is_empty()
                 && p.native_returns
                     .iter()
                     .all(|r| r.reported_revision.is_some()
@@ -167,6 +165,30 @@ impl Store {
         }
         let (_, revision) =
             producer::purpose_source(&tx, human, entry, &p.native, &contract.purpose)?;
+        if let Some(review) = &mut p.review {
+            anyhow::ensure!(
+                review.contract.production
+                    && contract.production
+                    && review.purpose_revision == revision
+                    && serde_json::to_value(&review.contract.purpose)?
+                        == serde_json::to_value(&contract.purpose)?
+                    && review.contract.interval_seconds == contract.interval_seconds
+                    && review.contract.max_checks == contract.max_checks
+                    && review.contract.expires_at_unix_ms == contract.expires_at_unix_ms,
+                "Update production sources only; preserve the selected purpose, cadence and funding"
+            );
+            // Pending originals were checked above. Keep review clocks, accounting,
+            // cursors and retained returns; changed fields get a new source revision.
+            p.contract.reports = contract.reports.clone();
+            review.contract.reports = contract.reports;
+            producer::save(&tx, &p)?;
+            tx.commit()?;
+            return Ok(());
+        }
+        anyhow::ensure!(
+            p.contract.reports.is_empty(),
+            "Preserve existing producer report sources"
+        );
         if contract.production {
             resources::select_production_review_on(&tx, session, human)?;
         } else {

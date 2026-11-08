@@ -5625,6 +5625,142 @@ mod tests {
         assert!(records.iter().all(|r| r["phase"] == "stopping"));
     }
     #[test]
+    fn production_review_sources_evolve_without_refunding_or_retiming() {
+        use crate::store::{HeartbeatCommand as H, HeartbeatPurpose, HeartbeatReviewContract};
+        let (_file, s, e, plan) = setup();
+        producer_configure(&s, &e, 4);
+        let paused = s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        s.heartbeat_enable_continuous(100, e.key, generation, 576)
+            .unwrap();
+        s.heartbeat_production_defaults(100, e.key, generation, "owner production direction")
+            .unwrap();
+        let report = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            report.path(),
+            r#"{"status":"pending","blocker":"native admission"}"#,
+        )
+        .unwrap();
+        let mut contract = HeartbeatReviewContract {
+            purpose: HeartbeatPurpose {
+                input_ref: plan.input_ref,
+                channel: "conversation".into(),
+            },
+            reports: vec![crate::store::HeartbeatReportSource {
+                id: "children".into(),
+                path: report.path().into(),
+                pointers: vec!["/status".into()],
+            }],
+            interval_seconds: 900,
+            max_checks: None,
+            expires_at_unix_ms: None,
+            production: true,
+        };
+        s.heartbeat_select_review(100, e.key, generation, contract.clone())
+            .unwrap();
+        producer_edit(&s, &e, |p| {
+            p["review"]["checks"] = json!(7);
+            p["review"]["next_check_ms"] = json!(Utc::now().timestamp_millis() + 900_000);
+        });
+        let before = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        contract.reports[0].pointers.push("/blocker".into());
+        assert!(
+            s.heartbeat_select_review(101, e.key, generation, contract.clone())
+                .is_err()
+        );
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation + 1, contract.clone())
+                .is_err()
+        );
+        let mut changed = contract.clone();
+        changed.interval_seconds = 1800;
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation, changed)
+                .is_err()
+        );
+        let mut changed = contract.clone();
+        changed.purpose.channel = "another-original-channel".into();
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation, changed)
+                .is_err()
+        );
+        s.heartbeat_select_review(100, e.key, generation, contract.clone())
+            .unwrap();
+        let after = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(before["resources"], after["resources"]);
+        assert_eq!(before["lanes"], after["lanes"]);
+        for field in [
+            "checks",
+            "next_check_ms",
+            "cursor_entries",
+            "retained_returns",
+        ] {
+            assert_eq!(before["producer"][field], after["producer"][field]);
+        }
+        for field in ["checks", "next_check_ms"] {
+            assert_eq!(
+                before["producer"]["finite_review"][field],
+                after["producer"]["finite_review"][field]
+            );
+        }
+        assert_eq!(
+            after["producer"]["finite_review"]["contract"]["reports"][0]["pointers"],
+            json!(["/status", "/blocker"])
+        );
+        s.heartbeat_control(100, e.key, H::Resume { generation })
+            .unwrap();
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation, contract.clone())
+                .is_err()
+        );
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ResumeLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+                generation: after["lanes"]["reports"]["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::WorkflowReturns,
+            },
+        )
+        .unwrap();
+        producer_edit(&s, &e, |p| p["review"]["next_check_ms"] = json!(0));
+        let check = s.heartbeat_begin_check(100, e.key).unwrap().unwrap();
+        s.heartbeat_finish_observation(&check, None, false).unwrap();
+        // Model a lost native ACK: pausing must retain this original, unlike
+        // a proved unsubmitted offer which pause can safely retire.
+        producer_edit(&s, &e, |p| {
+            let returns = p["native_returns"].as_array_mut().unwrap();
+            assert_eq!(returns.len(), 1);
+            returns[0]["phase"] = json!("uncertain");
+        });
+        let paused = s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        let pending = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(pending["producer"]["pending"], true);
+        contract.reports[0].pointers = vec!["/blocker".into()];
+        assert!(
+            s.heartbeat_select_review(100, e.key, paused["generation"].as_u64().unwrap(), contract)
+                .is_err()
+        );
+        let retained = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(pending["producer"], retained["producer"]);
+        assert_eq!(pending["resources"], retained["resources"]);
+    }
+    #[test]
     fn finite_review_selection_keeps_parent_counters_and_exact_human_purpose() {
         use crate::store::{
             HeartbeatCommand as H, HeartbeatProducerContract, HeartbeatPurpose,

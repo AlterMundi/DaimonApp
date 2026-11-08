@@ -338,6 +338,13 @@ The owner console's `heartbeat select-review GENERATION CONTRACT_JSON` selects
 one initial report-review successor on the existing bound parent. It requires
 an exact paused global generation, a paused Reports lane, no unresolved execution
 or pending return, no prior review selection and no existing Reports sources.
+For an existing production review, the same command updates only the selected
+report files/pointers after pending returns have been reviewed. Purpose, cadence,
+production funding and expiry/check policy must match the existing contract.
+Checks, next-check time, resource reservations, source cursors and historical
+returns are preserved. A finite pilot cannot be renewed through this operation.
+Use this path when an owning project adds a current milestone/blocker field;
+do not leave permanent review watching only obsolete initialization fields.
 It changes no source frontier, seen revision, original check counter, native
 binding, global/lane generation, goal, resource contract or historical reservation.
 It does not resume either control. After selection, use the existing explicit
