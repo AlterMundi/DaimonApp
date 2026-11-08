@@ -227,3 +227,23 @@ The separate Sessions entry retains its own shell. Inherited Home CSS remains
 render-blocking; do not hide the application indefinitely while waiting for
 appearance events or use appearance to admit access. Shared-auth attributes and
 explicit inherited-style policy coexist on the same HTML element.
+
+
+## Rejected preview starts
+
+A model_not_found diagnostic is terminal only for the existing single-start Live
+preview transport with a released connection, no session.started identity, no
+audio/format and the matching frozen cache identity. That transport sends only
+one session.start until startup; no commentary, silence or other command can
+precede it. The new rejected_before_start outcome describes that rejected
+request, not session.closed, a zero-charge claim, an attempt refund or a retry.
+Other errors, missing diagnostics, started sessions, audio or unknown outcomes
+stay held. Account/grant/config checks and the four-batch limit are unchanged.
+
+The existing explicit retirement path verifies an exact hash of the rejected
+state and absence of audio under its speech-job lock before cleanup. The original
+uncertain batch without this proof remains. A later explicit Play prepares a new
+identity after access is corrected; it never replays the rejected/uncertain one.
+Old readers may show the new terminal state but cannot retire it; retain this
+reader until a claimed retirement completes. Preserve an operator receipt of
+the observed rejection and selected retirement, never invent finalization.

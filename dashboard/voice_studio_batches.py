@@ -13,7 +13,7 @@ from .voice_studio import choice
 
 PASSAGE='Dale, Compai. Sigamos con la idea de Alter Mundi, con calma y claridad.'
 MAX_BATCHES=4
-TERMINAL={'rendered','not_started','cancelled_verified'}
+TERMINAL={'rendered','not_started','cancelled_verified','rejected_before_start'}
 
 
 def preview_state(value):

@@ -69,7 +69,7 @@ class PreviewService:
         if row['renders'][slot]['id']!=ident:raise ValueError('Frozen preview render identity changed')
         job=Path(route['cache_root'])/ident;path=job/'state.json'
         if not path.exists() and not path.is_symlink():return None
-        state=json.loads(speech.private_bytes(path,32768));provider=state.get('provider_receipt',{})
+        raw=speech.private_bytes(path,32768);state=json.loads(raw);provider=state.get('provider_receipt',{})
         if (state.get('identity_sha256')!=ident or state.get('provider')!='openai-live'
                 or state.get('voice')!=route['voice'] or state.get('language')!=route['language']
                 or state.get('text_sha256')!=speech.sha(request['text'].encode())):
@@ -86,6 +86,14 @@ class PreviewService:
             receipt.update(audio_sha256=state['audio_sha256'],format=info,voice=route['voice'],language=route['language'])
             return {'state':'rendered','receipt':receipt}
         if finalized:return {'state':'cancelled_verified','receipt':receipt}
+        if speech.preview_start_rejection(state) and not (job/'audio.wav').exists() and not (job/'audio.wav').is_symlink():
+            receipt.update(automatic_retry=False,diagnostic=copy.deepcopy(provider['diagnostic']),
+                render_state_sha256=speech.sha(raw),request_rejected=True,finalization='not_observed',
+                accounting='not_refunded')
+            # Return only the same fixed diagnostic classifications as unknowns.
+            from scripts.openai_live_speech import diagnostic
+            receipt['diagnostic']=diagnostic(provider['diagnostic'])
+            return {'state':'rejected_before_start','receipt':receipt}
         if state.get('phase')=='unconfirmed':
             from scripts.openai_live_speech import diagnostic
             details=diagnostic(provider.get('diagnostic'))
