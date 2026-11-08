@@ -16,6 +16,18 @@ handoff; a web-only change does not restart native work. Preserve paused/blocked
 goals and uncertain inputs. Never clear journals or replay a command to manufacture
 convergence. Reuse actual outcomes after a failed verifier.
 
+Apply the short path to the whole delivery, from preparation through installation
+and verification. Reuse qualified unchanged packages and observed receipts rather
+than adding another build, review or approval gate. A task's clean checkpoint
+does not reserve native idle: active goals may immediately continue. When selected
+maintenance needs that boundary, prepare the existing finite owner-scoped
+pause/restoration transaction before pausing eligible goals, then perform the
+handoff and verify conditional restoration. Preserve prior pauses, blocked goals,
+later human direction and accounting; do not use maintenance holds as evidence
+of useful heartbeat availability. An expired uncertain transaction remains
+historical evidence after a later explicit goal control supersedes its authority;
+it must neither be replayed nor block a freshly observed operation forever.
+
 Keep one deployment checkpoint containing each actual receiver, prior/current
 selection, exact source/assets/reader/configuration preservation, adoption outcome,
 rollback and concrete pending reason. Verify own actor/grant and private API refusal

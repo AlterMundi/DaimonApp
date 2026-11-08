@@ -100,7 +100,35 @@ impl Store {
         let entry_binding = super::goal_controls::binding_on(&tx, human, plan.entry)?;
         let mut targets = Vec::new();
         for target in &plan.targets {
-            let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bot_state b,json_each(json_extract(b.value,'$.targets')) t WHERE b.key LIKE 'scoped_maintenance:%' AND json_extract(t.value,'$.target.chat_id')=?1 AND json_extract(t.value,'$.target.thread_id')=?2 AND json_extract(t.value,'$.phase') NOT IN ('restored','not_paused','preserved','superseded'))",params![target.target.chat_id,target.target.thread_id],|r|r.get(0))?;
+            // A later explicit goal control supersedes an expired uncertain
+            // transaction. Keep its receipt unchanged; it grants no retry or
+            // restoration authority. Live submissions and owned pauses still
+            // exclude another operation.
+            let generation = serde_json::to_value(super::goal_controls::command_generation_on(
+                &tx,
+                target.target,
+            )?)?;
+            let mut prior = tx.prepare("SELECT b.value,t.value FROM bot_state b,json_each(json_extract(b.value,'$.targets')) t WHERE b.key LIKE 'scoped_maintenance:%' AND json_extract(t.value,'$.target.chat_id')=?1 AND json_extract(t.value,'$.target.thread_id')=?2 AND json_extract(t.value,'$.phase') NOT IN ('restored','not_paused','preserved','superseded')")?;
+            let rows = prior.query_map(
+                params![target.target.chat_id, target.target.thread_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )?;
+            let mut conflict = false;
+            for row in rows {
+                let (operation, previous) = row?;
+                let operation: Value = serde_json::from_str(&operation)?;
+                let previous: Value = serde_json::from_str(&previous)?;
+                let superseded = matches!(
+                    previous["phase"].as_str(),
+                    Some("pause_unconfirmed" | "restore_unconfirmed")
+                ) && operation["plan"]["deadline"]
+                    .as_i64()
+                    .is_some_and(|t| t < now)
+                    && generation.as_str().is_some_and(|v| !v.is_empty())
+                    && generation != previous["command_generation"];
+                conflict |= !superseded;
+            }
+            drop(prior);
             if conflict {
                 bail!("Target has an existing unresolved maintenance transaction");
             }
@@ -429,6 +457,52 @@ mod tests {
         assert!(
             store
                 .maintenance_admission(100, &plan.request_id, 0, "pause_submitted")
+                .is_err()
+        );
+    }
+    #[test]
+    fn scoped_maintenance_expired_uncertainty_preserves_receipt_after_later_control() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &defaults()).unwrap();
+        let old = fixture(&store, "active");
+        let doc = store.maintenance_prepare(100, &old).unwrap();
+        let retained = store
+            .maintenance_transition(
+                100,
+                &old.request_id,
+                0,
+                &doc,
+                "restore_unconfirmed",
+                json!({"unknown":true}),
+            )
+            .unwrap();
+        let next = fixture(&store, "active");
+        assert!(store.maintenance_prepare(100, &next).is_err());
+        {
+            let db = store.conn.lock().unwrap();
+            db.execute("INSERT INTO bot_state(key,value) VALUES('goal_intent:100:7','later-explicit-control')", []).unwrap();
+        }
+        // Later direction alone does not permit overlapping a live window.
+        assert!(store.maintenance_prepare(100, &next).is_err());
+        let mut expired = retained.clone();
+        expired["plan"]["deadline"] = json!(Utc::now().timestamp() - 1);
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE bot_state SET value=?2 WHERE key=?1",
+                params![key(&old.request_id).unwrap(), expired.to_string()],
+            )
+            .unwrap();
+        store.maintenance_prepare(100, &next).unwrap();
+        assert_eq!(
+            store.maintenance_read(100, &old.request_id).unwrap(),
+            expired
+        );
+        assert!(
+            store
+                .maintenance_admission(100, &old.request_id, 0, "restore_unconfirmed")
                 .is_err()
         );
     }

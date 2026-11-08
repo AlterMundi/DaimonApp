@@ -350,6 +350,14 @@ provide a hard wall-clock restoration guarantee. Source qualification must not
 be described as reserving native maintenance or guaranteed recovery during an
 outage.
 
+After the absolute window has expired, a later explicit goal control with a
+different command generation supersedes an uncertain transaction's authority.
+A freshly observed owner plan may then proceed without modifying or replaying
+that historical receipt. Unchanged generations, active windows, submissions and
+acknowledged owned pauses still exclude conflicting plans. Asking tasks to finish
+does not itself reserve idle; use the prepared bridge when authorized maintenance
+requires preventing their automatic goal continuations from racing selection.
+
 `restore UUID` also closes never-paused targets, allowing the owner to defer or
 finish adoption early. Later native decisions are `superseded`; prior paused or
 blocked targets remain `preserved`. The journal sends no separate message or model turn. Restoration carries an
