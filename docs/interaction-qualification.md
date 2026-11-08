@@ -3,6 +3,28 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Session reading position across Detail and Back —8November2026
+
+The shipped browser journey now checks the exact Conversation `scrollTop` before
+opening another session and after returning with Back. Desktop1280 and phone
+widths390/320 preserve that position, the unsent draft and the prior pinned
+source/revision. Opening Detail still advances the input-admission epoch; Back
+must not restore an obsolete capture generation. The first additional assertion
+incorrectly compared that epoch as part of the destination; its failure was
+retained and corrected to compare the exact reference plus an advancing epoch.
+No product behavior was changed to satisfy the verifier.
+
+Actual Chromium journeys passed with both inherited and authored/HUD appearance,
+then with the selected Root792 public-runtime composition. The workspace module
+matches the source bytes. Other selected shell assets retain valid composed
+deltas; qualification used the receiving working directory as the fixture's
+public root rather than selecting the moving source tree into production.
+The fixture uses synthetic HTTP data and checks existing access-loss/draft/audio
+controls; it sends no native input, provider request or real media capture.
+No runtime rollout or avatar/voice/grant/goal mutation accompanies this change.
+This establishes browser behavior; physical touch/keyboard/hearing and the full
+continuous-voice/memory/children/School roadmap remain open.
+
 ## Media uploads without an application-clock cutoff —7November2026
 
 Ordinary recorded-audio and selected-PNG POSTs no longer abort on an application
