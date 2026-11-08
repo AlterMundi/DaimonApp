@@ -1,3 +1,11 @@
+# Integration requirements
+
+Read `CONTRIBUTING.md` before integration. Its independent-review requirement
+for binding, security and persistent-state changes remains mandatory when an old
+review-permission question is withdrawn. Reuse the existing authorized review
+route; do not create another approval question. Source checks and receiving
+adoption are separate from a completed independent review.
+
 Ordinary voice messages already recording survive browser tab visibility changes,
 as do their in-flight original uploads. Keep late microphone permission blocked
 while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
