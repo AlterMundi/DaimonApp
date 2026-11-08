@@ -1362,3 +1362,55 @@ html[data-style-policy="authored"] .standalone-conversation header .header-tools
 .avatar-workshop-compact-header {display:flex;align-items:center;gap:.75rem;min-width:0}
 .avatar-workshop-compact-preview nav {display:flex;flex-wrap:wrap;gap:.5rem}
 .avatar-workshop-compact-preview button {min-height:44px;font:inherit}
+
+/* Notices float above the composer; changing text never resizes its input. */
+#conversation-compose {position:relative;}
+#conversation-compose-notices {position:absolute;right:4px;bottom:calc(100% + 2px);z-index:12;}
+#conversation-compose-notices:not(:has([data-attention="true"]:not(:empty),#conversation-recording-review:not([hidden]),#conversation-codex-recovery:not([hidden]),#conversation-voice-remaining:not([hidden]))) {display:none;}
+#conversation-compose-notices>summary {list-style:none;display:flex;align-items:center;justify-content:center;gap:4px;width:44px;min-height:44px;cursor:pointer;color:var(--warn);font-size:14px;}
+#conversation-compose-notices>summary::-webkit-details-marker {display:none;}
+#conversation-compose-notices>summary>span:first-child {display:grid;place-items:center;width:22px;height:22px;border:1px solid currentColor;border-radius:50%;font-weight:700;background:var(--panel);}
+#conversation-compose-notices .composer-notice-panel {position:absolute;right:0;bottom:calc(100% + 2px);width:min(380px,calc(100vw - 38px));max-height:min(380px,55dvh);overflow:auto;padding:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);box-shadow:0 12px 40px #0007;}
+#conversation-compose-notices #conversation-compose-status {display:block;position:static;width:auto;height:auto;max-height:none;min-height:0;overflow:visible;clip-path:none;}
+#conversation-compose-notices #conversation-compose-status p {display:block;margin:0 0 10px;font-size:14px;line-height:1.5;overflow-wrap:anywhere;}
+#conversation-compose-notices #conversation-compose-status p:empty {display:none;}
+#conversation-compose-notices #conversation-codex-recovery {position:static;max-height:none;}
+#conversation-compose-notices #conversation-recording-review {flex-wrap:wrap;}
+#conversation-compose-notices:has([data-attention="true"]:not(:empty))>summary {color:var(--warn);}
+
+/* One authored HUD vocabulary across its secondary surfaces. Other people's
+   inherited Homemaker choices retain their own presentation. */
+html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.voice-mode,.heartbeat-menu,#conversation-diagnostics[open],#conversation-attachment-sheet,.session-rail,dialog:not(.voice-mode)) {
+ --hud-copper:#bf9067;--hud-copper-soft:#bf906766;
+ color:var(--ink);background:linear-gradient(145deg,#1c2b38,#0b151f 70%);border:1px solid var(--hud-copper-soft);border-radius:3px;
+ box-shadow:inset 0 0 0 5px #0a141ddd,inset 0 0 0 6px #77d4e022,0 16px 56px #0006;
+}
+html[data-style-policy="authored"] :is(.avatar-workshop-toolbar,.session-view-toolbar,.voice-mode h2,.dialog-top) {border-bottom:1px solid #bf906755;padding-block:12px;letter-spacing:.025em;}
+html[data-style-policy="authored"] .avatar-workshop-toolbar {margin:0;padding:12px 18px;background:linear-gradient(110deg,#223443,#0c1721);}
+html[data-style-policy="authored"] .avatar-workshop-dialog {padding:8px;}
+html[data-style-policy="authored"] .avatar-workshop-dialog iframe {border:0;background:#0b151f;}
+html[data-style-policy="authored"] :is(.voice-studio-card,.voice-studio-presets,.session-message) {background:#15232e;border:1px solid #78d7e02e;border-left:2px solid #78d7e066;border-radius:3px;box-shadow:none;}
+html[data-style-policy="authored"] :is(.voice-studio-card,.voice-studio-presets) {padding:18px;}
+html[data-style-policy="authored"] .voice-studio-mark {border-radius:0;clip-path:polygon(18% 0,82% 0,100% 18%,100% 82%,82% 100%,18% 100%,0 82%,0 18%);background:linear-gradient(135deg,#bf90672b,#78d7e01c);border:1px solid #bf906766;}
+html[data-style-policy="authored"] :is(.voice-mode-controls,.avatar-workshop-toolbar,.voice-studio-card,.session-row-actions,.session-view-toolbar,.heartbeat-menu) button {min-height:44px;min-width:44px;border:1px solid #78d7e077;border-radius:24px;background:#142635;color:var(--accent);font-size:14px;padding:10px 14px;}
+html[data-style-policy="authored"] :is(.voice-studio-card,.voice-studio-presets) :is(input,textarea,select) {background:#0b1722;color:var(--ink);border:1px solid #bf906777;border-radius:10px;font:inherit;}
+html[data-style-policy="authored"] .voice-mode {padding:24px max(22px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(22px,env(safe-area-inset-left));background:radial-gradient(ellipse at 50% 32%,#1b46523d,transparent 60%),linear-gradient(155deg,#182a38,#08121c);}
+html[data-style-policy="authored"] .voice-mode h2 {font-family:ui-serif,Georgia,serif;font-weight:500;}
+html[data-style-policy="authored"] .voice-mode-detection {padding:10px 14px;border-left:1px solid #78d7e077;border-radius:0;background:#142a3544;font-size:14px;}
+html[data-style-policy="authored"] .voice-mode-caption {border-top:1px solid #bf906744;padding-top:16px;line-height:1.65;}
+html[data-style-policy="authored"] .voice-mode-controls {padding:12px 0;border-top:1px solid #78d7e033;}
+html[data-style-policy="authored"] #conversation-diagnostics[open] {padding:12px 18px;}
+html[data-style-policy="authored"] #conversation-diagnostics>summary::after {display:none;}
+html[data-style-policy="authored"] .session-view-toolbar {gap:8px;}
+html[data-style-policy="authored"] .session-message {margin:12px 0;padding:16px;line-height:1.6;}
+html[data-style-policy="authored"] .session-rail {padding:14px;}
+html[data-style-policy="authored"] .native-share-offer {padding:16px;border:1px solid #bf906777;border-left:2px solid var(--accent);border-radius:12px;background:linear-gradient(125deg,#1b2d3a,#0d1c28);}
+html[data-style-policy="authored"] #conversation-compose-notices .composer-notice-panel {border:1px solid #bf906777;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 3px #78d7e012,0 12px 40px #0008;}
+@media(max-width:600px) {
+ html[data-style-policy="authored"] .standalone-conversation main {padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));}
+ html[data-style-policy="authored"] .avatar-workshop-dialog {width:calc(100% - 8px);max-width:none;max-height:calc(100dvh - 8px);margin:4px;}
+ html[data-style-policy="authored"] .session-row-actions {gap:6px;flex-wrap:wrap;}
+}
+html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail) {
+ background:linear-gradient(135deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) left top/24px 24px no-repeat,linear-gradient(225deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) right top/24px 24px no-repeat,linear-gradient(45deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) left bottom/24px 24px no-repeat,linear-gradient(315deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) right bottom/24px 24px no-repeat,linear-gradient(145deg,#1c2b38,#0b151f 70%);
+}

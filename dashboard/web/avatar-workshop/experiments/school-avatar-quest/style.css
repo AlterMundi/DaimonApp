@@ -19,3 +19,28 @@ textarea{display:block;width:100%;margin-top:8px;padding:13px;background:var(--s
 .image-tools{margin:20px 0}.image-tools canvas{max-width:240px;height:210px;object-fit:contain;background:var(--surface);border:1px solid var(--line);border-radius:12px}.prop-editor{margin:22px 0;padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.prop-editor fieldset{min-width:0;border:1px solid var(--line);border-radius:12px;margin:18px 0;padding:14px}.prop-editor legend{font-weight:650;font-size:16px}.prop-editor .swatches [aria-pressed=true]{background:var(--ink);color:var(--paper)}#edit-animation,#open-theatre{margin-top:18px}
 
 @font-face{font-family:'Space Grotesk';font-style:normal;font-weight:300 700;font-display:swap;src:url('../../../space-grotesk-latin.woff2') format('woff2')}
+
+/* The parent chooses this authored composition; no palette/preference storage. */
+html[data-presentation="navigator-hud"] {color-scheme:dark;--paper:#0b151f;--surface:#142430;--ink:#eee7d9;--accent:#83d9e8;--line:#bf906766;--muted:#bbc8c9;--lime:#254a54;--radius:4px;background:radial-gradient(ellipse at 60% 20%,#1f40504d,transparent 65%),var(--paper);}
+html[data-presentation="navigator-hud"] .masthead {padding:18px 0;border-bottom:1px solid #bf906777;}
+html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,dialog,.appearance-popover) {color:var(--ink);border:1px solid #bf906766;border-radius:4px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 4px #0b151f,inset 0 0 0 5px #78d7e01e;}
+html[data-presentation="navigator-hud"] :is(.closet-top,.world-label,.dialog-top) {background:transparent;color:var(--ink);border-bottom:1px solid #bf906744;}
+html[data-presentation="navigator-hud"] :is(button,.choice) {min-height:44px;border:1px solid #78d7e055;border-radius:12px;color:var(--ink);background:#12232f;box-shadow:none;}
+html[data-presentation="navigator-hud"] button.primary {color:#09232c;background:#83d9e8;border-color:#b5eef5;}
+html[data-presentation="navigator-hud"] :is(button[aria-pressed=true],button[aria-selected=true],.choice[aria-pressed=true]) {color:var(--ink);border-color:var(--accent);background:#234956;}
+html[data-presentation="navigator-hud"] :is(.journey,.grownups) {border-color:#78d7e044;}
+html[data-presentation="navigator-hud"] :is(.art-wrap,.stage) {background:radial-gradient(ellipse,#25556625,transparent 70%);}
+html[data-presentation="navigator-hud"] #pocket {background:#0c1924;border-top:1px solid #bf906777;box-shadow:0 -8px 30px #0004;}
+html[data-presentation="navigator-hud"] :is(input,textarea,select) {background:#0b1722;color:var(--ink);border-color:#bf906777;}
+html[data-presentation="navigator-hud"] :is(.edition,.small,.eyebrow,.art-description,.frame-label) {color:var(--muted);}
+html[data-presentation="navigator-hud"] body {background:transparent;}
+html[data-presentation="navigator-hud"] .wardrobe-shell {border:1px solid #bf906777;border-radius:4px;background:linear-gradient(145deg,#1b2b3a,#0c1722);box-shadow:inset 0 0 0 5px #0b151f,inset 0 0 0 6px #78d7e01c;}
+html[data-presentation="navigator-hud"] :is(#panel,#tabs button,.wardrobe-tile,.upload-symbol,.stage #expression-title,.prop-editor,.prop-editor fieldset) {background:#122430;color:var(--ink);border-color:#78d7e044;box-shadow:none;}
+html[data-presentation="navigator-hud"] :is(#tabs [aria-selected=true],.wardrobe-tile[aria-pressed=true],.side-switch [aria-pressed=true]) {background:#234956;color:var(--ink);border-color:var(--accent);outline-color:var(--accent);box-shadow:none;}
+html[data-presentation="navigator-hud"] :is(.panel-caption,.closet #message,#page-count,.prop-options summary) {color:var(--muted);}
+html[data-presentation="navigator-hud"] .prop-swatch:focus-within {outline-color:var(--accent);}
+
+html[data-presentation="navigator-hud"] .stage :is(#appearance>summary,.art-wrap #play) {background:#132b38;color:var(--accent);border:1px solid #78d7e077;box-shadow:none;}
+html[data-presentation="navigator-hud"] .keep-actions button {min-width:0;overflow-wrap:anywhere;}
+@media(max-width:420px){html[data-presentation="navigator-hud"] .keep-actions #save {grid-column:1/-1;flex-basis:100%;}}
+@media(max-width:600px){html[data-presentation="navigator-hud"] #tabs {grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}html[data-presentation="navigator-hud"] #tabs button {font-size:16px;min-height:44px;padding:8px;white-space:normal;}}

@@ -164,6 +164,16 @@ class Mounted(unittest.TestCase):
         self.assertEqual([v['type'] for v in native.sent],['session.close'])
         self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
 
+    def test_optional_close_diagnostic_write_failure_cannot_block_stop(self):
+        with patch.object(LiveCreations,'record_close_reason',side_effect=OSError('Synthetic diagnostic write failure')):
+            with self.socket() as socket:
+                native=self.start(socket)
+                socket.send_json({'type':'close','reason':'explicit_stop'})
+                self.assertEqual(socket.receive_json()['type'],'finishing')
+                self.assertEqual(socket.receive_json()['type'],'closed')
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
+
     def test_client_close_reason_is_bounded_and_preserves_explicit_stop(self):
         with self.socket() as socket:
             native=self.start(socket)

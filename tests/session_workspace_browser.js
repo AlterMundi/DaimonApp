@@ -229,6 +229,20 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    await page.locator('#conversation-visual>summary').click();
    assert(await page.locator('#conversation-attachment-sheet').isVisible(),'Attachments stay available');
    await page.locator('#conversation-visual>summary').click();
+   const inputBefore=await page.locator('#conversation-message').boundingBox(),composeBefore=await page.locator('#conversation-compose').boundingBox();
+   await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.dataset.attention='true';message.textContent='A retained recording needs review. '.repeat(18);});
+   const notices=page.locator('#conversation-compose-notices');
+   assert(await notices.locator('summary').isVisible(),'A minimal notice indicator is available');
+   assert.equal((await page.locator('#conversation-compose').boundingBox()).height,composeBefore.height,'Long notices never expand the composer');
+   assert.equal((await page.locator('#conversation-message').boundingBox()).height,inputBefore.height);
+   await notices.locator('summary').click();
+   const popup=await notices.locator('.composer-notice-panel').boundingBox();
+   assert(popup&&popup.y+popup.height<=inputBefore.y,'Notice opens upward outside the text input');
+   assert(popup.x>=0&&popup.x+popup.width<=width,'Notice fits the phone viewport');
+   assert.equal(await page.locator('#conversation-message').inputValue(),'Explore this idea together.');
+   await page.screenshot({path:path.join(output,`hud-notice-${width}-${height}.png`)});
+   await notices.locator('summary').click();
+   await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.textContent='';delete message.dataset.attention;});
    await page.screenshot({path:path.join(output,`hud-${width}-${height}.png`)});
    layouts.push({width,height});
   }

@@ -310,7 +310,14 @@ def install(app, config, provider, authorize, origins):
                             if action.get('type')!='close' or set(action)-{'type','reason'}:
                                 raise ValueError('Select a matching source acknowledgment or an explicit close')
                             if 'reason' in action:
-                                await asyncio.to_thread(history.record_close_reason,visit,human,owner,action['reason'])
+                                reason=action['reason']
+                                if not isinstance(reason,str) or reason not in history.close_reasons:
+                                    raise ValueError('Select a known voice close diagnostic')
+                                # A diagnostic is optional. Its storage failure must
+                                # not prevent explicit Stop/final usage; begin_close
+                                # still rechecks the current authorized owner.
+                                with suppress(OSError,ValueError,RenderError):
+                                    await asyncio.to_thread(history.record_close_reason,visit,human,owner,reason)
                             await begin_close()  # A duplicate close observes the same intent.
                         read_browser=asyncio.create_task(message(1024))
                     if returning is not None and returning.done():

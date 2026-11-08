@@ -54,9 +54,9 @@
     "renderer.mjs": "4bac887e1750c521486ad31f2a536b60639f43cc576c85cf635b391d507f3dc8",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
-    "experiments/school-avatar-quest/index.html": "861f0b207547504b1d70e05342490b490cad01e05ad316ab34074735b2034c44",
-    "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
-    "experiments/school-avatar-quest/storage.mjs": "106e8609b4058cae7c5481978be9a6770f6ba99e203c9f361811e233564a5588",
+    "experiments/school-avatar-quest/index.html": "864d1c19d5234d410764e2dc8d1f22f5cf7454f89275f94ffe676dd325c0744c",
+    "experiments/school-avatar-quest/style.css": "d5d086b5bde6995d2d211f603835da3f3d06683e8c236b06a25dc44d3c31a5b0",
+    "experiments/school-avatar-quest/storage.mjs": "cf606a383a2fc05b701377347d098abd12908e16bea7205b9462f3cf4e88ae7b",
     "experiments/school-avatar-quest/wardrobe.mjs": "8508c3ae0f328461bd3eb1b96e4c2859046e1c70d3368414e3f658c1ceec5a92",
     "experiments/school-avatar-quest/precision-renderer.mjs": "8ea8f42c6eedf08bb08d1b8fb7782fd886f432a028d880a27d401384ee8cc9be",
     "experiments/school-avatar-quest/pillow.mjs": "363a5d745893983ee8046da8d810f0bf4bfd9021cb22d11b13c35eddd7aec16a",
@@ -86,7 +86,8 @@
     "experiments/avatar-studio/characters.mjs": "aad43a83e27bd64f6874438e732d089e9375740b4c29a259ba634e693978eea9",
     "skills/ascii-avatar-author/scripts/model-runtime.mjs": "6fb13431c07c236909bbea2e1956c848c7db34c0b5bf960434ff4f124301fd22",
     "skills/ascii-avatar-author/assets/example.avatar.json": "f8aae8c3186762828994c16ed5e2bb04f6698c2a68c9cfd75098a74f3a1a36d6",
-    "skills/ascii-avatar-author/scripts/raster-model-author.mjs": "682670e5efa4a274c28dd1ce89e73fe6dfab4a03df37e29d0bbd213e6847ecaa"
+    "skills/ascii-avatar-author/scripts/raster-model-author.mjs": "682670e5efa4a274c28dd1ce89e73fe6dfab4a03df37e29d0bbd213e6847ecaa",
+    "experiments/school-avatar-quest/presentation.js": "e9fa92d8132d88a83ab42ee6d00714e4cb492a3eb8a524614439ce4b87618e4d"
   },
   "previous_source_revision": "e1ef54bef8ed9a790b7d7d1807f0c73889c955d3"
 }
