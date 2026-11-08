@@ -1262,6 +1262,7 @@ mod inbox_tests {
             }
             let resources_before =
                 store.heartbeat_control(100, entry, H::Status).unwrap()["resources"].clone();
+            let second_original = item(2);
             // A completed unreported batch and a mismatched physical receipt
             // cannot be relabeled as failed/reviewed to open admission.
             for (status, physical) in [
@@ -1279,7 +1280,7 @@ mod inbox_tests {
                 let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
                 let selected = selection(&store, entry, &source);
                 let page_items = if selected.after == 1 {
-                    vec![item(2)]
+                    vec![second_original.clone()]
                 } else {
                     vec![]
                 };
@@ -1333,7 +1334,10 @@ mod inbox_tests {
             assert_eq!(offered.len(), 1);
             assert_eq!(
                 offered[0].key,
-                format!("matrix-inbox:{}", item(2)["message_id"].as_str().unwrap())
+                format!(
+                    "matrix-inbox:{}",
+                    second_original["message_id"].as_str().unwrap()
+                )
             );
             assert_eq!(
                 conn.query_row(
