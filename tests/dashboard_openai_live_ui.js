@@ -45,13 +45,14 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
      if(boundaryTail){const size=boundaryTail;boundaryTail=0;captureBytes+=size;listener({pcm:new Uint8Array(size).buffer});}
      listener({boundary:token,totalBytes:captureBytes});
     });},finish(){listener({finished:true});},close(){recorderCloses++;}};}}};
- const nativeOutputs=[];
+ const nativeOutputs=[],observers=[];
+ window.WebRtcNativeAudio={observe:async(stream,options)=>{const observer={options,closed:0,close(){this.closed++;}};observers.push(observer);return observer;}};
  if(nativeOutput){
   window.NativeSpeechAudio={webrtcPcm:true};
   window.WebRtcNativeAudio={supported:()=>true,open:async options=>{
    assert.equal(options.sessionSeconds,600);order.push('native-ready');
    const output={closed:0,streams:[],close(){this.closed++;},attach(stream){this.streams.push(stream);},setEnabled(){},pause(){},resume(){}};
-   nativeOutputs.push(output);return output;
+   output.activity=options.onActivity;nativeOutputs.push(output);return output;
   }};
  }
  async function fetch(url,options){
@@ -75,7 +76,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,
+ return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   expireNetworkClocks:()=>{for(const clock of networkClocks)clock.controller.abort();},
@@ -92,6 +93,18 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
    'Confirmed HTTP creation plus connected WebRTC must not wait for an optional session.started event');
   assert.equal(await httpStarting,true);assert.equal(httpStarted.sockets.length,1);
  }finally{await httpStarted.engine.hold();await httpStarting;}
+ const playback=fixture();await playback.start();
+ try{
+  playback.peers[0].ontrack({streams:[{}]});await until(()=>playback.observers.length);
+  const observation=playback.observers[0];assert.equal(playback.states.at(-1).playback,'idle','Opening a continuous audio stream is not speech');
+  observation.options.onActivity(.2);assert.equal(playback.states.at(-1).playback,'playing');assert.equal(playback.states.at(-1).outputLevel,1);
+  playback.engine.pause();assert.equal(playback.states.at(-1).outputLevel,0);assert.equal(playback.states.at(-1).playback,'paused');
+  observation.options.onActivity(.2);assert.equal(playback.states.at(-1).outputLevel,0);
+  playback.engine.resume();observation.options.onActivity(.1);assert.equal(playback.states.at(-1).playback,'playing');
+  playback.engine.setEnabled(false);assert.equal(playback.states.at(-1).outputLevel,0);observation.options.onActivity(.2);assert.equal(playback.states.at(-1).playback,'idle');
+  playback.engine.setEnabled(true);observation.options.onActivity(0);assert.equal(playback.states.at(-1).playback,'idle','Silence never becomes speaking from a transcript');
+  await playback.engine.hold();assert.equal(observation.closed,1);const states=playback.states.length;observation.options.onActivity(.2);assert.equal(playback.states.length,states,'Late old output cannot animate a closed/replaced voice visit');
+ }finally{await playback.engine.hold();}
  const slow=fixture();await slow.start();let releaseSlow;
  slow.uploads(()=>new Promise(resolve=>{releaseSlow=resolve;}));slow.pcm();
  const slowRequest=crypto.randomUUID();slow.sockets[0].onmessage({data:JSON.stringify({

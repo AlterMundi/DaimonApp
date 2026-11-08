@@ -144,7 +144,7 @@ window.Conversation = (() => {
       }
     }
     const sound=window.ConversationSound?.mount({api,unauthorized:failed,getAuthority:fileCredential,onState:value=>companion?.sonic?.(value)});
-    const presentState=(patch,updateVoice=true)=>{companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
+    const presentState=(patch,updateVoice=true)=>{if(Object.hasOwn(patch,'outputLevel'))avatarWorkshop?.speechLevel?.(patch.outputLevel);companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
     let inspectorReturnFocus;
     if(standalone){
       const inspector=$("#conversation-diagnostics"),inspectButton=$("#conversation-inspect");

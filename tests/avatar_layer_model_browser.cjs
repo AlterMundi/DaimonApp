@@ -10,6 +10,9 @@ const result=await page.evaluate(async fixture=>{const {packRasterLayers}=await 
 const clip=structuredClone(m);clip.nodes[0].clip=[[100,100],[140,100],[100,140]];const clipped=renderAvatarModel(clip);
 // All pixels outside the two moving parts must remain identical.
 let outside=0;const aa=a.getContext('2d').getImageData(0,0,576,720).data,bb=b.getContext('2d').getImageData(0,0,576,720).data;for(let y=300;y<720;y++)for(let x=0;x<576;x++)for(let k=0;k<4;k++)if(aa[(y*576+x)*4+k]!==bb[(y*576+x)*4+k])outside++;
+const jaw=structuredClone(m);jaw.nodes.push({id:'anchor-mouth',type:'path',path:[['M',300,200]],fill:null,parent:'head',pivot:[300,200]},{id:'jaw',type:'ellipse',cx:300,cy:200,rx:12,ry:5,fill:'#ffffff',parent:'anchor-mouth',pivot:[300,200]});const jm=validateAvatarModel(jaw),original=JSON.stringify(jm),closed=renderAvatarModel(jm,0,'calm',0),open=renderAvatarModel(jm,0,'calm',1);
+if(pixel(closed,300,200)[3]!==255||pixel(open,300,200)[3]!==0||pixel(open,300,212)[3]!==255)throw Error('Independent mouth anchor did not follow output level');
+if(original!==JSON.stringify(jm)||renderAvatarModel(m,0,'calm',1).toDataURL()!==a.toDataURL()||renderAvatarModel(jm,0,'calm',NaN).toDataURL()!==closed.toDataURL())throw Error('Mouth playback changed saved/legacy drawing');
 return {calm:pixel(a,110,110),focus:pixel(b,110,130),sleep:pixel(sleep,110,110),oldHeadEdge:pixel(b,110,101),clipped:pixel(clipped,170,170),fingerMoved:pixel(b,215,150),outside};},fixture);
 assert.deepEqual(result.calm,[255,0,0,255]);assert.deepEqual(result.focus,[0,255,0,255]);assert.deepEqual(result.sleep,[0,255,0,255]);assert.equal(result.oldHeadEdge[3],0);assert.equal(result.clipped[3],0);assert.equal(result.fingerMoved[3],0);assert.equal(result.outside,0);
 console.log('Actual Canvas: cue texture, relative parent/finger motion, polygon clip, sleep and stable outside pixels passed.');

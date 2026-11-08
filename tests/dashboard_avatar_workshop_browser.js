@@ -46,6 +46,57 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  if(process.env.OUTPUT_MOUTH_ONLY==='1'){
+   await page.goto(origin);
+   const input=process.env.AVATAR_MOUTH_DESIGN?JSON.parse(fs.readFileSync(process.env.AVATAR_MOUTH_DESIGN,'utf8')):null;
+   const original=process.env.AVATAR_MOUTH_ORIGINAL?JSON.parse(fs.readFileSync(process.env.AVATAR_MOUTH_ORIGINAL,'utf8')).record.design:null;
+   const result=await page.evaluate(async({input,original})=>{
+    const {fresh}=await import('/assets/avatar-workshop/experiments/school-avatar-quest/model.mjs'),{prepare}=await import('/assets/avatar-workshop/renderer.mjs');
+    const design=input||{...fresh(),body:'custom-model',characterStyle:'model/v1',avatarModel:{schema:'ascii-avatar-model/v1',id:'mouth-fixture',name:'Mouth fixture',nodes:[{id:'head',type:'ellipse',cx:288,cy:200,rx:100,ry:100,fill:'#ffffff'},{id:'anchor-mouth',type:'path',path:[['M',288,230]],fill:null,pivot:[288,230]},{id:'jaw',type:'ellipse',cx:288,cy:240,rx:55,ry:12,fill:'#00ffff',parent:'anchor-mouth',pivot:[288,230]}],animations:{calm:[]},anchors:{compact:[160,80,256,320]}}};
+    const frozen=JSON.stringify(design),base=original||structuredClone(design);if(!original){base.avatarModel.nodes=base.avatarModel.nodes.filter(n=>n.id!=='anchor-mouth');delete base.avatarModel.nodes.find(n=>n.id==='jaw').parent;}
+    let stills=0,mouthChanges=0;
+    for(const width of [640,148]){
+     const a=document.createElement('canvas'),b=document.createElement('canvas');a.style.width=b.style.width=width+'px';document.body.append(a,b);const old=prepare(a,base),paint=prepare(b,design);
+     for(const cue of ['calm','curious','joy','sad','anger','uncertain','focus','welcome','sleep']){
+      old.selectCue(cue);paint.selectCue(cue);paint.setSpeechLevel(0);
+      for(let frame=0;frame<12;frame++){old(frame);paint(frame);if(a.toDataURL()!==b.toDataURL())throw Error('Adding an inert mouth anchor changed the authored drawing');stills++;}
+      paint(0);const rest=b.toDataURL();if(!paint.setSpeechLevel(1))throw Error('Mouth anchor unavailable');paint(0);if(rest!==b.toDataURL())mouthChanges++;paint.setSpeechLevel(0);paint(0);if(rest!==b.toDataURL())throw Error('Speech release did not restore the exact authored expression');
+     }a.remove();b.remove();
+    }
+    return {stills,mouthChanges,unchanged:JSON.stringify(design)===frozen,draft:design};
+   },{input,original});
+   assert.equal(result.stills,216);assert.equal(result.mouthChanges,18);assert(result.unchanged);assert.equal(errors.length,0,errors.join('\n'));
+   await page.evaluate(async design=>{
+    const write=async body=>{const r=await fetch('/api/interaction/avatars',{method:'POST',headers:{'X-Test-Actor':'100','X-Dashboard-CSRF':'test-action','Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw Error(await r.text());return r.json();};
+    const id=crypto.randomUUID();await write({action:'save',id,design,parentId:null,generation:0});await write({action:'activate',id,generation:1});testAvatar.reset();testAvatar.bind('actor100');
+   },result.draft);
+   await page.locator('#conversation-companion canvas').waitFor();
+   const read=()=>page.locator('#conversation-companion canvas').evaluate(c=>c.toDataURL());
+   const still=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),still,'Reduced motion suppresses mouth motion');
+   await page.emulateMedia({reducedMotion:'no-preference'});
+   const transition=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),still=c.toDataURL();testAvatar.speechLevel(1);const open=c.toDataURL();testAvatar.speechLevel(0);return {still,open,rest:c.toDataURL()};});
+   assert.notEqual(transition.open,transition.still);assert.equal(transition.rest,transition.still,'Host restores the current exact authored frame');
+   await page.locator('#avatar-workshop-pause').click();const paused=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),paused,'Explicit avatar pause suppresses live mouth movement');
+   await page.locator('#avatar-workshop-pause').click();await page.evaluate(()=>testAvatar.speechLevel(1));await page.locator('#avatar-workshop-open').click();const wardrobe=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),wardrobe,'Wardrobe keeps the active portrait still');
+   console.log('PASS actual glyph renderer:216 authored large/compact frames unchanged at rest,18 cue/view mouth transitions restore exactly, no saved design mutation; no providers');return;
+  }
+  if(process.env.OUTPUT_ACTIVITY_ONLY==='1'){
+   await page.goto(origin);await page.addScriptTag({url:origin+'/assets/webrtc-native-audio.js'});
+   const result=await page.evaluate(async()=>{
+    const context=new AudioContext({sampleRate:24000}),osc=context.createOscillator(),gain=context.createGain(),destination=context.createMediaStreamDestination(),audio=new Audio(),levels=[];
+    gain.gain.value=0;osc.frequency.value=440;osc.connect(gain).connect(destination);osc.start();await context.resume();audio.srcObject=destination.stream;await audio.play();
+    let observer;const until=async test=>{for(let i=0;i<100;i++){if(test())return;await new Promise(r=>setTimeout(r,30));}throw Error('Actual output activity not observed');};
+    try{
+     observer=await WebRtcNativeAudio.observe(destination.stream,{sessionSeconds:300,isPlaying:()=>!audio.paused&&!audio.muted,onActivity:value=>levels.push(value)});
+     await until(()=>levels.length>=2);const silence=levels.every(v=>v===0);gain.gain.value=.2;await until(()=>levels.some(v=>v>.1));const speech=levels.at(-1);
+     audio.muted=true;await until(()=>levels.at(-1)===0);const muted=levels.at(-1);audio.muted=false;await until(()=>levels.at(-1)>.1);
+     gain.gain.value=0;await until(()=>levels.at(-1)===0);observer.close();const count=levels.length;await new Promise(r=>setTimeout(r,300));
+     return {silence,speech,muted,afterClose:levels.length-count,stillPlaying:!audio.paused,nativeOwnerCreated:!!window.NativeSpeechAudio};
+    }finally{observer?.close();audio.pause();audio.srcObject=null;osc.stop();for(const track of destination.stream.getTracks())track.stop();await context.close();}
+   });
+   assert(result.silence);assert(result.speech>.1);assert.equal(result.muted,0);assert.equal(result.afterClose,0);assert(result.stillPlaying,'Cosmetic observer close never pauses or replaces the player');assert.equal(result.nativeOwnerCreated,false);
+   assert.equal(errors.length,0,errors.join('\n'));console.log('PASS actual Chromium remote-track activity: silent graph observes synthesized PCM/silence/mute, exports no PCM, closes without stopping existing playback; no microphone/provider/device hearing claim');return;
+  }
   if(process.env.COMPACT_PREVIEW_ONLY==='1'){
    await page.goto(origin);await page.locator('#avatar-workshop-open').click();
    const editor=page.frameLocator('iframe'),panel=page.locator('.avatar-workshop-compact-preview');

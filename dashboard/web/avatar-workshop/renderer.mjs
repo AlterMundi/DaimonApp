@@ -11,6 +11,13 @@ export function prepare(canvas,raw){
  paintAscii(canvas,first,design,0);
  const paint=frame=>paintAscii(canvas,drawFrame(design,frame,true,canvas.getBoundingClientRect().width<320),design,frame);
  const cadence=()=>{const spec=animationSpec(design);Object.assign(paint,{frames:spec.frames,frameMs:spec.frames===12?180:spec.frameMs});};
+ // Optional inert anchor keeps live playback motion separate from authored cues.
+ // The normalized design is a transient clone; no saved model or pose is edited.
+ paint.setSpeechLevel=value=>{
+  if(!design.avatarModel?.nodes.some(n=>n.id==='anchor-mouth'&&n.type==='path'&&!n.fill&&!n.stroke))return false;
+  const level=Number.isFinite(value)?Math.round(Math.min(1,Math.max(0,value))*4)/4:0;
+  if((design.speechLevel||0)===level)return false;design.speechLevel=level;return true;
+ };
  paint.selectCue=cue=>{
   // Choose only an already-authored local gesture. This clone is never saved.
   const chosen=design.gestures.find(g=>g.rig==='local/v1'&&g.cue===cue)?.id||savedGesture;

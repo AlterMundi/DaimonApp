@@ -1,5 +1,41 @@
 # Shared avatar workshop receiving adapter
 
+## Playback-driven mechanical mouth
+
+An optional invisible `anchor-mouth` path node opts a model into local jaw
+motion. It uses existing inert node fields: `fill: null`, no stroke, an authored
+hinge pivot and parent. Reparent only the intended lower-shell/jaw parts beneath
+it. It adds no format, normalization, saved default or implicit emotion mapping.
+The renderer accepts a transient level in five steps0/.25/.5/.75/1 and adds at
+most12master pixels of opening and .035radians of rotation at the hinge, on top
+of the selected authored pose. Level0 preserves the original drawing exactly.
+Models without the explicit invisible node remain unchanged. The saved design,
+atlas, nine artistic cues and body/head/hand/finger tracks are never rewritten
+by playback. The actor still saves and uses an immutable version explicitly.
+
+The public GPT-Live frontend observes decoded remote output, not input audio,
+transcript deltas or completion guesses. Browser playback keeps its existing
+HTML audio owner; an outputless local worklet emits only100ms RMS observations
+and retains no PCM. Android reuses its existing PCM worklet and selects the
+corresponding bounded level only after actual native playback-progress evidence,
+not when bytes are received or queued. At most32small RMS ranges are retained;
+old source IDs, pause/mute and closed output discard cosmetic observations.
+The existing300–600second output bound is unchanged. Observer preparation/resume
+has a5second bound; observer failure closes only that cosmetic branch, never
+starts a second player/provider or stops the existing browser player.
+
+Avatar pause, reduced motion, hidden pages and the wardrobe suppress live mouth
+motion; silence and output closure restore the authored pose. This is an audio
+amplitude approximation, not phoneme/viseme alignment or proof of human hearing.
+The native Codex/legacy speech paths do not acquire this output-level signal
+merely because their custom renderer supports the optional anchor.
+
+[Official GPT-Live migration guidance](https://developers.openai.com/api/docs/guides/live-migration#adapt-the-connection-and-audio-lifecycle)
+requires client-side playback tracking and supplies no spoken-response-end event.
+Synthetic PCM/Canvas qualifications must stay distinct from physical phone,
+artistic and human-hearing acceptance. No real audition is needed for these
+local rendering/ownership checks; preserve all retained samples and unknowns.
+
 ## Inspect a saved revision at Conversation size
 
 In the existing workshop, **Ver junto al nombre** is available after saving or
