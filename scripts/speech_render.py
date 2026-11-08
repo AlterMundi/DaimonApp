@@ -603,9 +603,11 @@ def retire_preview_job(binding,ident,outcome):
                 and outcome.get('receipt',{}).get('render_id')==ident
                 and outcome.get('receipt',{}).get('render_state_sha256')==sha(raw)
                 and not (job/'audio.wav').exists() and not (job/'audio.wav').is_symlink())
+            proof_ok=(rejected if outcome['state']=='rejected_before_start'
+                else state.get('provider_receipt',{}).get('finalized') is True)
             if (state.get('identity_sha256')!=ident or state.get('provider')!='openai-live'
                     or state.get('phase') not in ('rendered','audio_expired','unconfirmed')
-                    or (not rejected and state.get('provider_receipt',{}).get('finalized') is not True)
+                    or not proof_ok
                     or outcome['state'] in ('prepared','not_started')):
                 raise RenderError('uncertain-preview-is-kept')
         audio=job/'audio.wav'

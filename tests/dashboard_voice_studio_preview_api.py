@@ -191,7 +191,7 @@ class Mounted(unittest.TestCase):
         denied=self.post({'action':'prepare','id':str(uuid.uuid4()),'profile':self.profile,
             'delivery':'Warm.','voice_generation':0,'generation':4})
         self.assertEqual(denied.status_code,400,'The four-batch bound is unchanged')
-        known_route,_,known_id=service.plan(100,known,'A')
+        known_route,known_request,known_id=service.plan(100,known,'A')
         state_path=original_jobs[1]/'state.json';original_state=state_path.read_bytes()
         changed=json.loads(original_state);changed['last_used_at']=123
         speech.atomic(state_path,speech.canonical(changed))
@@ -203,6 +203,15 @@ class Mounted(unittest.TestCase):
         with self.assertRaisesRegex(speech.RenderError,'uncertain-preview-is-kept'):
             speech.retire_preview_job(known_route,known_id,render['outcome'])
         self.assertTrue(audio.exists());audio.unlink()
+        # A later finalized render must not bypass an older rejection's exact
+        # state hash/no-audio proof, even though normal rendered retirement works.
+        self.cached(known_route,known_request)
+        later_state=state_path.read_bytes();later_audio=audio.read_bytes()
+        with self.assertRaisesRegex(speech.RenderError,'uncertain-preview-is-kept'):
+            speech.retire_preview_job(known_route,known_id,render['outcome'])
+        self.assertEqual(state_path.read_bytes(),later_state)
+        self.assertEqual(audio.read_bytes(),later_audio)
+        audio.unlink();speech.atomic(state_path,original_state)
         retired=self.post({**self.body(known,'retire'),'generation':4})
         self.assertEqual(retired.status_code,200,retired.text)
         self.assertFalse(original_jobs[1].exists())
