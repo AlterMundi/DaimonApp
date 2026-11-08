@@ -52,9 +52,12 @@ def qualify(binary):
             assert r.json().get('code')=='visual_reselection'and r.json().get('submission_attempted')is False
             assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(ident,))==[(0,)]
         stale=copy.deepcopy(ref);stale['selected_at']=stale['captured_at']=(datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat()
-        assert submit('That one.',stale)[1].status_code==400
+        assert submit('That one.',{**stale,'source_kind':'application_selection'})[1].status_code==400
         stale_frame={**ref,'source_kind':'camera_frame','captured_at':(datetime.now(timezone.utc)-timedelta(seconds=10)).isoformat()}
         assert submit('That one.',stale_frame)[1].status_code==400
+        # An attached still remains the exact historical selection, even after
+        # composing/uploading for longer than the live-view freshness window.
+        ref=stale
         j.hold_new_native=True
         original,r=submit('Describe this selected object in Alpha.',ref);assert r.status_code==200,r.text
         assert j.new_native_seen.wait(timeout=5),'Synthetic initial binding was not observed'
@@ -170,7 +173,7 @@ def qualify(binary):
         assert b.status(original)['visual']==ref
         assert len(j.instructions(7))==5,'Restart replayed a visual instruction'
         assert b.status(paired)['visual']==pair and b.status(spoken_pair)['visual']==pair
-        print('PASS actual HTTP/native/SQLite image selection, front and busy worker native images, exact coordinates/provenance, ASR frozen image, immutable retries, private image read, stale/missing/changed/ambiguous/disconnected rejection and restart; zero models/sensors.')
+        print('PASS actual HTTP/native/SQLite old attached-image selection, front and busy worker native images, exact coordinates/provenance, ASR frozen image, immutable retries, private image read, stale live-view/missing/changed/ambiguous/disconnected rejection and restart; zero models/sensors.')
     finally:
         if b:b.client.close()
         j.close()

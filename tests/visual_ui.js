@@ -2,7 +2,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto').webcrypto;
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 function boot({photo=false}={}){
- const nodes=new Map(),uploads=[],encodings=[],timers=new Map();let decode,network,timerID=0,binding="entry-binding";
+ const nodes=new Map(),uploads=[],encodings=[],timers=new Map();let decode,network,timerID=0,binding="entry-binding",now=Date.now();
+ class ClockDate extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
  function element(){return {value:'',files:[],hidden:false,disabled:false,handlers:{},textContent:'',width:0,height:0,children:[],attributes:{},
   append(...children){this.children.push(...children);},replaceChildren(...children){this.children=children;},setAttribute(k,v){this.attributes[k]=v;},querySelector(){return undefined;},
   addEventListener(k,f){this.handlers[k]=f;},getContext(){return {drawImage(){},beginPath(){},arc(){},stroke(){}};},getBoundingClientRect(){return {left:0,top:0,width:200,height:100};}};}
@@ -10,13 +11,15 @@ function boot({photo=false}={}){
  const bitmap=()=>({width:photo?4000:200,height:photo?3000:100,closed:false,close(){this.closed=true;}});
  class Canvas{constructor(w,h){this.width=w;this.height=h;}getContext(){return {drawImage(){}};}async convertToBlob(){encodings.push([this.width,this.height]);return new Blob([photo?new Uint8Array(this.width*this.height*3):'synthetic image bytes'],{type:'image/png'});}}
  const reply=options=>({ok:true,json:async()=>({image_sha256:options.headers['X-Image-Sha256'],width:nodes.get('#conversation-image-view').width,height:nodes.get('#conversation-image-view').height})});
- const context=vm.createContext({window:{},document,crypto,Blob,Uint8Array,AbortController,OffscreenCanvas:Canvas,
+ const context=vm.createContext({window:{},document,crypto,Blob,Uint8Array,AbortController,OffscreenCanvas:Canvas,Date:ClockDate,
   setTimeout(fn,ms){const id=++timerID;timers.set(id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);},
   createImageBitmap(){if(decode){const held=decode;decode=undefined;return held.promise;}return Promise.resolve(bitmap());},
   async fetch(route,options){uploads.push({route,options});if(network){const held=network;network=undefined;return new Promise((resolve,reject)=>{const abort=()=>reject(Object.assign(Error('Aborted'),{name:'AbortError'}));options.signal.addEventListener('abort',abort,{once:true});held.promise.then(value=>{options.signal.removeEventListener('abort',abort);resolve(value);},error=>{options.signal.removeEventListener('abort',abort);reject(error);});});}return reply(options);}});
  vm.runInContext(fs.readFileSync('dashboard/web/visual.js','utf8'),context);
  const ui=context.window.VisualInput.mount({headers:()=>({}),getBinding:()=>binding,unauthorized(){throw Error('Unexpected auth failure');}});
  return {ui,nodes,uploads,encodings,bitmap,timers,
+  advance(ms){now+=ms;},
+  now(){return now;},
   holdUpload(){network=deferred();return network;},
   reply(index=uploads.length-1){return reply(uploads[index].options);},
   expire(ms=Infinity){for(const timer of [...timers.values()])if(timer.ms<=ms)timer.fn();},
@@ -27,6 +30,22 @@ function boot({photo=false}={}){
   point(){nodes.get('#conversation-image-view').handlers.click({clientX:25,clientY:30});}};
 }
 (async()=>{
+
+ const aged=boot();
+ aged.nodes.get('#conversation-image').files=Array.from({length:6},(_,i)=>({name:`photo-${i}.png`,size:100}));
+ await aged.nodes.get('#conversation-image').handlers.change();
+ aged.advance(10*60*1000);
+ const delayedUpload=aged.holdUpload(),agedCapture=aged.ui.capture();
+ assert.equal(aged.uploads.length,1,'Six old attachments start uploading without reselecting');
+ aged.advance(10*60*1000);delayedUpload.resolve(aged.reply());
+ const agedRefs=await agedCapture;
+ assert.equal(agedRefs.length,6);assert.equal(new Set(agedRefs.map(ref=>ref.source_id)).size,6);
+ assert(agedRefs.every(ref=>Date.parse(ref.selected_at)===Date.parse(agedRefs[0].selected_at)));
+ assert(agedRefs.every(ref=>Date.parse(ref.selected_at)<aged.now()-5*60*1000),'Original selection times are preserved, not refreshed to evade validation');
+ const frozenJSON=JSON.stringify(agedRefs);aged.advance(60*60*1000);
+ assert.equal(JSON.stringify(await aged.ui.captureForVoice()),frozenJSON);
+ assert.equal(aged.uploads.length,6,'Confirmed old bytes are reused without another upload');
+ aged.ui.consumed(agedRefs);assert.equal(await aged.ui.capture(),undefined);
 
  const pasted=boot();const input=pasted.nodes.get('#conversation-message');input.value='Keep my draft';
  let prevented=0;
