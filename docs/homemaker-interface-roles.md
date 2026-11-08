@@ -37,3 +37,23 @@ Canvas fallback correction: the derived background now participates in the same
 owned-role mapping as foregrounds. Invalid provider updates therefore cannot
 leak a raw canvas color around the retained last-valid text/panel mapping.
 The authored transition releases this override with the other roles.
+
+## Reproduce the receiving-material browser check
+
+Use the existing Playwright installation and an actual selected web directory:
+
+```sh
+python3 tests/dashboard_appearance_browser.py \
+  --web-root /path/to/candidate/dashboard/web \
+  --homemaker /path/to/homemaker \
+  --chromium /path/to/chromium \
+  --output /chosen/evidence/browser-results.json
+```
+
+This serves the exact shell, styles and adapter from a loopback-only test server;
+conversation controllers are deliberately removed. It verifies delayed provider
+CSS before first paint, all catalog palettes at1440/375/320px, preservation of
+existing DOM/draft/focus/selection, invalid canvas fallback and authored release.
+It uses synthetic UI state and no accounts, models or provider calls. Existing
+controller tests cover separate functional paths; this is not real-human or
+authenticated end-to-end acceptance. The server and browser stop on success/failure.
