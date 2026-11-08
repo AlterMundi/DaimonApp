@@ -188,3 +188,15 @@ Edit only an owned, delimited section of a shared operator note. Another task ma
 have appended current receiving evidence between older headings; replacing a
 whole prefix can discard it. Retain other sections and distinguish this source
 publication from actual receiving adoption.
+
+### Native package copy within the existing handoff window
+
+A bounded v2 handoff keeps its original absolute deadline (at most300 seconds).
+After natural-idle maintenance, installation may use at most140 seconds and only
+the time left after reserving66 seconds for stopped recovery. A real725MiB Eko
+package copy exceeded the former15-second substep cap; the operator restored the
+previous complete selection and retained that terminal receipt. Inspect its
+actual selection/process state before a corrected successor; never replay its
+intent. The finite window, natural-idle requirement and no-input-replay policy
+are unchanged. Native-only delivery leaves the listener/web and voice settings
+running.

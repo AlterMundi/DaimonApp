@@ -152,10 +152,35 @@ class HandoffBoundaries(unittest.TestCase):
             return 0, {'pid': replacement.pid}
         with patch('native_package_handoff.cli', side_effect=command):
             result = adopt(self.plan, self.receipt)
-        self.assertEqual(calls, [('maintenance', 138), ('update', 15), ('restart', 45)])
+        self.assertEqual(calls, [('maintenance', 138), ('update', 140), ('restart', 45)])
         self.assertEqual(result['phase'], 'restored_candidate')
         self.assertEqual(result['installer_acknowledgment'], 'unconfirmed')
         self.assertTrue(result['supervisor_resumed'])
+
+    def test_installer_uses_remaining_window_and_keeps_recovery_reserve(self):
+        self.prepare_python_package()
+        self.scoped_clock(240)
+        calls = []
+        def command(binary, args, env, timeout):
+            calls.append((args[0], timeout))
+            if args == ['maintenance']:
+                self.clock += 100
+                self.receiver.terminate()
+                self.receiver.wait(timeout=5)
+                return 0, {'pid': self.receiver.pid, 'outcome': 'handoffReady'}
+            if args[0] == 'update':
+                self.clock += timeout
+                raise subprocess.TimeoutExpired(args, timeout)
+            self.assertEqual(args, ['restart', '--if-stopped'])
+            self.clock += 45
+            replacement = self.process()
+            return 0, {'pid': replacement.pid}
+        with patch('native_package_handoff.cli', side_effect=command):
+            result = adopt(self.plan, self.receipt)
+        self.assertEqual(calls, [('maintenance', 138), ('update', 74), ('restart', 45)])
+        self.assertEqual(result['phase'], 'restored_previous')
+        self.assertTrue(result['supervisor_resumed'])
+        self.assertEqual(self.plan['lifecycle_deadline_unix'] - self.clock, 21)
 
     def test_changed_process_refuses_before_any_signal_or_command(self):
         self.plan['supervisor']['start_ticks'] = '0'
