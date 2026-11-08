@@ -5727,7 +5727,22 @@ mod tests {
         .unwrap();
         s.heartbeat_control(100, e.key, H::Resume { generation: 1 })
             .unwrap();
-        let r = s.heartbeat_produce(100, e.key).unwrap().unwrap();
+        let check = s.heartbeat_begin_check(100, e.key).unwrap().unwrap();
+        assert!(
+            s.heartbeat_finish_observation(&check, None, false)
+                .unwrap()
+                .is_none()
+        );
+        let waiting = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(waiting["producer"]["pending"], true);
+        assert_eq!(waiting["resources"]["reserved_provider_attempts"], 0);
+        let mut retained = s.heartbeat_returns_recover_unsent(100, e.key).unwrap();
+        assert_eq!(retained.len(), 1);
+        let r = retained.remove(0);
+        assert_eq!(
+            r.attempts, 1,
+            "A busy source observation is not a submission attempt"
+        );
         let packet: Value = serde_json::from_str(&r.output).unwrap();
         let revision = packet["evidence"]["operating_purpose"]["revision"]
             .as_str()

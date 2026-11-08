@@ -46,6 +46,10 @@ def qualify(binary):
         assert all(l['paused'] for l in selected['lanes'].values())
         j.read('heartbeat','resume-lane','reports',str(selected['lanes']['reports']['generation']))
         j.read('heartbeat','resume',generation)
+        j.wait(lambda:j.read('heartbeat','status')['result']['producer']['finite_review']['checks']>=1,seconds=45)
+        waiting=j.read('heartbeat','status')['result']
+        assert waiting['producer']['pending'] and waiting['resources']['reserved_provider_attempts']==0
+        assert len(j.bounded)==0, 'Busy observation must retain metadata without a native/model request'
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:len(j.bounded)==1,seconds=45)
         j.wait(lambda:j.row("SELECT count(*) FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.phase')='accepted'")==[(1,)])

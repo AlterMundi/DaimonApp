@@ -373,3 +373,11 @@ rolling back software; preserve the current journal/account and later originals.
 An unselected successor leaves the previous account representation unchanged.
 Receiving selection and a useful native review must be verified separately from
 source tests and metadata observation.
+
+Finite Reports checks snapshot their selected fields even while ordinary native
+work is busy. A changed relevant source retains one known-unsent metadata return
+without an execution reservation or submission attempt. Existing idle recovery
+checks current source/purpose/expiry and capacity, then makes the first actual
+admission attempt. No second scheduler, fake human queue or busy-turn steering
+is introduced. An unavailable report is a failed source observation with explicit
+`selected_report_unavailable`, rather than a successful empty check.

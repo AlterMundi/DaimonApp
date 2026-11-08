@@ -491,7 +491,13 @@ pub(in crate::store) fn retained(
     entry: SessionKey,
 ) -> Result<Option<Parent>> {
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
-    Ok(load(conn, human, session)?.filter(|p| {
+    let parent = load(conn, human, session)?;
+    if parent.as_ref().is_some_and(|p| p.review.is_some())
+        && !resources::status_on(conn, session, human).is_ok_and(|s| s["state"] == "available")
+    {
+        return Ok(None);
+    }
+    Ok(parent.filter(|p| {
         p.native_returns
             .iter()
             .any(|r| r.phase == "retained_unsent")
@@ -999,9 +1005,25 @@ impl Store {
             };
             p.inbox_state = Some(if retained { "available" } else { "unavailable" }.into());
         }
+        // Reports are observed even while native work is busy. Retain one
+        // known-unsent metadata batch; the existing idle recovery owns dispatch.
+        let report_offers =
+            super::reports::offers(if c.activation.lane == HeartbeatLane::Reports {
+                &p.contract.reports
+            } else {
+                &[]
+            })?;
+        let retaining_review =
+            !allow_attention && c.activation.lane == HeartbeatLane::Reports && p.review.is_some();
         let now = Utc::now().timestamp_millis();
         let error = (c.matrix_inbox.is_some() && p.inbox_state.as_deref() != Some("available"))
-            .then(|| "matrix_inbox_unavailable".to_owned());
+            .then(|| "matrix_inbox_unavailable".to_owned())
+            .or_else(|| {
+                report_offers
+                    .iter()
+                    .any(|o| o.evidence["state"] == "unavailable")
+                    .then(|| "selected_report_unavailable".to_owned())
+            });
         if let Some(observation) = &mut p.last_check {
             observation.completed_at_unix_ms = Some(now);
             observation.outcome = if error.is_some() {
@@ -1015,7 +1037,7 @@ impl Store {
         if error.is_none() {
             p.last_success_at_unix_ms = Some(now);
         }
-        if !allow_attention
+        if (!allow_attention && !retaining_review)
             || !resources::status_on(&tx, session, human)
                 .is_ok_and(|status| status["state"] == "available")
         {
@@ -1069,14 +1091,10 @@ impl Store {
                 .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
                 .collect();
         }
-        lanes[2] = super::reports::offers(if c.activation.lane == HeartbeatLane::Reports {
-            &p.contract.reports
-        } else {
-            &[]
-        })?
-        .into_iter()
-        .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
-        .collect();
+        lanes[2] = report_offers
+            .into_iter()
+            .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
+            .collect();
         let mut progress_next = None;
         if c.activation.lane == HeartbeatLane::SessionProgress && p.contract.session_progress {
             let (after, offers) = super::super::presentation::heartbeat_progress_on(
@@ -1140,12 +1158,17 @@ impl Store {
             attention_activation: Some(c.activation.clone()),
             reported_revision: None,
             envelope,
-            phase: "reserved".into(),
+            phase: if retaining_review {
+                "retained_unsent"
+            } else {
+                "reserved"
+            }
+            .into(),
             local: None,
             collection_local: None,
             native_turn: None,
             instance: self.instance_id.clone(),
-            attempts: 1,
+            attempts: if retaining_review { 0 } else { 1 },
             retry_after: None,
         };
         let result = ReturnDispatch {
@@ -1170,7 +1193,7 @@ impl Store {
         }
         save(&tx, &p)?;
         tx.commit()?;
-        Ok(Some(result))
+        Ok(if retaining_review { None } else { Some(result) })
     }
     pub(crate) fn heartbeat_reported(
         &self,
