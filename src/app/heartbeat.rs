@@ -100,6 +100,24 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("production-defaults ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected heartbeat production-defaults GENERATION SOURCE_JSON_STRING")?;
+        let source: String = serde_json::from_str(raw)?;
+        let cfg = super::routing::profile(&app.shared)?;
+        anyhow::ensure!(
+            cfg.human_id == human,
+            "Heartbeat belongs to the configured paired human"
+        );
+        app.shared.store.heartbeat_production_defaults(
+            human,
+            cfg.entry(),
+            generation.parse()?,
+            &source,
+        )?;
+        return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
+    }
     if let Some(rest) = args.strip_prefix("select-review ") {
         let (generation, raw) = rest
             .split_once(' ')

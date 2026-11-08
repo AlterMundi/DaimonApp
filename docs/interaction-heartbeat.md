@@ -390,3 +390,30 @@ originals may proceed. Status exposes `last_completed_without_review`. Existing
 reported-review semantics and bounded retention are unchanged. Unknown, running
 or mismatched physical outcomes never authorize this settlement. This corrects
 an observed Oliva deadlock at completed local581; do not forge its review mark.
+
+### Production defaults and selected progress review
+
+The owner-only `heartbeat production-defaults GENERATION SOURCE_JSON_STRING`
+selects normal operating capacity after an exact global pause. Retain the actual
+owner direction as the JSON string; it is operator provenance, not new speech
+from the receiving paired human. This selection never resumes a control, resets
+an hour, refunds history, replaces an execution allowance or changes accounts.
+It preserves the pilot and lifetime reservations, source frontiers and uncertain
+originals. Its strict account marker requires the compatible reader on rollback.
+
+The default is48 execution envelopes per hour, shared by selected work. With the
+existing12-attempt execution ceiling this is576 reserved possible provider
+attempts/hour, rather than the former48-attempt pilot setting's four envelopes.
+Reservations are conservative upper bounds, not observed model calls, token use
+or money. Each execution keeps its existing request-byte and time limits. Empty,
+unchanged and health observations use no inference. Existing pause/stop controls
+remain available; the production service has no hour-lifetime expiry.
+
+A newly selected review may specify `production:true`, with `max_checks:null`
+and `expires_at_unix_ms:null`. It keeps the exact retained human purpose and
+owned JSON-pointer sources, runs through the same parent at15minutes or slower,
+and uses that shared production hourly allowance. Unchanged projections remain
+model-free. It has no trial lifetime/check cutoff; retiring its purpose or pausing
+Reports/global stops admission. No other lane is selected. Legacy finite review
+contracts retain their original pilot-only funding, expiry and four-execution
+ceiling; production selection cannot relabel or reset a previously selected review.

@@ -89,6 +89,31 @@ pub(super) fn generation_current_on(
 }
 
 impl Store {
+    /// Actual owner-selected production defaults; no counter, hour or gate reset.
+    pub fn heartbeat_production_defaults(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        source: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let c: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            c.paused && c.generation == generation,
+            "Pause and inspect the exact generation before production policy selection"
+        );
+        resources::production_defaults_on(&tx, session, human, source)?;
+        tx.commit()?;
+        Ok(())
+    }
     /// Explicit owner selection of persistent operation, with a recurring rate.
     /// Historical contracts/counters and all controls remain untouched.
     pub fn heartbeat_enable_continuous(

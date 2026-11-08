@@ -5673,8 +5673,9 @@ mod tests {
                 channel: "conversation".into(),
             },
             interval_seconds: 900,
-            max_checks: 96,
-            expires_at_unix_ms: resources.expires_at_unix_ms,
+            max_checks: Some(96),
+            expires_at_unix_ms: Some(resources.expires_at_unix_ms),
+            production: false,
             reports: vec![crate::store::HeartbeatReportSource {
                 id: "children".into(),
                 path: report.path().to_owned(),

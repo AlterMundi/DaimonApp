@@ -20,6 +20,72 @@ struct Account {
     finite_review_executions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continuous: Option<Continuous>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    production: Option<Production>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    production_review: Option<bool>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Production {
+    source: String,
+    selected_at_unix_ms: i64,
+    max_executions_per_hour: u32,
+}
+pub(super) fn production_on(conn: &Connection, session: i64, human: i64) -> Result<bool> {
+    Ok(load(conn, session, human)?.is_some_and(|a| a.production.is_some()))
+}
+pub(super) fn production_defaults_on(
+    conn: &Connection,
+    session: i64,
+    human: i64,
+    source: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        !source.trim().is_empty() && source.len() <= 2000,
+        "Retain the actual owner production direction"
+    );
+    let mut a = load(conn, session, human)?.context("Heartbeat resources not configured")?;
+    if let Some(p) = &a.production {
+        anyhow::ensure!(
+            p.source == source,
+            "Production policy already selected; no reset applied"
+        );
+        return Ok(());
+    }
+    let rate = a
+        .contract
+        .provider_attempts_per_execution
+        .checked_mul(48)
+        .filter(|v| *v <= 4096)
+        .context("Production hourly execution bound exceeds supported capacity")?;
+    let c = a
+        .continuous
+        .as_mut()
+        .context("Select continuous messaging first")?;
+    c.max_provider_attempts_per_hour = c.max_provider_attempts_per_hour.max(rate);
+    a.production = Some(Production {
+        source: source.into(),
+        selected_at_unix_ms: Utc::now().timestamp_millis(),
+        max_executions_per_hour: c.max_provider_attempts_per_hour
+            / a.contract.provider_attempts_per_execution,
+    });
+    // Preserve the existing hour, all reservations, pilot and execution limits.
+    save(conn, session, human, &a)
+}
+pub(super) fn select_production_review_on(
+    conn: &Connection,
+    session: i64,
+    human: i64,
+) -> Result<()> {
+    let mut a = load(conn, session, human)?.context("Heartbeat resources unavailable")?;
+    anyhow::ensure!(
+        a.production.is_some() && a.finite_review_executions.is_none(),
+        "Select production policy before new review sources; preserve prior review accounting"
+    );
+    a.finite_review_executions = Some(0);
+    a.production_review = Some(true);
+    save(conn, session, human, &a)
 }
 /// Recurring allowance is separate from the immutable pilot allocation. Neither
 /// restart nor adoption can refund historical reservations or restart the hour.
@@ -168,6 +234,8 @@ pub(super) fn configure_on(
             reserved_provider_attempts: 0,
             finite_review_executions: None,
             continuous: None,
+            production: None,
+            production_review: None,
         },
     )
 }
@@ -190,6 +258,8 @@ pub(super) fn status_on(conn: &Connection, session: i64, human: i64) -> Result<V
             "contract":account.contract,"reserved_provider_attempts":account.reserved_provider_attempts,
             "remaining_provider_attempts":remaining,"continuous":c,
             "pilot_remaining_provider_attempts":account.contract.max_provider_attempts-account.reserved_provider_attempts,
+            "production":account.production,
+            "remaining_execution_envelopes":remaining/account.contract.provider_attempts_per_execution,
             "lifetime_reserved_provider_attempts":u64::from(c.pilot_reserved_at_adoption)+c.reserved_provider_attempts,
             "measurement":"reserved_request_attempts_not_tokens_or_money"}));
     }
@@ -220,6 +290,14 @@ pub(super) fn finite_available_on(conn: &Connection, session: i64, human: i64) -
     let Some(a) = load(conn, session, human)? else {
         return Ok(false);
     };
+    if a.production_review == Some(true) {
+        return Ok(a.production.is_some()
+            && a.continuous.as_ref().is_some_and(|c| {
+                c.max_provider_attempts_per_hour
+                    .saturating_sub(c.usage(Utc::now().timestamp_millis()))
+                    >= a.contract.provider_attempts_per_execution
+            }));
+    }
     Ok(a.finite_review_executions.unwrap_or(0) < 4
         && a.contract
             .max_provider_attempts
@@ -247,7 +325,7 @@ pub(super) fn reserve_finite_on(
     let count = account
         .finite_review_executions
         .context("Select the finite review resource fence first")?;
-    account.finite_review_executions = Some(count + 1);
+    account.finite_review_executions = Some(count.saturating_add(1));
     save(conn, session, human, &account)?;
     Ok(allowance)
 }
@@ -331,6 +409,79 @@ pub(in crate::store) fn test_contract() -> HeartbeatResources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn production_defaults_preserve_history_and_fund_selected_review_after_pilot() {
+        let (_file, store, entry) = setup();
+        let mut c = test_contract();
+        c.max_provider_attempts = 48;
+        c.provider_attempts_per_execution = 12;
+        let mut conn = store.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        configure_on(&tx, entry.id, 100, c).unwrap();
+        enable_continuous_on(&tx, entry.id, 100, 48).unwrap();
+        for _ in 0..4 {
+            reserve_on(&tx, entry.id, 100).unwrap();
+        }
+        let before = load(&tx, entry.id, 100).unwrap().unwrap();
+        assert_eq!(
+            status_on(&tx, entry.id, 100).unwrap()["state"],
+            "rate_limited"
+        );
+        production_defaults_on(&tx, entry.id, 100, "actual owner production direction").unwrap();
+        let after = load(&tx, entry.id, 100).unwrap().unwrap();
+        assert_eq!(
+            after.reserved_provider_attempts,
+            before.reserved_provider_attempts
+        );
+        let old = before.continuous.unwrap();
+        let new = after.continuous.unwrap();
+        assert_eq!(new.window_started_at_unix_ms, old.window_started_at_unix_ms);
+        assert_eq!(new.reserved_in_window, old.reserved_in_window);
+        assert_eq!(
+            new.reserved_provider_attempts,
+            old.reserved_provider_attempts
+        );
+        assert_eq!(new.max_provider_attempts_per_hour, 576);
+        assert_eq!(
+            status_on(&tx, entry.id, 100).unwrap()["remaining_execution_envelopes"],
+            44
+        );
+        let selected = serde_json::to_value(load(&tx, entry.id, 100).unwrap().unwrap()).unwrap();
+        production_defaults_on(&tx, entry.id, 100, "actual owner production direction").unwrap();
+        assert_eq!(
+            serde_json::to_value(load(&tx, entry.id, 100).unwrap().unwrap()).unwrap(),
+            selected
+        );
+        assert!(production_defaults_on(&tx, entry.id, 100, "changed source").is_err());
+        select_production_review_on(&tx, entry.id, 100).unwrap();
+        for _ in 0..5 {
+            reserve_finite_on(&tx, entry.id, 100).unwrap();
+        }
+        assert_eq!(
+            load(&tx, entry.id, 100)
+                .unwrap()
+                .unwrap()
+                .reserved_provider_attempts,
+            48
+        );
+        assert_eq!(
+            load(&tx, entry.id, 100)
+                .unwrap()
+                .unwrap()
+                .finite_review_executions,
+            Some(5)
+        );
+        for _ in 0..39 {
+            reserve_on(&tx, entry.id, 100).unwrap();
+        }
+        assert!(reserve_on(&tx, entry.id, 100).is_err());
+        assert!(reserve_finite_on(&tx, entry.id, 100).is_err());
+        assert_eq!(
+            status_on(&tx, entry.id, 100).unwrap()["remaining_execution_envelopes"],
+            0
+        );
+        tx.commit().unwrap();
+    }
     #[test]
     fn finite_review_shares_pilot_and_cannot_borrow_a_new_continuous_hour() {
         let (_file, store, entry) = setup();
