@@ -60,9 +60,16 @@ an uncertain submission rather than restarting it to repair the verifier.
 This is a persistent native-reader change: retain a compatible reader for pending
 recovery notices on rollback. An older reader can retain the document but cannot
 admit this new notice. Unit tests establish the reader/CAS and admission behavior;
-actual native semantic checkpoint completion and device/hearing acceptance remain
-separate receiving qualifications. Do not replay an uncertain native input or
-manually supply a fabricated checkpoint to satisfy those qualifications.
+device/hearing acceptance remains a separate receiving qualification. A later
+actual Sol-low case completed a semantic checkpoint, persisted it through receiver
+restart and prepared a bounded successor seed. That case used a test-only policy
+which always requested a full reader, so it does not prove ordinary production
+notification uptake. Production guidance instead checks `checkpoint_request` in
+each notification and each read/part/incorporate response: a request can arrive
+after the notification was frozen. A newly observed request requires the full
+checkpoint procedure; an incorporation ACK alone is insufficient. Without a
+pending request, ordinary deltas do not require a full-history read. Do not replay
+an uncertain native input or manually supply a fabricated checkpoint to satisfy those qualifications.
 
 ## Startup with a long idle integrating history
 
