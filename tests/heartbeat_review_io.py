@@ -93,6 +93,20 @@ def qualify(binary, production=False):
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
         assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==(12 if production else 3)
+        if production:
+            # An ordinary goal starts after the bounded collector closes. Only
+            # metadata and exact collector attachment may bridge that gap.
+            before_calls=len([m for m in j.rpc if m.get('method') in ('turn/start','turn/steer','turn/startBoundedIfIdle','thread/goal/set')])
+            before_resources=j.read('heartbeat','status')['result']['resources']
+            j.native_fixture_busy=True
+            j.native_continuation='existing-ordinary-goal-successor'
+            j.web_turn=j.native_continuation
+            j.row("UPDATE bot_state SET value=json_set(value,'$.next_check_ms',0,'$.review.next_check_ms',0) WHERE key LIKE 'heartbeat_producer:%'")
+            j.wait(lambda:j.row("SELECT count(*) FROM bot_state WHERE key LIKE 'collector_attachment:%' AND json_extract(value,'$.native_turn')=?",(j.native_continuation,))==[(1,)],seconds=45)
+            assert before_calls==len([m for m in j.rpc if m.get('method') in ('turn/start','turn/steer','turn/startBoundedIfIdle','thread/goal/set')]), 'Collection must not start or steer native work'
+            assert j.goals[j.web_thread]==goal
+            assert j.read('heartbeat','status')['result']['resources']==before_resources
+            assert len(j.bounded)==1
         # Advance only this disposable fixture's clock fence. An unchanged field
         # projection must not create another bounded execution.
         report.write_text(json.dumps({'milestone':'synthetic checkpoint A','clock':2}))

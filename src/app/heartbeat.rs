@@ -308,8 +308,13 @@ pub(super) async fn tick(app: &App) -> Result<()> {
         None
     };
     let current = app.shared.store.get_session(cfg.entry())?;
+    let mut continuing_goal = None;
     let allow_attention = if let Some(session) = current.filter(|s| !s.busy) {
-        native_preflight_allows_dispatch(app.shared.codex.bounded_idle_readiness(&session).await)
+        let readiness = app.shared.codex.bounded_idle_readiness(&session).await;
+        if matches!(readiness, Ok("native_busy")) {
+            continuing_goal = session.codex_thread_id.clone();
+        }
+        native_preflight_allows_dispatch(readiness)
     } else {
         false
     };
@@ -330,6 +335,30 @@ pub(super) async fn tick(app: &App) -> Result<()> {
                 None,
             )?;
         }
+    }
+    // The previous bounded collector may have closed before the ordinary
+    // native goal's idle checkpoint elapsed. Reuse this selected source tick
+    // and exact owner attachment for its already-running successor; no new
+    // input, goal activation, inference reservation or parallel observer.
+    if let Some(native) = continuing_goal
+        && app.shared.store.heartbeat_check_current(&check)?
+        && app
+            .shared
+            .codex
+            .get_goal(&native)
+            .await?
+            .is_some_and(|g| g.status == "active")
+        && let Some(physical) = app.shared.codex.live_native_turn(&native).await?
+        && app.shared.store.heartbeat_check_current(&check)?
+    {
+        let args = format!(
+            "{} {} {} {}",
+            cfg.entry().chat_id,
+            cfg.entry().thread_id,
+            native,
+            physical
+        );
+        super::goals::attach_active(app, cfg.human_id, &args).await?;
     }
     Ok(())
 }

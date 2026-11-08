@@ -28,6 +28,9 @@ class HeartbeatJourney(WorkflowJourney):
         if message.get('method')=='thread/read':
             send({'id':message['id'],'result':{'thread':{'id':message['params']['threadId'],'model':'fixture-model','modelProvider':'fixture','canAcceptDirectInput':True,'status':{'type':'active' if getattr(self,'native_fixture_busy',False) else 'idle'}}}})
             return True
+        if message.get('method')=='thread/turns/list' and getattr(self,'native_continuation',None):
+            send({'id':message['id'],'result':{'data':[{'id':self.native_continuation,'status':'inProgress'}],'nextCursor':None}})
+            return True
         if message.get('method') == 'turn/startBoundedIfIdle':
             p = message['params']
             turn = p['turn']

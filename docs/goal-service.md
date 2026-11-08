@@ -429,3 +429,11 @@ active and may continue independently; its idle checkpoint cannot keep the finis
 heartbeat collector waiting or turn a completed result into a collection timeout.
 This releases local collection only: no goal mutation, continuation kickoff,
 allowance extension or input replay.
+
+When that ordinary goal starts after its idle checkpoint and no local worker
+remains, the existing selected heartbeat source tick may attach its exact live
+physical turn. This requires current source generation/purpose/binding, explicit
+observed native contention and an active goal. The existing attach-active path
+revalidates physical identity, local admission, Stop/maintenance and newer human
+work. It sends no input, activates no goal and reserves no inference allowance.
+No separate observer or timer is installed.
