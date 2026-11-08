@@ -1553,7 +1553,7 @@ where
         elapsed_ms = preparation_started.elapsed().as_millis(),
         "native turn preparation"
     );
-    let goal_collection_wait = if shared_app_server {
+    let goal_collection_wait = if shared_app_server && bounded.is_none() && !idle_only {
         let read = async {
             let id = process.send_request("config/read", json!({"includeLayers":false})).await?;
             process.await_response(id).await
@@ -3966,6 +3966,7 @@ mod tests {
                 let id = &request["id"];
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"approval-thread"},"model":"synthetic-model"})
@@ -4404,6 +4405,7 @@ mod tests {
                     let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
                     let result = match request["method"].as_str() {
                         Some("initialize") => json!({}),
+                        Some("config/read") => json!({"config":{}}),
                         Some("initialized") => continue,
                         Some("thread/start") => {
                             json!({"thread":{"id":"owned-thread"},"model":"synthetic-model"})
@@ -4505,6 +4507,7 @@ mod tests {
                 let id = &request["id"];
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"prepared-thread"},"model":"synthetic-model"})
@@ -4606,6 +4609,7 @@ mod tests {
                 let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"cancel-before-write"},"model":"synthetic"})
