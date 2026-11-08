@@ -388,6 +388,22 @@ pub(super) async fn restore(app: &App, human: i64, id: &str) -> Result<()> {
                 // Only startup uses this while no old command can still run.
                 // Concurrent owner calls leave an in-flight write alone.
             }
+            Some("restore_unconfirmed" | "restart_unconfirmed") => {
+                // Observation only. Expired uncertainty is never permission to
+                // resume, and a later definition must not stay blocked by it.
+                let selected: SessionKey = serde_json::from_value(target["target"].clone())?;
+                let native = target["binding"]["entry_binding"][3]
+                    .as_str()
+                    .context("Native target missing")?;
+                app.shared
+                    .store
+                    .validate_owned_binding(selected, human, native)?;
+                if let Ok(observed) = app.shared.codex.get_goal_snapshot(native).await {
+                    app.shared
+                        .store
+                        .maintenance_reconcile_observed(human, id, i, &doc, &observed)?;
+                }
+            }
             Some("paused") => {
                 let paused: NativeGoalSnapshot = serde_json::from_value(
                     target["paused_receipt"]["receipt"]["native_receipt"].clone(),
