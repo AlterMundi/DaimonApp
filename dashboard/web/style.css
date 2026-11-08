@@ -1366,7 +1366,7 @@ html[data-style-policy="authored"] .standalone-conversation header .header-tools
 /* Notices float above the composer; changing text never resizes its input. */
 #conversation-compose {position:relative;}
 #conversation-compose-notices {position:absolute;right:4px;bottom:calc(100% + 2px);z-index:12;}
-#conversation-compose-notices:not(:has([data-attention="true"]:not(:empty),#conversation-recording-review:not([hidden]),#conversation-codex-recovery:not([hidden]),#conversation-voice-remaining:not([hidden]))) {display:none;}
+#conversation-compose-notices:not(:has([data-attention="true"]:not(:empty),#conversation-recording-review:not([hidden]),#conversation-codex-recovery:not([hidden]),#conversation-public-live-recovery:not([hidden]),#conversation-voice-remaining:not([hidden]))) {display:none;}
 #conversation-compose-notices>summary {list-style:none;display:flex;align-items:center;justify-content:center;gap:4px;width:44px;min-height:44px;cursor:pointer;color:var(--warn);font-size:14px;}
 #conversation-compose-notices>summary::-webkit-details-marker {display:none;}
 #conversation-compose-notices>summary>span:first-child {display:grid;place-items:center;width:22px;height:22px;border:1px solid currentColor;border-radius:50%;font-weight:700;background:var(--panel);}
@@ -1374,7 +1374,11 @@ html[data-style-policy="authored"] .standalone-conversation header .header-tools
 #conversation-compose-notices #conversation-compose-status {display:block;position:static;width:auto;height:auto;max-height:none;min-height:0;overflow:visible;clip-path:none;}
 #conversation-compose-notices #conversation-compose-status p {display:block;margin:0 0 10px;font-size:14px;line-height:1.5;overflow-wrap:anywhere;}
 #conversation-compose-notices #conversation-compose-status p:empty {display:none;}
-#conversation-compose-notices #conversation-codex-recovery {position:static;max-height:none;}
+#conversation-compose-notices :is(#conversation-codex-recovery,#conversation-public-live-recovery) {position:static;max-height:none;font-size:14px;}
+#conversation-compose-notices :is(#conversation-codex-recovery,#conversation-public-live-recovery)>summary {min-height:44px;cursor:pointer;color:var(--warn);}
+#conversation-compose-notices :is(#conversation-codex-recovery,#conversation-public-live-recovery)>.note {display:block;line-height:1.5;margin-block:10px;}
+#conversation-compose-notices :is(#conversation-codex-recovery,#conversation-public-live-recovery) .conversation-tools {display:flex;flex-wrap:wrap;gap:8px;margin-block:12px;}
+#conversation-compose-notices :is(#conversation-codex-recovery,#conversation-public-live-recovery) .conversation-tools>span {flex-basis:100%;overflow-wrap:anywhere;}
 #conversation-compose-notices #conversation-recording-review {flex-wrap:wrap;}
 #conversation-compose-notices:has([data-attention="true"]:not(:empty))>summary {color:var(--warn);}
 

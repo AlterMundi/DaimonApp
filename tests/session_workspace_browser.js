@@ -160,6 +160,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
   };
  },{publicCase,codexActivityCase});
+ if(hudCase)await context.addInitScript(()=>{
+  let module;Object.defineProperty(window,'PublicLiveConversation',{configurable:true,get:()=>module,set(value){module={...value,create(options){window.hudRecovery=options.onRecovery;return value.create(options);}};}});
+ });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  async function appearanceTransition(stage){
@@ -216,6 +219,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   await page.evaluate(()=>clearInterval(timer));
   await page.locator('#conversation-message').fill('Explore this idea together.');
+  await page.waitForFunction(()=>typeof hudRecovery==='function');
+  const composerBeforeRecovery=await page.locator('#conversation-compose').boundingBox();
+  await page.evaluate(binding=>hudRecovery(Array.from({length:3},(_,ordinal)=>({binding,ordinal,voice_visit:'11111111-1111-4111-8111-111111111111',blob:new Blob([new Uint8Array(32044)],{type:'audio/wav'})}))),binding);
+  assert.equal((await page.locator('#conversation-compose').boundingBox()).height,composerBeforeRecovery.height,'Three retained recordings cannot expand the input');
+  assert.equal(await page.locator('#conversation-compose>#conversation-public-live-recovery').count(),0,'Recovery belongs inside the shared notice popover');
   const layouts=[];
   for(const [width,height] of [[375,812],[320,740],[430,932],[1280,800],[375,430]]){
    await page.setViewportSize({width,height});await page.waitForTimeout(120);
@@ -232,16 +240,21 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    const inputBefore=await page.locator('#conversation-message').boundingBox(),composeBefore=await page.locator('#conversation-compose').boundingBox();
    await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.dataset.attention='true';message.textContent='A retained recording needs review. '.repeat(18);});
    const notices=page.locator('#conversation-compose-notices');
-   assert(await notices.locator('summary').isVisible(),'A minimal notice indicator is available');
+   assert(await notices.locator(':scope>summary').isVisible(),'A minimal notice indicator is available');
    assert.equal((await page.locator('#conversation-compose').boundingBox()).height,composeBefore.height,'Long notices never expand the composer');
    assert.equal((await page.locator('#conversation-message').boundingBox()).height,inputBefore.height);
-   await notices.locator('summary').click();
+   await notices.locator(':scope>summary').click();
+   const recovery=page.locator('#conversation-public-live-recovery');
+   assert(await recovery.getByText('3 audio copies to review',{exact:true}).isVisible());
+   if(!await recovery.evaluate(el=>el.open))await recovery.locator(':scope>summary').click();
+   assert(await recovery.getByRole('button',{name:'Download copy',exact:true}).first().isVisible());
+   assert(await recovery.getByText(/This does not repeat your messages/).isVisible());
    const popup=await notices.locator('.composer-notice-panel').boundingBox();
    assert(popup&&popup.y+popup.height<=inputBefore.y,'Notice opens upward outside the text input');
    assert(popup.x>=0&&popup.x+popup.width<=width,'Notice fits the phone viewport');
    assert.equal(await page.locator('#conversation-message').inputValue(),'Explore this idea together.');
    await page.screenshot({path:path.join(output,`hud-notice-${width}-${height}.png`)});
-   await notices.locator('summary').click();
+   await notices.locator(':scope>summary').click();
    await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.textContent='';delete message.dataset.attention;});
    await page.screenshot({path:path.join(output,`hud-${width}-${height}.png`)});
    layouts.push({width,height});
@@ -328,9 +341,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.waitForFunction(()=>codexFixture.contexts.every(ctx=>ctx.state==='closed')&&codexFixture.peers.every(peer=>peer.connectionState==='closed'));
   await page.locator('#conversation-timeline').getByText('Conservo tu corrección.',{exact:true}).waitFor();
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I compare voices.');
-  const panel=page.locator('#conversation-public-live-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
+  await page.locator('#conversation-compose-notices>summary').click();const panel=page.locator('#conversation-public-live-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
   await page.screenshot({path:path.join(output,'public-live-mobile-recovery.png')});
-  await panel.getByRole('button',{name:'Retry saving',exact:true}).click();await panel.waitFor({state:'hidden'});
+  await panel.getByRole('button',{name:'Try saving audio',exact:true}).click();await panel.waitFor({state:'hidden'});
   assert.equal(voiceUploads.length,2);assert.deepEqual(voiceUploads[0],voiceUploads[1],'Public original retry preserves exact bytes and visit');
   assert.equal(posts.length,0,'Public media and original recovery never submit ordinary native work');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1);
@@ -344,19 +357,19 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert(locked,'The real browser lock remains held while microphone capture owns its fragments');
   assert.equal(voiceUploads.length,0,'Only local fragments persist before normal original sealing');
   await page.reload({waitUntil:'load'});await page.locator('.session-workspace-toolbar').waitFor({state:'visible'});
-  const panel=page.locator('#conversation-codex-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
+  await page.locator('#conversation-compose-notices>summary').click();const panel=page.locator('#conversation-codex-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
   await page.getByText(/Recovered audio prefix/).waitFor({state:'visible'});
   assert.equal(await page.evaluate(()=>codexFixture.opens),0,'Reload does not reopen the microphone');
   const recovered=await page.evaluate(async()=>{const rows=await VoiceInput.recoveryStore('codex_voice').list();return {count:rows.length,bytes:rows.reduce((n,v)=>n+v.blob.size-44,0),fragments:rows.every(v=>v.native_fragment===true)};});
   assert(recovered.fragments&&recovered.bytes>=32000&&recovered.bytes<=before,'Retain the exact committed prefix, never claim a missing tail');
   assert(await page.evaluate(async()=>{const row=(await VoiceInput.recoveryStore('codex_voice').list())[0];return navigator.locks.request('daimon-native-voice:'+row.codex_visit,{ifAvailable:true},lock=>!!lock);}), 'Reload releases the old page capture lock');
-  await panel.getByRole('button',{name:'Retry saving',exact:true}).click();
+  await panel.getByRole('button',{name:'Try saving audio',exact:true}).click();
   await page.getByText(/Recovered audio prefix not confirmed/).waitFor();
   assert.equal(voiceUploads.length,0,'Old backend capability refuses prefix upload before any external write');
-  prefixSupport=true;await panel.getByRole('button',{name:'Retry saving',exact:true}).click();
+  prefixSupport=true;await panel.getByRole('button',{name:'Try saving audio',exact:true}).click();
   await page.getByText(/Recovered audio prefix not confirmed/).waitFor();
   await page.waitForFunction(async()=>{const v=await VoiceInput.recoveryStore('codex_voice').list();return v.length===1&&v[0].captureStop==='interrupted_prefix'&&!v[0].native_fragment;});
-  await panel.getByRole('button',{name:'Retry saving',exact:true}).click();await panel.waitFor({state:'hidden'});
+  await panel.getByRole('button',{name:'Try saving audio',exact:true}).click();await panel.waitFor({state:'hidden'});
   assert.equal(voiceUploads.length,2);assert.deepEqual(voiceUploads[0],voiceUploads[1],'Explicit retry saves identical prefix bytes/visit/ordinal');
   assert.equal(posts.length,0);assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   report.state='qualified-native-reload-prefix-recovery';report.beforePCM=before;report.recovered=recovered;report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
@@ -429,10 +442,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0);assert.equal(questionPosts,0,'Choosing a written reply still requires explicit Send');
 
   await page.waitForFunction(()=>codexFixture.contexts.every(ctx=>ctx.state==='closed')&&codexFixture.peers.every(peer=>peer.connectionState==='closed'),null,{timeout:10000});
+  await page.locator('#conversation-compose-notices>summary').click();
   await page.locator('#conversation-codex-recovery').waitFor({state:'visible'});
   await page.locator('#conversation-codex-recovery summary').click();
   await page.screenshot({path:path.join(output,'codex-mobile-recovery.png')});
-  await page.getByRole('button',{name:'Retry saving',exact:true}).click();
+  await page.getByRole('button',{name:'Try saving audio',exact:true}).click();
   await page.locator('#conversation-codex-recovery').waitFor({state:'hidden'});
   assert.equal(voiceUploads.length,2);assert.deepEqual(voiceUploads[0],voiceUploads[1],'Retry retains the exact original and visit');
   assert.equal(posts.length,0,'Native original recovery never uses ordinary Send');

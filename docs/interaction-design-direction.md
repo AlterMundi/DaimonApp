@@ -160,3 +160,5 @@ notice open/close without draft loss or composer growth, the real wardrobe and
 voice workshop, full voice view, and original countdown boundaries. Synthetic
 actors/transports qualify layout and interaction only, never actual provider
 continuity, phone/hearing, avatar activation or artistic acceptance.
+
+Local audio recovery belongs inside the same upward notice popover, including public GPT-Live and native Codex recordings. It never becomes a flex/grid child beside the textarea. Its explanation distinguishes pending/unconfirmed audio storage from another message or work request. Existing actions are labelled Try saving audio, Download copy and Remove device copy; changing presentation does not permit automatic retry or retirement. Qualify the compact input with several retained recordings, not only plain error text.

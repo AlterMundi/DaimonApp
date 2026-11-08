@@ -88,7 +88,7 @@ Originals reuse the browser20MiB/128-record budget and receiving original store.
 Engine tags isolate recovery in the historical `codex_voice` store; its name does
 not select Codex. One-second fragments permit interrupted-prefix recovery; an
 unsaved tail may be missing. Server receipts must match visit, binding, ordinal,
-SHA-256, bytes and provenance before local retirement. **Retry saving** retains
+SHA-256, bytes and provenance before local retirement. **Try saving audio** retains
 the same original: it never reruns ASR, submits speech, dispatches work or creates
 another session. Save/Discard affect local originals, not server work. Rollback
 must keep a reader that ignores foreign-engine records and preserves originals.

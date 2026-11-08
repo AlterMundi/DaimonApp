@@ -826,7 +826,7 @@ Metadata limits are512visits,
 32MiB overall,64KiB and256transcripts per visit. Existing protected-original and
 selected-archive bounds are unchanged. No automatic original retirement.
 
-`Retry saving` verifies and saves the same visit/ordinal/bytes. It never performs
+`Try saving audio` verifies and saves the same visit/ordinal/bytes. It never performs
 ASR, submits ordinary input, opens voice or repeats a handoff. `Save audio`
 exports the local copy. `Discard local copy` removes only that browser copy and
 does not cancel server work. Failed persistence retains a local recovery action.
