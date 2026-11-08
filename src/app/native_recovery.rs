@@ -64,7 +64,7 @@ pub(super) async fn tick(app: &App) -> Result<()> {
                 if let Some(active)=active.filter(|a|a.turn_id==selected.local)
                     && let Some(raw)=app.shared.store.bot_state_value(&format!("collector_attachment:{}",selected.local))?
                 {
-                    let receipt:Value=serde_json::from_str(&raw)?;
+                    let receipt:serde_json::Value=serde_json::from_str(&raw)?;
                     if receipt["native_thread"]==selected.native
                         && let Some(physical)=receipt["native_turn"].as_str()
                         && let Some(observation)=app.shared.codex.terminal_observation(&selected.native,physical).await?
