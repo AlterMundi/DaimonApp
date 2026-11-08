@@ -92,6 +92,27 @@ class Mounted(unittest.TestCase):
         retired=self.post({**self.body(row,'retire'),'generation':1})
         self.assertEqual(retired.status_code,200,retired.text);self.assertEqual(retired.json()['batches'],[])
         self.assertEqual(self.post(body).status_code,404);self.assertEqual(len(self.calls),1)
+    def test_one_play_freezes_own_text_and_selected_voice_without_comparison(self):
+        self.config['voice_studio']={'voices':['cedar','marin']}
+        profile={**self.profile,'voice':'marin'}
+        request={'action':'prepare_sample','id':str(uuid.uuid4()),'profile':profile,'delivery':'Warm.',
+                 'voice_generation':0,'generation':0,'passage':'¡Hola! ¿Qué vamos a descubrir hoy?'}
+        reply=self.post(request);self.assertEqual(reply.status_code,200,reply.text);row=reply.json()
+        self.assertEqual(set(row['renders']),{'sample'});self.assertEqual(row['passage'],request['passage'])
+        self.assertEqual(self.post(request).json(),row)
+        changed={**request,'passage':'Different text'};self.assertEqual(self.post(changed).status_code,409)
+        body=self.body(row,slot='sample');reply=self.post(body);self.assertEqual(reply.status_code,200,reply.text)
+        self.assertEqual(reply.json()['batch']['renders']['sample']['state'],'rendered')
+        self.assertEqual(self.calls[0]['text'],request['passage'])
+        self.assertEqual(self.post(body).json()['audio'],reply.json()['audio']);self.assertEqual(len(self.calls),1)
+        self.assertIsNone(self.store.voice_snapshot(100)['active'])
+        self.assertEqual(self.post({**self.body(row,'retire'),'generation':1}).status_code,200)
+    def test_custom_text_bounds_reject_before_allocation_or_worker(self):
+        for text in ('','word '*41,'x'*1025,'\0',None):
+            request={'action':'prepare_sample','id':str(uuid.uuid4()),'profile':self.profile,'delivery':'',
+                     'voice_generation':0,'generation':0,'passage':text}
+            self.assertEqual(self.post(request).status_code,400)
+        self.assertEqual(self.store.preview_snapshot(100)['batches'],[]);self.assertEqual(self.calls,[])
     def test_maintenance_and_active_capture_refuse_before_attempt(self):
         row=self.prepare()
         with maintenance_guard(self.config['state_dir']):self.assertEqual(self.post(self.body(row)).status_code,409)

@@ -4,14 +4,26 @@ import re
 import uuid
 from .avatar_workshop_voice import voice_profile
 
+# Official GPT-Live voice options; regional labels are not language restrictions.
+# https://developers.openai.com/api/docs/guides/live-conversations#voice-options
+LIVE_VOICES=('marin','cedar','quartz','ripple','vesper','willow','stone','gleam',
+    'meridian','bossa','tempo','beacon','delta','cinder','nuri','juni','flitz',
+    'brise','sillage','nira','harema','shida','noeul')
+
 
 def configured_profiles(config):
     selected=config.get('openai_live',{})
     voice=selected.get('session_options',{}).get('audio',{}).get('output',{}).get('voice')
     if selected.get('enabled') is not True or not isinstance(voice,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}',voice):
         return []
-    # Only the receiving configured identity, not a guessed account catalogue.
-    return [{'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':voice}]
+    # Public built-ins plus this receiver's explicit current identity. No
+    # account/custom-voice discovery, permission change or provider call.
+    approved=config.get('voice_studio',{}).get('voices',[])
+    if (not isinstance(approved,list) or len(approved)>len(LIVE_VOICES)
+            or any(not isinstance(name,str) or name not in LIVE_VOICES for name in approved)):
+        raise ValueError('Select documented receiving-qualified studio voices')
+    return [{'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':name}
+            for name in dict.fromkeys((voice,*approved))]
 
 
 def choice(revision,profile):
@@ -35,11 +47,14 @@ def validate_choice(value):
     return copy.deepcopy(value)
 
 
-def apply_choice(spec,value):
+def apply_choice(spec,value,compatible_profiles=None):
     value=validate_choice(value);profile=value['profile'];result=copy.deepcopy(spec)
     if (profile['api']!='gpt-live' or profile['model']!=result['model']
-            or profile['voice']!=result.get('audio',{}).get('output',{}).get('voice')):
+            or not isinstance(result.get('audio'),dict) or not isinstance(result['audio'].get('output'),dict)
+            or (profile not in compatible_profiles if compatible_profiles is not None
+                else profile['voice']!=result.get('audio',{}).get('output',{}).get('voice'))):
         raise ValueError('The frozen voice is incompatible with this connection')
+    result['audio']['output']['voice']=profile['voice']
     if value['delivery']:
         result['instructions']+='\nVoice delivery only; preserve identity, language, pronunciation and execution instructions:\n'+value['delivery']
         if len(result['instructions'].encode())>8192:raise ValueError('Voice delivery exceeds the existing instruction bound')

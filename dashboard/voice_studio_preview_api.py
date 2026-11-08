@@ -33,7 +33,7 @@ class PreviewService:
         if base['provider']!='openai-realtime':raise ValueError('Select the existing OpenAI speech cache')
         key=self.config['openai_live']['api_key_file']
         if not isinstance(key,str) or not Path(key).is_absolute():raise ValueError('Select the configured project access')
-        fingerprint=speech.sha(speech.canonical([speech.sha(raw),key,profiles]))
+        fingerprint=speech.sha(speech.canonical([speech.sha(raw),key,profiles[:1]]))
         return base,key,profiles,capacity,fingerprint
 
     def available(self,human):
@@ -60,9 +60,9 @@ class PreviewService:
         if not self.available(human):raise ValueError('Voice previews are not available for this account')
         *_,profiles,capacity,fingerprint=self.receiving()
         if body['profile'] not in profiles:raise ValueError('Voice is not configured for this account')
-        def planner(row):return {slot:self.plan(human,row,slot)[2] for slot in ('A','B')}
+        def planner(row):return {slot:self.plan(human,row,slot)[2] for slot in row['choices']}
         return self.store.preview_prepare(human,body['id'],body['profile'],body['delivery'],
-            body['voice_generation'],body['generation'],planner,receiving_fingerprint=fingerprint)
+            body['voice_generation'],body['generation'],planner,receiving_fingerprint=fingerprint,passage=body.get('passage'))
 
     def observed(self,human,row,slot):
         route,request,ident=self.plan(human,row,slot)
@@ -96,7 +96,7 @@ class PreviewService:
 
     def reconcile(self,human,row):
         if row['phase']=='retiring':return row
-        for slot in ('A','B'):
+        for slot in row['renders']:
             current=row['renders'][slot]
             if current['state'] in ('intent','cancel_requested','unconfirmed'):
                 outcome=self.observed(human,row,slot)
@@ -123,7 +123,7 @@ class PreviewService:
     def retire(self,human,body):
         def remove(row):
             seen=set()
-            for slot in ('A','B'):
+            for slot in row['renders']:
                 route,_,ident=self.plan(human,row,slot)
                 if ident in seen:continue
                 seen.add(ident);render=row['renders'][slot]
@@ -213,8 +213,11 @@ def install(app,config,provider,store,owner,call):
         try:
             if action=='prepare' and set(body)=={'action','id','profile','delivery','voice_generation','generation'}:
                 return await call(request,service.prepare,body,write=True)
+            if action=='prepare_sample' and set(body)=={'action','id','profile','delivery','voice_generation','generation','passage'}:
+                if body['passage'] is None:raise ValueError('Write a short sample')
+                return await call(request,service.prepare,body,write=True)
             if action in ('render','cancel') and set(body)==({'action','id','batch_generation','slot'} if action=='render' else {'action','id','batch_generation'}):
-                if action=='render' and body['slot'] not in ('A','B'):raise ValueError('Select preview A or B')
+                if action=='render' and body['slot'] not in ('A','B','sample'):raise ValueError('Select an exact preview')
                 if action=='cancel':value=await service.cancel(human,body['id'],body['batch_generation'])
                 else:value=await service.render(request,human,body,owner)
                 await owner(request,True);return value

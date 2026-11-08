@@ -13,7 +13,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    URL.createObjectURL=blob=>{const url=create(blob);if(blob.type==='audio/wav')testVoiceURLs.add(url);return url;};
    URL.revokeObjectURL=url=>{testVoiceURLs.delete(url);return revoke(url);};
   });
-  const previewStates=new Map();let previewPosts=[],deferPreview=false,blockedPreview,lastPreviewAudio;
+  const previewStates=new Map();let previewPosts=[],deferPreview=false,unknownPreview=false,blockedPreview,lastPreviewAudio;
   await page.route('**/api/interaction/avatars/voice',async route=>{
    const response=await route.fetch(),value=await response.json();
    if(route.request().method()==='GET')value.audition_available=true;
@@ -23,20 +23,21 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    const actor=route.request().headers()['x-test-actor'];if(!previewStates.has(actor))previewStates.set(actor,{generation:0,batches:[]});const previewState=previewStates.get(actor);
    if(route.request().method()==='GET'){await route.fulfill({json:previewState});return;}
    const body=route.request().postDataJSON();previewPosts.push(body);
-   if(body.action==='prepare'){
-    const profile=body.profile;const row={id:body.id,generation:++previewState.generation,createdAt:Date.now(),phase:'prepared',
-     choices:{A:{profile,delivery:'Current delivery'},B:{profile,delivery:body.delivery}},renders:{A:{state:'prepared'},B:{state:'prepared'}}};
+   if(body.action==='prepare_sample'){
+    const profile=body.profile;const row={id:body.id,generation:++previewState.generation,createdAt:Date.now(),phase:'prepared',passage:body.passage,
+     choices:{sample:{profile,delivery:body.delivery}},renders:{sample:{state:'prepared'}}};
     previewState.batches.push(row);await route.fulfill({json:row});return;
    }
    const row=previewState.batches.find(r=>r.id===body.id);
    if(body.action==='cancel'){await route.abort();return;}
    if(body.action==='render'){
     if(deferPreview){if(row.renders[body.slot].state!=='rendered')row.renders[body.slot]={state:'intent'};blockedPreview={route,row,slot:body.slot};return;}
-    if(body.slot==='B'){row.renders.B={state:'unconfirmed'};await route.abort();return;}
-    row.renders.A={state:'rendered',outcome:{receipt:{provider_receipt:{usage:{seconds:2},first_pcm_millis:120}}}};
+    if(unknownPreview){row.renders.sample={state:'unconfirmed'};await route.abort();return;}
+    row.renders[body.slot]={state:'rendered',outcome:{receipt:{provider_receipt:{usage:{seconds:2},first_pcm_millis:120}}}};
     const wav=Buffer.alloc(4844);wav.write('RIFF');wav.writeUInt32LE(4836,4);wav.write('WAVEfmt ',8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(24000,24);wav.writeUInt32LE(48000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write('data',36);wav.writeUInt32LE(4800,40);
     lastPreviewAudio={mime:'audio/wav',data:wav.toString('base64')};await route.fulfill({json:{batch:row,audio:lastPreviewAudio}});return;
    }
+   if(body.action==='retire'){previewState.batches=previewState.batches.filter(r=>r.id!==body.id);previewState.generation++;await route.fulfill({json:previewState});return;}
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
@@ -117,94 +118,70 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(await editor.locator('#history button').count(),0,'Another actor has an isolated version library');
   await page.getByRole('button',{name:'Voice',exact:true}).click();
   const studio=page.getByRole('region',{name:'Voice workshop'});
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.voice-studio-presets button')).some(b=>b.getAttribute('aria-label')==='Warm'&&!b.disabled));
-  await page.evaluate(()=>{testLoseVoiceSaveAck=true;testVoicePosts=0;});
   await studio.getByRole('button',{name:'Warm',exact:true}).click();
-  await studio.getByRole('button',{name:'Save my style',exact:true}).click();
-  await studio.getByText('Style saved. Choose it when you are ready.',{exact:true}).waitFor();
-  assert.equal(await page.evaluate(()=>testVoicePosts),1,'Lost save ACK only reads the same revision');
-  assert.equal(await studio.getByRole('button',{name:'Choose this style'}).isEnabled(),true);
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.voice-studio-presets button')).some(b=>b.getAttribute('aria-label')==='Warm'&&!b.disabled));
-  assert.equal(await page.locator('#conversation-companion pre').isVisible(),true,'Voice save keeps the visual avatar');
-  await studio.getByRole('button',{name:'Choose this style'}).click();
-  await studio.getByText('Chosen! We will use it in our next voice chat.',{exact:true}).waitFor();
-  assert.equal(previewPosts.length,0,'Opening, saving and selecting never generate audio');
-  await studio.getByRole('button',{name:'Make a voice test',exact:true}).click();
-  await studio.getByRole('button',{name:'Current voice: Make this sample',exact:true}).waitFor();
-  assert.deepEqual(previewPosts.map(r=>r.action),['prepare']);
-  await studio.getByRole('button',{name:'Current voice: Make this sample',exact:true}).click();
-  await page.waitForFunction(()=>!Array.from(document.querySelectorAll('.voice-studio button')).find(b=>b.getAttribute('aria-label')==='Listen to my current voice').disabled);
-  await studio.getByRole('button',{name:'Listen to my current voice',exact:true}).click();
-  await studio.getByRole('button',{name:'Stop my current sample',exact:true}).click();
-  await studio.getByRole('button',{name:'New style: Make this sample',exact:true}).click();
-  await studio.getByText('This sample wasn’t confirmed. Check its status; it won’t be made again.',{exact:true}).waitFor();
-  assert.equal(previewPosts.filter(r=>r.action==='render'&&r.slot==='B').length,1,'Unknown generation only reads retained status');
-  assert.equal(await studio.getByRole('button',{name:'New style: Make this sample',exact:true}).isDisabled(),true);
-  assert.equal(await studio.getByRole('button',{name:'Listen to my current voice',exact:true}).isEnabled(),true,'Generating B keeps the cached A audio');
-  assert.equal(await page.evaluate(()=>testVoiceURLs.size),1,'Only the current cached A preview is held');
-  await studio.getByText('More options',{exact:true}).click();await studio.getByText('My tests',{exact:true}).click();
-  assert.equal(await studio.getByRole('button',{name:'Delete this test',exact:true}).isDisabled(),true,'Unknown paid outcome is preserved');
-  await studio.getByText('More options',{exact:true}).click();
-  for(const width of [1200,375,320]){
-   await page.setViewportSize({width,height:900});
-   assert(await studio.evaluate(e=>e.scrollWidth<=e.clientWidth+1),'Voice workshop overflow at '+width);
-   assert.equal(await studio.getByLabel('Describe how the voice should sound').evaluate(e=>getComputedStyle(e).fontSize),'16px');
-  }
-  if(process.env.VOICE_STUDIO_SCREENSHOT)await page.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT});
-  await page.evaluate(()=>{for(const [key,value] of Object.entries({background:'#101820',surface:'#17212b',text:'#f3f1e6',accent:'#82d5e7'}))document.body.style.setProperty('--dm-'+key,value);});
-  assert.equal(await studio.evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(16, 24, 32)');
-  if(process.env.VOICE_STUDIO_SCREENSHOT)await page.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT.replace(/\.png$/,'-dark.png')});
-  // A network-held generation cannot trap the person in the workshop. Its
-  // scoped cancellation may also lose its ACK; late audio must stay detached.
-  deferPreview=true;await studio.getByRole('button',{name:'Calm',exact:true}).click();
-  await studio.getByRole('button',{name:'Make a voice test',exact:true}).click();
-  await studio.getByRole('button',{name:'New style: Make this sample',exact:true}).click();
+  await studio.getByLabel('Name for this voice').fill('My friendly voice');
+  await page.evaluate(()=>{testLoseVoiceSaveAck=true;testVoicePosts=0;});
+  await studio.getByRole('button',{name:'Save this voice',exact:true}).click();
+  await studio.getByText('Saved! You can find it in My saved voices.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>testVoicePosts),1,'Lost save ACK reads the same named revision');
+  assert.equal(await studio.getByRole('button',{name:'Use this voice'}).isEnabled(),true);
+  assert.equal(previewPosts.length,0,'Open, edits and Save never generate audio');
+  await studio.getByRole('button',{name:'Use this voice'}).click();
+  await studio.getByText('Chosen for our next voice chat.',{exact:true}).waitFor();
+  await studio.getByLabel('Text to listen to').fill('¡Hola, árbol! ¿Nos vamos a explorar?');
+  await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  await studio.getByText('Try another voice, or save this one.',{exact:true}).waitFor();
+  assert.deepEqual(previewPosts.map(r=>r.action),['prepare_sample','render']);
+  assert.equal(previewPosts[0].passage,'¡Hola, árbol! ¿Nos vamos a explorar?');
+  assert.equal(previewPosts[1].slot,'sample','There is one sample, no comparison');
+  const beforeCached=previewPosts.length;
+  await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  assert.equal(previewPosts.length,beforeCached,'Known audio plays again without another generation');
+  await studio.getByRole('button',{name:'▶ Marin',exact:true}).click();
+  await page.waitForFunction(n=>(window.testPreviewReplies||0)>=n,(await page.evaluate(()=>testPreviewReplies))-1);
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(previewPosts.filter(r=>r.action==='prepare_sample').at(-1).profile.voice,'marin');
+  const editsOnly=previewPosts.length;
+  await studio.locator('.voice-studio-presets').getByRole('button',{name:'Calm',exact:true}).click();
+  await studio.getByRole('button',{name:'Joy',exact:true}).click();
+  assert.equal(previewPosts.length,editsOnly,'Style and expression changes are inert');
+  await studio.getByRole('button',{name:'Listen: Joy',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(previewPosts.filter(r=>r.action==='prepare_sample').at(-1).passage,'Hooray! We did it! I want to celebrate with you.');
+  assert(await page.evaluate(()=>testVoiceURLs.size<=2),'At most two cached audio URLs');
+  // Unknown synthesis is read, never hidden by a replacement identity.
+  unknownPreview=true;await studio.getByLabel('Text to listen to').fill('This is a distinct uncertain phrase.');
+  await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  const uncertainCalls=previewPosts.length;
+  await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  await studio.getByText('This sample was not confirmed. Check My earlier samples; it won’t be made again.',{exact:true}).waitFor();
+  assert.equal(previewPosts.length,uncertainCalls);
+  await studio.getByText('My earlier samples',{exact:true}).click();
+  assert(await studio.getByRole('button',{name:'Delete sample',exact:true}).evaluateAll(buttons=>buttons.some(b=>b.disabled)),'Unknown sample cannot be retired');
+  for(const width of [1200,375,320]){await page.setViewportSize({width,height:900});assert(await studio.evaluate(e=>e.scrollWidth<=e.clientWidth+1));}
+  // A pending explicit Play closes immediately and is cancelled only once.
+  unknownPreview=false;deferPreview=true;await studio.getByLabel('Text to listen to').fill('A different pending phrase.');
+  blockedPreview=undefined;await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
   for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
-  const replies=await page.evaluate(()=>window.testPreviewReplies||0);
+  const replies=await page.evaluate(()=>testPreviewReplies||0);
+  await studio.getByRole('button',{name:'Stop',exact:true}).click();
   await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
   await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
-  assert.equal(previewPosts.filter(r=>r.action==='cancel'&&r.id===blockedPreview.row.id).length,1,'Close sends only one owned stop, without waiting for its lost reply');
-  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Closing releases recorded audio URLs');
-  blockedPreview.row.renders.B={state:'rendered'};
-  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
-  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,replies);
-  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Late closed-panel audio cannot become a new playback URL');
-  assert.equal(previewPosts.filter(r=>r.action==='render'&&r.id===blockedPreview.row.id).length,1,'Late audio does not cause generation replay');
-
-  await page.locator('#avatar-workshop-open').click();await page.getByRole('button',{name:'Voice',exact:true}).click();
-  await studio.getByRole('button',{name:'New style: Get saved audio',exact:true}).waitFor();
-  assert.equal(await studio.getByLabel('Describe how the voice should sound').inputValue(),'Use a warm, relaxed delivery with natural pauses.','Discard returns the editor to the selected saved revision');
-  const stopsBefore=previewPosts.filter(r=>r.action==='cancel').length;blockedPreview=undefined;
-  await studio.getByRole('button',{name:'New style: Get saved audio',exact:true}).click();
-  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
-  const cachedReplies=await page.evaluate(()=>window.testPreviewReplies||0);
-  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
-  await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
-  assert.equal(previewPosts.filter(r=>r.action==='cancel').length,stopsBefore,'Closing a pending cached read cannot cancel another slot');
-  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
-  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,cachedReplies);
-  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Late cached playback remains detached after closing');
-  await page.locator('#avatar-workshop-open').click();await page.getByRole('button',{name:'Voice',exact:true}).click();
-  await studio.getByRole('button',{name:'Calm',exact:true}).click();
-  await studio.getByRole('button',{name:'Make a voice test',exact:true}).click();
-  blockedPreview=undefined;await studio.getByRole('button',{name:'New style: Make this sample',exact:true}).click();
-  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
-  const manualReplies=await page.evaluate(()=>window.testPreviewReplies||0);
-  await studio.getByRole('button',{name:'Stop making audio',exact:true}).click();
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.voice-studio button')).find(b=>b.textContent==='Stop making audio').disabled);
-  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
-  await page.getByRole('dialog',{name:'Avatar workshop',exact:true}).waitFor({state:'hidden'});
-  assert.equal(previewPosts.filter(r=>r.action==='cancel'&&r.id===blockedPreview.row.id).length,1,'Closing after an unconfirmed Stop cannot repeat it');
-  blockedPreview.row.renders.B={state:'rendered'};
-  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
-  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,manualReplies);
+  assert.equal(previewPosts.filter(r=>r.action==='cancel'&&r.id===blockedPreview.row.id).length,1);
   assert.equal(await page.evaluate(()=>testVoiceURLs.size),0);
+  blockedPreview.row.renders.sample={state:'rendered'};await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(n=>(window.testPreviewReplies||0)>n,replies);
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0,'Late closed-panel audio is ignored');
+  await page.locator('#avatar-workshop-open').click();await page.getByRole('button',{name:'Voice',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await studio.getByLabel('Name for this voice').inputValue(),'My friendly voice');
+  assert.equal(await studio.getByLabel('Describe how the voice should sound').inputValue(),'Use a warm, relaxed delivery with natural pauses.');
   await page.evaluate(()=>{testActor='100';testAvatar.bind('actor100');});
-  assert.equal(await studio.getByLabel('My earlier tests').locator('option').count(),0,'Actor reset clears old batch labels before the next read');
-  await page.locator('#avatar-workshop-open').click();
-  await page.getByRole('button',{name:'Voice',exact:true}).click();
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('.voice-studio-presets button')).some(b=>b.getAttribute('aria-label')==='Warm'&&!b.disabled));
-  assert.equal(await studio.getByLabel('My saved styles').locator('option').count(),1,'Voice library is actor isolated');
+  assert.equal(await page.evaluate(()=>testVoiceURLs.size),0);
+  await page.locator('#avatar-workshop-open').click();await page.getByRole('button',{name:'Voice',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await studio.getByLabel('My saved voices').locator('option').count(),1,'Named styles remain actor private');
   assert.deepEqual(errors,[]);
   // New source semantics survive the real account bridge and finite renderer.
   await page.reload();await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();
@@ -226,17 +203,18 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await child.route('**/api/interaction/avatars/voice',async route=>{const response=await route.fetch(),value=await response.json();if(route.request().method()==='GET')value.audition_available=true;await route.fulfill({response,json:value});});
   await child.goto(process.argv[2]+'/?workshop=voice');
   const childStudio=child.getByRole('region',{name:'Taller de voces'});
-  await childStudio.getByRole('heading',{name:'Una voz a mi manera'}).waitFor();
+  await childStudio.getByRole('heading',{name:'Encontrá mi voz'}).waitFor();
   await child.getByRole('button',{name:'Cálida',exact:true}).click();
   assert.equal(await child.getByRole('button',{name:'Cálida',exact:true}).getAttribute('aria-pressed'),'true');
-  assert.equal(await childStudio.getByRole('button',{name:'Guardar mi estilo',exact:true}).isEnabled(),true);
-  assert.equal(await childStudio.getByRole('button',{name:'Elegir este estilo',exact:true}).isDisabled(),true,'A new edit cannot silently select a voice');
+  await childStudio.getByLabel('Nombre para esta voz').fill('Mi voz amiga');
+  assert.equal(await childStudio.getByRole('button',{name:'Guardar esta voz',exact:true}).isEnabled(),true);
+  assert.equal(await childStudio.getByRole('button',{name:'Usar esta voz',exact:true}).isDisabled(),true,'A new edit cannot silently select a voice');
   assert.equal(await childStudio.locator(':scope > details.voice-studio-more').getAttribute('open'),null,'Technical controls start closed');
   for(const width of [375,320,1200]){
    await child.setViewportSize({width,height:850});await childStudio.evaluate(e=>{e.scrollTop=0;});
    assert(await childStudio.evaluate(e=>e.scrollWidth<=e.clientWidth+1),'Spanish workshop reflows at '+width);
    assert(await childStudio.locator('.voice-studio-presets button').evaluateAll(nodes=>nodes.every(e=>e.getBoundingClientRect().height>=44)));
-   assert(await childStudio.locator('.voice-studio-card p,.voice-studio-presets small').evaluateAll(nodes=>nodes.every(e=>parseFloat(getComputedStyle(e).fontSize)>=14)));
+   assert(await childStudio.locator('.voice-studio-card p').evaluateAll(nodes=>nodes.every(e=>parseFloat(getComputedStyle(e).fontSize)>=14)));
    if(process.env.VOICE_STUDIO_SCREENSHOT)await child.screenshot({path:process.env.VOICE_STUDIO_SCREENSHOT.replace(/\.png$/,'-es-'+width+'.png')});
   }
   await child.setViewportSize({width:375,height:850});
@@ -248,6 +226,6 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await childStudio.getByLabel('Contá cómo querés que suene').fill('Alegre, con pausas suaves.');
   assert.equal(await childStudio.locator('.voice-studio-presets [aria-pressed="true"]').count(),0,'Custom delivery clears preset selection');
   assert.deepEqual(childErrors,[]);await child.close();
-  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; voice revisions/current A/save lost-ACK/use, actor isolation, explicit A/B generation/playback, lost generation status-only recovery and narrow layouts; no provider calls');
+  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; named voice save lost-ACK/use, actor isolation, direct Play/change/custom and expression text, exact cached playback, unknown generation no retry and narrow layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

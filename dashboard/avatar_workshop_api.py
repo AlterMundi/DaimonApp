@@ -76,9 +76,11 @@ def install(app,config,provider,authorize,origins):
         except ValueError:raise HTTPException(400,'Select one voice action') from None
         if not isinstance(body,dict):raise HTTPException(400,'Select one voice action')
         profiles=configured_profiles(config)
-        if body.get('action')=='save' and set(body)=={'action','id','profile','delivery','parentId','generation'}:
+        if body.get('action')=='save' and set(body) in ({'action','id','profile','delivery','parentId','generation'},
+                                                     {'action','id','profile','delivery','parentId','generation','name'}):
             if body['profile'] not in profiles:raise HTTPException(400,'Voice is not configured for this service')
-            return await call(request,store.voice_save,body['id'],body['profile'],body['delivery'],body['parentId'],body['generation'],write=True)
+            return await call(request,store.voice_save,body['id'],body['profile'],body['delivery'],body['parentId'],body['generation'],
+                              *([body['name']] if 'name' in body else []),write=True)
         if body.get('action')=='use' and set(body)=={'action','id','generation'}:
             return await call(request,store.voice_select,body['id'],body['generation'],profiles,write=True)
         raise HTTPException(400,'Select Save revision or Use on next conversation')
