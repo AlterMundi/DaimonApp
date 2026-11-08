@@ -1455,7 +1455,6 @@ impl CodexDeviceAuthSession {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 // Native idle checkpoints intentionally defer automatic goal continuation. Keep
 // the original transport grace beyond that actual per-thread policy, not inside it.
 fn goal_continuation_collection_wait(config: &Value, thread: &str) -> Duration {
@@ -1470,6 +1469,7 @@ fn goal_continuation_collection_wait(config: &Value, thread: &str) -> Duration {
     Duration::from_secs(checkpoint + 30)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_app_server_turn<F, Fut>(
     binary: &Path,
     shared_app_server: bool,
