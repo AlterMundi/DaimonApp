@@ -28,8 +28,23 @@ Avatar pause, reduced motion, hidden pages and the wardrobe suppress live mouth
 motion; resuming restores the current account-scoped output level even if it
 has not changed. Silence and output closure restore the authored pose. This is an audio
 amplitude approximation, not phoneme/viseme alignment or proof of human hearing.
-The native Codex/legacy speech paths do not acquire this output-level signal
+Native Codex WebRTC also observes its decoded remote track through the same
+outputless worklet. Its existing HTML audio remains the only player. Track
+replacement, physical renewal and closure retire the old observer; a delayed
+preparation cannot attach to a successor. Mute/pause and silence clear the
+transient level, and an unavailable cosmetic observer leaves voice running.
+This adds no microphone, ASR, native handoff, provider session, renewed allowance
+or durable audio. Legacy speech paths do not acquire the output-level signal
 merely because their custom renderer supports the optional anchor.
+
+`QUALIFICATION_CODEX_ACTIVITY=1` in the existing
+`tests/session_workspace_browser.js` drives the shipped native engine with a
+synthetic660Hz remote track through real Chromium audio/worklet code, while a
+different local input tone continues. It checks output/silence/pause/resume;
+the native engine regression separately covers same-peer track changes, two
+physical renewals, retired callbacks, late observer preparation and optional
+observer failure. Synthetic sockets do not prove provider or physical-device
+acceptance. Receiving state remains in Shared Resources, not this source guide.
 
 [Official GPT-Live migration guidance](https://developers.openai.com/api/docs/guides/live-migration#adapt-the-connection-and-audio-lifecycle)
 requires client-side playback tracking and supplies no spoken-response-end event.

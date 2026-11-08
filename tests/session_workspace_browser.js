@@ -8,7 +8,8 @@ const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
-const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase,questionPosts=0;const voiceUploads=[];
+const codexActivityCase=process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
+const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -111,9 +112,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   navigator.mediaDevices.getUserMedia=async()=>new MediaStream();
   window.MediaRecorder=class{static isTypeSupported(){return true;}constructor(){this.state='inactive';this.events={};}addEventListener(n,f){this.events[n]=f;}start(){this.state='recording';}stop(){this.state='inactive';}};
  });
- if(codexCase||publicCase)await context.addInitScript(({publicCase})=>{
+ if(codexCase||publicCase)await context.addInitScript(({publicCase,codexActivityCase})=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
   const fixture=window.codexFixture={opens:0,contexts:[],peers:[],captureBytes:0,audioRequests:0,audioRequestedWhileNativeOpen:false};
+  if(codexActivityCase){let actualCodex;Object.defineProperty(window,'CodexConversation',{configurable:true,get:()=>actualCodex,set(value){actualCodex={...value,create(options){const engine=value.create({...options,onState:state=>{(fixture.outputLevels??=[]).push(state.outputLevel);options.onState?.(state);}});fixture.engine=engine;return engine;}};}});}
+
   let captureModule;Object.defineProperty(window,'StreamingVoice',{configurable:true,get:()=>captureModule,set(value){captureModule={...value,async openCapture(...args){const c=await value.openCapture(...args);c.subscribe(e=>{if(e.pcm)fixture.captureBytes+=e.pcm.byteLength;});return c;}};}});
   const actualFetch=window.fetch.bind(window);window.fetch=(url,...args)=>{if(String(url).endsWith('api/interaction/audio')){fixture.audioRequests++;fixture.audioRequestedWhileNativeOpen ||= fixture.peers.some(peer=>peer.connectionState!=='closed')||fixture.contexts.some(ctx=>ctx.state!=='closed');}return actualFetch(url,...args);};
   window.AudioContext=class extends ActualContext{constructor(...args){super(...args);fixture.contexts.push(this);}};
@@ -127,8 +130,10 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    createDataChannel(label){if(label!=='oai-events')throw Error('Unexpected native channel');return this.channel={close(){}};}
    async createOffer(){return {type:'offer',sdp:'v=0 synthetic-offer'};}
    async setLocalDescription(value){this.localDescription=value;}
-   async setRemoteDescription(value){if(value.sdp!=='v=0 synthetic-answer')throw Error('Unexpected answer');this.connectionState='connected';this.onconnectionstatechange();if(publicCase)this.channel.onmessage({data:JSON.stringify({type:'session.started',session:{id:'live_opaque/provider:42'}})});}
-   close(){this.connectionState='closed';this.onconnectionstatechange?.();}
+   async setRemoteDescription(value){if(value.sdp!=='v=0 synthetic-answer')throw Error('Unexpected answer');this.connectionState='connected';this.onconnectionstatechange();if(publicCase)this.channel.onmessage({data:JSON.stringify({type:'session.started',session:{id:'live_opaque/provider:42'}})});
+    if(codexActivityCase){const ctx=new window.AudioContext({sampleRate:24000}),source=ctx.createOscillator(),gain=ctx.createGain(),dest=ctx.createMediaStreamDestination();source.frequency.value=660;gain.gain.value=.12;source.connect(gain);gain.connect(dest);source.start();await ctx.resume();this.output=fixture.remoteOutput={ctx,source,gain,stream:dest.stream};this.ontrack({streams:[dest.stream]});}
+   }
+   close(){this.connectionState='closed';if(this.output){this.output.source.stop();for(const track of this.output.stream.getTracks())track.stop();void this.output.ctx.close();}this.onconnectionstatechange?.();}
   };
   window.WebSocket=class{
    static OPEN=1;constructor(url){if(!String(url).endsWith(publicCase?'/voice/gpt-live':'/voice/codex'))return new actualSocket(url);fixture.opens++;this.readyState=1;queueMicrotask(()=>this.onopen());}
@@ -147,7 +152,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    }
    close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
   };
- },{publicCase});
+ },{publicCase,codexActivityCase});
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  async function appearanceTransition(stage){
@@ -329,6 +334,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await selectEngine('codex');
   await page.locator('#conversation-companion pre').click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});
+  if(codexActivityCase){
+   await page.waitForFunction(()=>codexFixture.outputLevels?.at(-1)>0);
+   await page.evaluate(()=>{codexFixture.remoteOutput.gain.gain.value=0;});await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)===0);
+   assert(await page.evaluate(()=>codexFixture.captureBytes>0),'Input capture remains active while silent remote output leaves the mouth still');
+   await page.evaluate(()=>{codexFixture.remoteOutput.gain.gain.value=.12;});await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)>0);
+   await page.evaluate(()=>codexFixture.engine.pause());await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)===0);
+   await page.evaluate(()=>codexFixture.engine.resume());await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)>0);
+   report.remoteOutputActivity='Actual660Hz remote track → existing outputless worklet → native engine state; silence and pause suppress while input capture continues';
+  }
+
   assert(await page.locator('#conversation-voice-engine').isDisabled());
   await page.locator('#conversation-voice-engine').evaluate(select=>{select.value='provider';select.dispatchEvent(new Event('change'));});
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'codex','Active mode stays frozen');
