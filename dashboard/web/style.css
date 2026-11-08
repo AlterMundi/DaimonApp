@@ -1219,3 +1219,28 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 
 .voice-studio input {box-sizing:border-box;width:100%;font:inherit;font-size:16px;min-height:44px;padding:.7rem;color:var(--dm-text,#eee);background:var(--dm-background,#0b1018);border:1px solid color-mix(in srgb,currentColor 40%,transparent);border-radius:var(--dm-radius,12px)}
 .voice-studio-phrase {display:flex;gap:.2rem}.voice-studio-phrase button:first-child{border-radius:var(--dm-radius,12px) 0 0 var(--dm-radius,12px)}.voice-studio-phrase button:last-child{border-radius:0 var(--dm-radius,12px) var(--dm-radius,12px) 0;min-width:44px}
+
+/* Keep avatar artwork behind the readable pending line; tools live in its frame. */
+#conversation-companion > .avatar-frame {position:relative;z-index:0;flex:none;min-width:0;width:180px;height:120px;}
+.avatar-frame .workshop-portrait {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
+.avatar-surface {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
+.avatar-surface > pre {position:absolute;inset:0 0 auto auto;}
+.avatar-surface[data-avatar-state="loading"] > pre {visibility:hidden;}
+.avatar-surface[role="button"] {cursor:pointer;}
+.avatar-surface[role="button"]:focus-visible {outline:2px solid var(--accent);outline-offset:4px;}
+.voice-mode-portrait .avatar-surface {position:relative;inset:auto;width:min(100%,640px);height:100%;max-height:640px;display:grid;place-items:center;}
+.voice-mode-portrait .avatar-surface > pre {position:static;}
+.voice-mode-portrait .avatar-surface .workshop-portrait {position:absolute;inset:0;width:100%;height:100%;}
+.avatar-frame-controls {position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:10px;z-index:1;}
+.avatar-frame-controls #avatar-workshop-open,.avatar-frame-controls #avatar-workshop-pause {display:grid;place-items:center;position:relative;box-sizing:border-box;width:32px;height:32px;min-width:32px;min-height:32px;padding:6px;margin:0;border:0;background:transparent;color:var(--muted);border-radius:50%;}
+.avatar-frame-controls #avatar-workshop-open[hidden],.avatar-frame-controls #avatar-workshop-pause[hidden] {display:none;}
+.avatar-frame-controls button::after {content:"";position:absolute;inset:-5px;}
+.avatar-frame-controls button svg {width:20px;height:20px;}
+.avatar-frame-controls button:hover,.avatar-frame-controls button:focus-visible {color:var(--accent);background:var(--panel);}
+.standalone-conversation header #conversation-companion > .avatar-frame {height:80px;}
+.standalone-conversation header .avatar-frame .workshop-portrait {top:0;transform:none;}
+.standalone-conversation header:has(#conversation-companion[data-pose="listening"]),
+.standalone-conversation header:has(#conversation-companion[data-pose="speaking"]) {background:radial-gradient(ellipse at 85% 0%,color-mix(in srgb,var(--accent) 22%,var(--bg)),var(--bg) 80%);}
+.standalone-conversation #conversation-presence {position:relative;z-index:1;background:var(--bg);}
+.standalone-conversation.conversation-header-compact header #conversation-companion > .avatar-frame {display:none;}
+@media(max-width:480px){#conversation-companion > .avatar-frame{width:126px;height:90px}.avatar-frame .workshop-portrait,.avatar-frame .avatar-surface{width:94px;height:90px}}

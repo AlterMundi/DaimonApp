@@ -338,6 +338,12 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                             and request.query_params.get('client') == 'standalone')
         if standalone_entry:
             body = body.replace('<title>Sessions · Telecodex</title>', '<title>Daimon Interaction</title>')
+            # Select the initial visible shell before scripts or account reads.
+            # This is presentation only: controls retain their existing grants.
+            body = body.replace('<body>', '<body class="conversation-mode standalone-conversation">', 1)
+            body = body.replace('<h1>Sessions</h1>', '<h1>Daimon</h1>', 1)
+            body = body.replace('Connecting to Telegram…', 'Opening your conversation…', 1)
+            body = body.replace('<section id="conversation" hidden', '<section id="conversation"', 1)
             body = body.replace('</head>', '<link rel="manifest" href="manifest.webmanifest">'
                 '<meta name="theme-color" content="#0b1018">'
                 '<link rel="apple-touch-icon" href="assets/interaction-192.png"></head>')
@@ -345,7 +351,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="authored"', 1)
         if appearance and not (standalone_entry and conversation_appearance == 'authored'):
             base = html.escape(appearance, quote=True)
-            body = body.replace('<html lang="en">', '<html lang="en" data-style-policy="inherit">')
+            body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="inherit"', 1)
             body = body.replace('</head>', '<link rel="stylesheet" data-home-style href="'+base+
                 '/style.css?surface=sessions"><script src="'+base+'/home-style.js" defer></script></head>')
         return HTMLResponse(body)

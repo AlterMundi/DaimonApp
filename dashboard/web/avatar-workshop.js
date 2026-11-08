@@ -7,6 +7,11 @@ window.AvatarWorkshopUI=(()=>{
   let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,studio,voiceTab,canvas,paint,frame=0,timer,paused=false;
   const motion=matchMedia('(prefers-reduced-motion: reduce)'),asset=path=>new URL('assets/avatar-workshop/'+path,document.baseURI).href;
   const voiceLabel=(en,es)=>(navigator.language||'').toLowerCase().startsWith('es')?es:en;
+  const frameBox=document.createElement('div');frameBox.className='avatar-frame';portrait.before(frameBox);const surface=document.createElement('div');surface.className='avatar-surface';surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');frameBox.append(surface);surface.append(portrait);
+  const controls=document.createElement('nav');controls.className='avatar-frame-controls';controls.setAttribute('aria-label',voiceLabel('Avatar controls','Controles del avatar'));frameBox.append(controls);
+  const pause=document.querySelector('#avatar-workshop-pause');controls.append(button);if(pause)controls.append(pause);
+  const icon=(target,kind,label)=>{target.setAttribute('aria-label',label);target.title=label;target.innerHTML=kind==='gear'?'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m9 3-.6 2.3-2 .9-2.1-.6L2.8 8l1.5 1.8-.2 2.3L2.8 14l1.5 2.5 2.3-.4 1.8 1.3L9 20h3l.7-2.6 1.9-1.2 2.3.4 1.5-2.6-1.4-1.8.1-2.3L18.6 8l-1.5-2.5-2.2.6-2-.9L12.3 3Z"/><circle cx="10.7" cy="11.5" r="3"/></svg>':kind==='play'?'<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M8 4v16l12-8Z"/></svg>':'<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';};
+  icon(button,'gear',voiceLabel('Personalize avatar','Personalizar avatar'));if(pause)icon(pause,'pause',voiceLabel('Pause avatar','Pausar avatar'));
   const voiceEntry=new URLSearchParams(window.location?.search||'').get('workshop')==='voice';let voiceEntryOpened=false;
   const resize=new ResizeObserver(()=>{try{paint?.(frame);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
@@ -16,7 +21,7 @@ window.AvatarWorkshopUI=(()=>{
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
   function stop(){clearTimeout(timer);timer=undefined;}
   function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%(paint.frames||12));run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},Math.max(80,Math.min(320,paint.frameMs||180)));}
-  function reset(){epoch++;studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
+  function reset(){epoch++;studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
   async function prepared(record){
    const selected=epoch,key=credential(),renderer=await import(asset('renderer.mjs'));
    if(selected!==epoch||key!==credential())throw Error('Avatar account changed');
@@ -26,11 +31,11 @@ window.AvatarWorkshopUI=(()=>{
   }
   function use(preview){
    if(preview.selected!==epoch||preview.key!==credential()){preview.candidate.remove();throw Error('Avatar account changed');}
-   stop();resize.disconnect();canvas?.remove();canvas=preview.candidate;paint=preview.render;canvas.style.visibility='';portrait.hidden=true;document.querySelector('#avatar-workshop-pause')?.removeAttribute('hidden');frame=0;resize.observe(canvas);run();
+   stop();resize.disconnect();canvas?.remove();canvas=preview.candidate;paint=preview.render;canvas.style.visibility='';portrait.hidden=true;surface.dataset.avatarState='custom';surface.setAttribute('aria-busy','false');document.querySelector('#avatar-workshop-pause')?.removeAttribute('hidden');frame=0;resize.observe(canvas);run();
   }
   async function refresh(){
    if(loaded||!actor)return;loaded=true;const selected=epoch,key=credential();
-   try{const state=await api('interaction/avatars');if(selected!==epoch||key!==credential())return;if(state.active){const record=await api('interaction/avatars/'+state.active);if(selected!==epoch||key!==credential())return;use(await prepared(record));}}
+   try{const state=await api('interaction/avatars');if(selected!==epoch||key!==credential())return;if(state.active){const record=await api('interaction/avatars/'+state.active);if(selected!==epoch||key!==credential())return;use(await prepared(record));}else{surface.dataset.avatarState='builtin';surface.setAttribute('aria-busy','false');}}
    catch{if(selected===epoch)message('Your previous avatar is kept. Open the workshop to retry.');}
   }
   function close(){if(studio&&!studio.mayClose())return;if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;button.focus();run();}
@@ -67,8 +72,7 @@ window.AvatarWorkshopUI=(()=>{
    }catch(error){preview?.candidate.remove();respond({error:error.message||'No recibí confirmación. Consultá las versiones sin repetir la acción.'});}
    finally{busy=false;}
   });
-  const pause=document.querySelector('#avatar-workshop-pause');
-  pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));pause.textContent=paused?'Animate avatar':'Pause avatar';run();});
+  pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));icon(pause,paused?'play':'pause',paused?voiceLabel('Animate avatar','Animar avatar'):voiceLabel('Pause avatar','Pausar avatar'));run();});
   document.addEventListener('visibilitychange',run);motion.addEventListener('change',run);
   function openVoiceEntry(){
    if(!actor||!voiceEntry||voiceEntryOpened||!window.VoiceStudioUI)return;

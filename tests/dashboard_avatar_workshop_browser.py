@@ -32,11 +32,11 @@ def qualify():
         install(app,{'state_dir':root,'voice_studio':{'voices':['cedar','marin']},'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin])
         @app.get('/assets/{name}')
         def asset(name:str):
-            if name not in ('avatar-workshop.js','voice-studio.js','style.css'):raise HTTPException(404)
+            if name not in ('avatar-workshop.js','voice-studio.js','voice-mode.js','style.css'):raise HTTPException(404)
             return FileResponse(public/name)
         @app.get('/')
         def shell():
-            return HTMLResponse('''<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"><script src="assets/voice-studio.js"></script><script src="assets/avatar-workshop.js"></script><script src="fixture.js" defer></script></head><body style="--dm-background:#101820;--dm-surface:#17212b;--dm-text:#f3f1e6;--dm-accent:#82d5e7"><section id="conversation-companion"><pre>PREVIOUS AVATAR</pre></section><button id="avatar-workshop-open" hidden>Personalize avatar</button><button id="avatar-workshop-pause" hidden>Pause avatar</button><p id="avatar-workshop-status"></p></body></html>''')
+            return HTMLResponse('''<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"><script src="assets/voice-mode.js"></script><script src="assets/voice-studio.js"></script><script src="assets/avatar-workshop.js"></script><script src="fixture.js" defer></script></head><body style="--dm-background:#101820;--dm-surface:#17212b;--dm-text:#f3f1e6;--dm-accent:#82d5e7"><section id="conversation-companion"><pre>PREVIOUS AVATAR</pre></section><button id="avatar-workshop-open" hidden>Personalize avatar</button><button id="avatar-workshop-pause" hidden>Pause avatar</button><p id="avatar-workshop-status"></p></body></html>''')
         @app.get('/fixture.js')
         def fixture():
             from fastapi.responses import Response

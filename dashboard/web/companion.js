@@ -108,7 +108,7 @@ window.ConversationCompanion = (() => {
       const d=pack.defaults.app;
       // Fit actual available width using this client's rendered monospace glyph.
       let columns=d.columns;
-      const width=(face.parentElement?.classList?.contains("voice-mode-portrait")?face.parentElement:box).getBoundingClientRect?.().width;
+      const width=(face.closest?.(".voice-mode-portrait")||box).getBoundingClientRect?.().width;
       if(width && window.getComputedStyle){
         const style=window.getComputedStyle(face), context=document.createElement("canvas").getContext?.("2d");
         if(context){context.font=style.font;const glyph=context.measureText("M").width;
