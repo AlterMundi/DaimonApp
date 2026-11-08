@@ -100,35 +100,7 @@ impl Store {
         let entry_binding = super::goal_controls::binding_on(&tx, human, plan.entry)?;
         let mut targets = Vec::new();
         for target in &plan.targets {
-            // A later explicit goal control supersedes an expired uncertain
-            // transaction. Keep its receipt unchanged; it grants no retry or
-            // restoration authority. Live submissions and owned pauses still
-            // exclude another operation.
-            let generation = serde_json::to_value(super::goal_controls::command_generation_on(
-                &tx,
-                target.target,
-            )?)?;
-            let mut prior = tx.prepare("SELECT b.value,t.value FROM bot_state b,json_each(json_extract(b.value,'$.targets')) t WHERE b.key LIKE 'scoped_maintenance:%' AND json_extract(t.value,'$.target.chat_id')=?1 AND json_extract(t.value,'$.target.thread_id')=?2 AND json_extract(t.value,'$.phase') NOT IN ('restored','not_paused','preserved','superseded')")?;
-            let rows = prior.query_map(
-                params![target.target.chat_id, target.target.thread_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )?;
-            let mut conflict = false;
-            for row in rows {
-                let (operation, previous) = row?;
-                let operation: Value = serde_json::from_str(&operation)?;
-                let previous: Value = serde_json::from_str(&previous)?;
-                let superseded = matches!(
-                    previous["phase"].as_str(),
-                    Some("pause_unconfirmed" | "restore_unconfirmed")
-                ) && operation["plan"]["deadline"]
-                    .as_i64()
-                    .is_some_and(|t| t < now)
-                    && generation.as_str().is_some_and(|v| !v.is_empty())
-                    && generation != previous["command_generation"];
-                conflict |= !superseded;
-            }
-            drop(prior);
+            let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bot_state b,json_each(json_extract(b.value,'$.targets')) t WHERE b.key LIKE 'scoped_maintenance:%' AND json_extract(t.value,'$.target.chat_id')=?1 AND json_extract(t.value,'$.target.thread_id')=?2 AND json_extract(t.value,'$.phase') NOT IN ('restored','not_paused','preserved','superseded'))",params![target.target.chat_id,target.target.thread_id],|r|r.get(0))?;
             if conflict {
                 bail!("Target has an existing unresolved maintenance transaction");
             }
@@ -204,6 +176,60 @@ impl Store {
     }
     pub(crate) fn maintenance_read(&self, human: i64, id: &str) -> Result<Value> {
         read(&self.conn.lock().expect("store mutex poisoned"), human, id)
+    }
+    /// Settle obsolete control metadata, never acknowledge or replay an unknown write.
+    pub(crate) fn maintenance_reconcile_observed(
+        &self,
+        human: i64,
+        id: &str,
+        index: usize,
+        expected: &Value,
+        observed: &NativeGoalSnapshot,
+    ) -> Result<bool> {
+        let target = &expected["targets"][index];
+        let now = Utc::now().timestamp();
+        if !matches!(
+            target["phase"].as_str(),
+            Some("restore_unconfirmed" | "restart_unconfirmed")
+        ) || expected["plan"]["deadline"]
+            .as_i64()
+            .is_none_or(|t| t >= now)
+            || target["restore_submitted_receipt"]["admit_until"]
+                .as_i64()
+                .is_none_or(|t| t >= now)
+        {
+            return Ok(false);
+        }
+        // An acknowledged pause provides a definition revision distinct from
+        // usage-only updates. A different fresh revision after expiry obsoletes
+        // its conditional authority, regardless of the old restore's outcome.
+        let Ok(paused) = serde_json::from_value::<NativeGoalSnapshot>(
+            target["paused_receipt"]["receipt"]["native_receipt"].clone(),
+        ) else {
+            return Ok(false);
+        };
+        let Some(goal) = paused.goal.as_ref().filter(|g| g.status == "paused") else {
+            return Ok(false);
+        };
+        if observed.revision.is_empty()
+            || observed.revision == paused.revision
+            || Some(observed.revision.as_str()) == target["snapshot"]["revision"].as_str()
+            || observed
+                .goal
+                .as_ref()
+                .is_some_and(|g| g.thread_id != goal.thread_id)
+        {
+            return Ok(false);
+        }
+        let selected: SessionKey = serde_json::from_value(target["target"].clone())?;
+        self.validate_owned_binding(selected, human, &goal.thread_id)?;
+        self.maintenance_transition(human, id, index, expected, "superseded", json!({
+            "native_mutation":false,"automatic_retry":false,
+            "reason":"Fresh native definition revision superseded expired restoration authority; original uncertain outcome retained",
+            "observed_snapshot":observed,
+            "restoration_acknowledged":false,"notification_delivered":false
+        }))?;
+        Ok(true)
     }
     pub(crate) fn maintenance_pending(&self) -> Result<Vec<(i64, String)>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
@@ -332,6 +358,140 @@ mod tests {
         }
     }
     #[test]
+    fn scoped_maintenance_expired_unknown_restore_yields_only_to_fresh_definition() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100, 200], &defaults()).unwrap();
+        let plan = fixture(&store, "active");
+        let doc = store.maintenance_prepare(100, &plan).unwrap();
+        let mut paused = plan.targets[0].snapshot.clone();
+        paused.revision = "opaque-goal-incarnation:2".into();
+        paused.goal.as_mut().unwrap().status = "paused".into();
+        let doc = store
+            .maintenance_transition(
+                100,
+                &plan.request_id,
+                0,
+                &doc,
+                "paused",
+                json!({"phase":"acknowledged","receipt":{"native_receipt":paused}}),
+            )
+            .unwrap();
+        let doc = store
+            .maintenance_transition(
+                100,
+                &plan.request_id,
+                0,
+                &doc,
+                "restore_submitted",
+                json!({"admit_until":Utc::now().timestamp()+20,"automatic_retry":false}),
+            )
+            .unwrap();
+        let unknown = json!({"phase":"uncertain","receipt":{"original_id":"keep-exact","automatic_retry":false}});
+        let doc = store
+            .maintenance_transition(
+                100,
+                &plan.request_id,
+                0,
+                &doc,
+                "restore_unconfirmed",
+                unknown.clone(),
+            )
+            .unwrap();
+        let mut later = paused.clone();
+        later.revision = "opaque-goal-incarnation:3".into();
+        later.goal.as_mut().unwrap().status = "active".into();
+        later.goal.as_mut().unwrap().objective = "Later human direction".into();
+        assert!(
+            !store
+                .maintenance_reconcile_observed(100, &plan.request_id, 0, &doc, &later)
+                .unwrap(),
+            "An unexpired restoration may still be admitted"
+        );
+        // Synthetic clock setup, never an operational database repair route.
+        store.conn.lock().unwrap().execute(
+            "UPDATE bot_state SET value=json_set(value,'$.plan.deadline',?2,'$.targets[0].restore_submitted_receipt.admit_until',?2) WHERE key=?1",
+            params![key(&plan.request_id).unwrap(),Utc::now().timestamp()-1]).unwrap();
+        let expired = store.maintenance_read(100, &plan.request_id).unwrap();
+        let mut usage = paused.clone();
+        usage.goal.as_mut().unwrap().tokens_used += 42;
+        assert!(
+            !store
+                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &usage)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .maintenance_reconcile_observed(
+                    100,
+                    &plan.request_id,
+                    0,
+                    &expired,
+                    &plan.targets[0].snapshot
+                )
+                .unwrap()
+        );
+        let mut wrong = later.clone();
+        wrong.goal.as_mut().unwrap().thread_id = "another-native".into();
+        assert!(
+            !store
+                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &wrong)
+                .unwrap()
+        );
+        assert!(
+            store
+                .maintenance_reconcile_observed(200, &plan.request_id, 0, &expired, &later)
+                .is_err()
+        );
+        let submitted = store.maintenance_transition(
+            100,
+            &plan.request_id,
+            0,
+            &expired,
+            "restore_submitted",
+            json!({}),
+        );
+        assert!(submitted.is_err(), "An unknown write cannot be rearmed");
+        assert!(
+            store
+                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
+                .unwrap()
+        );
+        let settled = store.maintenance_read(100, &plan.request_id).unwrap();
+        assert_eq!(settled["targets"][0]["phase"], "superseded");
+        assert_eq!(
+            settled["targets"][0]["restore_unconfirmed_receipt"],
+            unknown
+        );
+        assert_eq!(
+            settled["targets"][0]["snapshot"],
+            expired["targets"][0]["snapshot"]
+        );
+        assert_eq!(
+            settled["targets"][0]["paused_receipt"],
+            expired["targets"][0]["paused_receipt"]
+        );
+        assert_eq!(
+            settled["targets"][0]["superseded_receipt"]["native_mutation"],
+            false
+        );
+        assert_eq!(
+            settled["targets"][0]["superseded_receipt"]["restoration_acknowledged"],
+            false
+        );
+        assert!(
+            store
+                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
+                .is_err(),
+            "Stale observation cannot overwrite settlement"
+        );
+        let fresh = fixture(&store, "active");
+        assert!(
+            store.maintenance_prepare(100, &fresh).is_ok(),
+            "Settled metadata no longer blocks a separate fresh plan"
+        );
+    }
+
+    #[test]
     fn scoped_maintenance_disjoint_settlement_preserves_target_cas() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &defaults()).unwrap();
@@ -457,52 +617,6 @@ mod tests {
         assert!(
             store
                 .maintenance_admission(100, &plan.request_id, 0, "pause_submitted")
-                .is_err()
-        );
-    }
-    #[test]
-    fn scoped_maintenance_expired_uncertainty_preserves_receipt_after_later_control() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let store = Store::open(file.path(), &[100], &defaults()).unwrap();
-        let old = fixture(&store, "active");
-        let doc = store.maintenance_prepare(100, &old).unwrap();
-        let retained = store
-            .maintenance_transition(
-                100,
-                &old.request_id,
-                0,
-                &doc,
-                "restore_unconfirmed",
-                json!({"unknown":true}),
-            )
-            .unwrap();
-        let next = fixture(&store, "active");
-        assert!(store.maintenance_prepare(100, &next).is_err());
-        {
-            let db = store.conn.lock().unwrap();
-            db.execute("INSERT INTO bot_state(key,value) VALUES('goal_intent:100:7','later-explicit-control')", []).unwrap();
-        }
-        // Later direction alone does not permit overlapping a live window.
-        assert!(store.maintenance_prepare(100, &next).is_err());
-        let mut expired = retained.clone();
-        expired["plan"]["deadline"] = json!(Utc::now().timestamp() - 1);
-        store
-            .conn
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE bot_state SET value=?2 WHERE key=?1",
-                params![key(&old.request_id).unwrap(), expired.to_string()],
-            )
-            .unwrap();
-        store.maintenance_prepare(100, &next).unwrap();
-        assert_eq!(
-            store.maintenance_read(100, &old.request_id).unwrap(),
-            expired
-        );
-        assert!(
-            store
-                .maintenance_admission(100, &old.request_id, 0, "restore_unconfirmed")
                 .is_err()
         );
     }

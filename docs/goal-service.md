@@ -295,7 +295,23 @@ running turn can be interrupted. This bridge never interrupts a turn.
 Use the existing authenticated gateway, `telecodex --control CONFIG goal
 maintenance ...`. No new socket, login, provider, background coordinator or model
 lease is introduced. Commands are `prepare JSON`, `status UUID`, `pause UUID`
-and `restore UUID`. Only the actual owner gateway installs the transaction;
+and `restore UUID`. The same restore command also reconciles an expired
+`restore_unconfirmed`/`restart_unconfirmed` marker by reading the actual native
+snapshot. It settles metadata as `superseded` only when both the transaction and
+restoration-admission windows expired, an acknowledged owned pause exists, and
+the fresh definition revision differs from both the original and paused
+revisions. It never resumes, edits or replays a native control, fabricates an ACK,
+or erases the original uncertain receipt. Usage-only, unchanged, unavailable,
+wrong-binding and potentially in-flight cases remain uncertain.
+
+After a failed/expired maintenance, inspect its existing status and invoke this
+same supported restore/reconciliation path before preparing another transaction.
+Do not repeat pause/resume or rewrite database rows to remove a stale conflict.
+A later goal revision can make the old conditional authority obsolete without
+proving what its original uncertain operation did. This closes the transaction
+metadata rather than adding an approval or another maintenance workflow.
+
+Only the actual owner gateway installs the transaction;
 model controller capabilities do not grant this owner operation.
 
 A prepare request contains `request_id` (caller-retained UUID), `source` (actual
@@ -349,14 +365,6 @@ native failures remain explicit for the owner; an unavailable backend cannot
 provide a hard wall-clock restoration guarantee. Source qualification must not
 be described as reserving native maintenance or guaranteed recovery during an
 outage.
-
-After the absolute window has expired, a later explicit goal control with a
-different command generation supersedes an uncertain transaction's authority.
-A freshly observed owner plan may then proceed without modifying or replaying
-that historical receipt. Unchanged generations, active windows, submissions and
-acknowledged owned pauses still exclude conflicting plans. Asking tasks to finish
-does not itself reserve idle; use the prepared bridge when authorized maintenance
-requires preventing their automatic goal continuations from racing selection.
 
 `restore UUID` also closes never-paused targets, allowing the owner to defer or
 finish adoption early. Later native decisions are `superseded`; prior paused or
