@@ -3,10 +3,11 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+const hudCase=process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||process.env.QUALIFICATION_AUTHORED==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
-const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=false,questionPosts=0;const voiceUploads=[];
+const codexCase=process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -18,6 +19,7 @@ const originals=[];let seen=0,workspaceAllowed=true;
 const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1});
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
+if(hudCase){sources.splice(0,29);sources[0]={...sources[0],kind:'integrator_answer',preview:'Let us explore this idea together.\n\nWe can open the result and keep creating.',text_characters:85};}
 const base=()=>({binding,csrf:'fixture-csrf',items:[],cursor:0,newest:0,more:false});
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fixture.invalid');
@@ -53,7 +55,7 @@ const server=http.createServer(async(req,res)=>{
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
   if(route.startsWith('interaction/requests/')){if(req.method==='POST')questionPosts++;return json(question());}
   if(route==='interaction/access'){accessReads++;return authDenied?json({detail:'Expired'},401):json({csrf:'fixture-csrf',label:'Synthetic operator'});}
-  if(route==='interaction' && readRejections>0){readRejections--;return json({detail:'Synthetic access rejection'},401);}
+  if(route==='interaction' && readRejections>0 && (!authCase||url.searchParams.get('qualification')==='auth')){readRejections--;return json({detail:'Synthetic access rejection'},401);}
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
@@ -68,7 +70,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:countdownCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:countdownCase||hudCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -80,7 +82,7 @@ const server=http.createServer(async(req,res)=>{
  const name=url.pathname.startsWith('/assets/')?path.basename(url.pathname):'index.html';
  const file=path.join(publicRoot,name);if(!fs.existsSync(file)){res.writeHead(404);return res.end();}
  let body=fs.readFileSync(file);
- if(name==='index.html')body=body.toString().replace('<html lang="en">','<html lang="en" data-shared-auth="true">').replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>','');
+ if(name==='index.html')body=body.toString().replace('<html lang="en">','<html lang="en" data-shared-auth="true"'+(authoredCase?' data-style-policy="authored"':'')+'>').replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>','');
  res.writeHead(200,{'content-type':name.endsWith('.js')?'application/javascript':name.endsWith('.css')?'text/css':name.endsWith('.woff2')?'font/woff2':'text/html'});res.end(body);
  }catch(error){errors.push(String(error));res.writeHead(500);res.end('Fixture error');}
 });
@@ -146,11 +148,42 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  },{publicCase});
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
+ if(hudCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  await page.evaluate(()=>clearInterval(timer));
+  await page.locator('#conversation-message').fill('Explore this idea together.');
+  const layouts=[];
+  for(const [width,height] of [[375,812],[320,740],[430,932],[1280,800],[375,430]]){
+   await page.setViewportSize({width,height});await page.waitForTimeout(120);
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'No horizontal overflow at '+width);
+   for(const selector of ['#conversation-message','#conversation-send','#conversation-visual>summary']){
+    const box=await page.locator(selector).boundingBox();assert(box&&box.width>0&&box.x>=0&&box.x+box.width<=width,selector+' is reachable at '+width);
+    assert(box.y>=0&&box.y+box.height<=height,selector+' fits keyboard viewport');
+   }
+   await page.locator('#conversation-message').focus();
+   assert(await page.locator('#conversation-message').evaluate(el=>getComputedStyle(el).outlineStyle!=='none'));
+   await page.locator('#conversation-visual>summary').click();
+   assert(await page.locator('#conversation-attachment-sheet').isVisible(),'Attachments stay available');
+   await page.locator('#conversation-visual>summary').click();
+   await page.screenshot({path:path.join(output,`hud-${width}-${height}.png`)});
+   layouts.push({width,height});
+  }
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Explore this idea together.');
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);
+  report.state='qualified-authored-hud-layouts';report.layouts=layouts;return;
+ }
  if(countdownCase){
   page.on('dialog',dialog=>dialog.accept());
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   await page.locator('#conversation-talk').click();
   await page.locator('#conversation-voice-remaining').waitFor({state:'visible'});
+  if(authoredCase){
+   await page.setViewportSize({width:320,height:740});
+   for(const selector of ['#conversation-send','#conversation-voice-discard','#conversation-voice-remaining']){
+    const box=await page.locator(selector).boundingBox();assert(box&&box.x>=0&&box.x+box.width<=320,selector+' remains visible while recording');
+   }
+   await page.screenshot({path:path.join(output,'hud-recording.png')});
+  }
   for(const offset of [110000,115000,117000,118000,119000]){
    await page.evaluate(value=>{window.countdownFixture.offset=value;},offset);
    await page.waitForTimeout(1050);
@@ -167,13 +200,13 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.waitForFunction(()=>authenticated && sharedConversationConnected);
   await page.evaluate(()=>clearInterval(timer));
   const before=accessReads;readRejections=1;
-  await page.evaluate(()=>api('interaction'));
+  await page.evaluate(()=>api('interaction?qualification=auth'));
   assert(accessReads>before,'A rejected read revalidates the existing session');
   assert.equal(await page.locator('#feedback').innerText(),'');
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my unsent draft.');
-  readRejections=2;assert.equal(await page.evaluate(()=>api('interaction').catch(e=>e.status)),503);
+  readRejections=2;assert.equal(await page.evaluate(()=>api('interaction?qualification=auth').catch(e=>e.status)),503);
   assert.equal(await page.locator('#feedback').innerText(),'','A scoped rejection with valid identity cannot sign out the whole app');
-  authDenied=true;readRejections=1;await page.evaluate(()=>api('interaction').catch(()=>conversationView.unauthenticated()));
+  authDenied=true;readRejections=1;await page.evaluate(()=>api('interaction?qualification=auth').catch(()=>conversationView.unauthenticated()));
   await page.getByRole('button',{name:'Sign in',exact:true}).waitFor();
   authDenied=false;await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
   await page.waitForFunction(()=>!document.querySelector('#feedback').textContent);

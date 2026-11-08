@@ -672,6 +672,7 @@ and useful-latency acceptance remain distinct and unfinished.
 Human selection, 2026-10-29: the next delivery focus also includes an independent
 Android APK with native audio ownership, usable as the sole client of a hosted
 daimon. Reuse the web conversation and shared login; Telegram stays optional.
+Nicolas8November also selects Android system Share into the existing composer: text/links, images/multiple images and files, explicit review before Send, bounded private staging and preserved capture/drafts. Full Share receiving and phone acceptance remain unfinished.
 The [native client plan](interaction-native-clients.md) defines the foreground
 pilot, native audio/focus, progressive/background follow-up, future Beacon
 mixing/filters and iOS equivalent. This explicitly selects the necessary part

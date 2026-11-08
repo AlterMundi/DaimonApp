@@ -51,7 +51,7 @@ def qualify():
         install(app,{'state_dir':root,'voice_studio':{'voices':['cedar','marin']},'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin],mission_host=mission_host)
         @app.get('/assets/{name}')
         def asset(name:str):
-            if name not in ('avatar-workshop.js','voice-studio.js','voice-mode.js','style.css'):raise HTTPException(404)
+            if name not in ('avatar-workshop.js','voice-studio.js','voice-mode.js','companion.js','style.css'):raise HTTPException(404)
             return FileResponse(public/name)
         @app.get('/')
         def shell():

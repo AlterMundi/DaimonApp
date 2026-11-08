@@ -12,8 +12,9 @@ import java.io.FileNotFoundException;
 public class SyntheticSaveProvider extends ContentProvider {
     public boolean onCreate() { return true; }
     private File file(Uri uri) throws FileNotFoundException {
-        if (!"/copy".equals(uri.getPath())) throw new FileNotFoundException();
-        return new File(getContext().getCacheDir(), "synthetic-saved-copy.bin");
+        String path=uri.getPath();
+        if (!"/copy".equals(path) && !"/share-one".equals(path) && !"/share-two".equals(path)) throw new FileNotFoundException();
+        return new File(getContext().getCacheDir(), "synthetic-saved-"+path.substring(1)+".bin");
     }
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
         return ParcelFileDescriptor.open(file(uri), mode.startsWith("w")

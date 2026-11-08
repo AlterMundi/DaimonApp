@@ -31,6 +31,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    }
    const row=previewState.batches.find(r=>r.id===body.id);
    if(body.action==='cancel'){await route.abort();return;}
+   if(body.action==='audio'){
+    if(deferPreview){blockedPreview={route,row,slot:body.slot};return;}
+    await route.fulfill({json:{batch:row,audio:row.renders[body.slot].state==='rendered'?lastPreviewAudio:null}});return;
+   }
    if(body.action==='render'){
     if(deferPreview){if(row.renders[body.slot].state!=='rendered')row.renders[body.slot]={state:'intent'};blockedPreview={route,row,slot:body.slot};return;}
     if(unknownPreview){row.renders.sample={state:'unconfirmed'};await route.abort();return;}
@@ -42,6 +46,45 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  if(process.env.ARTISTIC_CUES_ONLY==='1'){
+   const {fixture}=await import('file://'+path.resolve('tests/avatar_layer_model.mjs'));
+   await page.goto(origin);await page.waitForFunction(()=>!document.querySelector('.avatar-surface').getAttribute('aria-busy')||document.querySelector('.avatar-surface').getAttribute('aria-busy')==='false');
+   const proof=await page.evaluate(async model=>{
+    const {fresh}=await import('/assets/avatar-workshop/experiments/school-avatar-quest/model.mjs');
+    const design=fresh('model/v1');design.body='custom-model';design.avatarModel=model;
+    design.gestures=['calm','curious','joy','sad','anger','uncertain','focus','welcome','sleep'].map(cue=>({id:'fixture-'+cue,name:cue,opening:1,bend:0,motion:'together',rig:'local/v1',cue}));design.activeGestureId='fixture-calm';
+    const id=crypto.randomUUID(),read=async path=>(await fetch('/api/'+path,{headers:{'X-Test-Actor':'100'}})).json();
+    const write=async body=>{const response=await fetch('/api/interaction/avatars',{method:'POST',headers:{'X-Test-Actor':'100','X-Dashboard-CSRF':'test-action','Content-Type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw Error('Synthetic save refused');return response.json();};
+    await write({action:'save',id,design,parentId:null,generation:0});await write({action:'activate',id,generation:1});
+    const before=await read('interaction/avatars'),record=await read('interaction/avatars/'+id);
+    const box=document.querySelector('#conversation-companion');for(const cls of ['companion-caption','companion-phases']){const node=document.createElement('p');node.className=cls;box.append(node);}
+    await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='/assets/companion.js';script.onload=resolve;script.onerror=reject;document.head.append(script);});
+    window.testCompanion=ConversationCompanion.mount({onArtisticRest:rest=>testAvatar.artisticRest(rest)});
+    window.testCue={id,design,before,record};testAvatar.reset();testAvatar.bind('actor100');return {id};
+   },fixture);
+   await page.locator('.workshop-portrait').waitFor();
+   const writes=[];page.on('request',request=>{if(request.method()!=='GET'&&request.url().includes('/api/'))writes.push(request.url());});
+   const pixel=()=>page.locator('.workshop-portrait').evaluate(c=>c.toDataURL());
+   const original=await pixel();
+   await page.evaluate(()=>{testCompanion.update({capture:'recording',playback:'playing',question:true});});
+   assert.equal(await pixel(),original,'Operational states do not move custom artistic cues');
+   await page.evaluate(()=>testCompanion.reply({id:'native:art',revision:'one',kind:'integrator_answer',observed_at:'2026-11-08T00:00:00Z',companion_hint:{rest:'focused',gesture:'none'}}));
+   const focused=await pixel();assert.notEqual(focused,original,'A fresh focused hint selects the saved focus gesture');
+   await page.waitForTimeout(250);assert.equal(await pixel(),focused,'Reduced motion keeps the chosen expression still');
+   await page.evaluate(()=>testCompanion.reply({id:'native:old',revision:'one',kind:'integrator_answer',observed_at:'2026-11-07T00:00:00Z',companion_hint:{rest:'calm'}}));assert.equal(await pixel(),focused);
+   await page.evaluate(()=>testAvatar.artisticRest('speaking'));assert.equal(await pixel(),original,'Unsupported artistic cue restores the saved default, without inventing lip sync');
+   await page.locator('#avatar-workshop-pause').click();
+   await page.evaluate(()=>testAvatar.artisticRest('focused'));const still=await pixel();
+   await page.waitForTimeout(250);assert.equal(await pixel(),still);assert.equal(await page.locator('#avatar-workshop-pause').getAttribute('aria-pressed'),'true','Artistic changes do not resume manual pause');
+   await page.evaluate(()=>{testAvatar.reset();testAvatar.artisticRest('focused');testAvatar.bind('actor100');});
+   await page.locator('.avatar-surface[data-avatar-state="custom"]').waitFor();assert.equal(await pixel(),focused,'A cue retained before loading applies to the selected candidate');
+   const unchanged=await page.evaluate(async()=>{
+    const read=async path=>(await fetch('/api/'+path,{headers:{'X-Test-Actor':'100'}})).json();
+    return JSON.stringify(await read('interaction/avatars'))===JSON.stringify(testCue.before)&&JSON.stringify(await read('interaction/avatars/'+testCue.id))===JSON.stringify(testCue.record);
+   });assert(unchanged,'Transient expression selection never modifies saved revisions/pointers/generation');assert.deepEqual(writes,[]);
+   await page.evaluate(()=>{testActor='200';testAvatar.bind('actor200');});assert.equal(await page.locator('.workshop-portrait').count(),0,'Actor change removes custom art and transient expression');
+   assert.equal(errors.length,0,errors.join('\n'));console.log('PASS actual companion→custom raster cue, operational separation, reduced motion, old-source refusal, fallback, unchanged authenticated storage and actor reset; zero providers');return;
+  }
   await page.goto(origin+'?workshop=voice&defer_bind=1');
   assert.equal(await page.locator('.avatar-workshop-dialog').count(),0,'Voice entry waits for authorized actor binding');
   await page.evaluate(()=>testAvatar.bind('actor100'));
@@ -171,6 +214,32 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(previewPosts.length,uncertainCalls);
   await studio.getByText('My earlier samples',{exact:true}).click();
   assert(await studio.getByRole('button',{name:'Delete sample',exact:true}).evaluateAll(buttons=>buttons.some(b=>b.disabled)),'Unknown sample cannot be retired');
+  const retained=studio.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).first();
+  const originalSettings=await studio.getByLabel('Text to listen to').inputValue(),historyPlays=await page.evaluate(()=>testVoicePlays),beforeHistory=previewPosts.length;
+  await retained.click();await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.deepEqual(previewPosts.slice(beforeHistory).map(r=>r.action),['audio'],'History playback never allocates or renders');
+  assert.equal(await page.evaluate(()=>testVoicePlays),historyPlays+1);
+  assert.equal(await studio.getByLabel('Text to listen to').inputValue(),originalSettings,'History playback preserves current settings');
+  await retained.click();assert.equal(previewPosts.length,beforeHistory+1,'Repeated history Play uses bounded audio cache');
+  // Use a different retained row so the explicit read is not already cached.
+  deferPreview=true;blockedPreview=undefined;
+  await studio.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).nth(1).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  await studio.getByRole('button',{name:'Stop',exact:true}).click();
+  const lateHistoryPlays=await page.evaluate(()=>testVoicePlays);
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await page.evaluate(()=>testVoicePlays),lateHistoryPlays,'Stop fences a late retained audio read');
+  blockedPreview=undefined;
+  await studio.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).nth(2).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));});
+  const hiddenHistoryPlays=await page.evaluate(()=>testVoicePlays);
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await page.evaluate(()=>testVoicePlays),hiddenHistoryPlays,'Background fences a late retained audio read');
+  await page.evaluate(()=>{delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));});
+  deferPreview=false;
   const denied=Array.from(previewStates.values()).flatMap(s=>s.batches).find(r=>r.passage==='This is a distinct uncertain phrase.');
   assert(denied);denied.renders.sample.outcome={receipt:{diagnostic:{provider_error_code:'model_not_found'}}};
   await studio.getByRole('button',{name:'Check saved voices and samples',exact:true}).click();

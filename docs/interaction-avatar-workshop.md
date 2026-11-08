@@ -87,6 +87,39 @@ owns one temporary server/browser/state root with a120second cap. Optional
 `WORKSHOP_SCREENSHOT` writes one selected PNG; it creates no HTML artifact or
 private data publication. Source API/storage suites remain ordinary CI.
 
+## Explicit reply artwork cues
+
+The selected custom portrait can follow the same optional artistic rest cue as
+new canonical replies. ConversationCompanion remains the single admission point:
+source kind, revision/time ordering, duplicate rejection and selected expression
+pack/catalog checks run before the custom renderer sees a cue. Microphone,
+playback, task, connection and question states never select this artistic cue.
+Operational captions and the header glow continue to describe their actual state.
+
+The wardrobe uses only an existing `local/v1` gesture in the active saved design.
+Native `focused` maps to `focus`, and `delighted` to `joy`; supported gallery keys
+can match an admitted per-being pack cue directly. `listening` and `speaking`
+have no invented wardrobe mapping. Missing/unmatched hints or gestures restore
+the design's saved default. This does not expand the native hint vocabulary or
+claim lip sync, emotion detection, all-nine automatic expression selection or
+new artwork for a flat image.
+
+Cue selection changes only the renderer's validated in-memory copy. No Save,
+Use, account generation, stored revision, API call, provider attempt or atlas
+allocation is triggered. The existing one-frame timer, pause, reduced motion,
+editor/background suspension and compact/large rendering remain in force. An
+arriving hint can update a still expression while animation remains paused.
+Actor reset clears transient selection; source/catalog reset restores the saved
+default. A hint received before active-art loading is applied to that same loaded
+candidate, without another fetch or selection write.
+
+The focused Chromium case (`ARTISTIC_CUES_ONLY=1` with the existing browser
+runner) uses the actual companion, raster renderer and mounted synthetic-actor
+storage. It checks visible focus/default differences, old-source rejection,
+operational separation, reduced motion, unchanged stored revision/pointers and
+actor reset. Full editor/voice/save/reopen/cancel and isolation qualification
+remains separate. Real phone and artistic acceptance are still required.
+
 ## Receiving selection —6November2026
 
 All three registered living services now select the qualified31e70a0 common web
@@ -299,3 +332,40 @@ The separate Sessions entry retains its own shell. Inherited Home CSS remains
 render-blocking; do not hide the application indefinitely while waiting for
 appearance events or use appearance to admit access. Shared-auth attributes and
 explicit inherited-style policy coexist on the same HTML element.
+
+
+## Rejected preview starts
+
+A model_not_found diagnostic is terminal only for the existing single-start Live
+preview transport with a released connection, no session.started identity, no
+audio/format and the matching frozen cache identity. That transport sends only
+one session.start until startup; no commentary, silence or other command can
+precede it. The new rejected_before_start outcome describes that rejected
+request, not session.closed, a zero-charge claim, an attempt refund or a retry.
+Other errors, missing diagnostics, started sessions, audio or unknown outcomes
+stay held. Account/grant/config checks and the four-batch limit are unchanged.
+
+The existing explicit retirement path verifies an exact hash of the rejected
+state and absence of audio under its speech-job lock before cleanup. The original
+uncertain batch without this proof remains. A later explicit Play prepares a new
+identity after access is corrected; it never replays the rejected/uncertain one.
+Old readers may show the new terminal state but cannot retire it; retain this
+reader until a claimed retirement completes. Preserve an operator receipt of
+the observed rejection and selected retirement, never invent finalization.
+
+Confirmed session closure does not make an audition successful: the bounded
+Live renderer retains its fixed provider/mismatch/no-audio classification in the
+closed receipt too. Preview readback keeps that sanitized cause even when usage
+and session.closed are confirmed. No raw provider message/credential is exposed;
+closing does not authorize replay, regenerate audio or claim human hearing.
+
+### Primary Live preview media
+
+The primary WebSocket's `session.output_audio.delta` is ordered media without
+`event_id`; see the official [LiveOutputAudioDelta schema](https://developers.openai.com/api/reference/resources/live/primary-websocket#session.output_audio.delta).
+Process every chunk in order, preserving identical consecutive bytes. Keep
+metadata event identity/digest deduplication separate. Existing startup model,
+voice, format, frame count, PCM alignment/size, duration, close/finalization and
+no-reconnect bounds remain. The post777 real attempt retained event_validation
+and0PCM; this contract correction is source-qualified, not a claim that its
+unretained specific event was recovered or that a new real sample succeeded.

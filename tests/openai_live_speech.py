@@ -19,7 +19,7 @@ class Clock:
 class Socket:
     def __init__(self,clock,voice='cedar',cancel=None):
         self.clock=clock;self.sent=[];self.closed=False;self.cancel=cancel
-        audio={'type':'session.output_audio.delta','event_id':'audio','delta':base64.b64encode(b'\x01\0'*2400).decode()}
+        audio={'type':'session.output_audio.delta','delta':base64.b64encode(b'\x01\0'*2400).decode()}
         self.events=[{'type':'session.started','event_id':'start','session':{'id':'synthetic-live',
             'model':'gpt-live-1','audio':{'format':{'type':'audio/pcm','rate':24000},'output':{'voice':voice}}}},
             audio,dict(audio),{'type':'session.output_transcript.delta','event_id':'words','delta':'Dale, Compai.'}]
@@ -53,7 +53,7 @@ class Preview(unittest.TestCase):
 
     def test_same_live_api_one_greeting_silence_dedup_and_confirmed_usage(self):
         audio,receipt=self.run_preview()
-        self.assertEqual(audio[:4],b'RIFF');self.assertEqual(len(audio),44+4800)
+        self.assertEqual(audio[:4],b'RIFF');self.assertEqual(len(audio),44+9600)
         self.assertTrue(receipt['finalized']);self.assertTrue(receipt['passage_match'])
         self.assertEqual(receipt['usage'],{'seconds':2});self.assertEqual(receipt['hearing'],'not_observed')
         self.assertTrue(self.socket.closed);self.assertEqual(self.connects,1)
@@ -62,6 +62,36 @@ class Preview(unittest.TestCase):
         self.assertEqual(types.count('session.close'),1);self.assertIn('session.input_audio.append',types)
         start=self.socket.sent[0]['session'];self.assertEqual(start['delegation'],{'type':'client'})
         self.assertFalse(start['store']);self.assertNotIn('tools',start)
+
+    def test_primary_audio_without_identity_preserves_repeated_chunks_in_order(self):
+        # Actual documented LiveOutputAudioDelta shape; no invented event_id.
+        self.socket.events[2] = {'type':'session.output_audio.delta',
+            'delta':base64.b64encode(b'\x02\0'*2400).decode()}
+        audio,receipt=self.run_preview()
+        self.assertEqual(audio[44:], b'\x01\0'*2400+b'\x02\0'*2400)
+        self.assertEqual(receipt['audio_millis'],200)
+        self.assertEqual(self.connects,1)
+
+    def test_primary_audio_still_checks_pcm_and_budget(self):
+        for delta in ('not base64!', '', base64.b64encode(b'odd').decode()):
+            with self.subTest(delta=delta):
+                self.clock=Clock();self.socket=Socket(self.clock)
+                self.socket.events[1]={'type':'session.output_audio.delta','delta':delta}
+                with self.assertRaisesRegex(live.SpeechError,'event-mismatch'):self.run_preview()
+        self.clock=Clock();self.socket=Socket(self.clock)
+        with self.assertRaisesRegex(live.SpeechError,'event-mismatch'):
+            live.render(self.configured,self.fields,'synthetic',100,
+                connector=self.connect,clock=self.clock)
+
+    def test_metadata_still_requires_identity_and_conflicting_duplicates_refuse(self):
+        for bad in ({'type':'session.output_transcript.delta','delta':'private'},
+                {'type':'session.output_transcript.delta','event_id':'start','delta':'private'}):
+            with self.subTest(bad=bad):
+                self.clock=Clock();self.socket=Socket(self.clock);self.socket.events.insert(1,bad);receipts=[]
+                with self.assertRaisesRegex(live.SpeechError,'event-mismatch'):
+                    self.run_preview(progress=receipts.append)
+                self.assertTrue(receipts[-1]['finalized'])
+                self.assertEqual(receipts[-1]['diagnostic']['mismatch_stage'],'event_validation')
 
     def test_cancel_drains_owned_close_without_another_session(self):
         cancel=threading.Event();self.socket.cancel=cancel;receipts=[]
@@ -86,6 +116,20 @@ class Preview(unittest.TestCase):
         self.assertTrue(self.socket.closed);self.assertEqual(self.connects,1)
         self.assertEqual(sum(x['type']=='session.close' for x in self.socket.sent),1)
 
+    def test_confirmed_close_keeps_the_failure_that_requested_it(self):
+        for kind in ('wrong_voice','provider_error','no_audio'):
+            with self.subTest(kind=kind):
+                self.clock=Clock();self.socket=Socket(self.clock,voice='other' if kind=='wrong_voice' else 'cedar');receipts=[]
+                if kind=='provider_error':self.socket.events.insert(1,{'type':'error','event_id':'bad','error':{'code':'invalid_value','message':'sk-private not for diagnostics'}})
+                if kind=='no_audio':self.socket.events=[self.socket.events[0]]
+                with self.assertRaises(live.SpeechError):self.run_preview(progress=receipts.append)
+                result=receipts[-1];self.assertEqual(result['stage'],'session_closed');self.assertTrue(result['finalized'])
+                expected={'wrong_voice':'audition-event-mismatch','provider_error':'audition-provider-error','no_audio':'audition-no-audio'}[kind]
+                self.assertEqual(result['diagnostic']['failure_code'],expected)
+                self.assertNotIn('sk-private',json.dumps(result))
+                if kind=='wrong_voice':self.assertEqual(result['diagnostic']['mismatch_stage'],'startup_voice')
+                if kind=='provider_error':self.assertEqual(result['diagnostic']['provider_error_code'],'invalid_value')
+
     def test_unknown_close_keeps_existing_cache_intent_and_never_reconnects(self):
         def disconnected():raise ConnectionError()
         self.socket.recv=disconnected
@@ -106,13 +150,9 @@ class Preview(unittest.TestCase):
             with self.assertRaisesRegex(speech.RenderError,'expired-no-automatic'):speech.render(self.config,self.request,allow_regenerate=False)
         self.assertEqual(self.connects,1);self.assertFalse(first['cache_hit'])
 
-    def test_no_audio_and_changed_duplicate_are_not_successful_previews(self):
+    def test_no_audio_is_not_a_successful_preview(self):
         self.socket.events=[self.socket.events[0]]
         with self.assertRaisesRegex(live.SpeechError,'no-audio'):self.run_preview()
-        self.assertTrue(self.socket.closed)
-        self.clock=Clock();self.socket=Socket(self.clock)
-        self.socket.events[2]['delta']=base64.b64encode(b'\x02\0'*2400).decode()
-        with self.assertRaisesRegex(live.SpeechError,'mismatch'):self.run_preview()
         self.assertTrue(self.socket.closed)
 
     def test_no_start_or_missing_final_usage_keeps_outcome_unconfirmed(self):

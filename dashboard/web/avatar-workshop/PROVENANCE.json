@@ -49,7 +49,7 @@
     "model-runtime.mjs: backwards-compatible bounded v2 raster atlas parts, per-cue textures and relative hierarchy; raster-model-author.mjs packs supplied transparent part canvases without network/image codecs. Original v1 normalization and existing renderer cadence retained."
   ],
   "receiving_hashes": {
-    "renderer.mjs": "6c6fb66a7ed6db7fa8cd83dfc8c39c515bf253a4e2fc8476f312030d7d121624",
+    "renderer.mjs": "8c6dfd6cbf8886cfec9d1b90a6016d92b8e501481db6d437be573be39f14eedb",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
     "experiments/school-avatar-quest/index.html": "1cf66e85d7b64cfd5caae71fd98ee5d8c73a82bfd3657c738b70c3961a2c20a7",
@@ -118,7 +118,8 @@
   "mission_return": {
     "school_contract": "school-creativity.ascii-workshop-request/v1",
     "selection_authority": "Injected trusted school host; unconnected by default. No URL/browser participant authority.",
-    "effects": "Save, return, trusted display review/learning evidence and explicit activation remain separate."
+    "effects": "Save, return, trusted display review/learning evidence and explicit activation remain separate.",
+    "preserved_app_successor": "79eb121: keep current named-voice playback, receiving appearance and explicit transient artistic cues. Mission compact preview remains pinned to the saved design rather than operational/artistic overrides."
   },
   "header_adjustment": {
     "source_revision": "5967ee3",

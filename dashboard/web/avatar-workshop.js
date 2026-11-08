@@ -4,7 +4,7 @@ window.AvatarWorkshopUI=(()=>{
   const button=document.querySelector('#avatar-workshop-open'),portrait=document.querySelector('#conversation-companion pre');
   if(!button||!portrait)return;
   button.hidden=false;
-  let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,studio,voiceTab,canvas,paint,frame=0,timer,paused=false;
+  let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,studio,voiceTab,canvas,paint,artisticCue,frame=0,timer,paused=false;
   const motion=matchMedia('(prefers-reduced-motion: reduce)'),asset=path=>new URL('assets/avatar-workshop/'+path,document.baseURI).href;
   const voiceLabel=(en,es)=>(navigator.language||'').toLowerCase().startsWith('es')?es:en;
   const frameBox=document.createElement('div');frameBox.className='avatar-frame';portrait.before(frameBox);const surface=document.createElement('div');surface.className='avatar-surface';surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');frameBox.append(surface);surface.append(portrait);
@@ -23,7 +23,8 @@ window.AvatarWorkshopUI=(()=>{
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
   function stop(){clearTimeout(timer);timer=undefined;}
   function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%(paint.frames||12));run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},Math.max(80,Math.min(320,paint.frameMs||180)));}
-  function reset(){epoch++;document.querySelector('#avatar-mission-preview')?.remove();studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
+  function reset(){epoch++;document.querySelector('#avatar-mission-preview')?.remove();studio?.reset();loaded=false;artisticCue=undefined;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
+
 
   async function prepared(record){
    const selected=epoch,key=credential(),renderer=await import(asset('renderer.mjs'));
@@ -34,6 +35,8 @@ window.AvatarWorkshopUI=(()=>{
   }
   function use(preview){
    if(preview.selected!==epoch||preview.key!==credential()){preview.candidate.remove();throw Error('Avatar account changed');}
+   // Finish the transient still while hidden, before replacing the previous drawing.
+   preview.render.selectCue?.(artisticCue);preview.render(0);
    stop();resize.disconnect();canvas?.remove();canvas=preview.candidate;paint=preview.render;canvas.style.visibility='';portrait.hidden=true;surface.dataset.avatarState='custom';surface.setAttribute('aria-busy','false');document.querySelector('#avatar-workshop-pause')?.removeAttribute('hidden');frame=0;resize.observe(canvas);run();
   }
   async function missionPreview(saved){
@@ -48,6 +51,15 @@ window.AvatarWorkshopUI=(()=>{
    const c=document.createElement('canvas');c.style.width='140px';c.style.height='140px';c.setAttribute('role','img');c.setAttribute('aria-label',record.name);c.dataset.revision=saved.id;c.dataset.sha256=saved.sha256;
    panel.append(title,c);const status=document.querySelector('#avatar-workshop-status');(status||frameBox).after(panel);
    try{renderer.prepare(c,record.design);}catch(error){panel.remove();throw error;}
+  }
+  function artisticRest(value){
+   const aliases={calm:'calm',curious:'curious',focused:'focus',focus:'focus',delighted:'joy',joy:'joy',sad:'sad',anger:'anger',uncertain:'uncertain',welcome:'welcome',sleep:'sleep'};
+   const cue=Object.hasOwn(aliases,value)?aliases[value]:undefined;
+   if(cue===artisticCue)return;artisticCue=cue;
+   if(!paint)return;
+   try{if(paint.selectCue?.(cue)){frame=0;paint(frame);}run();}
+   catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}
+
   }
   async function refresh(){
    if(loaded||!actor)return;loaded=true;const selected=epoch,key=credential();
@@ -101,7 +113,7 @@ window.AvatarWorkshopUI=(()=>{
    if(!actor||(!voiceEntry&&!missionPath)||voiceEntryOpened||(voiceEntry&&!window.VoiceStudioUI))return;
    voiceEntryOpened=true;button.click();if(voiceEntry&&studio?.panel.hidden)voiceTab.click();
   }
-  return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset};
+  return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset,artisticRest};
  }
  return {mount};
 })();
