@@ -44,11 +44,12 @@ public final class MainActivity extends ComponentActivity {
     private PermissionRequest microphone;
     private ValueCallback<Uri[]> chooser;
     private SharedText incomingShare;
+    private String shareHome, shareBinding;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         if (state != null) {
-            try { incomingShare = SharedText.restore(state); } catch (RuntimeException ignored) { }
+            try { incomingShare = SharedText.restore(state); shareHome = state.getString("shared_home"); shareBinding = state.getString("shared_binding"); } catch (RuntimeException ignored) { }
         } else acceptShare(getIntent());
         exports = new FileExport(this, value -> { if (reply != null) try { reply.postMessage(value.toString()); } catch (Exception ignored) { } },
             (name, mime) -> {
@@ -67,7 +68,7 @@ public final class MainActivity extends ComponentActivity {
         super.onNewIntent(intent); setIntent(intent); acceptShare(intent); notifyShare();
     }
     @Override protected void onSaveInstanceState(Bundle state) {
-        if (incomingShare != null) incomingShare.save(state);
+        if (incomingShare != null) { incomingShare.save(state); state.putString("shared_home", shareHome); state.putString("shared_binding", shareBinding); }
         super.onSaveInstanceState(state);
     }
     private void acceptShare(Intent intent) {
@@ -75,7 +76,7 @@ public final class MainActivity extends ComponentActivity {
             SharedText value = SharedText.from(intent);
             if (value == null) return;
             if (incomingShare != null) throw new IllegalArgumentException("Review the pending shared content first.");
-            incomingShare = value;
+            incomingShare = value; shareHome = null; shareBinding = null;
         } catch (RuntimeException error) {
             new AlertDialog.Builder(this).setMessage(error instanceof IllegalArgumentException
                 ? error.getMessage() : "Shared content could not be opened. Nothing was sent.")
@@ -84,7 +85,9 @@ public final class MainActivity extends ComponentActivity {
     }
     private void notifyShare() {
         if (!foreground || !appPage() || incomingShare == null) return;
-        try { web.evaluateJavascript("window.NativeSharedText?.receive(" + incomingShare.json() + ")", null); }
+        if (shareHome == null) shareHome = origin;
+        if (!shareHome.equals(origin)) return;
+        try { web.evaluateJavascript("window.NativeSharedText?.receive(" + incomingShare.json().put("binding", shareBinding) + ")", null); }
         catch (org.json.JSONException ignored) { }
     }
     private void setup() {
@@ -153,8 +156,18 @@ public final class MainActivity extends ComponentActivity {
             String data = message.getData(); if (data == null || data.length() > 45000) return;
             try {
                 JSONObject value = new JSONObject(data); reply = proxy;
+                if (value.optString("command").equals("share_bind")) {
+                    Object selected = value.opt("binding");
+                    if (foreground && incomingShare != null && incomingShare.id.equals(value.optString("id"))
+                            && origin.equals(shareHome) && selected instanceof String
+                            && !((String)selected).isEmpty() && ((String)selected).length() <= 2048) {
+                        if (shareBinding == null) shareBinding = (String)selected;
+                        notifyShare();
+                    }
+                    return;
+                }
                 if (value.optString("command").equals("share_ack")) {
-                    if (foreground && incomingShare != null && incomingShare.id.equals(value.optString("id"))) incomingShare = null;
+                    if (foreground && incomingShare != null && incomingShare.id.equals(value.optString("id"))) { incomingShare = null; shareHome = shareBinding = null; }
                     return;
                 }
                 if (value.optString("command").startsWith("pcm_") && !foreground) return;

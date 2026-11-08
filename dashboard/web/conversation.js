@@ -834,7 +834,7 @@ window.Conversation = (() => {
       $("#conversation-inputs").replaceChildren();
       $("#conversation-inputs-older").hidden = true;
       $("#conversation-telegram-older").hidden=true;$("#conversation-telegram-state").textContent="";
-      draft.disabled = true; send.disabled = true;
+      sharedText?.reset();draft.disabled = true; send.disabled = true;
     }
     async function readTrace(card) {
       if (card.traceBusy) return;

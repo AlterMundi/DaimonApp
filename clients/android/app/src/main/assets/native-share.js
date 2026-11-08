@@ -2,13 +2,14 @@
 /* Explicit Android offer -> editable draft only. No fetch, upload or Send. */
 window.NativeSharedText=(()=>{
  const bridge=window.DaimonAudio;if(!bridge?.postMessage)return;
- let offer,view,lastAdded;
+ let offer,view;const resolved=new Set();
+ const settle=id=>{resolved.add(id);if(resolved.size>16)resolved.delete(resolved.values().next().value);ack(id);};
  const ack=id=>bridge.postMessage(JSON.stringify({command:'share_ack',id}));
  function refresh(){view?.refresh();}
  function receive(value){
   if(!value||typeof value.id!=='string'||!/^[a-f0-9-]{36}$/.test(value.id)||typeof value.text!=='string'||!value.text.trim()||new TextEncoder().encode(value.text).length>12000)return;
-  if(lastAdded===value.id){ack(value.id);return;}
-  if(offer&&offer.id!==value.id)return;offer={id:value.id,text:value.text};refresh();
+  if(resolved.has(value.id)){ack(value.id);return;}
+  if(offer&&offer.id!==value.id)return;offer={id:value.id,text:value.text,binding:typeof value.binding==='string'?value.binding:undefined,requested:false};refresh();
  }
  function mount({parent,draft,getBinding,isBusy=()=>false}){
   if(view)return view;
@@ -20,15 +21,22 @@ window.NativeSharedText=(()=>{
   for(const b of [add,discard])b.type='button';add.textContent=say('Add to message','Agregar al mensaje');discard.textContent=say('Discard share','Descartar lo compartido');
   box.append(title,preview,add,discard);parent.before(box);
   const ready=()=>!!getBinding()&&!draft.disabled;
-  view={refresh(){box.hidden=!offer||!ready();if(!box.hidden){preview.textContent=offer.text;add.disabled=isBusy();}},reset(){box.hidden=true;}};
+  view={refresh(){
+   box.hidden=true;preview.textContent='';if(!offer||!ready())return;
+   const binding=getBinding();if(offer.binding!==binding){
+    if(!offer.binding&&!offer.requested){offer.requested=true;bridge.postMessage(JSON.stringify({command:'share_bind',id:offer.id,binding}));}
+    return;
+   }
+   box.hidden=false;preview.textContent=offer.text;add.disabled=isBusy();
+  },reset(){box.hidden=true;preview.textContent='';}};
   add.addEventListener('click',()=>{
-   if(!offer||!ready()||isBusy())return;const selected=offer,binding=getBinding();
+   if(!offer||!ready()||offer.binding!==getBinding()||isBusy())return;const selected=offer,binding=getBinding();
    const value=draft.value+(draft.value?'\n':'')+selected.text;
    if(binding!==getBinding()||!ready())return;
    draft.value=value;draft.dispatchEvent(new Event('input',{bubbles:true}));draft.focus();
-   lastAdded=selected.id;offer=undefined;refresh();ack(selected.id);
+   offer=undefined;refresh();settle(selected.id);
   });
-  discard.addEventListener('click',()=>{if(!offer||!ready())return;const id=offer.id;offer=undefined;refresh();ack(id);});
+  discard.addEventListener('click',()=>{if(!offer||!ready()||offer.binding!==getBinding())return;const id=offer.id;offer=undefined;refresh();settle(id);});
   refresh();return view;
  }
  return {receive,mount,refresh};

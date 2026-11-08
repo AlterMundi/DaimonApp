@@ -22,15 +22,20 @@ After existing writable conversation admission, the offer shows literal text
 and requires Add to message. Existing draft text and reply destination stay;
 recording/busy capture blocks Add. The person still presses Send. No shared URL
 is opened, no server input is authored, and no new login/grant/store is created.
-An activity recreation retains the offer ID; the same in-page ID cannot append
-again after acknowledgement. Page/home changes do not automatically append it.
+An activity recreation retains the offer ID plus its native-pinned home/binding.
+The first writable destination is bound before text is displayed. Access reset
+hides and clears the visible text; another destination cannot show it. Returning
+to the original destination retains the pending offer. Added and discarded IDs
+are both settled in a bounded16-ID page set, so a delayed ACK cannot resurrect
+the same offer. Page/home changes do not automatically append or transfer it.
 
 Images, multiple images, arbitrary files and their bounded URI-permission/private
 byte staging remain **unfinished**. This increment does not advertise those MIME
 types and refuses a binary extra instead of silently dropping the attachment.
 Full Share delivery also requires native compilation/lint, actual emulator
 Intent/lifecycle and real phone Sharesheet acceptance plus a signed update.
-The two new native parser tests join the existing emulator instrumentation run;
+Three new native tests (including actual Activity new-intent/recreation in the
+isolated setup screen without network) join the existing emulator run;
 actual Chromium covers ready gating, literal HTML/URL text, preserved draft,
 no Send/network, duplicate IDs, busy capture and discard. Source preparation is
 not APK installation or physical acceptance. Preserve all other Android/voice,

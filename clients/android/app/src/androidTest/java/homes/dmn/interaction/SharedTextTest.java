@@ -1,6 +1,11 @@
 package homes.dmn.interaction;
 
 import android.content.ClipData;
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import androidx.test.core.app.ActivityScenario;
+import androidx.test.platform.app.InstrumentationRegistry;
+import java.lang.reflect.Field;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -25,6 +30,39 @@ public class SharedTextTest {
         refuse(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "caption").putExtra(Intent.EXTRA_STREAM, Uri.parse("content://example.test/photo")));
         Intent hidden = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "caption");
         ClipData clips = ClipData.newPlainText("text", "caption"); clips.addItem(new ClipData.Item(Uri.parse("content://example.test/photo"))); hidden.setClipData(clips); refuse(hidden);
+    }
+    @Test public void actualActivityNewIntentAndRecreationPreservePendingIdentityAndDestination() {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        assertTrue("Synthetic debug APK only", (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
+        // Only this isolated CI app's setup selection, not any production login.
+        context.getSharedPreferences("MainActivity", Context.MODE_PRIVATE).edit().remove("home").commit();
+        context.getSharedPreferences("homes.dmn.interaction.MainActivity", Context.MODE_PRIVATE).edit().remove("home").commit();
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(new Intent(context, MainActivity.class))) {
+            String[] ident = new String[1];
+            scenario.onActivity(activity -> {
+                assertNull(field(activity, "web")); // setup only; no network or login fixture.
+                activity.onNewIntent(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Synthetic incoming URL https://example.test"));
+                SharedText pending = (SharedText)field(activity, "incomingShare"); assertNotNull(pending); ident[0] = pending.id;
+                setField(activity, "shareHome", "https://example.test");
+                setField(activity, "shareBinding", "synthetic-owner");
+            });
+            scenario.recreate();
+            scenario.onActivity(activity -> {
+                SharedText pending = (SharedText)field(activity, "incomingShare");
+                assertNotNull(pending); assertEquals(ident[0], pending.id);
+                assertEquals("https://example.test", field(activity, "shareHome"));
+                assertEquals("synthetic-owner", field(activity, "shareBinding"));
+                assertNull(field(activity, "web"));
+            });
+        }
+    }
+    private Object field(MainActivity activity, String name) {
+        try { Field f = MainActivity.class.getDeclaredField(name); f.setAccessible(true); return f.get(activity); }
+        catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+    }
+    private void setField(MainActivity activity, String name, String value) {
+        try { Field f = MainActivity.class.getDeclaredField(name); f.setAccessible(true); f.set(activity, value); }
+        catch (ReflectiveOperationException error) { throw new AssertionError(error); }
     }
     private void refuse(Intent intent) {
         try { SharedText.from(intent); fail("Unsupported share must be refused"); }
