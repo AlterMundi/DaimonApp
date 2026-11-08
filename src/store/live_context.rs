@@ -1798,6 +1798,60 @@ impl Store {
     }
 }
 
+/// A fresh closed reconnect may need to finish an older frozen full reader.
+/// Boundary metadata alone is not a terminal receipt: require a completed,
+/// owner-bound observation of every acknowledged physical lifetime. Unknown
+/// submissions and failed-only observations must keep their existing fence.
+fn checkpoint_recovery_on(conn: &Connection, p: &Projection) -> Result<Option<String>> {
+    let Some(range) = p.range.as_ref().filter(|r| r.full) else {
+        return Ok(None);
+    };
+    let Some(request) = p.checkpoint_request.as_ref().filter(|q| {
+        p.closed
+            && q.reason == "reconnect"
+            && !q.acknowledged
+            && !q.committed
+            && q.generation == p.generation
+            && q.revision.is_some()
+            && q.revision != range.checkpoint_request_revision
+    }) else {
+        return Ok(None);
+    };
+    let idle: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.id=?1 AND s.busy=0
+         AND NOT EXISTS(SELECT 1 FROM turns t WHERE t.session_id=s.id
+             AND t.status IN ('running','observing')))",
+        [p.session],
+        |r| r.get(0),
+    )?;
+    if !idle || p.native_returns.is_empty() {
+        return Ok(None);
+    }
+    for receipt in &p.native_returns {
+        if !matches!(receipt.phase.as_str(), "accepted" | "accepted_reconciled")
+            || receipt.reported_revision.is_none()
+            || receipt.native_turn.is_none()
+        {
+            return Ok(None);
+        }
+        // A failed local alias can share an actually completed physical turn;
+        // failed/retired/boundary records on their own prove no such closure.
+        let completed: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t
+             JOIN native_collections n ON n.local_turn=t.id
+             WHERE t.session_id=?1 AND t.from_user_id=?2 AND t.native_thread_id=?3
+                 AND t.status='completed' AND t.completed_at IS NOT NULL
+                 AND n.first_turn=?4)",
+            params![p.session, p.human, p.native, receipt.native_turn],
+            |r| r.get(0),
+        )?;
+        if !completed {
+            return Ok(None);
+        }
+    }
+    Ok(request.revision.clone())
+}
+
 /// Reserve one coalesced context range through the existing native dispatcher.
 /// No new source is discovered by transport recovery.
 pub(in crate::store) fn reserve_on(
@@ -1808,16 +1862,36 @@ pub(in crate::store) fn reserve_on(
     instance: &str,
 ) -> Result<Option<Value>> {
     let mut p = load(conn, dialogue, human, entry)?;
-    if (p.incorporated >= p.high && p.checkpoint_request.as_ref().is_none_or(|q| q.acknowledged))
-        || p.range.as_ref().is_some_and(|r| r.full)
-    {
+    if p.incorporated >= p.high && p.checkpoint_request.as_ref().is_none_or(|q| q.acknowledged) {
         return Ok(None);
     }
-    let evidence = freeze(&mut p, false)?;
+    let full = p.range.as_ref().is_some_and(|r| r.full);
+    let recovery = if full {
+        checkpoint_recovery_on(conn, &p)?
+    } else {
+        None
+    };
+    if full && recovery.is_none() {
+        return Ok(None);
+    }
+    let mut evidence = freeze(&mut p, full)?;
     let revision = evidence["range"]["revision"]
         .as_str()
         .context("Missing frozen revision")?;
-    let id = format!("foreground:{}:{}", p.dialogue, revision);
+    let id = if let Some(request) = &recovery {
+        format!(
+            "foreground:{}:{}",
+            p.dialogue,
+            hash(&json!([revision, request]))?
+        )
+    } else {
+        format!("foreground:{}:{}", p.dialogue, revision)
+    };
+    if let Some(request) = recovery {
+        // Keep the old reader identity/offsets intact. This identifies only the
+        // fresh control notice; it cannot acknowledge the newer full-read CAS.
+        evidence["range"]["recovery_request_revision"] = json!(request);
+    }
     if p.native_returns.iter().any(|r| r.id == id) {
         return Ok(None);
     }
@@ -3528,6 +3602,182 @@ mod tests {
             .workflow_native_outcome(&r.id, "accepted", Some("physical-context-turn"))
             .unwrap();
     }
+    fn stale_checkpoint_reader(f: &Fixture) -> (super::super::ReturnDispatch, i64, Value) {
+        for _ in 0..2 {
+            f.append(
+                &Uuid::now_v7().to_string(),
+                &"Exact attributed context. ".repeat(500),
+            )
+            .unwrap();
+        }
+        let first = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        let l = local(f, "");
+        linked(f, &first, l);
+        f.store
+            .record_turn_native_thread(l, "entry-native")
+            .unwrap();
+        f.store
+            .native_collection_started(l, "physical-context-turn")
+            .unwrap();
+        f.ack(&f.read_all(false)).unwrap();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let request = || {
+            json!({"action":"checkpoint_needed","dialogue":f.dialogue,
+            "generation":f.generation,"reason":"reconnect","tokens":null,
+            "usage_kind":"unknown","request_id":Uuid::now_v7().to_string()})
+        };
+        f.call(request()).unwrap();
+        f.ack(&f.read_all(true)).unwrap();
+        let frozen = f.read(true);
+        assert_eq!(frozen["range"]["complete"], false);
+        f.call(json!({"action":"part","dialogue":f.dialogue,
+            "revision":frozen["range"]["revision"],"offset":0}))
+            .unwrap();
+        f.call(request()).unwrap();
+        (first, l, frozen)
+    }
+
+    #[test]
+    fn fresh_checkpoint_dispatch_preserves_stale_full_reader_after_confirmed_terminal() {
+        let mut f = Fixture::new();
+        let (_, l, frozen) = stale_checkpoint_reader(&f);
+        f.store.record_turn_finished(l, "completed", None).unwrap();
+        let before = {
+            let conn = f.store.conn.lock().unwrap();
+            serde_json::to_value(load(&conn, &f.dialogue, 100, f.entry).unwrap().range).unwrap()
+        };
+        let recovery = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .expect("A fresh reconnect request must reach the native checkpoint writer");
+        let output: Value = serde_json::from_str(&recovery.output).unwrap();
+        assert_eq!(output["evidence"]["revision"], frozen["range"]["revision"]);
+        assert_ne!(
+            output["checkpoint_request"]["revision"],
+            frozen["range"]["checkpoint_request_revision"]
+        );
+        assert_eq!(output["checkpoint_request"]["reason"], "reconnect");
+        f.store.workflow_native_validate(&recovery.id).unwrap();
+        let conn = f.store.conn.lock().unwrap();
+        let after =
+            serde_json::to_value(load(&conn, &f.dialogue, 100, f.entry).unwrap().range).unwrap();
+        assert_eq!(
+            before, after,
+            "Recovery cannot replace the reader or advance its supplied pages"
+        );
+        drop(conn);
+        assert!(
+            f.store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .unwrap()
+                .is_none()
+        );
+        // Restart keeps the distinct reservation; it is not permission to submit twice.
+        drop(f.store);
+        f.store = Store::open(f.file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(
+            f.store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .unwrap()
+                .is_none()
+        );
+        let old_ack = f.ack(&f.read_all(true)).unwrap();
+        assert_eq!(old_ack["checkpoint_request"]["acknowledged"], false);
+        let full = f.read_all(true);
+        assert_eq!(full["range"]["content"], Value::Null); // paginated exact body
+        let ack = f.ack(&full).unwrap();
+        assert_eq!(ack["checkpoint_request"]["acknowledged"], true);
+        let saved = f.checkpoint(&ack, 2);
+        assert_eq!(saved["checkpointed"], 2);
+    }
+
+    #[test]
+    fn stale_full_checkpoint_recovery_refuses_active_or_uncertain_native_lifetimes() {
+        for state in [
+            "running",
+            "failed",
+            "busy",
+            "uncertain",
+            "uncollected",
+            "wrong_physical",
+        ] {
+            let f = Fixture::new();
+            let (first, l, _) = stale_checkpoint_reader(&f);
+            if state != "running" {
+                f.store
+                    .record_turn_finished(
+                        l,
+                        if state == "failed" {
+                            "failed"
+                        } else {
+                            "completed"
+                        },
+                        None,
+                    )
+                    .unwrap();
+            }
+            match state {
+                "busy" => f.store.set_session_busy(f.entry, true).unwrap(),
+                "uncertain" | "uncollected" => {
+                    let conn = f.store.conn.lock().unwrap();
+                    let mut p = load(&conn, &f.dialogue, 100, f.entry).unwrap();
+                    let r = p
+                        .native_returns
+                        .iter_mut()
+                        .find(|r| r.id == first.id)
+                        .unwrap();
+                    r.phase = if state == "uncertain" {
+                        "uncertain"
+                    } else {
+                        "accepted_uncollected"
+                    }
+                    .into();
+                    save(&conn, &p).unwrap();
+                }
+                "wrong_physical" => {
+                    let conn = f.store.conn.lock().unwrap();
+                    conn.execute("UPDATE native_collections SET first_turn='another-physical-turn' WHERE local_turn=?1", [l]).unwrap();
+                }
+                _ => {}
+            }
+            assert!(
+                f.store
+                    .native_foreground_reserve(100, f.entry, &f.dialogue)
+                    .unwrap()
+                    .is_none(),
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_recovery_dispatch_cannot_cross_a_changed_native_binding() {
+        let f = Fixture::new();
+        let (_, l, _) = stale_checkpoint_reader(&f);
+        f.store.record_turn_finished(l, "completed", None).unwrap();
+        let recovery = f
+            .store
+            .native_foreground_reserve(100, f.entry, &f.dialogue)
+            .unwrap()
+            .unwrap();
+        f.store.workflow_native_validate(&recovery.id).unwrap();
+        f.store
+            .set_session_codex_thread(f.entry, "changed-native")
+            .unwrap();
+        assert!(f.store.workflow_native_validate(&recovery.id).is_err());
+        assert!(
+            f.store
+                .native_foreground_reserve(100, f.entry, &f.dialogue)
+                .is_err()
+        );
+    }
+
     #[test]
     fn foreground_attachment_requires_owned_unincorporated_ack_not_another_input() {
         let f = Fixture::new();

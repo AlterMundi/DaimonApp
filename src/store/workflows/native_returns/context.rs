@@ -104,7 +104,7 @@ impl ReturnContext {
         match &self.parent {
             ReturnParent::Heartbeat(_) => crate::store::heartbeat::producer::output(r),
             ReturnParent::Foreground(parent) => {
-                let request=parent.checkpoint_request.as_ref().filter(|q|r.envelope["checkpoint_generation"]==q["generation"] && r.envelope["checkpoint_request_revision"]==q["revision"]);
+                let request=parent.checkpoint_request.as_ref().filter(|q|(r.envelope["checkpoint_generation"]==q["generation"] && r.envelope["checkpoint_request_revision"]==q["revision"]) || (q["reason"]=="reconnect" && q["generation"]==parent.generation && r.envelope["recovery_request_revision"].is_string() && r.envelope["recovery_request_revision"]==q["revision"]));
                 json!({"schema":"telecodex.foreground-context/v1","return_id":r.id,"dialogue":parent.dialogue,"generation":parent.generation,"evidence":r.envelope,
                 "checkpoint_request":request,
                 "checkpoint_reader":{"operation":"live_context","arguments":{"action":"read","dialogue":parent.dialogue,"full":true}},
