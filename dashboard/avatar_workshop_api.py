@@ -1,11 +1,12 @@
 """Existing App authentication and CSRF for account-owned workshop revisions."""
 import asyncio
+import hashlib
 import json
 import secrets
 from pathlib import Path
 
 from fastapi import HTTPException,Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse,Response
 
 from .avatar_workshop import AvatarWorkshop,WorkshopConflict
 from .provider import ProviderUnavailable
@@ -86,8 +87,19 @@ def install(app,config,provider,authorize,origins):
         raise HTTPException(400,'Select Save revision or Use on next conversation')
 
     @app.get('/api/interaction/avatars/{ident}')
-    async def avatar(request:Request,ident:str):
-        return await call(request,store.get,ident)
+    async def avatar(request:Request,ident:str,format:str='record'):
+        if format not in ('record','canonical'):
+            await owner(request)
+            raise HTTPException(400,'Select record or canonical format')
+        value=await call(request,store.get,ident,format=='canonical')
+        if format=='record':return value
+        # Preserve the stored validator bytes, including Unicode and key order.
+        # call() rechecks current account access after the immutable read.
+        raw=value.encode('utf-8')
+        return Response(raw,media_type='application/json',headers={
+            'Cache-Control':'private, no-store','ETag':'"sha256-'+hashlib.sha256(raw).hexdigest()+'"',
+            'Content-Disposition':'attachment; filename="'+ident+'.avatar.json"',
+            'X-Content-Type-Options':'nosniff'})
 
     @app.post('/api/interaction/avatars')
     async def change_avatar(request:Request):

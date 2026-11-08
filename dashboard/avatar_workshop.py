@@ -114,7 +114,7 @@ class AvatarWorkshop(WorkshopVoiceRevisions,WorkshopPreviewBatches):
     def snapshot(self,human):
         with history_lock(self.root/'.lock'):return self._summary(self._read(human))
 
-    def get(self,human,ident):
+    def get(self,human,ident,canonical=False):
         self._ident(ident)
         with history_lock(self.root/'.lock'):
             value=self._read(human)
@@ -122,6 +122,8 @@ class AvatarWorkshop(WorkshopVoiceRevisions,WorkshopPreviewBatches):
             if row is None:raise KeyError('Avatar revision unavailable for this account')
             if hashlib.sha256(row['canonical'].encode()).hexdigest()!=row['sha256']:
                 raise ValueError('Avatar revision needs review')
+            if canonical:
+                return row['canonical']
             return {k:copy.deepcopy(v) for k,v in row.items() if k!='canonical'}|{'design':json.loads(row['canonical'])}
 
     @staticmethod
