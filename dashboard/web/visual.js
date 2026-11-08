@@ -155,7 +155,8 @@ window.VisualInput = (() => {
       if(images.some(image=>image.state==='failed'))throw Error('A selected image is unavailable. Choose another image or remove it.');
       if(!images.length)return undefined;
       const owned=generation,binding=getBinding(),snapshot=images.map(image=>({image,reference:{source_kind:'selected_image',source_id:image.source_id,image_sha256:image.image_sha256,width:image.width,height:image.height,captured_at:image.captured_at,selected_at:image.selected_at,selected_revision:image.image_sha256,state:'selected',point:image.point?{...image.point}:null}}));
-      if(snapshot.some(({reference})=>Date.now()-Date.parse(reference.selected_at)>300000))throw Error('Select the images again to refresh your selection.');
+      // Attached files remain the user's exact selection while composing.
+      // Keep their original times; waiting or uploading does not change pixels.
       for(const {image,reference} of snapshot){
         await upload(image,binding);
         if(owned!==generation||binding!==getBinding())throw Error('Your selected images changed. Review them before sending.');
