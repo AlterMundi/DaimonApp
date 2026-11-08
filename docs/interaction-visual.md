@@ -66,9 +66,13 @@ remain distinct producer kinds; a camera frame selected more than five seconds
 after its reported capture is refused. This consumer does not install or enable
 a camera/gesture producer.
 
-A new selection must be no older than five minutes and cannot name different
+An attached `selected_image` does not expire while composing or uploading. Keep
+its original timestamps, exact pixels, optional point and source identity; do
+not refresh its times to evade validation. Camera frames and application views
+still require a selection no older than five minutes; future selections beyond
+the existing five-second allowance refuse. Any selection naming different
 selected/image revisions, an unavailable/ambiguous/disconnected view, or absent
-image bytes. The HTTP response asks for a fresh selection and
+image bytes refuses. The HTTP response asks for a fresh selection and
 admits no original. A structured `visual_reselection` response certifies that
 this attempt did not reach original submission. The composer can request a new
 selection; an explicit recording retry can then freeze the same saved clip
