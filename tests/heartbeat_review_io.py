@@ -71,7 +71,14 @@ def qualify(binary, production=False):
             goal=dict(threadId=j.web_thread,objective='Preserve synthetic ongoing goal',status='active',tokenBudget=None,tokensUsed=17,timeUsedSeconds=3,createdAt=1,updatedAt=1)
             j.goals[j.web_thread]=goal.copy()
             j.broadcast(j.web_thread,'thread/goal/updated',{'goal':goal})
+        if production:j.native_fixture_busy=True
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
+        if production:
+            j.wait(lambda:j.read('heartbeat','status')['result']['producer']['last_check']['sequence']>waiting['producer']['last_check']['sequence'],seconds=45)
+            assert len(j.bounded)==0, 'Known native contention spent an execution envelope'
+            assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==12
+            j.native_fixture_busy=False
+
         j.wait(lambda:len(j.bounded)==1,seconds=45)
         j.wait(lambda:j.row("SELECT count(*) FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.phase')='accepted'")==[(1,)])
         packet=json.loads(j.bounded[0]['turn']['toolOutput']['output'])
