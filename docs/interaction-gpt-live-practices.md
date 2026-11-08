@@ -628,12 +628,12 @@ No inference, provider switch, limit change or new recording occurred here.
 
 ### Optional result reads must not terminate current speech —8November2026
 
-A failed read/append of earlier native work stops that visit's optional result
+A failed read/append of current or earlier native work stops that visit's optional result
 poller, retaining its original cursor and any uncertain append. It does not close
 an otherwise healthy current WebRTC voice connection or repeat work/reads. Owner
 and access checks remain active; explicit Stop and required capture/context
 failures retain their existing closure path. A one-shot notice distinguishes
-missing earlier results from lost voice transport.
+missing work results from lost voice transport.
 
 Explicit browser closure can retain one enumerated `client_close_reason` in the
 existing owner-bound visit, never raw exception text or a new event archive. It

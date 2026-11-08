@@ -198,7 +198,7 @@ window.PublicLiveConversation=(()=>{
               if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
               onItem({visit,item:value.event,public_live:true});
             }
-            else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · earlier work results need review.');
+            else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · work results need review.');
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
               if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.','source_unconfirmed');
             });
