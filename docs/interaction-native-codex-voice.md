@@ -27,6 +27,18 @@ current complete checkpoint plus tail and use its exact checkpoint-writer CAS.
 Reservation is durable and deduplicated across restart; changed owner/native/Stop
 bindings still refuse admission. No source is retired by the notice itself.
 
+Foreground known-unsent recovery uses the existing maintenance runner even when
+workflow and routed-return switches are both off. Those switches still control
+their own journals; they are not a prerequisite for finishing an already admitted
+voice-context intent. Return identity, finite attempt limits and uncertainty
+fences remain unchanged. No new source event or retry loop is introduced.
+
+In an actual-native qualification, archive the task-owned thread only after its
+owned continuations have settled. An idle observation before a new physical ACK
+is a preparation state, not proof that the new worker already completed. Keep
+the bridge alive through the exact pending admission/terminal outcome; preserve
+an uncertain submission rather than restarting it to repair the verifier.
+
 This is a persistent native-reader change: retain a compatible reader for pending
 recovery notices on rollback. An older reader can retain the document but cannot
 admit this new notice. Unit tests establish the reader/CAS and admission behavior;

@@ -414,11 +414,12 @@ pub(super) async fn recover_unsent(app: &App) -> Result<()> {
     let Some(cfg) = app.shared.config.interaction.as_ref() else {
         return Ok(());
     };
-    if !(cfg.native_workflow_returns || cfg.native_routed_returns)
-        || app.shared.shutdown.is_cancelled()
-    {
+    if app.shared.shutdown.is_cancelled() {
         return Ok(());
     }
+    // Foreground voice owns its existing known-unsent returns independently
+    // of routed/workflow attention. Their flags still select only their own
+    // journals below; this neither discovers new sources nor retries unknowns.
     for selected in app.shared.store.native_returns_recover_unsent(
         cfg.human_id,
         cfg.entry(),
