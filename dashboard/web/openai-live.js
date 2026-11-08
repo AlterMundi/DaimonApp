@@ -8,16 +8,19 @@ window.PublicLiveConversation=(()=>{
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
     let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,nativeAudioAbort,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen,activityObserver,activityAbort;
-    let active=false,starting=false,closing=false,renewing=false,renewalReadyAck,logicalGeneration=0,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
+    let continuity=false,active=false,starting=false,closing=false,renewing=false,renewalReadyAck,logicalGeneration=0,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let captureLocks;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
     let replacementReview,voiceContinuation,outputLevel=0;
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
-    const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
+    // View updates have no transport/capture authority. In particular a failed
+    // Avatar/notice renderer cannot interrupt Stop before closing is cleared.
+    const present=(callback,value)=>{try{callback(value);}catch{/* Keep owned audio cleanup running. */}};
+    const state=message=>present(onState,{active,starting,working:closing,untilStop:continuity,pending:originals.size>0,floor:false,
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,...(message?{message}:{})});
-    const notify=()=>onRecovery([...originals.values()]);
+    const notify=()=>present(onRecovery,[...originals.values()]);
     const usage=value=>{try{onUsage({visit,binding,...value});}catch{/* Diagnostics never fail voice cleanup. */}};
     async function request(value,path,options={}){
       if(value.binding!==getBinding())throw Error('Recording belongs to another conversation');
@@ -92,28 +95,29 @@ window.PublicLiveConversation=(()=>{
       durable=sealed.catch(()=>{void hold('Local audio storage needs review. Save the retained original.','local_storage');});
       uploads=uploads.then(async()=>{const value=await sealed;try{await upload(value);}catch{if(owned===epoch)state('Original audio is kept for recovery.');}}).catch(()=>{if(owned===epoch)state('Original audio is kept for review.');});
     }
+    const sourceFailure=reason=>Object.assign(Error('Voice source confirmation needs review'),{sourceReason:reason});
     async function sealSource(value){
       const owned=epoch;
       if(!active||closing||value.visit!==visit||value.binding!==binding||binding!==getBinding()
           ||typeof value.request!=='string'||!/^([a-f0-9]{8}-)([a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value.request))
-        throw Error('Source boundary does not belong to this active recording');
+        throw sourceFailure('source_owner_changed');
       let pending=seals.get(value.request);
       if(!pending){
-        if(seals.size>=32)throw Error('Voice source boundary limit reached');
+        if(seals.size>=32)throw sourceFailure('source_boundary_limit');
         pending=(async()=>{
           let timeout;
           try{
             // Reuse the recorder's existing processing boundary: it flushes
             // pending PCM before acknowledging, without stopping live media.
             const boundary=await new Promise((resolve,reject)=>{
-              if(sourceBoundary)return reject(Error('Another audio boundary is pending'));
+              if(sourceBoundary)return reject(sourceFailure('source_boundary_overlap'));
               sourceBoundary={request:value.request,token:'public-seal:'+value.request,resolve,reject};
-              timeout=setTimeout(()=>reject(Error('Audio processing boundary is unconfirmed')),3000);
-              try{capture.boundary(sourceBoundary.token);}catch(error){reject(error);}
+              timeout=setTimeout(()=>reject(sourceFailure('source_boundary_timeout')),3000);
+              try{capture.boundary(sourceBoundary.token);}catch{reject(sourceFailure('source_capture_unavailable'));}
             });
             clearTimeout(timeout);
-            await boundary.uploads;
-            for(let n=0;n<boundary.through;n++)if(!confirmed.has(n))throw Error('A source original still needs review');
+            try{await boundary.uploads;}catch{throw sourceFailure('source_upload_unconfirmed');}
+            for(let n=0;n<boundary.through;n++)if(!confirmed.has(n))throw sourceFailure('source_upload_unconfirmed');
             return {type:'source_sealed',request:value.request,through_ordinal:boundary.through,capture_bytes:boundary.captureBytes};
           }finally{
             clearTimeout(timeout);
@@ -124,7 +128,7 @@ window.PublicLiveConversation=(()=>{
       }
       const receipt=await pending;
       if(owned!==epoch||!active||closing||binding!==getBinding()||socket?.readyState!==WebSocket.OPEN)
-        throw Error('Source boundary finished after recording changed');
+        throw sourceFailure('source_owner_changed');
       // This reports confirmed raw bytes, never transcript text, utterance end,
       // question authority, a provider command or permission to run native work.
       socket.send(JSON.stringify(receipt));
@@ -200,7 +204,7 @@ window.PublicLiveConversation=(()=>{
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       if(renewal&&(logical!==logicalGeneration||!media||!unlock))return false;
-      if(!renewal){logicalGeneration++;captureLocks=new Map();}
+      if(!renewal){logicalGeneration++;captureLocks=new Map();continuity=false;}
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
       const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
@@ -228,7 +232,7 @@ window.PublicLiveConversation=(()=>{
         }).catch(()=>granted(false));
         if(!await wait(locked,3000))throw Error('Microphone capture is owned by another page');
         const url=new URL('api/interaction/voice/gpt-live',window.location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
-        const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;
+        const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;const sourceReasons=new Set();
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
           ...(backend===undefined?{}:{backend}),...(renewal?{renewal}:{}),
@@ -239,7 +243,10 @@ window.PublicLiveConversation=(()=>{
           try{
             if(typeof event.data!=='string'||event.data.length>1024*1024)throw Error('Voice event exceeds bound');
             const value=JSON.parse(event.data);
-            if(value.type==='prepared'){voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
+            if(value.type==='prepared'){
+              continuity=backend==='native'&&value.admission?.continuous_renewal===true;
+              for(const reason of value.admission?.source_close_reasons||[])if(typeof reason==='string'&&/^source_[a-z_]{1,40}$/.test(reason))sourceReasons.add(reason);
+              voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
             else if(value.type==='context_preparing')state('Preparing previous conversation');
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event'){
@@ -247,8 +254,8 @@ window.PublicLiveConversation=(()=>{
               onItem({visit,item:value.event,public_live:true});
             }
             else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · work results need review.');
-            else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
-              if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.','source_unconfirmed');
+            else if(value.type==='source_seal_requested')void sealSource(value).catch(error=>{
+              if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.',sourceReasons.has(error?.sourceReason)?error.sourceReason:'source_unconfirmed');
             });
             else if(value.type==='finishing'){if(!closing&&!renewing)void hold(value.message||'Finishing voice; checking pending work.','server_finishing');}
             else if(value.type==='successor_ready'){if(renewing&&value.id===visit)renewalReadyAck?.(value.renewal);}
@@ -330,7 +337,7 @@ window.PublicLiveConversation=(()=>{
             if(sourceBoundary&&value.boundary===sourceBoundary.token){
               const pending=sourceBoundary;sourceBoundary=undefined;
               if(!Number.isSafeInteger(value.totalBytes)||value.totalBytes!==total)
-                pending.reject(Error('Audio processing boundary changed'));
+                pending.reject(sourceFailure('source_boundary_changed'));
               else{
                 // This callback runs after all preceding worklet PCM messages.
                 // Freeze/flush before resolving, so later frames stay separate.

@@ -966,14 +966,16 @@ minutes, even when its engine had a600second visit. The sustained540second
 qualification above mounted the native engine, not that fullscreen controller;
 it could not prove that the complete view stayed open. Retain that distinction.
 
-The continuous fullscreen guard now permits at most ten minutes; the legacy
-alternating mode retains its five-minute opt-in. The selected engine still owns
-its configured capture limit, including any shorter limit. Expiry closes through
-the existing onLeave/hold/flush path exactly once; it does not cancel accepted
-backend work or reopen a microphone. Only explicit reconnect rearms the view
-guard. No provider, context, storage or complete-microphone-visit budget changes.
-This qualifies the deterministic view boundary, not an actual ten-minute phone
-visit or the cause of a particular historical recording-review error.
+Nonrenewing continuous engines keep the ten-minute view guard; legacy alternating
+mode keeps its five-minute opt-in. An explicitly admitted native dialogue with
+`continuous_renewal: true` instead reports `untilStop` to the fullscreen view.
+That view stays open through physical replacements until the human closes it;
+it must not terminate a healthy dialogue with an independent ten-minute timer.
+Each physical connection retains its server/engine capture limit (300–600 seconds),
+source fences, storage and accounting. Back, Stop, background and authority loss
+still use their existing owner paths. View continuity grants no replacement or
+microphone permission. Deterministic view tests do not prove physical hearing or
+the cause of a historical recording-review error.
 
 Before qualifying native human questions, inspect the selected mode and effective
 tool availability. The inspected Core request_user_input handler is root-only

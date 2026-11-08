@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -23,7 +23,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
    if(value.binding){this.id=value.id;order.push('admission');
     if(reviewFirst&&sockets.length===1){emit({type:'unconfirmed',id:this.id,message:'Tap Reconnect voice. Final usage unconfirmed.',
       replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
-    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous}});}
+    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous,...(sourceDiagnostics?{source_close_reasons:['source_boundary_changed']}:{})}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
    if(value.type==='close'&&!deferClose){
     const renewal=value.reason==='transport_renewal';
@@ -54,7 +54,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
    openCapture:async()=>{captureBytes=0;return {subscribe(fn){listener=fn;return ()=>{};},start(){order.push('recorder');},
     boundary(token){queueMicrotask(()=>{
      if(boundaryTail){const size=boundaryTail;boundaryTail=0;captureBytes+=size;listener({pcm:new Uint8Array(size).buffer});}
-     listener({boundary:token,totalBytes:captureBytes});
+     listener({boundary:token,totalBytes:captureBytes+(badBoundary?2:0)});
     });},finish(){listener({finished:true});},close(){recorderCloses++;}};}}};
  const nativeOutputs=[],observers=[];
  window.WebRtcNativeAudio={observe:async(stream,options)=>{const observer={options,closed:0,close(){this.closed++;}};observers.push(observer);return observer;}};
@@ -83,7 +83,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   {timeout(ms){const controller=new AbortController();networkClocks.push({ms,controller});return controller.signal;}},
   (run,ms)=>{if(continuous&&ms>470000&&ms<490000)timers.push(run);return setTimeout(run,ms);});
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
-  onState:value=>states.push(value),onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
+  onState:value=>{states.push(value);if(throwClosingState&&value.working)throw Error('Synthetic presentation failure during close');},onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
  async function start(){
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
@@ -95,6 +95,24 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ // A presentation callback must not strand the transport in closing: it would
+ // leave Avatar's Reconnect disabled while retaining a microphone owner.
+ const failedPresentation=fixture({throwClosingState:true});await failedPresentation.start();
+ failedPresentation.pcm();await failedPresentation.engine.hold('Source needs review.','source_unconfirmed');
+ assert.equal(failedPresentation.states.at(-1).working,false,'Close reaches a terminal UI state despite presentation failure');
+ assert.equal(failedPresentation.engine.active,false);assert.equal(failedPresentation.stops(),1);
+ assert.equal(failedPresentation.sockets[0].readyState,3);
+ await until(()=>failedPresentation.requests.length===1&&failedPresentation.engine.originals.length===0);
+ assert.equal(failedPresentation.requests.length,1,'The same original is saved once, without new speech/work');
+ await failedPresentation.start();assert.equal(failedPresentation.permission(),2,'Only an explicit next start obtains another microphone owner');
+ await failedPresentation.engine.hold();
+ for(const diagnostic of [false,true]){
+  const mismatch=fixture({sourceDiagnostics:diagnostic,badBoundary:true});await mismatch.start();mismatch.pcm();
+  const socket=mismatch.sockets[0];socket.onmessage({data:JSON.stringify({type:'source_seal_requested',visit:socket.id,binding:'a'.repeat(64),request:crypto.randomUUID()})});
+  await until(()=>mismatch.states.at(-1)?.working===false&&!mismatch.engine.active);
+  assert.equal(socket.sent.find(v=>v.type==='close')?.reason,diagnostic?'source_boundary_changed':'source_unconfirmed','Only an advertised fixed diagnostic replaces the legacy close reason');
+  assert(!socket.sent.some(v=>v.type==='source_sealed'),'Mismatched raw byte boundaries never gain a fabricated ACK');
+ }
  // A transport handover retains one microphone/lock and never replays
  // retained closing speech into the successor. Source IDs stay per visit.
  const renewal=fixture({nativeChoice:true,continuous:true});await renewal.start();
