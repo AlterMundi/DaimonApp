@@ -212,6 +212,83 @@ class Backend(unittest.TestCase):
         self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
         self.assertEqual(len(self.updates),1,'An unknown injection cannot be retried or skipped')
 
+    def partial_worker_correction(self,ack=True):
+        route,old,channel=self.worker_result()
+        corrected={**old,'source':'delivery:00000000-0000-4000-8000-000000000003','revision':'e'*64}
+        part=self.provider.presentation_part
+        def current_part(source,revision,offset):
+            value=part(source,revision,offset)
+            if source==old['source']:
+                if old['current'] is False:raise ValueError('Synthetic canonical source is no longer current')
+                value['text']=('The previous result has a long explanation. '*24)[offset:offset+1600]
+            else:
+                self.assertEqual(source,corrected['source']);value['text']='The corrected current result is Río Cobre.'
+            return value
+        self.provider.presentation_part=current_part
+        first=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertGreater(first['next_offset'],0)
+        if ack:
+            command=self.updates[-1]
+            self.visits.event(self.ident,100,self.owner,{'type':command['type']+'ed',
+                'event_id':'partial-result-ack','client_event_id':command['event_id']})
+        old.update(current=False,revision='c'*64);route['results'].append(corrected)
+        return route,old,corrected,channel,first
+
+    def test_corrected_worker_result_is_not_blocked_by_acknowledged_old_partial(self):
+        route,old,corrected,channel,first=self.partial_worker_correction()
+        result=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(result['source'],corrected['source'])
+        self.assertIn('corrected current result',self.updates[-1]['content'])
+        self.assertEqual(len(self.updates),2);self.assertEqual(len(self.writes),1)
+        rows=self.visits.read(self.ident,100,self.owner)['native_result_updates'].values()
+        retained=next(r for r in rows if r['source']==old['source'])
+        self.assertEqual(retained['state'],'context_injected')
+        self.assertEqual(retained['next_offset'],first['next_offset'],'Old canonical cursor is preserved, not completed or erased')
+
+    def test_correction_never_skips_an_unknown_partial_injection(self):
+        route,old,corrected,channel,first=self.partial_worker_correction(ack=False)
+        self.assertIsNone(return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel))
+        self.assertEqual(len(self.updates),1);self.assertEqual(len(self.writes),1)
+
+    def test_pending_correction_stops_old_partial_before_new_current_result(self):
+        route,old,corrected,channel,first=self.partial_worker_correction()
+        old.update(current=True,correction_pending=True)
+        returned=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(returned['source'],corrected['source'])
+        self.assertEqual(len(self.updates),2);self.assertEqual(len(self.writes),1)
+
+    def test_corrected_partial_still_requires_current_owner_trace(self):
+        route,old,corrected,channel,first=self.partial_worker_correction()
+        self.provider.conversation_input_trace=lambda root:{'id':root,'entry_binding':[1,2,3,4],'routes':[route]}
+        from dashboard.provider import ProviderUnavailable
+        with self.assertRaises(ProviderUnavailable):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(len(self.updates),1);self.assertEqual(len(self.writes),1)
+
+    def test_older_partial_uses_exact_canonical_lookup_before_current_correction(self):
+        route,old,corrected,channel,first=self.partial_worker_correction()
+        route['results']=[corrected];lookups=[]
+        self.provider.conversation_input_trace=lambda root:{'id':root,'result_pages':'v1',
+            'entry_binding':self.owner['entry_binding'],'routes':[route]}
+        def exact(root,source):
+            lookups.append(source)
+            return {'id':root,'result_pages':'v1','entry_binding':self.owner['entry_binding'],
+                    'routes':[{**route,'results':[old]}]}
+        self.provider.conversation_input_trace_result=exact
+        returned=return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(returned['source'],corrected['source']);self.assertEqual(lookups,[old['source']])
+        self.assertEqual(len(self.updates),2);self.assertEqual(len(self.writes),1)
+
+    def test_missing_or_unavailable_old_partial_is_not_supersession_proof(self):
+        route,old,corrected,channel,first=self.partial_worker_correction()
+        route['target_available']=False
+        with self.assertRaises(ValueError):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        route['target_available']=True;route['results']=[corrected]
+        with self.assertRaises(ValueError):
+            return_one_native_part(self.visits,self.ident,100,self.owner,self.delegation,self.provider,channel)
+        self.assertEqual(len(self.updates),1);self.assertEqual(len(self.writes),1)
+
     def test_unavailable_or_uncovered_worker_can_be_observed_later_without_new_work(self):
         route,result,channel=self.worker_result()
         self.provider.presentation_list=lambda *args:{'binding':self.owner['binding'],

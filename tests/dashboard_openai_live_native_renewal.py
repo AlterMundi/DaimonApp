@@ -10,7 +10,7 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from dashboard.openai_live_native_results import return_native_part
-from dashboard.openai_live_native_backend import return_next_native_part
+from dashboard.openai_live_native_backend import return_next_native_part,return_one_native_part
 from dashboard.openai_live_visits import LiveCreations
 from dashboard.provider import ProviderUnavailable
 import dashboard_openai_live_native_results as fixtures
@@ -155,6 +155,28 @@ class Renewal(unittest.TestCase):
         self.assertEqual(len(f.writes),1)
         self.replacement();self.assertEqual(self.emit()['state'],'already_forwarded')
         self.assertEqual(len(f.updates),1)
+
+    def test_replacement_and_fresh_reader_accept_correction_after_old_partial(self):
+        f=self.f;old='delivery:00000000-0000-4000-8000-000000000001'
+        new='delivery:00000000-0000-4000-8000-000000000003'
+        f.source=old;f.text='Previous long result. '*60;f.source_fields.update(kind='worker_result',current=True)
+        prior={'source':old,'revision':f.revision,'instruction_covered':True,'current':True,'correction_pending':False}
+        corrected={'source':new,'revision':'e'*64,'instruction_covered':True,'current':True,'correction_pending':False}
+        f.provider.conversation_input_trace=lambda root:{'id':root,'entry_binding':f.owner['entry_binding'],
+            'routes':[{'target_available':True,'results':[prior,corrected]}]}
+        f.provider.presentation_list=lambda *args:{'binding':f.owner['binding'],'items':[],
+            'cursor':{'native':77,'delivery':0},'more':False}
+        first=self.emit();self.ack();self.replacement()
+        f.visits=LiveCreations(f.root);self.replacement()
+        prior.update(current=False,revision='c'*64)
+        f.source=new;f.revision=corrected['revision'];f.text='The corrected result is Río Cobre.'
+        returned=return_one_native_part(f.visits,self.current,100,f.owner,f.delegation,
+            f.provider,f.channel,source_visit=self.origin)
+        self.assertEqual(returned['source'],new);self.assertIn(f.text,f.updates[-1]['content'])
+        self.assertEqual(len(f.updates),2);self.assertEqual(len(f.writes),1)
+        origin=f.visits.read(self.origin,100,f.owner)
+        kept=next(r for r in origin['native_result_updates'].values() if r['source']==old)
+        self.assertEqual(kept['state'],'context_injected');self.assertEqual(kept['next_offset'],first['next_offset'])
 
 
 if __name__=='__main__':unittest.main()
