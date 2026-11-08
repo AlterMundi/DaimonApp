@@ -123,6 +123,20 @@ class IntegratingLedger(unittest.TestCase):
         self.input_page['entry_binding'][0]=200
         with self.assertRaisesRegex(ValueError,'owner changed'):integrating_sources(self.p,self.frozen)
 
+    def test_same_general_entry_cannot_silently_become_another_native_thread(self):
+        selected=copy.deepcopy(self.frozen)
+        observer=Reader([{'data':[message('current','The same general conversation.')],'nextCursor':None}])
+        observer.close=lambda:None
+        def switched(_):
+            # A changed selected entry refuses rather than using the previous
+            # voice snapshot or admitting work into a replacement conversation.
+            return {**selected,'entry_binding':selected['entry_binding'][:3]+['other-native'],
+                'native_thread':'other-native'}
+        self.p.public_live_binding=switched
+        with patch('dashboard.provider.Native',return_value=observer),self.assertRaises(ProviderUnavailable):
+            self.p.public_live_integrator_context(selected)
+        self.assertEqual(observer.calls,[],'Refuse before reading any other native conversation')
+
     def test_source_timestamps_order_windows_instead_of_reader_or_page_order(self):
         self.output_page['items'][0]['observed_at']='2026-11-07T17:59:59Z'
         value=integrating_sources(self.p,self.frozen)

@@ -724,6 +724,19 @@ Source preparation is separate from receiving selection and real trial acceptanc
 
 ## Current integrating context at entry
 
+This prepared increment is evaluated against the later same-general-conversation
+direction. It does not establish another persona, native thread, login or history
+store. Voice/text windows belong to the existing authenticated native entry. The
+old PR737 review-delegation question was withdrawn after the revised direction;
+its historical pending label is not a current approval or delivery receipt.
+
+On8November the source was rebased onto798. The actual configured owner read
+12native messages and14canonical sources from the same selected general thread:
+14,516 embedded bytes within16KiB, no provider, native input or memory write.
+78startup/context/mounted API tests passed against that base. Source preparation
+and read-only authority evidence do not prove speech, receiving adoption or the
+complete shared-conversation experience.
+
 The prepared public-native entry now reads the current integrating thread with
 the existing owner-local read-only observer (`thread/items/list`) and the latest
 canonical integrating originals/results through their existing readers. This

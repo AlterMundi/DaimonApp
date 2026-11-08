@@ -15,7 +15,8 @@ from .codex_voice_history import history_lock
 
 
 def _current_context_message(context):
-    text=('Current native integrator conversation and integrating source windows read for this voice entry. '
+    text=('These are source windows of our same general conversation across text and voice, not another being or conversation. '
+        'Current native conversation and retained source windows read for this voice entry. '
         'Each window preserves its own source chronology and timestamps. '
         'Merge this with the earlier voice continuity by source chronology, not by input-message order. '
         'A freshly read native item may predate the last voice conversation: keep that voice context when it '
