@@ -278,6 +278,31 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await childStudio.getByLabel('Contá cómo querés que suene').fill('Alegre, con pausas suaves.');
   assert.equal(await childStudio.locator('.voice-studio-presets [aria-pressed="true"]').count(),0,'Custom delivery clears preset selection');
   assert.deepEqual(childErrors,[]);await child.close();
+  if(process.env.SCHOOL_SOURCE){
+   const requestId='00000000-0000-4000-8000-000000000001';
+   await page.goto(origin+'/?avatar_mission='+requestId);
+   const mission=page.frameLocator('iframe');await mission.locator('main:not([inert])').waitFor();
+   assert(await mission.locator('#use-avatar').isHidden(),'Mission never offers activation');
+   await mission.locator('#appearance summary').click();await mission.locator('#name').fill('Synthetic mission companion');await mission.locator('#name').dispatchEvent('change');await mission.locator('#close-appearance').click();
+   await mission.locator('#save').click();await mission.locator('#return-mission:enabled').waitFor();
+   const before=await page.evaluate(async()=>fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}}).then(r=>r.json()));
+   await mission.locator('#return-mission').click();
+   await page.locator('.avatar-workshop-dialog').waitFor({state:'hidden'});
+   const entry=await page.evaluate(async id=>fetch('/api/interaction/avatars/missions/'+id,{headers:{'X-Test-Actor':'100'}}).then(r=>r.json()),requestId);
+   const revision=entry.returned.saved_revision;
+   assert.equal(revision.id,before.editing,'Return pins the explicitly saved version');
+   const after=await page.evaluate(async()=>fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}}).then(r=>r.json()));
+   assert.equal(after.active,before.active,'Mission return never activates');
+   await page.reload();await mission.locator('main:not([inert])').waitFor();
+   assert(await mission.locator('#return-mission').isEnabled(),'Returned revision reopens after reload');
+   const compact=page.locator('#avatar-mission-preview canvas');
+   assert.equal(await compact.getAttribute('data-revision'),revision.id);
+   assert.equal(await compact.getAttribute('data-sha256'),revision.sha256);
+   assert(await compact.evaluate(c=>c.width>0&&c.height>0&&c.getContext('2d').getImageData(0,0,c.width,c.height).data.some(v=>v!==0)),'Exact returned revision renders in actual compact mission preview');
+   assert(await mission.locator('#portrait').evaluate(c=>c.width>0&&c.height>0),'Reopened revision renders in workshop');
+   await mission.locator('#cancel-workshop').click();
+   console.log('PASS composed school mission browser entry/save/return/reload, exact immutable revision, workshop and compact rendering without activation');
+  }
   console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; named voice save lost-ACK/use, actor isolation, direct Play/change/custom and expression text, exact cached playback, unknown generation no retry and narrow layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

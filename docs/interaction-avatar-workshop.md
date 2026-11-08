@@ -228,3 +228,43 @@ Accounts/files/audio are synthetic/temporary; no provider or real account write.
 This candidate has not been receiving-deployed or accepted on Ani's device.
 The Oca entry/return adapter still needs the owning school's actual source route;
 no school event, child contribution or completion is fabricated by this UI sync.
+
+### Candidate ASCII mission entry/return
+
+`dashboard/avatar_mission.py` and the existing workshop installer accept an
+optional trusted `mission_host` (`resolve`, `returned`, `retain_return`). The
+school implementation is Modo Creativo's `scripts/ascii_mission_host.py`.
+The receiving product must resolve the already authorized retained participant,
+space, companion and request from the authenticated actor; no browser field or
+school declaration supplies that authority. The default host is absent and
+mission calls refuse with503; ordinary wardrobe/voice behavior is unchanged.
+
+`?avatar_mission=REQUEST_UUID` on the existing Conversation waits for account
+binding and opens the same editor. The closed parent bridge loads only that
+request via GET `/api/interaction/avatars/missions/{request_id}` and returns a
+saved immutable revision using CSRF-protected POST with exactly `revision_id`.
+The existing Home/device interaction grant explicitly admits these two methods;
+monitor, unknown paths, foreign actors and extra fields remain refused.
+No iframe-origin, source-window, request-ID or credential-epoch check is relaxed.
+
+Mission mode keeps Save and return distinct, hides Use and refuses activation in
+the parent. The trusted host retains exact validator bytes and a revision/hash
+return; it checks selection again at commit and refuses substitution. On reload
+GET restores that same revision rather than the mutable editing pointer. The
+parent also renders an explicitly separate140px compact mission preview using
+that revision, checking its hash first, without changing the conversation avatar.
+Return/rendering never attest a child's contribution or complete the Oca.
+
+Review and recording use the school's existing ledger and real attributed
+observations, not a browser review checkbox. Its host retains a matching check
+receipt and resumes partial ledger recording with the same event IDs. A failed or
+unknown acknowledgement is recovered with GET of the same request/revision; it
+must not trigger another save or automatic replay.
+
+Qualification: select `SCHOOL_SOURCE=/path/to/modo-creativo` when running
+`tests/dashboard_avatar_workshop_browser.py`; select this App checkout with
+`DAIMONAPP_SOURCE` for the school's tests. Fixtures use synthetic actors and
+observations and temporary actual stores, with no provider calls or real learners.
+Production participant selection, Oca entry/return navigation, host injection,
+private report publication, deployment and human-device acceptance are separate
+receiving dependencies. This candidate creates none of those grants or identities.

@@ -11,12 +11,14 @@ window.AvatarWorkshopUI=(()=>{
   const resize=new ResizeObserver(()=>{try{paint?.(frame);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
   const credential=()=>JSON.stringify(headers());
+  const missionId=new URLSearchParams(window.location?.search||'').get('avatar_mission');
+  const missionPath=missionId&&uuid(missionId)?'interaction/avatars/missions/'+missionId:null;
   function appearance(){const style=getComputedStyle(document.body),value={};for(const role of ['background','surface','text','accent','body-font','heading-font','radius','gap']){const v=style.getPropertyValue('--dm-'+role).trim();if(v&&v.length<256&&!/url\(/i.test(v))value['--dm-'+role]=v;}return value;}
   window.addEventListener('home-style:resolved',()=>iframe?.contentWindow.postMessage({kind:'daimon.workshop.appearance',appearance:appearance()},location.origin));
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
   function stop(){clearTimeout(timer);timer=undefined;}
   function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%(paint.frames||12));run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},Math.max(80,Math.min(320,paint.frameMs||180)));}
-  function reset(){epoch++;studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
+  function reset(){epoch++;document.querySelector('#avatar-mission-preview')?.remove();studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
   async function prepared(record){
    const selected=epoch,key=credential(),renderer=await import(asset('renderer.mjs'));
    if(selected!==epoch||key!==credential())throw Error('Avatar account changed');
@@ -27,6 +29,19 @@ window.AvatarWorkshopUI=(()=>{
   function use(preview){
    if(preview.selected!==epoch||preview.key!==credential()){preview.candidate.remove();throw Error('Avatar account changed');}
    stop();resize.disconnect();canvas?.remove();canvas=preview.candidate;paint=preview.render;canvas.style.visibility='';portrait.hidden=true;document.querySelector('#avatar-workshop-pause')?.removeAttribute('hidden');frame=0;resize.observe(canvas);run();
+  }
+  async function missionPreview(saved){
+   const selected=epoch,key=credential(),record=await api('interaction/avatars/'+saved.id);
+   const model=await import(asset('experiments/school-avatar-quest/model.mjs'));
+   if(await model.digest(record.design)!==saved.sha256)throw Error('La vista de misión no coincide con la versión guardada.');
+   const renderer=await import(asset('renderer.mjs'));
+   if(selected!==epoch||key!==credential())throw Error('La cuenta cambió.');
+   document.querySelector('#avatar-mission-preview')?.remove();
+   const panel=document.createElement('section');panel.id='avatar-mission-preview';panel.setAttribute('aria-label','Vista del avatar de la misión');
+   const title=document.createElement('p');title.textContent='Vista de tu misión · '+record.name;
+   const c=document.createElement('canvas');c.style.width='140px';c.style.height='140px';c.setAttribute('role','img');c.setAttribute('aria-label',record.name);c.dataset.revision=saved.id;c.dataset.sha256=saved.sha256;
+   panel.append(title,c);button.after(panel);
+   try{renderer.prepare(c,record.design);}catch(error){panel.remove();throw error;}
   }
   async function refresh(){
    if(loaded||!actor)return;loaded=true;const selected=epoch,key=credential();
@@ -44,6 +59,7 @@ window.AvatarWorkshopUI=(()=>{
    if(!iframe||event.source!==iframe.contentWindow||event.origin!==location.origin)return;
    if(event.data?.kind==='daimon.workshop.ready'){editorReady=true;return;}
    if(event.data?.kind==='daimon.workshop.closed'){close();return;}
+   if(event.data?.kind==='daimon.workshop.mission-returned'&&missionPath&&event.data.request_id===missionId){message('Versión conservada para la misión. Podés volver a abrirla; la revisión sigue separada.');close();return;}
    const data=event.data;if(data?.kind!=='daimon.workshop.request'||!uuid(data.id))return;
    const target=iframe.contentWindow,selected=epoch,key=credential();
    const respond=value=>{if(selected===epoch&&target===iframe?.contentWindow&&key===credential()){
@@ -54,9 +70,15 @@ window.AvatarWorkshopUI=(()=>{
    try{
     if(JSON.stringify(data).length>1048576||!data.args||typeof data.args!=='object')throw Error('Diseño demasiado grande.');
     const a=data.args;let value;
-    if(data.action==='snapshot'&&Object.keys(a).length===0)value=await api('interaction/avatars');
+    if(data.action==='snapshot'&&Object.keys(a).length===0){
+     const mission=missionPath?await api(missionPath):null;
+     value=await api('interaction/avatars');
+     if(mission){if(mission.returned)await missionPreview(mission.returned.saved_revision);value={...value,editing:mission.returned?.saved_revision?.id||value.editing,mission};}
+    }
+    else if(data.action==='mission-return'&&missionPath&&Object.keys(a).join(',')==='id'&&uuid(a.id)){value=await api(missionPath,{revision_id:a.id});await missionPreview(value.saved_revision);}
     else if(data.action==='get'&&Object.keys(a).length===1&&uuid(a.id))value=await api('interaction/avatars/'+a.id);
     else if(['edit','activate'].includes(data.action)&&Object.keys(a).sort().join(',')==='generation,id'&&uuid(a.id)&&Number.isSafeInteger(a.generation)){
+     if(data.action==='activate'&&missionPath)throw Error('Volvé a la misión con la versión guardada; Usar es una elección separada.');
      if(data.action==='activate')preview=await prepared(await api('interaction/avatars/'+a.id));
      if(selected!==epoch||key!==credential())throw Error('La cuenta cambió.');
      value=await api('interaction/avatars',{action:data.action,...a});
@@ -71,8 +93,8 @@ window.AvatarWorkshopUI=(()=>{
   pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));pause.textContent=paused?'Animate avatar':'Pause avatar';run();});
   document.addEventListener('visibilitychange',run);motion.addEventListener('change',run);
   function openVoiceEntry(){
-   if(!actor||!voiceEntry||voiceEntryOpened||!window.VoiceStudioUI)return;
-   voiceEntryOpened=true;button.click();if(studio?.panel.hidden)voiceTab.click();
+   if(!actor||(!voiceEntry&&!missionPath)||voiceEntryOpened||(voiceEntry&&!window.VoiceStudioUI))return;
+   voiceEntryOpened=true;button.click();if(voiceEntry&&studio?.panel.hidden)voiceTab.click();
   }
   return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset};
  }

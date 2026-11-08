@@ -22,7 +22,8 @@ const supported=()=>!!design.imageArt||!design.image&&['surface/v1','surface/v2'
 function message(text){$('message').textContent=text;$('dialog-message').textContent=text;}
 function changed(note){edits.record(design,globalThis.event?.type==='input'?note:null);syncEdits();dirty=true;if(note&&!notes.includes(note))notes.push(note);renderArt();}
 function paint(canvas,art,d=design){paintAscii(canvas,art,d,frame);}
-function saveState(){$('use-avatar').disabled=!ready||dirty||!selectedId;const button=$('save');button.disabled=!ready||!dirty&&!!selectedId;button.textContent=!dirty&&selectedId?'Guardado':'Guardar personalización';$('save-state').textContent=dirty?'Cambios sin guardar':selectedId?'Guardado en tu cuenta':'Podés seguir probando';}
+const returnMission=document.createElement('button');returnMission.id='return-mission';returnMission.textContent='Volver a la misión';returnMission.hidden=true;$('use-avatar').after(returnMission);
+function saveState(){const mission=store.mission();returnMission.hidden=!mission;returnMission.disabled=!ready||dirty||!selectedId;$('use-avatar').hidden=!!mission;$('use-avatar').disabled=!ready||dirty||!selectedId;const button=$('save');button.disabled=!ready||!dirty&&!!selectedId;button.textContent=!dirty&&selectedId?'Guardado':'Guardar personalización';$('save-state').textContent=dirty?'Cambios sin guardar':selectedId?'Guardado en tu cuenta':'Podés seguir probando';}
 function syncPlayback(){for(const [id,text] of [['play',playing?'Pausar':motion.matches?'Ver una vez':'Animar'],['scene-play',scenePlaying?'Pausar escena':sceneFrame===31?'Volver a verla':'Ver la escena']]){if(id==='play'){const state=playing?'pause':'play';if($(id).dataset.iconState!==state){$(id).innerHTML=playing?pauseIcon:playIcon;$(id).dataset.iconState=state;}}else $(id).textContent=text;$(id).setAttribute('aria-label',text);$(id).title=text;$(id).setAttribute('aria-pressed',String(id==='play'?playing:scenePlaying));}$('play').disabled=!!design.image&&!design.imageArt;}
 // Preview framing is ephemeral; account designs and active rendering stay unchanged.
 function expressionFrame(g,at=0){return drawFrame({...design,previewFocus:'face',gestures:[g],activeGestureId:g.id},at,true,true);}
@@ -102,3 +103,5 @@ $('cancel-workshop').onclick=()=>{if(!dirty||confirm('¿Volver y descartar los c
 window.addEventListener('message',e=>{if(e.source===parent&&e.origin===location.origin&&e.data?.kind==='daimon.workshop.close'){if(!dirty||confirm('¿Volver y descartar los cambios sin guardar?')){dirty=false;store.close();}}});
 
 parent.postMessage({kind:'daimon.workshop.ready'},location.origin);
+
+returnMission.onclick=async()=>{if(dirty||!selectedId)return;returnMission.disabled=true;try{const result=await store.returnMission(selectedId);message('Versión conservada para tu misión. La revisión y tu aporte se registran por separado.');parent.postMessage({kind:'daimon.workshop.mission-returned',request_id:result.request_id,revision_id:result.saved_revision.id},location.origin);}catch(e){message(e.message||'Consultá la misma misión para recuperar el resultado sin repetir el guardado.');}finally{saveState();}};

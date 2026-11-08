@@ -5,6 +5,9 @@ One temporary state root/server/browser,120s cap, no provider/model/device calls
 Set PLAYWRIGHT_MODULE and CHROMIUM_EXECUTABLE to the existing browser tools.
 """
 import asyncio
+import copy
+import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -29,7 +32,23 @@ def qualify():
             if actor not in ('100','200'):raise HTTPException(401,'Synthetic test actor required')
             return {'human':int(actor),'scope':'interaction_only','csrf':'test-action'}
         sock=socket.socket();sock.bind(('127.0.0.1',0));origin='http://127.0.0.1:'+str(sock.getsockname()[1])
-        install(app,{'state_dir':root,'voice_studio':{'voices':['cedar','marin']},'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin])
+        mission_host=None
+        if os.environ.get('SCHOOL_SOURCE'):
+            school=Path(os.environ['SCHOOL_SOURCE']).resolve()
+            sys.path.insert(0,str(school/'scripts'))
+            from ascii_mission_host import AsciiMissionHost
+            from learning_engine import Ledger
+            ledger=Ledger(Path(root)/'school')
+            fixture=json.loads((school/'docs/examples/ascii-mission3.synthetic.json').read_text())
+            context=fixture['request']
+            ledger.put_profile({'id':context['learner_id'],'name':'Synthetic browser participant',
+                'synthetic':True,'participation_authorized':True,'guardian_reference':'fixture:adult'})
+            def resolve(actor,request_id):
+                if actor!=100 or request_id!=context['request_id']:raise KeyError('No selected mission')
+                return copy.deepcopy(context)
+            mission_host=AsciiMissionHost(ledger,resolve)
+            ledger.close()
+        install(app,{'state_dir':root,'voice_studio':{'voices':['cedar','marin']},'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin],mission_host=mission_host)
         @app.get('/assets/{name}')
         def asset(name:str):
             if name not in ('avatar-workshop.js','voice-studio.js','style.css'):raise HTTPException(404)
