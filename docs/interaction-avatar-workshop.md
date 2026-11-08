@@ -195,3 +195,36 @@ example normalization remains byte-identical to the pre-extension result.
 After the first v2 save, keep this compatible validator/renderer in any web
 rollback; an older reader rejects the saved raster model. A software update
 alone must not create a v2 production revision or change the active avatar.
+
+## Enchanted Archive UI —8November2026 candidate
+
+Ani selected the Enchanted Archive art direction and requested integrating it in
+DaimonApp. The source UI is ASCII-Interfaces6a88f51; `archive_ui` in PROVENANCE.json
+retains exact original/receiving hashes separately from the existing model pin.
+The current App770 raster-model runtime/validator, storage bridge and explicit
+Save/Use semantics remain. There is no account/data migration or provider change.
+
+The editor now has a centered avatar.exe title, Pixelify Sans/Nunito fonts,
+squared raised controls, original letter import illustration, coherent SVG play/
+pause/undo/redo controls, and native retro-styled range inputs. All appearance
+captions sit above their controls with proximity grouping. Expression gallery
+previews use an ephemeral face-framing hint, including Sleep; full acting remains
+unchanged. Fonts and full OFL/MIT notices are vendored; the public asset allowlist
+adds only the two selected font paths. No arbitrary binary suffix is admitted.
+
+Header navigation is part of the initial inert boundary too, preserving account
+bootstrap fencing. The existing parent bridge still owns credentials, grants,
+CSRF and generation checks. Home surface/text/accent roles remain active; colored
+paper mixes with the receiving surface so dark homes retain readable contrast.
+Save and Use remain separate controls, with Back in the header. The current
+three-built-ins-per-page inventory is retained, including all six available bases.
+
+Validation:23 actual-Node/storage/API/voice-account tests, plus the existing real
+Chromium editor/renderer/mounted-API journey. The browser now checks actual local
+font load, selected envelope, appearance grouping/no-scroll, and continues to
+exercise account save/use/reload, isolation, failure preservation, custom/raster
+imports, export roundtrip, reduced motion, narrow layouts and existing voice UI.
+Accounts/files/audio are synthetic/temporary; no provider or real account write.
+This candidate has not been receiving-deployed or accepted on Ani's device.
+The Oca entry/return adapter still needs the owning school's actual source route;
+no school event, child contribution or completion is fabricated by this UI sync.
