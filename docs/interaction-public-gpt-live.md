@@ -722,6 +722,68 @@ Source preparation is separate from receiving selection and real trial acceptanc
 
 # Native results across fresh voice connections
 
+## Current integrating context at entry
+
+This prepared increment is evaluated against the later same-general-conversation
+direction. It does not establish another persona, native thread, login or history
+store. Voice/text windows belong to the existing authenticated native entry. The
+old PR737 review-delegation question was withdrawn after the revised direction;
+its historical pending label is not a current approval or delivery receipt.
+
+On8November the source was rebased onto798. The actual configured owner read
+12native messages and14canonical sources from the same selected general thread:
+14,516 embedded bytes within16KiB, no provider, native input or memory write.
+78startup/context/mounted API tests passed against that base. Source preparation
+and read-only authority evidence do not prove speech, receiving adoption or the
+complete shared-conversation experience.
+
+The prepared public-native entry now reads the current integrating thread with
+the existing owner-local read-only observer (`thread/items/list`) and the latest
+canonical integrating originals/results through their existing readers. This
+second window matters: a visible correction or worker return may not yet have
+been incorporated into the native thread. The previous voice producer is still
+settled through its existing semantic continuation, with its original opening
+time and relative transcript timing; it is no longer the sole startup source.
+
+The voice policy reconciles timestamps and original capture order across the
+windows, including the inverse case where voice is newer than native text.
+Read/append order does not make an old statement current. Native harness roles
+retain their attribution; original voice language remains machine interpretation.
+Private analysis and tool outputs are excluded. Current progress remains progress,
+not a completed goal or a new action. Unknown order and earlier-history coverage
+stay explicit; missing facts go to the same native integrator and memory tools.
+
+The observer reads at most four16-item pages and retains at most16 complete
+conversational items. The integrating window uses one bounded input/result page,
+at most16 selected sources, and exact canonical text cursors. A bounded window
+stops scheduling reads after12seconds; one already-issued read keeps its existing
+transport deadline and the mounting owner's late-I/O exclusion until it ends.
+A bounded window
+omits only complete older sources with an explicit earlier-history marker; an
+oversized latest source refuses for semantic preparation rather than clipping its
+text. The combined reserve is at most16KiB inside the unchanged complete32KiB
+public session specification. Charge context as JSON text embedded in the final
+JSON request, including both escaping layers; quotes/backslashes cannot use a
+raw-byte estimate. Measure the actual developer-message envelope and policy
+before allocating that reserve. Whole older sources can be omitted; the latest
+source still refuses if it cannot fit. The boundary fixture fills the complete
+32KiB specification without clipping or another context read. Existing
+native24KiB resume and64k/48k/600s limits
+are unchanged. No history store, provider call, new human original, work replay,
+memory write, daemon start, native login change or context injection is needed
+to read this startup data. Only the short-lived existing observer proxy closes.
+
+Source qualification covers current corrections and progress after voice, whole
+source bounds/cursors, changed-owner refusal and prior-voice seed preservation.
+The actual receiving owner read both current native history and newer canonical
+integrating updates without opening voice or making a paid/model request. A
+three-visit mounted fixture retains the actual wrapper/source/projection path;
+its Core observer and speech are synthetic. This is prepared source, not receiving
+selection or semantic/physical acceptance. Actual useful speech, inverse chronology,
+repeated replacements and the full original roadmap remain open.
+
+## Historical result transport
+
 The native client-delegation mode now has a source-prepared return path for work
 that outlives a voice connection. This is not provider stored-session forking or
 proof of semantic/physical continuity. The existing persistent native thread owns

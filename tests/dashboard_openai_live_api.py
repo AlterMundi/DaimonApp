@@ -42,6 +42,9 @@ class Owner:
         self.journal=context_fixtures.Journal()
         self.media_retention=None;self.binding='a'*64;self.held=False
     def conversation_live_context(self,body):return self.journal.conversation_live_context(body)
+    def public_live_integrator_context(self,frozen,max_bytes):
+        return {'kind':'current_integrator_conversation','thread':frozen['native_thread'],
+            'messages':[],'earlier_history_available':False}
     def presentation(self,command):return {'binding':self.binding}
     def presentation_list(self,*args):return {'binding':self.binding,'items':[]}
     def authorized(self,human):return human==100
@@ -516,7 +519,7 @@ class Mounted(unittest.TestCase):
                         'kind':'worker_result','current':True,'correction_pending':False,'native_binding_current':True}
                     with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as second:
                         continued=self.start(second)
-                        seed=continued.spec['input'][-1]
+                        seed=continued.spec['input'][-2]
                         self.assertEqual(seed['role'],'developer')
                         self.assertIn('Friday, not Thursday',seed['content'][0]['text'])
                         self.assertEqual(second.receive_json()['event']['type'],'session.commentary.appended')

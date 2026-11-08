@@ -24,6 +24,10 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
     owner=fixtures.Context.owner
 
     def prepare(self):
+        self.provider.public_live_integrator_context=lambda frozen,budget: {
+            'kind':'current_integrator_conversation','thread':frozen['native_thread'],
+            'messages':[{'role':'user','text':'Latest integrator correction: Saturday.'}],
+            'earlier_history_available':True}
         self.frozen={'binding':self.binding,'native_thread':'native',
             'entry_binding':[100,{'chat_id':100,'thread_id':1},1,'native']}
         self.visits=LiveCreations(Path(self.tmp.name)/'visits')
@@ -151,7 +155,8 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         seeded=await context.prepare(original)
         self.assertEqual(seeded['audio'],original['audio']);self.assertEqual(seeded['instructions'],original['instructions'])
         self.assertNotIn('input',original)
-        self.assertIn('Actually Friday',seeded['input'][-1]['content'][0]['text'])
+        self.assertIn('Actually Friday',seeded['input'][-2]['content'][0]['text'])
+        self.assertIn('Latest integrator correction: Saturday.',seeded['input'][-1]['content'][0]['text'])
         self.assertEqual(seeded['input'][-1]['role'],'developer')
         self.assertEqual(self.visits.read(current,100,self.frozen)['state'],'prepared')
         self.assertNotIn('call',self.visits.read(current,100,self.frozen))
@@ -169,6 +174,26 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record['phase'],'closing');self.assertFalse(self.provider.producers[self.dialogue]['closed'])
         await context.close(settled=True)
         self.assertTrue(self.provider.producers[self.dialogue]['closed'])
+
+    async def test_current_context_reserve_measures_complete_provider_message(self):
+        from dashboard.integrator_startup import _size
+        self.prepare();budgets=[]
+        def current(frozen,budget):
+            budgets.append(budget)
+            value={'text':'x'*(budget-_size({'text':''}))}
+            self.assertEqual(_size(value),budget)
+            return value
+        self.provider.public_live_integrator_context=current
+        context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,
+            self.dialogue,self.frozen,self.owner)
+        spec={'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'},
+            'input':[{'type':'message','role':'developer',
+                'content':[{'type':'input_text','text':'Prior retained context. '+'x'*20000}]}]}
+        prepared=await context.prepare(spec)
+        self.assertEqual(len(json.dumps(prepared,ensure_ascii=False).encode()),32768)
+        self.assertEqual(len(budgets),1,'No repeated context read to repair the budget')
+        self.assertEqual(prepared['input'][0],spec['input'][0])
+        await context.close()
 
 
     async def active_context(self):
