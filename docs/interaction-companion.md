@@ -188,6 +188,12 @@ rewriting a journal. Existing bot configurations preserve
 their previous binding bytes and defaults. Telegram menu CLI operations refuse
 web-only configuration before reading a receiver token or issuing network I/O.
 
+Explicitly disabled Telegram is part of the receiving authority fingerprint.
+Enabling or otherwise changing that setting after startup invalidates existing
+web/device access until the operator requalifies the receiver; a cached startup
+identity cannot keep the web-only scope alive. Legacy enabled/default receiver
+fingerprints retain their existing bytes.
+
 For the four children's receiving route, Clúster owns signed native admission,
 actual per-child human grants and registered HTTPS Home entry. App owns this
 configuration contract, the existing avatar/Voice workshops and provider routes.

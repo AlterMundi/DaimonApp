@@ -33,8 +33,12 @@ def receiving_authority(receiver):
         'session_control': receiver.get('session_control'),
         'interaction': receiver.get('interaction'),
         'voice': receiver.get('voice'),
-        'telegram': {key: telegram.get(key) for key in
-                     ('api_base', 'bot_token', 'bot_token_file')},
+        # Disabled transport is part of a web-only receiver's authority. Keep
+        # legacy enabled/omitted bindings byte-identical while fencing any
+        # post-start change away from explicitly disabled Telegram.
+        'telegram': {**{key: telegram.get(key) for key in
+                       ('api_base', 'bot_token', 'bot_token_file')},
+                     **({'enabled': False} if telegram.get('enabled') is False else {})},
         'native_binary': receiver.get('codex', {}).get('binary', 'codex'),
     }, sort_keys=True, separators=(',', ':')).encode()
 
