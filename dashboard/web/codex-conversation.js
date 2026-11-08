@@ -9,9 +9,11 @@ window.CodexConversation=(()=>{
     let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),durable=Promise.resolve(),timer,fragmentParts=[],fragmentBytes=0,segment,persistingFragments=0;
     let audible=true,paused=false,connected=false,restored,restoring,historyBefore,historyGeneration=0,openingCount=0,unlockCapture;
     let admission,admissionDeadline,mediaVisit,captureEpoch=0,renewing=false,failureTimer,rejectOpening,replacementRequested=false,terminalClose=false;
+    let activityAbort,activityObserver,outputLevel=0;
     const originals=new Map();
     const state=(message,preserveMessage=false)=>onState({active,starting:starting||renewing,reconnecting:renewing||replacementRequested||failureTimer!==undefined,floor:false,pending:originals.size>0,working:closing,
-      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(preserveMessage?{}:{message})});
+      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,...(preserveMessage?{}:{message})});
+    function stopActivity(){activityAbort?.abort();activityAbort=undefined;activityObserver?.close();activityObserver=undefined;const previous=outputLevel;outputLevel=0;if(previous)state(undefined,true);}
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     async function request(path,options={}){
       const response=await fetch(new URL('api/interaction/voice/codex/'+path,window.location.href),{
@@ -93,7 +95,7 @@ window.CodexConversation=(()=>{
       chain=chain.then(async()=>{const value=await sealed;try{await upload(value);}catch{state('Original recording kept for recovery.');}}).catch(()=>{void hold('Local recording storage needs review. Save the retained original.');});
     }
     async function hold(message='Voice paused. Accepted work continues.'){
-      if(closing)return;closing=true;active=starting=connected=false;clearTimeout(timer);clearTimeout(failureTimer);failureTimer=undefined;state(message);
+      if(closing)return;closing=true;active=starting=connected=false;stopActivity();clearTimeout(timer);clearTimeout(failureTimer);failureTimer=undefined;state(message);
       const reject=rejectOpening;rejectOpening=undefined;reject?.(Error('Voice activation ended'));
       replacementRequested=false;
       const endedAdmission=admission?mediaVisit:undefined;admission=undefined;
@@ -126,7 +128,7 @@ window.CodexConversation=(()=>{
       if(renewing||closing||!active||starting||openingCount||!admission||admission.generation>=7||Date.now()>=admissionDeadline-2000){
         if(!closing)void hold('Voice paused. Your originals and accepted work are kept.');return;
       }
-      renewing=true;const predecessor=visit;++epoch;active=starting=connected=false;clearTimeout(failureTimer);failureTimer=undefined;
+      renewing=true;const predecessor=visit;++epoch;active=starting=connected=false;stopActivity();clearTimeout(failureTimer);failureTimer=undefined;
       channel?.close();channel=undefined;peer?.close();peer=undefined;
       if(audio){audio.pause();audio.srcObject=null;audio=undefined;}socket?.close();socket=undefined;
       // Capture, its Web Lock, ordinals, PCM allowance and original deadline
@@ -151,10 +153,11 @@ window.CodexConversation=(()=>{
       const owned=++epoch,logicalCapture=captureEpoch;visit=continuing?crypto.randomUUID():mediaVisit;
       replacementRequested=false;terminalClose=false;
       let startupStage='preparing';
-      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio,ownedUnlock,ownedReject;
+      const selectedBinding=binding;let ownedMedia,ownedCapture,ownedPeer,ownedChannel,ownedAudio,ownedUnlock,ownedReject,ownedActivityAbort,ownedActivityObserver;
       const current=()=>owned===epoch&&(active||starting)&&!closing&&selectedBinding===getBinding();
       function closeRetired(){
         if(ownedCapture!==capture)ownedCapture?.close();ownedChannel?.close();ownedPeer?.close();ownedAudio?.pause();
+        ownedActivityAbort?.abort();ownedActivityObserver?.close();
         if(ownedUnlock!==unlockCapture)ownedUnlock?.();
         if(!continuing&&(!closing||logicalCapture!==captureEpoch))for(const track of ownedMedia?.getTracks()||[])track.stop();
       }
@@ -225,7 +228,22 @@ window.CodexConversation=(()=>{
         // owns its handoffs; this client sends no response/turn control on it.
         channel=ownedChannel=ownedPeer.createDataChannel('oai-events');ownedChannel.onmessage=()=>{};
         audio=ownedAudio=new Audio();audio.autoplay=!paused;audio.muted=!audible;
-        ownedPeer.ontrack=event=>{if(!current()||audio!==ownedAudio)return;ownedAudio.srcObject=event.streams[0]||new MediaStream([event.track]);if(!paused)ownedAudio.play().catch(()=>{if(current()){paused=true;state('Tap Resume audio to listen.');}});};
+        ownedPeer.ontrack=event=>{
+          if(!current()||audio!==ownedAudio)return;
+          stopActivity();const stream=event.streams[0]||new MediaStream([event.track]);ownedAudio.srcObject=stream;
+          if(!paused)ownedAudio.play().catch(()=>{if(current()){paused=true;outputLevel=0;state('Tap Resume audio to listen.');}});
+          activityAbort=ownedActivityAbort=new AbortController();const signal=ownedActivityAbort.signal;
+          const playing=()=>current()&&!signal.aborted&&audio===ownedAudio&&ownedAudio.srcObject===stream&&!paused&&audible&&!ownedAudio.paused&&!ownedAudio.muted;
+          const activity=rms=>{
+            if(!current()||signal.aborted||audio!==ownedAudio||ownedAudio.srcObject!==stream)return;
+            const level=playing()?Math.round(Math.min(1,Math.max(0,Number.isFinite(rms)?rms:0)*6)*4)/4:0;
+            if(level!==outputLevel){outputLevel=level;state();}
+          };
+          // Cosmetic output observation reuses the existing bounded, outputless
+          // worklet. HTML audio remains the only player; no new voice session.
+          if(window.WebRtcNativeAudio?.observe)void window.WebRtcNativeAudio.observe(stream,{sessionSeconds:seconds,signal,isPlaying:playing,onActivity:activity})
+            .then(value=>{if(!current()||signal.aborted)value.close();else activityObserver=ownedActivityObserver=value;}).catch(()=>{if(current()&&!signal.aborted)activity(0);});
+        };
         ownedPeer.onconnectionstatechange=()=>{
           if(!current()||peer!==ownedPeer)return;
           if(ownedPeer.connectionState==='connected'){
@@ -343,8 +361,8 @@ window.CodexConversation=(()=>{
           await recovery.remove(current);
         }else await recovery.discardNative(original.native_fragments);
       });else await recovery.remove(original);originals.delete(original.id);onRecovery([...originals.values()]);state();},
-      setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;state();},
-      pause:()=>{paused=true;audio?.pause();state();},resume:()=>{paused=false;audio?.play().catch(()=>{paused=true;state('Tap Resume audio to listen.');});state();},
+      setEnabled:value=>{audible=value===true;if(!audible)outputLevel=0;if(audio)audio.muted=!audible;state();},
+      pause:()=>{paused=true;outputLevel=0;audio?.pause();state();},resume:()=>{paused=false;audio?.play().catch(()=>{paused=true;outputLevel=0;state('Tap Resume audio to listen.');});state();},
       release:()=>false,get originals(){return [];}, // Never feed native originals to ordinary Send recovery.
       get active(){return active||starting||closing||renewing;},get hasAudio(){return connected;},get paused(){return paused;},get floor(){return false;}};
   }
