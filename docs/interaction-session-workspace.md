@@ -151,9 +151,13 @@ selection, rollback and remaining acceptance live in the Shared Resources
 Interaction receiving guide and the receiving owner's local operations record.
 
 The compact session toolbar sits below the reading area, immediately above the
-input dock. Its menu opens upward within that area on desktop and mobile, without
-shifting the conversation or input. The destination remains beside the menu
-control. Compact-header mode also hides the pending/status lane; reverse scrolling
+writing field. The menu, destination and minimal notice indicator share one
+compact row across the dock, including above the left audio controls. Its menu
+opens upward within the reading area on desktop and mobile. Long destination
+labels stay on one line with their full text available to assistive technology
+and through the tooltip. The writing line spans the full composer width above
+attachment, microphone and Send controls; notices remain in the upward popover
+without expanding the input or changing its draft. Compact-header mode also hides the pending/status lane; reverse scrolling
 restores it without changing its content or pending tasks.
 
 Routing maps and saved-input routing-path disclosures remain in Under the hood,
@@ -161,7 +165,8 @@ without per-message map shortcuts or routing details in the conversation.
 
 Session rows use one compact line for the title and four borderless reply, pin,
 mute and solo controls, followed by the readable status. Each control has a
-28px target and an 18px icon, matching the small audio-control vocabulary. Long
+44px touch target in the authored HUD (28px in the inherited compact style)
+and an 18px icon. Long
 titles truncate visually while retaining their full accessible name and tooltip.
 Pressed controls and keyboard focus remain visible; the menu stays anchored
 above the composer without changing its draft or selected input target.
@@ -171,7 +176,7 @@ returns keyboard focus to the menu toggle; reply uses the existing composer
 focus without changing the frozen message reference. Mute and Solo keep the
 menu open. When any audio filter is active, Reset appears in the menu header
 aligned above the controls; clearing filters hides it again. The collapsed
-destination toolbar contains only navigation and the current input destination.
+destination toolbar shares its row with the existing notice indicator.
 
 Selected-history failures retain an explicit Retry reading action. A changed
 file gets one fresh read immediately; persistent conflicts cannot loop. Existing

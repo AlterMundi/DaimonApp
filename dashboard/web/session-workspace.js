@@ -9,7 +9,7 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,daimonName='Daimon',onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,toolbarHost,daimonName='Daimon',onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
@@ -53,6 +53,7 @@
     const scopeToggle=button('Show all sessions','Show all sessions',()=>{showAll=!showAll;syncScope();remember();render();});scopeToggle.className='session-scope-toggle';
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(railHeading,reset);
     rail.append(railHeader,scopeToggle,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
+    if(toolbarHost)toolbarHost.insertBefore(toolbar,toolbarHost.firstChild);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
     const followKey='interaction.followed-session.v1';
@@ -68,7 +69,7 @@
     function capture(){const value=selected();if(value&&!value.is_entry&&!value.destination)throw Error('Your saved session is unavailable. Select a destination before sending.');return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){remember();renderSelection();onTarget();}
     function renderSelection(){
-      const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';
+      const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';target.title=target.textContent;
       back.hidden=!expanded;
       unpin.hidden=!current;unpin.setAttribute('aria-pressed',String(!!pin&&pin.id===current?.id));
       unpin.title=pin?`Unpin ${pin.title}: send to the conversation`:'Send to the conversation';

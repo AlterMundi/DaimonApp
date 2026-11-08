@@ -1418,3 +1418,22 @@ html[data-style-policy="authored"] #conversation-compose-notices .composer-notic
 html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail) {
  background:linear-gradient(135deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) left top/24px 24px no-repeat,linear-gradient(225deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) right top/24px 24px no-repeat,linear-gradient(45deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) left bottom/24px 24px no-repeat,linear-gradient(315deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) right bottom/24px 24px no-repeat,linear-gradient(145deg,#1c2b38,#0b151f 70%);
 }
+
+/* One destination/notice row above a full-width writing line. */
+.standalone-conversation #conversation-compose-bar {grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:4px;min-width:0;position:relative;z-index:12;}
+.standalone-conversation #conversation-compose-bar .session-workspace-toolbar {flex:1;min-width:0;padding:0;border:0;}
+.standalone-conversation #conversation-compose-bar .session-input-target {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.standalone-conversation #conversation-compose-bar .session-workspace-toolbar button {min-width:44px;min-height:44px;padding:6px 10px;font-size:16px;}
+.standalone-conversation #conversation-compose-bar #conversation-compose-notices {position:relative;right:auto;bottom:auto;flex:none;margin-left:auto;}
+.standalone-conversation #conversation-dock #conversation-compose,
+.standalone-conversation #conversation-dock #conversation-audio-tools {grid-row:2;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-message,
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(#conversation-voice-discard:not([hidden])) #conversation-message {grid-column:1/-1;grid-row:2;padding:6px 8px;border-left:0;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-visual,
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-voice,
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-send,
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(#conversation-voice-discard:not([hidden])) #conversation-voice,
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(#conversation-voice-discard:not([hidden])) #conversation-send {grid-row:3;}
+html[data-style-policy="authored"] .session-rail {--session-actions-width:182px;}
+html[data-style-policy="authored"] .session-rail-header {grid-template-columns:minmax(0,1fr) var(--session-actions-width);}
+@media(max-width:600px) {html[data-style-policy="authored"] .session-rail {--session-actions-width:194px;}}
