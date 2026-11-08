@@ -79,7 +79,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   for(const size of [{width:375,height:812},{width:320,height:740}]){
    await page.setViewportSize(size);
    assert(await editor.locator('#portrait').evaluate(c=>c.width>0&&c.height>0));
-   assert(await editor.locator('#compact').evaluate(c=>c.width>0&&c.height>0));
+   assert(await editor.locator('#companion-name').isVisible());
    await editor.locator('#tab-accessories').click();await editor.locator('#tab-details').click();
    assert(await editor.locator('body').evaluate(b=>b.scrollWidth<=innerWidth+1),'Narrow workshop overflow');
   }
@@ -195,6 +195,20 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await studio.getByText('A · cedar · Current delivery',{exact:true}).waitFor();
   assert.equal(await studio.getByLabel('Saved voice revisions').locator('option').count(),1,'Voice library is actor isolated');
   assert.deepEqual(errors,[]);
+  // New source semantics survive the real account bridge and finite renderer.
+  await page.reload();await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();
+  await editor.locator('#tab-avatar').click();await editor.locator('[data-body="modular-bot"]').click();await editor.locator('#companion-name').click();
+  await editor.locator('#cap-color').evaluate(e=>{e.value='#2266ee';e.dispatchEvent(new Event('input'));});await editor.locator('#close-appearance').click();
+  await editor.locator('#tab-expression').click();while(!await editor.locator('[data-gallery="sleep"]').count())await editor.locator('#page-prev').click();
+  await editor.locator('[data-gallery="sleep"]').click();await editor.locator('#tab-accessories').click();await editor.locator('#page-next').click();await editor.locator('[data-prop="pillow"]').click();
+  await editor.locator('[data-prop-color="pillow"]').evaluate(e=>{e.value='#b185dc';e.dispatchEvent(new Event('input'));e.dispatchEvent(new Event('change'));});
+  await editor.locator('#save').click();await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);
+  const current=await page.evaluate(async()=>{const h={'X-Test-Actor':'100'},state=await(await fetch('/api/interaction/avatars',{headers:h})).json();return(await fetch('/api/interaction/avatars/'+state.editing,{headers:h})).json();});
+  assert.equal(current.design.bodyColors['modular-bot'],'#2266ee');const sleeping=current.design.gestures.find(g=>g.id===current.design.activeGestureId);assert.equal(sleeping.cue,'sleep');assert.equal(sleeping.performance,'accessory/v1');assert.equal(sleeping.props[0].color,'#b185dc');
+  const renderCheck=await page.evaluate(async d=>{const renderer=await import('/assets/avatar-workshop/renderer.mjs'),c=document.createElement('canvas');c.style='width:300px;height:300px';document.body.append(c);const paint=renderer.prepare(c,d);paint(24);const peak=c.toDataURL();paint(0);const start=c.toDataURL();paint(48);const end=c.toDataURL();c.remove();return {frames:paint.frames,ms:paint.frameMs,loop:start===end,changed:peak!==start};},current.design);
+  assert.equal(renderCheck.frames,48);assert(renderCheck.loop&&renderCheck.changed);assert(renderCheck.ms>=80&&renderCheck.ms<=320);
+  await editor.locator('#use-avatar').click();await editor.locator('#cancel-workshop').click();await page.reload();await page.locator('.workshop-portrait').waitFor();
+  assert.equal(await page.locator('.workshop-portrait').count(),1,'New saved acting avatar reloads through existing account activation');
   console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; voice revisions/current A/save lost-ACK/use, actor isolation, explicit A/B generation/playback, lost generation status-only recovery and narrow layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
