@@ -240,9 +240,11 @@ unresolved native execution, changed generation or replacement rate. Exact repea
 retain the selected hourly window and every reservation. No far-future timestamp,
 new contract UUID, daily counter reset or automatic renewal job is involved.
 
-The original pilot contract and reserved attempts remain immutable historical
-accounting. A separate recurring ledger reserves each complete execution from its
-hourly allowance before provider I/O, retaining its cumulative reservations across
+The original pilot contract and historical reservations are preserved. Remaining
+pilot capacity is consumed first and never refilled; finite review purposes can
+still constrain their admission to that remaining original balance. A recurring
+ledger separately counts every new complete execution against its
+hourly allowance before provider I/O, retaining cumulative reservations across
 hour boundaries and restarts. Clock rollback cannot reset the current hour. Each
 execution keeps its existing attempt, complete-request byte and time limits. An
 exhausted hour reports `rate_limited`; bounded model-free checks continue, originals

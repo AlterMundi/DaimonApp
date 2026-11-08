@@ -25,6 +25,7 @@ struct Account {
 #[serde(deny_unknown_fields)]
 struct Continuous {
     max_provider_attempts_per_hour: u32,
+    pilot_reserved_at_adoption: u32,
     window_started_at_unix_ms: i64,
     reserved_in_window: u32,
     reserved_provider_attempts: u64,
@@ -39,7 +40,13 @@ impl Continuous {
     }
 }
 pub(super) fn continuous_on(conn: &Connection, session: i64, human: i64) -> Result<bool> {
-    Ok(load(conn, session, human)?.is_some_and(|a| a.continuous.is_some()))
+    // An unreadable execution ledger grants no continuous lifetime. Keep the
+    // independent finite observation policy usable; resource status/reservation
+    // still reports/refuses the actual ledger failure before any inference.
+    Ok(load(conn, session, human)
+        .ok()
+        .flatten()
+        .is_some_and(|a| a.continuous.is_some()))
 }
 pub(super) fn enable_continuous_on(
     conn: &Connection,
@@ -62,6 +69,7 @@ pub(super) fn enable_continuous_on(
     }
     a.continuous = Some(Continuous {
         max_provider_attempts_per_hour,
+        pilot_reserved_at_adoption: a.reserved_provider_attempts,
         window_started_at_unix_ms: chrono::Utc::now().timestamp_millis(),
         reserved_in_window: 0,
         reserved_provider_attempts: 0,
@@ -178,7 +186,8 @@ pub(super) fn status_on(conn: &Connection, session: i64, human: i64) -> Result<V
             "state":if remaining >= account.contract.provider_attempts_per_execution {"available"} else {"rate_limited"},
             "contract":account.contract,"reserved_provider_attempts":account.reserved_provider_attempts,
             "remaining_provider_attempts":remaining,"continuous":c,
-            "lifetime_reserved_provider_attempts":u64::from(account.reserved_provider_attempts)+c.reserved_provider_attempts,
+            "pilot_remaining_provider_attempts":account.contract.max_provider_attempts-account.reserved_provider_attempts,
+            "lifetime_reserved_provider_attempts":u64::from(c.pilot_reserved_at_adoption)+c.reserved_provider_attempts,
             "measurement":"reserved_request_attempts_not_tokens_or_money"}));
     }
     let state = if account.contract.expires_at_unix_ms <= chrono::Utc::now().timestamp_millis() {
@@ -221,6 +230,14 @@ pub(super) fn reserve_on(
             .reserved_provider_attempts
             .checked_add(u64::from(account.contract.provider_attempts_per_execution))
             .context("Heartbeat lifetime allocation overflow")?;
+        // Consume the existing finite allocation first. Its remaining capacity
+        // can still constrain a separately authorized finite review purpose;
+        // continuous messaging never makes that pilot balance reappear.
+        account.reserved_provider_attempts += account
+            .contract
+            .max_provider_attempts
+            .saturating_sub(account.reserved_provider_attempts)
+            .min(account.contract.provider_attempts_per_execution);
         let reservation = json!({"contract_id":account.contract.contract_id,
             "max_provider_attempts":account.contract.provider_attempts_per_execution,
             "max_request_bytes":account.contract.max_request_bytes,
@@ -301,7 +318,8 @@ mod tests {
             assert_eq!(status_on(&tx, entry.id, 100).unwrap(), before);
             assert!(enable_continuous_on(&tx, entry.id, 100, 12).is_err());
             assert_eq!(before["state"], "rate_limited");
-            assert_eq!(before["reserved_provider_attempts"], 3);
+            assert_eq!(before["reserved_provider_attempts"], 6);
+            assert_eq!(before["pilot_remaining_provider_attempts"], 0);
             assert_eq!(before["lifetime_reserved_provider_attempts"], 9);
             tx.commit().unwrap();
         }
@@ -321,7 +339,7 @@ mod tests {
         reserve_on(&tx, entry.id, 100).unwrap();
         let after = status_on(&tx, entry.id, 100).unwrap();
         assert_eq!(after["remaining_provider_attempts"], 3);
-        assert_eq!(after["reserved_provider_attempts"], 3);
+        assert_eq!(after["reserved_provider_attempts"], 6);
         assert_eq!(after["continuous"]["reserved_provider_attempts"], 9);
         assert_eq!(after["lifetime_reserved_provider_attempts"], 12);
         assert!(

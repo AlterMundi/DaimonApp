@@ -155,7 +155,7 @@ def qualify(binary):
         # Explicit permanent-operation selection retains pilot history while
         # replacing its expired operating lifetime, through the actual CLI.
         current = j.read('heartbeat', 'status')['result']
-        j.row("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',1,'$.checks',json_extract(value,'$.contract.max_checks')) WHERE key LIKE 'heartbeat_producer:%'")
+        j.row("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',1,'$.checks',json_extract(value,'$.contract.max_checks'),'$.next_check_ms',0) WHERE key LIKE 'heartbeat_producer:%'")
         j.row("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',1) WHERE key LIKE 'heartbeat_resources:%'")
         pilot = j.read('heartbeat', 'status')['result']
         adopted = j.read('heartbeat', 'continuous', str(current['generation']), '6')['result']
