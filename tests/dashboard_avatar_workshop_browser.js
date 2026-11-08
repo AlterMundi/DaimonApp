@@ -46,6 +46,31 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  if(process.env.OUTPUT_HUD_ONLY==='1'){
+   await page.goto(origin);
+   await page.evaluate(()=>{document.documentElement.dataset.stylePolicy='authored';});
+   await page.locator('#avatar-workshop-open').click();
+   const editor=page.frameLocator('iframe');
+   await editor.locator('html[data-presentation="navigator-hud"]').waitFor();
+   assert((await page.locator('iframe').getAttribute('src')).includes('presentation=navigator-hud'));
+   await editor.locator('.wardrobe-tile').first().waitFor();
+   const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+   for(const width of [1200,375,320]){
+    await page.setViewportSize({width,height:860});
+    await page.waitForTimeout(100);
+    assert.equal(await editor.locator('html').evaluate(e=>e.scrollWidth>innerWidth),false,'Workshop fits '+width);
+    const background=await editor.locator('#panel').evaluate(e=>getComputedStyle(e).backgroundColor);
+    assert.equal(background,'rgb(18, 36, 48)','Actual wardrobe panel uses authored dark surface');
+    await page.screenshot({path:path.join(output,'workshop-'+width+'.png')});
+   }
+   await page.getByRole('button',{name:/^(Voice|Voces)$/,exact:true}).click();
+   await page.locator('.voice-studio-card').first().waitFor();
+   assert.equal(await page.locator('.voice-studio-card').first().evaluate(e=>getComputedStyle(e).borderRadius),'3px');
+   await page.screenshot({path:path.join(output,'voice-studio-320.png')});
+   assert.equal(previewPosts.length,0,'Appearance never auditions or applies a voice');
+   assert.equal(errors.length,0,errors.join('\n'));
+   console.log('PASS authored workshop/voice sheets at desktop375/320; no overflow, auditions or activation');return;
+  }
   if(process.env.OUTPUT_MOUTH_ONLY==='1'){
    await page.goto(origin);
    const input=process.env.AVATAR_MOUTH_DESIGN?JSON.parse(fs.readFileSync(process.env.AVATAR_MOUTH_DESIGN,'utf8')):null;

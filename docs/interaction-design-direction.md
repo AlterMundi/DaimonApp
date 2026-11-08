@@ -1,7 +1,8 @@
 # Selected visual direction — 8 November 2026
 
-Status: human-selected direction; first standalone Conversation implementation
-prepared. Receiving adoption and physical phone acceptance remain separate.
+Status: the first authored Conversation shell is selected on Root. The complete
+secondary-surface and composer-notice treatment below is now source-prepared;
+receiving adoption and physical phone acceptance remain separate.
 Nicolas selected the attached desktop/mobile proposal and reported that Annie
 also liked it. Source instruction: `9bfd894e-ae65-5934-8a39-711c70ad419a`.
 The exact reference image SHA-256 is
@@ -137,3 +138,25 @@ pills use existing content when present. Settings, workshops, Nexus and further
 shared-world composition remain subsequent owning work. Compare the actual
 selected surface with the reference and obtain phone feedback before calling
 visual fidelity accepted.
+
+## Complete secondary surfaces and quiet composer —8November2026
+
+Nicolas4798/4799 requires the selected composition across the whole user interface
+and long recovery/errors outside the text input. Shared authored framing now
+covers the voice view/studio, avatar wardrobe, session rail/detail, menus,
+confirmations, inspector and attachment/share sheets. The iframe reuses its same
+parent-owned appearance message, with an explicit cosmetic presentation marker
+and pre-paint marker from its known query value; no second preference store or
+authority is introduced. Inherited Homemaker choices keep their own presentation.
+
+The composer retains its existing input and controls. A small accessible notice
+indicator opens an upward overlay with the original status/recovery actions;
+long messages do not expand the input. The recording countdown stays visible
+in that indicator, preserving10/5/3/2/1 warnings. The real sibling Share offer
+gets the same panel treatment and mobile padding retains safe areas.
+
+Actual Chromium source fixtures cover375/320 phone widths and desktop, long
+notice open/close without draft loss or composer growth, the real wardrobe and
+voice workshop, full voice view, and original countdown boundaries. Synthetic
+actors/transports qualify layout and interaction only, never actual provider
+continuity, phone/hearing, avatar activation or artistic acceptance.
