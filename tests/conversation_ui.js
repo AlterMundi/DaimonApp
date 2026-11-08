@@ -567,7 +567,9 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(order().at(-2),'input:reply-earlier','A different source revision is not silently used as the reply parent');
   threaded.ui.stop();
   const stream=single.nodes.get('#conversation-timeline');
-  assert.equal(stream.children[0].dataset.timelineKey,'voice-history','The history toolbar remains above ordered message cards');
+  const diagnosticHistoryPanel=single.nodes.get('#conversation-diagnostics .conversation-diagnostics-content').children.find(c=>c.className==='voice-history-controls');
+  assert(diagnosticHistoryPanel?.children.some(c=>c.dataset.timelineKey==='voice-history'),'Engine-specific retrieval stays available under diagnostics');
+  assert(!stream.children.some(c=>c.dataset.timelineKey?.startsWith('voice-history')),'History retrieval controls do not occupy the ordinary conversation');
   const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&!c.dataset.timelineKey.startsWith('voice-history'));
   assert.deepEqual(messageCards().map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='native:1').children[1].textContent,'Progress update.');
