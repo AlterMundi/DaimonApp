@@ -133,6 +133,20 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
         ["goals", "detail", id] if Uuid::parse_str(id).is_ok() => {
             app.shared.store.goal_control_view(human, cfg.entry(), id)
         }
+        [operation, delivery, native, matrix, inbox, responses]
+            if matches!(*operation, "list" | "before") =>
+        {
+            app.shared.store.interaction_presentation_page_messages(
+                human,
+                cfg.entry(),
+                delivery.parse()?,
+                native.parse()?,
+                Some(matrix.parse()?),
+                Some(inbox.parse()?),
+                Some(responses.parse()?),
+                *operation == "before",
+            )
+        }
         [operation, delivery, native, matrix] if matches!(*operation, "list" | "before") => {
             app.shared.store.interaction_presentation_page_matrix(
                 human,
@@ -218,6 +232,38 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
 }
 
 fn source_label(shared: &AppShared, source: &mut serde_json::Value) -> Result<()> {
+    if matches!(
+        source["kind"].as_str(),
+        Some("matrix_inbox" | "matrix_response")
+    ) {
+        let cfg = super::routing::profile(shared)?;
+        let author = source["source_author"].clone();
+        let own = cfg
+            .matrix_transport
+            .as_ref()
+            .map(|t| serde_json::to_value(&t.source))
+            .transpose()?
+            .is_some_and(|v| {
+                v["being_ref"] == author["being_ref"]
+                    && v["embodiment_id"] == author["embodiment_id"]
+            });
+        let own = own || source["kind"] == "matrix_response";
+        source["direction"] = json!(if own { "outgoing" } else { "incoming" });
+        let name = cfg
+            .matrix_targets
+            .iter()
+            .find(|t| {
+                serde_json::to_value(&t.destination)
+                    .is_ok_and(|v| v["being_ref"] == author["being_ref"])
+            })
+            .map(|t| t.name.as_str())
+            .unwrap_or_else(|| author["being_ref"].as_str().unwrap_or("Unknown sender"));
+        source["label"] = json!(format!(
+            "Matrix · {} · {name}",
+            if own { "outgoing" } else { "incoming" }
+        ));
+        return Ok(());
+    }
     if source["kind"] == "matrix_result" {
         return Ok(());
     }

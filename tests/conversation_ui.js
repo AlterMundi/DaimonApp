@@ -251,6 +251,12 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
+  if(options.replyActivity){
+    const activity=options.replyActivity;activity.levels=[];activity.clears=0;
+    context.window.AvatarWorkshopUI={mount:()=>({bind(){},reset(){},speechLevel:v=>activity.levels.push(v)})};
+    context.window.WebRtcNativeAudio={watchElement(element,hooks){activity.element=element;activity.hooks=hooks;
+      return {clear(){activity.clears++;hooks.onActivity(0);}};}};
+  }
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
   if(options.autoText)context.window.IntersectionObserver=class{
     constructor(callback){intersection=callback;}observe(){}unobserve(){}disconnect(){}
@@ -1037,7 +1043,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   await skipButton.handlers.click();await until(()=>skipping.audioCalls.some(call=>call.source==='native:10')&&!skipPlayer.paused);
   assert.equal(skipping.audioCalls.filter(call=>call.source==='native:9').length,2,'Already prepared continuation is cancelled rather than played or retried');
   assert.equal(skipButton.textContent,'Resume audio','Skip preserves the actual heard cursor for a later explicit resume');
-  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();skipping.clock.fire(450);
+  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();
+  // Refresh/ended may still be preparing the owned next source. Fire only once
+  // its silence timer exists, or continue if its next segment is already ready.
+  await until(()=>skipping.clock.pending().includes(450)||skipping.audioCalls.some(call=>call.source==='native:11'));
+  skipping.clock.fire(450);
   await until(()=>skipping.audioCalls.some(call=>call.source==='native:11'));
   assert.deepEqual([...new Set(skipping.audioCalls.map(call=>call.source))],['native:9','native:10','native:11']);
   assert.equal(skipping.nativePosts.length,0,'Skipping audio does not answer or change native work');skipping.ui.stop();
@@ -1244,6 +1254,14 @@ function boot(readOnly=false,standalone=false,options={}) {
   followed.nodes.get('#conversation-voice-replies').handlers.click();followSwitch.handlers.click();
   await listenButton(spokenCard(7)).handlers.click();
   assert.equal(scrolls.length,2,'Turning Voice off also prevents subsequent Follow movement');followed.ui.stop();
+
+  const replyActivity={},replyJaw=boot(false,true,{capture:true,playback:true,replyActivity});replyJaw.audio();await replyJaw.ui.refresh();
+  assert.equal(replyActivity.hooks.isPlaying(),false);
+  const jawCard=replyJaw.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+  await listenButton(jawCard).handlers.click();assert.equal(replyActivity.hooks.isPlaying(),true);
+  replyActivity.hooks.onActivity(.08);assert.equal(replyActivity.levels.at(-1),.5,'Existing workshop receives the live-path five-step quantization');
+  replyJaw.capture();assert.equal(replyActivity.hooks.isPlaying(),false);assert.equal(replyActivity.levels.at(-1),0,'Microphone hold retires reply jaw observation');
+  replyJaw.finishCapture();replyJaw.ui.stop();assert.equal(replyActivity.levels.at(-1),0);assert(replyActivity.clears>0);
 
   const playbackHint=boot(false,true,{capture:true,playback:true});playbackHint.audio();
   playbackHint.overrideSource(8,{revision:'a'.repeat(64)});await playbackHint.ui.refresh();
@@ -2088,4 +2106,23 @@ function boot(readOnly=false,standalone=false,options={}) {
   workspace.valid=false;draft.value='Must not fall back to integration';const count=fixture.originals.size;
   await form.requestSubmit();assert.equal(fixture.originals.size,count);assert.match(fixture.nodes.get('#conversation-send-state').textContent,/Select your session again/);
   fixture.ui.stop();console.log('Workspace Conversation input: frozen text/voice targets across attachment preparation and stale-pin refusal passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Matrix originals and own response intents remain attributed, refreshable and contextual.
+(async()=>{
+  const f=boot(false,true);const id='matrix-inbox:11111111-1111-4111-8111-111111111111';
+  f.overrideSource(8,{id,kind:'matrix_inbox',label:'Matrix · incoming · Eko',direction:'incoming',source_author:{being_ref:'signed-eko',embodiment_id:'signed-body'},preview:'A retained peer question.',revision:'a'.repeat(64),text_characters:25});
+  f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'b'.repeat(64),handling:{phase:'uncertain'},parent_message_id:'11111111-1111-4111-8111-111111111111'});
+  const echo='matrix-inbox:22222222-2222-4222-8222-222222222222';f.overrideSource(6,{id:echo,kind:'matrix_inbox',direction:'outgoing',preview:'An own response.',revision:'d'.repeat(64)});
+  await f.ui.refresh();const cards=f.nodes.get('#conversation-timeline').children;
+  const incoming=cards.find(c=>c.dataset.sourceId===id),outgoing=cards.find(c=>c.dataset.sourceId?.startsWith('matrix-response:'));
+  assert(incoming);assert(outgoing);assert.match(incoming.children[1].textContent,/incoming message/);assert.match(outgoing.children[1].textContent,/Delivery uncertain/);
+  assert.match(incoming.children.find(c=>c.children?.[0]?.textContent==='Matrix details').children[1].textContent,/signed-eko/);
+  const reply=incoming.children[3].children[2];assert.equal(reply.hidden,false);await reply.handlers.click();
+  f.nodes.get('#conversation-message').value='Let us discuss this Matrix message';await f.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});
+  const original=[...f.originals.values()].at(-1);assert.equal(original.reply.source,id);assert.equal(original.reply.context_only,true);
+  f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'c'.repeat(64),handling:{phase:'recipient_copy_proved',outcome:{message_id:'22222222-2222-4222-8222-222222222222'}}});
+  await f.ui.refresh();assert.match(outgoing.children[1].textContent,/receiving copy proved/);assert.equal(cards.filter(c=>c.dataset.sourceId?.startsWith('matrix-response:')).length,1);
+  assert(!f.nodes.get('#conversation-timeline').children.some(c=>c.dataset.sourceId===echo),'A native own-copy and observed response receipt must not duplicate speech');
+  f.ui.stop();console.log('Matrix Conversation: attribution, delivery uncertainty refresh and context-only human discussion passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -69,46 +69,54 @@ This source preparation does not select native/Core code, restart services or
 activate heartbeat. Resolve actual served versions and per-body native support
 through the owning current service record; source capability is not selection.
 
-### Operational evidence still required from the native owner
+### Fresh native operational observation
 
-The producer status now retains one replaceable `last_check` with its sequence,
-global generation, lane activation, start/completion milliseconds and outcome.
-`last_success_at_unix_ms` records the last completed source check; it stays
-unchanged after a failed read. Older producer documents report these fields as
-null until a new check. A failed inbox read uses the fixed
-`matrix_inbox_unavailable` classification, without retaining arbitrary adapter
-error text. A late page rejected after pause or a generation change
-cannot complete the earlier observation. An interrupted check can therefore
-remain `in_progress`; its timestamp and generation must be inspected rather than
-interpreting the word as a current live process. The existing 256KiB producer
-document cap includes this record; it is not an accumulating event log.
-
-These are source observations only. They neither demonstrate a useful native
-action/delivered reply nor grant operational readiness. The following additional
-readiness evidence remains required.
-
-Proposed exact additional status field, to agree and qualify before consumption:
+The owner status emits `operational` and one nonaccumulating
+`operational_evidence` observation. This source successor must still be selected
+on the receiving bodies; older backends supply no positive proof.
 
 ```json
 {"operational_evidence":{"schema":"telecodex.heartbeat-operational/v1",
-  "generation":4,"observed_at":"2026-11-06T12:00:00Z",
-  "valid_for_seconds":15,"operational":true,
-  "lanes":{"messaging":{"generation":2,"operational":true,"reason":"ready"}}}}
+  "generation":4,"observed_at_unix_ms":1794093000000,
+  "valid_for_seconds":15,"operational":true,"reason":"ready",
+  "lanes":{"messaging":{"generation":2,"operational":true}}}}
 ```
 
-The native owner must derive this observation from the selected producer's
-actual bounded readiness (registered/live loop and fresh successful check),
-valid unexpired finite resources with remaining admission capacity, and the
-selected native execution primitive's actual availability for this actor/entry.
-The global fence and each claimed lane must be enabled at the exact returned
-generations. Missing, expired, exhausted, unavailable or errored dependencies
-must return false with a bounded reason; an idle ready loop can be operational.
-An active execution, configured producer, open gate or successful control ACK
-alone cannot supply this proof. Evidence lifetime is at most15seconds; stale
-or mismatched generations cannot pulse the heart. This is a proposed contract,
-not a claim that the currently selected backend emits or proves it. The existing
-App state reader still waits for explicit owner-derived `operational=true` and
-rejects contradictory status; this preparation adds no synthetic positive proof.
+A positive observation requires the actual existing maintenance task handle to
+be live and a successful selected Messaging check performed since that loop
+started. The last check must match both exact generations. Source freshness is
+bounded by two configured check intervals plus15seconds, allowing the existing
+serial bounded recovery pass; stale, interrupted and failed checks remain
+unavailable. The existing cadence, check ceiling and expiry do not change.
+
+Both finite windows must be current, sufficient unreserved inference capacity
+must remain and observation capacity must be available. An unresolved pending
+attention return cannot report idle readiness. The existing writer lease must
+still be held by this live loop. Through the existing
+native connection, the owner reads the serving Core's explicit
+`initialize.boundedIdleTurn` support advertisement and `thread/read` for the
+selected existing thread. It verifies identity, actual model/provider/effort,
+idle status and direct-input readiness. It sends no resume, turn, malformed
+mutation probe, provider request or reservation. Missing support on an older
+Core stays unavailable. A busy native conversation is explicitly waiting.
+These checks establish current readiness, not a promise of provider success or
+future delivery. Genuine useful work and its receipts remain separate evidence.
+
+After the bounded native read, the owner rereads its generations, windows,
+resources and entry binding. Changed controls/bindings refuse positive evidence.
+The frontend requires the matching evidence document and both generation values,
+rejects future or older-than15second observations, and expires its pulse at the
+earlier native observation deadline or either finite window. Re-reading an old
+proof cannot extend its lifetime. Tab hiding and failed reads clear the pulse.
+Only fixed reason classifications are exposed; arbitrary private native/adapter
+errors are not copied into status.
+
+The producer separately retains one replaceable `last_check` with sequence,
+generations, start/completion milliseconds and outcome, plus the last successful
+check time. A failed read uses `matrix_inbox_unavailable`; an interrupted check
+may remain `in_progress`, which never claims that an old process is still alive.
+The existing256KiB producer cap includes this record. These source timestamps
+alone still do not prove operational readiness, native action or reply delivery.
 
 ## Versioned native control successor
 
@@ -204,3 +212,252 @@ Owner console equivalents are `heartbeat pause GLOBAL_GENERATION`, and
 Existing explicit owner commands remain compatible. The source change does not
 add a web write endpoint, operational evidence, Core adoption or activation;
 those remain actual receiving integration work.
+
+## Source health does not request inference
+
+An inbox read failure or recovery updates the bounded source observation and
+last-check/last-success status only. It does not create a heartbeat offer,
+reserve an execution or wake a model. A genuine unreviewed source can still
+create an offer after recovery. Existing health-only returns and seen cursors
+remain historical evidence; changing this policy never refunds reservations,
+rewrites an original or resets the resource account.
+
+Receiving evidence found one useful Eko message execution and three separately
+accepted, reviewed health-only batches. Each reserved its12-attempt allowance,
+exhausting the original48-attempt peer contract. Those are reserved maxima,
+not measured tokens or money. The implementation removes those automatic
+health-only batches rather than replenishing their account or moving the same
+work into another inference loop.
+
+
+## Continuous owner-selected messaging
+
+An explicit ongoing-operation request may replace the pilot's lifetime with
+`heartbeat continuous GENERATION ATTEMPTS_PER_HOUR` on the existing owner console.
+Pause first and use the exact current global generation; resume explicitly afterward.
+This command is not a model tool, does not enable another lane, and refuses an
+unresolved native execution, changed generation or replacement rate. Exact repeats
+retain the selected hourly window and every reservation. No far-future timestamp,
+new contract UUID, daily counter reset or automatic renewal job is involved.
+
+The original pilot contract and historical reservations are preserved. Remaining
+pilot capacity is consumed first and never refilled; finite review purposes can
+still constrain their admission to that remaining original balance. A recurring
+ledger separately counts every new complete execution against its
+hourly allowance before provider I/O, retaining cumulative reservations across
+hour boundaries and restarts. Clock rollback cannot reset the current hour. Each
+execution keeps its existing attempt, complete-request byte and time limits. An
+exhausted hour reports `rate_limited`; bounded model-free checks continue, originals
+remain pending, and useful attention becomes eligible when the next hour has capacity.
+Continuous operation is not unlimited inference. Pause/conditional lane controls
+and the existing owner/service stop paths remain available.
+
+The existing producer retains its cumulative check count and source frontiers,
+without the pilot's absolute expiry or cumulative check ceiling. Idle checks and
+health failure/recovery never start a model. Operational evidence still requires
+the actual live loop, current owner, eligible native entry/profile, capacity and
+fresh exact-generation source check; its proof expires after15seconds. A continuous
+mode label or open gate alone cannot pulse the heart.
+
+Continuous cache retention keeps eight completed and reviewed heartbeat batches,
+eight resolved incoming-original projections (`recipient_copy_proved` or explicit
+`no_reply`), and64 own-body echoes. Unreported/native-unresolved batches and
+pending, deferred, merely submitted or uncertain replies are preserved. Retirement
+never changes accounting or the persisted native inbox frontier. Old pages cannot
+reintroduce a retired projection. Canonical signed Matrix originals/authoring/
+delivery receipts and native conversation turns remain in their owning journals;
+this is bounded projection retirement, not history deletion or task completion.
+The existing16batch/256original/4MiB limits still refuse genuinely unresolved
+backlog, rather than discard it. Older finite policies retain their prior behavior.
+
+Use `matrix_response` action `no_reply` with the exact original/revision and a
+bounded reason only when neither a response nor further work is needed. It sends
+nothing, creates no response intent, and cannot replace a submitted/uncertain
+intent. Keep real pending work explicitly deferred. `heartbeat_reported` remains
+review acknowledgment and must not be used as proof that peer work is completed.
+Rollback to a finite-only reader stops continuous attention; do not restore an old
+journal or pretend that its expired pilot became a current allowance.
+
+A failed or interrupted accepted attention may end before it can report review.
+On the next model-free check, an exact heartbeat-owned terminal physical receipt
+settles that admission as `attention_failed` or `attention_interrupted`. Its return,
+originals and response uncertainty stay retained; no review, reply or completion
+is invented. The attempted source revisions are fenced against automatic replay,
+without refunding reservations. New genuine originals can still be admitted.
+Completed but unreported work and unmatched/transferred/uncertain executions
+remain pending. Status retains `last_attention_failure` separately from present
+operational readiness. This does not authorize a failed task retry.
+
+
+## Attributed Matrix messages in Conversation
+
+The existing owner presentation accepts optional `inbox` and `responses` cursors
+beside `delivery`, `native` and `matrix`. Native console form:
+`presentation list|before DELIVERY NATIVE MATRIX INBOX RESPONSES`. Each source
+has a stable ID and exact revision; pages contain at most eight sources per
+cursor with `more`/oldest/newest continuation. Rendering reads the authenticated
+owner/current-entry store only, with no Matrix transport I/O or new journal.
+The existing bounded projection retention still applies; this is not a complete
+archive of the SDK's canonical signed history.
+
+Incoming `matrix-inbox:UUID` sources keep their original canonical revisions.
+Their direction and sender label are presentation metadata, not revised offers.
+Own `matrix-response:ORIGINAL_UUID` sources expose exact retained response text,
+source author, original parent/thread/send IDs, and the actual retained native
+outcome. A monotonic projection sequence in the existing handling record makes
+later delivery/uncertainty changes discoverable even for older originals. Legacy
+handling records remain readable before their next update. Updating that record
+never changes or reoffers the incoming original. Submitted/uncertain intent is
+not recipient delivery; a signed receiving copy is not comprehension, task
+completion or human hearing. No-reply dispositions author no outgoing speech.
+
+Conversation labels peer speech explicitly and exposes source/receipt details.
+The same signed event shown through ordinary results, own response receipts or
+inbox copies is represented once when those views meet. These raw message cards
+do not automatically speak as the local daimon or trigger avatar reply animation.
+Their Reply button retains a context-only source reference for discussion with
+the paired human; it creates no peer destination, send, approval or replay.
+
+Model-free source checks continue at the existing cadence while the entry is
+busy, retaining attributed originals for Conversation without reserving inference,
+advancing selected-offer cursors or marking them reviewed. Actual native attention
+still requires a free entry; bounded heartbeat delivery refuses to steer an active
+ordinary execution. This fixes source visibility starvation separately from the
+remaining fair execution admission limitation. Native active goals may continue again at the same
+terminal checkpoint, leaving no usable polling interval. Open continuous controls
+therefore do not establish intake or fair admission under an always-active goal.
+The existing native user-input queue does not carry the bounded application
+context/allowance contract. Do not forge a user message, pause the goal, globally
+withhold goals through maintenance, or borrow an active execution's unlimited
+budget to make a readiness indicator positive. Fair per-entry checkpoint
+admission remains part of the existing heartbeat/progress-review implementation.
+
+## Finite selected progress review within standing messaging
+
+The owner console's `heartbeat select-review GENERATION CONTRACT_JSON` selects
+one initial report-review successor on the existing bound parent. It requires
+an exact paused global generation, a paused Reports lane, no unresolved execution
+or pending return, no prior review selection and no existing Reports sources.
+For an existing production review, the same command updates only the selected
+report files/pointers after pending returns have been reviewed. Purpose, cadence,
+production funding and expiry/check policy must match the existing contract.
+Checks, next-check time, resource reservations, source cursors and historical
+returns are preserved. A finite pilot cannot be renewed through this operation.
+Use this path when an owning project adds a current milestone/blocker field;
+do not leave permanent review watching only obsolete initialization fields.
+It changes no source frontier, seen revision, original check counter, native
+binding, global/lane generation, goal, resource contract or historical reservation.
+It does not resume either control. After selection, use the existing explicit
+lane/global resume controls; pause the Reports lane to stop this review while
+preserving Messaging.
+
+The contract contains the actual retained `purpose` (`input_ref` and `channel`),
+`reports` (the existing exact owner-file/JSON-pointer contract),
+`interval_seconds` (900 through3600), `max_checks` (1 through96) and
+`expires_at_unix_ms` (future and within24hours). Select milestone/blocker fields,
+excluding a report's changing clock. This is deterministic source observation;
+it does not certify that semantic review, child admission or delivery occurred.
+A changed eligible batch carries this review's own exact human-purpose reader,
+separately from standing Messaging's original. Empty checks reserve no inference.
+One pending/uncertain return prevents another review. The existing native entry
+worker remains the sole execution owner; there is no additional scheduler.
+
+Review executions reserve only the original shared pilot balance, at most four
+executions in total, without borrowing the recurring Messaging allowance. Other
+Messaging work can consume that balance first. With the selected12-attempt
+execution bound and48remaining, at most four executions remain shared; they are
+not earmarked reviews. Reservations are charged before native/provider work,
+never refunded after failure, uncertainty, restart, pause or expiry. The same
+hourly bound also applies while continuous operation is selected. Exhaustion or
+expiry stops new review admission and preserves standing Messaging. A review's
+native deadline is capped by both the existing execution bound and review expiry.
+There is no renewal/reset/replacement command for this selected review purpose.
+
+Selecting review installs a resource-record compatibility marker before exposing
+its sources. Strict older resource readers refuse that selected account instead
+of interpreting Reports as standing-funded work. Keep a compatible reader when
+rolling back software; preserve the current journal/account and later originals.
+An unselected successor leaves the previous account representation unchanged.
+Receiving selection and a useful native review must be verified separately from
+source tests and metadata observation.
+
+Finite Reports checks snapshot their selected fields even while ordinary native
+work is busy. A changed relevant source retains one known-unsent metadata return
+without an execution reservation or native/provider call. Existing bounded
+known-unsent retry accounting is preserved. Idle recovery
+checks current source/purpose/expiry and capacity, then makes the first actual
+admission attempt. No second scheduler, fake human queue or busy-turn steering
+is introduced. An unavailable report is a failed source observation with explicit
+`selected_report_unavailable`, rather than a successful empty check.
+
+A proved completed physical attention turn without `heartbeat_reported` retains
+`accepted_terminal_unreviewed`, not a semantic review/task/delivery claim. Its
+exact attempted source revisions are fenced from automatic replay, while new
+originals may proceed. Status exposes `last_completed_without_review`. Existing
+reported-review semantics and bounded retention are unchanged. Unknown, running
+or mismatched physical outcomes never authorize this settlement. This corrects
+an observed Oliva deadlock at completed local581; do not forge its review mark.
+
+### Production defaults and selected progress review
+
+The owner-only `heartbeat production-defaults GENERATION SOURCE_JSON_STRING`
+selects normal operating capacity after an exact global pause. Retain the actual
+owner direction as operator provenance, never new speech from the receiving paired
+human. Selection does not resume a control, reset an hour, refund history, change
+an account or extend an already admitted native execution.
+
+Production uses64 provider attempts and600seconds per new execution, keeping the
+configured request-byte limit. Its recurring bound funds48 full new execution
+envelopes/hour: at most3072 reserved possible provider attempts, shared by selected
+work. Empty, unchanged and health observations use no inference. Reservations
+are conservative upper bounds, not actual model calls, token use or money. The
+service has no trial lifetime; existing pause controls remain available.
+
+The immutable pilot contract, previous native allowances, lifetime/hour counters,
+source frontiers and uncertain originals remain unchanged. Production's separate
+`effective_execution` is the active envelope; the pilot's12/300 fields are not its
+current limit. Historic smaller reservations stay charged in original attempt
+units. Strict account readers require the compatible production reader on rollback.
+Actual receiving failures exhausted12 attempts and the300s deadline; these are
+observed reasons for selecting the supported production envelope.
+
+A newly selected review specifies `production:true`, `max_checks:null` and
+`expires_at_unix_ms:null`. It keeps its exact retained human purpose and owned
+JSON-pointer sources, runs through the same parent at15minutes or slower, and
+shares production funding. Unchanged projections stay model-free. Retiring the
+purpose or pausing Reports/global stops admission. Legacy finite reviews retain
+original pilot funding, per-execution limits, expiry and four-execution ceiling.
+No other lane, scheduler or silent finite-review conversion is selected.
+
+Canonical checks continue while busy. New attention and known-unsent recovery
+observe native contention before spending an attempt; a free local slot alone is
+not proof that native is idle. A known busy native defers admission without a
+reservation. An unloaded cache retains the existing model-free resume path;
+missing metadata is not a new permanent activation gate. Mandatory atomic native
+admission still verifies readiness/profile and handles later races.
+
+At an acknowledged physical goal terminal, eligible pending canonical attention
+can release the completed ordinary collector. The existing parent then admits
+attention through the normal native idle check. Without eligible pending work,
+collection stays across the configured idle checkpoint. Exact terminal metadata
+can reconcile a missed terminal without importing or retiring missing output.
+No goal pause/edit, native interrupt or input replay is needed for this handoff.
+
+Production selection retains one bounded recovery permission for an already
+exhausted original proved never submitted. Its exact return ID/next attempt stay
+in one account-sized receipt. Repeating selection grants no further attempt.
+Admitted, uncertain and completed executions are excluded. Explicit resume still
+reconciles only proved-unsent generations; no fictitious trial renewal is used.
+
+During listener delivery, inspect actual owned execution before pausing admission.
+Let admitted work finish; preserve its original allowance and terminal outcome.
+Use the current conditional heartbeat controls around the selected handoff and
+restore only that operation's unchanged pause. A queued attachment is not actual
+collection. Its final proof must postdate the replacement listener's process start,
+not the earlier whole-operation preparation timestamp.
+
+Fresh canonical Matrix originals retained during busy work expose
+`producer.unoffered_inbox` before any return or reservation exists. They can
+release a finished ordinary collector when Messaging is enabled. Already
+attempted source revisions and a paused Messaging lane cannot trigger that
+handoff. Status reads only local retained metadata and perform no live inbox I/O.

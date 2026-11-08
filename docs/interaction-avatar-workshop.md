@@ -1,5 +1,143 @@
 # Shared avatar workshop receiving adapter
 
+## Original source and adapted-byte verification
+
+The selected author source is ASCII-Interfaces
+`4acdb30f85848933d2c50c9557bbc2fc7d51ec9d`, following the earlier `e1ef54b`
+wardrobe sync and its pillow/sleep refinement. All32 declared original file
+hashes were checked against that exact upstream Git object. Later App adaptations
+have their own36-file receiving inventory; they never replace original hashes,
+authorship, license or handoff evidence.
+
+After changing vendored workshop files, refresh only that adapted inventory in
+the development checkout, then run its existing validator/store tests:
+
+```sh
+python3 -B -m dashboard.avatar_workshop_provenance --update
+python3 -B -m dashboard.avatar_workshop_provenance
+python3 -B tests/dashboard_avatar_workshop.py
+```
+
+Use module execution: running a file directly inside `dashboard/` can shadow the
+standard-library `operator` module with the existing local `operator.py`.
+The helper changes only `receiving_hashes`; the existing tests refuse changed,
+missing or unlisted files and verify retained upstream provenance. It performs
+no network, account, avatar or provider operation and adds no runtime admission.
+Its atomic metadata replacement preserves a previous hardlinked release;
+refreshing an unselected candidate must not edit the selected base inode.
+
+The8November check found six stale adapted hashes after the compact-preview,
+hand-anchor and mechanical-mouth changes. Corrected source metadata matches all36
+actual selected files on all three original receivers. Those immutable receiving
+directories retain their historical metadata file; verification is retained
+externally, with no rewrite/restart merely to relabel the same deployed bytes.
+Future candidates should take the corrected source metadata alongside the exact
+adapted files. This establishes source provenance, not new phone/School/art or
+human-hearing acceptance.
+
+## Playback-driven mechanical mouth
+
+An optional invisible `anchor-mouth` path node opts a model into local jaw
+motion. It uses existing inert node fields: `fill: null`, no stroke, an authored
+hinge pivot and parent. Reparent only the intended lower-shell/jaw parts beneath
+it. It adds no format, normalization, saved default or implicit emotion mapping.
+The renderer accepts a transient level in five steps0/.25/.5/.75/1 and adds at
+most12master pixels of opening and .035radians of rotation at the hinge, on top
+of the selected authored pose. Level0 preserves the original drawing exactly.
+Models without the explicit invisible node remain unchanged. The saved design,
+atlas, nine artistic cues and body/head/hand/finger tracks are never rewritten
+by playback. The actor still saves and uses an immutable version explicitly.
+
+The public GPT-Live frontend observes decoded remote output, not input audio,
+transcript deltas or completion guesses. Browser playback keeps its existing
+HTML audio owner; an outputless local worklet emits only100ms RMS observations
+and retains no PCM. Android reuses its existing PCM worklet and selects the
+corresponding bounded level only after actual native playback-progress evidence,
+not when bytes are received or queued. At most32small RMS ranges are retained;
+old source IDs, pause/mute and closed output discard cosmetic observations.
+The existing300–600second output bound is unchanged. Observer preparation/resume
+has a5second bound; observer failure closes only that cosmetic branch, never
+starts a second player/provider or stops the existing browser player.
+
+Avatar pause, reduced motion, hidden pages and the wardrobe suppress live mouth
+motion; resuming restores the current account-scoped output level even if it
+has not changed. Silence and output closure restore the authored pose. This is an audio
+amplitude approximation, not phoneme/viseme alignment or proof of human hearing.
+Native Codex WebRTC also observes its decoded remote track through the same
+outputless worklet. Its existing HTML audio remains the only player. Track
+replacement, physical renewal and closure retire the old observer; a delayed
+preparation cannot attach to a successor. Mute/pause and silence clear the
+transient level, and an unavailable cosmetic observer leaves voice running.
+This adds no microphone, ASR, native handoff, provider session, renewed allowance
+or durable audio. Legacy speech paths do not acquire the output-level signal
+merely because their custom renderer supports the optional anchor.
+
+`QUALIFICATION_CODEX_ACTIVITY=1` in the existing
+`tests/session_workspace_browser.js` drives the shipped native engine with a
+synthetic660Hz remote track through real Chromium audio/worklet code, while a
+different local input tone continues. It checks output/silence/pause/resume;
+the native engine regression separately covers same-peer track changes, two
+physical renewals, retired callbacks, late observer preparation and optional
+observer failure. Synthetic sockets do not prove provider or physical-device
+acceptance. Receiving state remains in Shared Resources, not this source guide.
+
+[Official GPT-Live migration guidance](https://developers.openai.com/api/docs/guides/live-migration#adapt-the-connection-and-audio-lifecycle)
+requires client-side playback tracking and supplies no spoken-response-end event.
+Synthetic PCM/Canvas qualifications must stay distinct from physical phone,
+artistic and human-hearing acceptance. No real audition is needed for these
+local rendering/ownership checks; preserve all retained samples and unknowns.
+
+## Inspect a saved revision at Conversation size
+
+In the existing workshop, **Ver junto al nombre** is available after saving or
+reopening a clean immutable revision. The parent reads that exact actor-owned
+record, verifies its ID and canonical SHA256, and renders it beside the current
+companion name using the installed renderer and compact frame dimensions.
+This is a read-only preview: no Save, Use, active/editing pointer, generation,
+voice preference or ledger mutation. Unsaved changes disable the entry.
+
+The preview runs at most one local animation cycle (up to120frames); reduced
+motion starts still and offers an explicit Animate once button. Closing it,
+leaving the workshop, switching to Voice or changing account removes it;
+backgrounding stops its timer. Delayed reads cannot reopen a closed preview or
+cross the captured account/iframe binding. A changed record digest refuses.
+No providers, external assets or animation calls to a model are involved.
+
+The bridge accepts only `preview` with `{id: revisionUUID}`. Its reply contains
+`id`, `sha256` and `view: compact_header_preview`; it is display metadata, not an
+authoritative review, child contribution, mission receipt or achievement. School
+still needs its actual retained mission/space/actor binding and private-workspace
+return. A general wardrobe preview does not create that authority.
+
+The mounted browser qualification uses synthetic actors and actual editor,
+storage API and Canvas renderer. Run with `COMPACT_PREVIEW_ONLY=1` through
+`tests/dashboard_avatar_workshop_browser.py`, selecting the existing Playwright
+module and Chromium executable via their documented environment variables.
+It checks immutable readback, no writes/activation, finite animation, reduced
+motion, short-phone controls, hash mismatch and delayed old-account refusal.
+This does not establish physical-device or artistic acceptance.
+
+## Exact saved-design export for an authorized host
+
+`GET /api/interaction/avatars/{revision UUID}?format=canonical` returns the
+unchanged UTF-8 canonical design saved by the selected workshop validator.
+Its SHA256 equals the normal immutable record's `sha256`; the quoted ETag is
+`sha256-<digest>`. The default `format=record` response remains unchanged.
+The same actor/grant checks apply before and after reading. Responses use
+`private, no-store`, never a shared cache or an unauthenticated download link.
+This read changes no revision, editing/active pointer, generation or ledger.
+An invalid digest, missing/foreign revision or changed access returns no design.
+
+The School host must first resolve its existing retained mission request,
+selected space/daimon and authenticated actor. It can read the immutable record
+and its canonical export, compare the digest, and retain those exact bytes in
+the already authorized private learner workspace. Browser/imported references
+are not authority; this API accepts no learner, workspace path or destination.
+Reopened workshop/compact-preview evidence and genuinely attributed child
+participation remain separate requirements for the owning School ledger.
+Export or Save alone does not activate an avatar or earn an achievement.
+Actual mission entry/return and child receiving acceptance remain pending.
+
 Nicolas selected integration into the existing DaimonApp goal on6November2026.
 Oliva authored the original handoff for Ani. The pinned MIT implementation is
 ASCII-Interfaces 4acdb30, handoff990dce9; module hashes and the original license
@@ -152,10 +290,11 @@ and the full original goal remain open. Public served files and synthetic browse
 journeys do not prove a human's successful use or authorize enabling another
 pair's Avatar, voice, provider, heartbeat or native-display flags.
 
-## Current wardrobe source sync —8November2026 candidate
+## Retained wardrobe source sync —8November2026
 
-The vendored source now selects Ani/Oliva ASCII-Interfaces e1ef54b, with original
-and adapted hashes in PROVENANCE.json. The six authored bodies support per-body
+The initial sync selected Ani/Oliva ASCII-Interfaces e1ef54b, followed by4acdb30's
+pillow refinement; original and adapted hashes stay distinct in PROVENANCE.json.
+The six authored bodies support per-body
 primary color, hex prop colors, three independent prop slots, eight acting hand
 objects and nine artistic cues (including Sueño/pillow). The editor keeps the
 current game-side tools, undo/redo and one-step surprise choices. Imported inert
@@ -322,7 +461,10 @@ are siblings, so editing or pausing does not start voice. The canvas and built-i
 portrait share the top origin. While authenticated selection is unresolved, the
 built-in drawing stays hidden instead of flashing before the custom revision.
 An unavailable selection keeps the workshop retry/status path, without guessing
-that the built-in avatar was selected. Account reset removes the previous art.
+that the built-in avatar was selected. A failed read ends the busy indicator;
+opening the workshop explicitly retries the selected revision. Ordinary binding
+polls do not retry, and recovery never saves, activates or auditions a voice.
+Successful readback clears the error; account reset removes the previous art.
 Listening/speaking evidence lights the full header for either portrait; authored
 expressions do not manufacture operational microphone state.
 
@@ -369,3 +511,32 @@ voice, format, frame count, PCM alignment/size, duration, close/finalization and
 no-reconnect bounds remain. The post777 real attempt retained event_validation
 and0PCM; this contract correction is source-qualified, not a claim that its
 unretained specific event was recovered or that a new real sample succeeded.
+
+## Held objects on an articulated custom model
+
+Existing hand anchors remain rest-space points. To attach a hand-held object to
+a moving hierarchy, author an inert `path` node named `anchor-leftHand` or
+`anchor-rightHand`, parent it to the corresponding palm, and keep the matching
+`anchors.leftHand`/`rightHand` point. A one-command path with null fill/stroke
+provides an invisible attachment. The renderer applies that node's full existing
+parent/pivot/track chain to the point for the selected cue/frame. This changes no
+schema, saved normalization or storage; models without these explicit nodes keep
+static anchors. All existing node/depth/track bounds still apply. Floating details
+stay independent, so a held object and a floating symbol can coexist. Object
+orientation retains the existing accessory drawing; this is position attachment,
+not a grip, collision or finger-contact solver.
+
+`tests/dashboard_avatar_hand_props_browser.cjs` checks actual composed Canvas
+movement with a simultaneous stationary detail, nested parent rotation/scale and
+legacy static anchors. Use the existing `PLAYWRIGHT_MODULE`/`CHROMIUM_EXECUTABLE`
+settings. It owns a temporary local HTTP server/browser and makes no provider or
+production storage calls. Physical touch and artistic contact remain separate.
+
+The mission candidate now reads `AvatarWorkshop.get(human, revision, canonical=True)`
+from the existing PR785 immutable store path. It checks the original stored bytes
+against the record hash rather than normalizing again on return. The canonical
+owner HTTP read/ETag and the school artifact remain byte-identical even when a
+later validator is unavailable. Current renderer validation and an actual
+revision-bound review remain required for visual/evidence acceptance; return
+alone neither activates nor awards credit. The candidate preserves PR790's
+separate saved-preview action and current hand-prop/output-activity behavior.

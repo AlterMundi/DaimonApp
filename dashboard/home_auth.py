@@ -60,6 +60,9 @@ class HomeAuth:
         self.workspace = self.selected.get('workspace_access', False)
         if type(self.workspace) is not bool:
             raise ValueError('Explicit shared session workspace permission required')
+        self.native_decisions = self.selected.get('native_decision_access', False)
+        if type(self.native_decisions) is not bool:
+            raise ValueError('Explicit shared native-request decision permission required')
         self.coordination = self.coordination or self.coordination_control
         self.binding = config['origin'] + config.get('prefix', '/sessions')
         if 'application_id' in config:
@@ -92,10 +95,10 @@ class HomeAuth:
                 or not self.provider.authorized(human)):
             raise PermissionError('This account has no receiving conversation grant')
         if request.url.path != '/api/interaction/access' and not permitted(
-                request.method, request.url.path, 'interaction_only', self.artifacts, self.alerts, self.coordination, self.coordination_control, self.workspace):
+                request.method, request.url.path, 'interaction_only', self.artifacts, self.alerts, self.coordination, self.coordination_control, self.workspace, self.native_decisions):
             raise PermissionError('Shared browser access is limited to the conversation')
         return {'human': human, 'scope': 'interaction_only', 'artifact_access': self.artifacts,
                 'alerts_access': self.alerts, 'workspace_access': self.workspace, 'coordination_access': self.coordination,
-                'coordination_control_access': self.coordination_control, 'expires': expires,
+                'coordination_control_access': self.coordination_control, 'native_decision_access': self.native_decisions, 'expires': expires,
                 'csrf': hashlib.sha256(('shared-conversation:' + self.binding + ':' + token).encode()).hexdigest(),
                 'label': actor.get('name', 'Your conversation'), 'presentation_profile': 'simple'}

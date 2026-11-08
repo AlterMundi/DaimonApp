@@ -12,8 +12,13 @@ args=parser.parse_args()
 WEB=args.web_root.resolve()
 templates=json.loads((args.homemaker/'public/content/templates.json').read_text())
 html=(WEB/'index.html').read_text()
-html=re.sub(r'<script\b[^>]*>.*?</script>','',html,flags=re.S)
-html=html.replace('</head>','<link rel="stylesheet" href="/provider.css"><script src="/assets/interface-appearance.js" defer></script></head>')
+adapter=re.compile(r'<script\b[^>]*\bsrc="assets/interface-appearance\.js"[^>]*>\s*</script>')
+assert len(adapter.findall(html))==1,'Candidate must declare exactly one local appearance adapter'
+# Keep the shipped deferred adapter in its original position. The actual Home
+# response appends provider CSS at the end of head, after this script tag.
+html=re.sub(r'<script\b[^>]*>.*?</script>',lambda m:m.group() if adapter.fullmatch(m.group()) else '',html,flags=re.S)
+html=html.replace('</head>','<link rel="stylesheet" href="/provider.css"></head>')
+assert html.index('assets/interface-appearance.js')<html.index('/provider.css')
 html=html.replace('<html lang="en">','<html lang="en" data-style-policy="inherit">')
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args):pass

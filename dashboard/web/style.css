@@ -1223,7 +1223,7 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .voice-studio-phrase {display:flex;gap:.2rem}.voice-studio-phrase button:first-child{border-radius:var(--dm-radius,12px) 0 0 var(--dm-radius,12px)}.voice-studio-phrase button:last-child{border-radius:0 var(--dm-radius,12px) var(--dm-radius,12px) 0;min-width:44px}
 
 /* Keep avatar artwork behind the readable pending line; tools live in its frame. */
-#conversation-companion > .avatar-frame {position:relative;z-index:0;flex:none;min-width:0;width:180px;height:120px;}
+#conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame {position:relative;z-index:0;flex:none;min-width:0;width:180px;height:120px;}
 .avatar-frame .workshop-portrait {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
 .avatar-surface {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
 .avatar-surface > pre {position:absolute;inset:0 0 auto auto;}
@@ -1245,7 +1245,7 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .standalone-conversation header:has(#conversation-companion[data-pose="speaking"]) {background:radial-gradient(ellipse at 85% 0%,color-mix(in srgb,var(--accent) 22%,var(--bg)),var(--bg) 80%);}
 .standalone-conversation #conversation-presence {position:relative;z-index:1;background:var(--bg);}
 .standalone-conversation.conversation-header-compact header #conversation-companion > .avatar-frame {display:none;}
-@media(max-width:480px){#conversation-companion > .avatar-frame{width:126px;height:90px}.avatar-frame .workshop-portrait,.avatar-frame .avatar-surface{width:94px;height:90px}}
+@media(max-width:480px){#conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame{width:126px;height:90px}.avatar-frame .workshop-portrait,.avatar-frame .avatar-surface{width:94px;height:90px}}
 
 /* Selected HUD reference, stage1: authored standalone Conversation only.
  * Existing Homemaker/inherited roles and every application action stay owned
@@ -1356,3 +1356,9 @@ html[data-style-policy="authored"] .standalone-conversation:has(#conversation-co
 html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence::after {content:"";position:absolute;left:6px;top:0;bottom:0;width:2px;background:var(--hud-copper);transform:skewX(-37deg);pointer-events:none;}
 html[data-style-policy="authored"] .standalone-conversation header .header-tools .for-you-navigation button {border:0;background:transparent;}
 @media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header #conversation-account {display:none;}}
+
+.avatar-workshop-compact-preview {flex:none;border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:var(--dm-radius,12px);padding:.5rem;background:var(--dm-surface,#17212b)}
+.avatar-workshop-compact-preview p {margin:0 0 .25rem}
+.avatar-workshop-compact-header {display:flex;align-items:center;gap:.75rem;min-width:0}
+.avatar-workshop-compact-preview nav {display:flex;flex-wrap:wrap;gap:.5rem}
+.avatar-workshop-compact-preview button {min-height:44px;font:inherit}

@@ -4,7 +4,7 @@ use crate::backend::{Maintenance, Ownership, Recovery};
 
 impl Maintenance for App {
     fn renew_owner(&self) -> Ownership {
-        match self.shared.store.heartbeat_instance() {
+        let ownership = match self.shared.store.heartbeat_instance() {
             Ok(()) => Ownership::Held,
             Err(error) => {
                 tracing::error!("database instance heartbeat failed: {error:#}");
@@ -14,7 +14,12 @@ impl Maintenance for App {
                     Ownership::Unavailable
                 }
             }
-        }
+        };
+        self.shared.heartbeat_owner_held.store(
+            ownership == Ownership::Held,
+            std::sync::atomic::Ordering::Release,
+        );
+        ownership
     }
 
     async fn recover(&self, phase: Recovery) {

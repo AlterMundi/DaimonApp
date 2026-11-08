@@ -33,6 +33,16 @@ impl ConversationReply {
             .strip_prefix("delivery:")
             .or_else(|| self.source.strip_prefix("input:"))
             .or_else(|| self.source.strip_prefix("matrix:"))
+            .or_else(|| {
+                self.context_only
+                    .then(|| self.source.strip_prefix("matrix-inbox:"))
+                    .flatten()
+            })
+            .or_else(|| {
+                self.context_only
+                    .then(|| self.source.strip_prefix("matrix-response:"))
+                    .flatten()
+            })
             .is_some_and(|id| Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id));
         let native = self.context_only
             && self.source.strip_prefix("native:").is_some_and(|id| {

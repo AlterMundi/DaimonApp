@@ -1,5 +1,6 @@
 """Mounted grant/CSRF/isolation and actual Node-backed workshop persistence."""
 from pathlib import Path
+import hashlib
 import sys
 from unittest.mock import patch
 import unittest
@@ -8,7 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from fastapi import FastAPI,HTTPException
 from fastapi.testclient import TestClient
-from dashboard.avatar_workshop import AvatarWorkshop
+from dashboard.avatar_workshop import AvatarWorkshop,validate_design
 from dashboard.avatar_workshop_api import install
 from dashboard.companion import permitted
 import dashboard_avatar_workshop as fixtures
@@ -90,6 +91,58 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.client.post(path,json={'action':'activate','id':self.ident,'generation':0},headers=foreign).status_code,404)
         self.assertEqual(self.client.post(path,json={**self.body,'human':100},headers=foreign).status_code,400)
         self.assertEqual(self.store.snapshot(200)['versions'],[])
+
+    def test_canonical_export_is_exact_immutable_validator_bytes_without_use(self):
+        self.design['name']='Lámpara 🧭'
+        canonical,digest=validate_design(self.design)
+        path='/api/interaction/avatars/'+self.ident
+        saved=self.client.post('/api/interaction/avatars',json=self.body,headers=self.headers)
+        self.assertEqual(saved.status_code,200,saved.text)
+        before=self.store._path(100).read_bytes()
+        response=self.client.get(path+'?format=canonical',headers=self.headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.content,canonical.encode('utf-8'))
+        self.assertEqual(hashlib.sha256(response.content).hexdigest(),digest)
+        self.assertEqual(response.headers['etag'],'"sha256-'+digest+'"')
+        self.assertEqual(response.headers['cache-control'],'private, no-store')
+        self.assertEqual(response.headers['x-content-type-options'],'nosniff')
+        self.assertEqual(response.headers['content-disposition'],
+                         'attachment; filename="'+self.ident+'.avatar.json"')
+        self.assertEqual(AvatarWorkshop(self.root).get(100,self.ident,True),canonical)
+        record=self.client.get(path,headers=self.headers).json()
+        self.assertNotIn('canonical',record)
+        self.assertEqual(record['sha256'],digest)
+        repeated=self.client.get(path+'?format=canonical',headers={**self.headers,'if-none-match':response.headers['etag']})
+        self.assertEqual(repeated.status_code,200)
+        self.assertEqual(repeated.content,response.content)
+        self.assertEqual(self.store._path(100).read_bytes(),before)
+        self.assertIsNone(self.store.snapshot(100)['active'])
+
+    def test_canonical_export_uses_existing_actor_and_current_access_checks(self):
+        self.client.post('/api/interaction/avatars',json=self.body,headers=self.headers)
+        path='/api/interaction/avatars/'+self.ident+'?format=canonical'
+        for token,status in ((None,401),('actor200',404),('monitor',403)):
+            headers={'authorization':token} if token else {}
+            self.assertEqual(self.client.get(path,headers=headers).status_code,status)
+        self.assertEqual(self.client.get(path.replace('canonical','unknown'),headers=self.headers).status_code,400)
+        read=AvatarWorkshop.get;test=self
+        def revoke(store,*args):
+            value=read(store,*args);test.allowed.clear();return value
+        with patch.object(AvatarWorkshop,'get',revoke):
+            response=self.client.get(path,headers=self.headers)
+        self.assertEqual(response.status_code,403)
+        self.assertNotIn('etag',response.headers)
+
+    def test_canonical_export_refuses_changed_stored_bytes(self):
+        self.client.post('/api/interaction/avatars',json=self.body,headers=self.headers)
+        value=self.store._read(100)
+        value['versions'][0]['canonical']+=' '
+        self.store._write(100,value)
+        before=self.store._path(100).read_bytes()
+        response=self.client.get('/api/interaction/avatars/'+self.ident+'?format=canonical',headers=self.headers)
+        self.assertEqual(response.status_code,400)
+        self.assertNotIn('etag',response.headers)
+        self.assertEqual(self.store._path(100).read_bytes(),before)
 
     def test_revocation_after_commit_preserves_immutable_save_for_status_readback(self):
         path='/api/interaction/avatars';write=AvatarWorkshop._write;test=self

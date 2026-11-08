@@ -31,3 +31,4 @@ export function close(){parent.postMessage({kind:'daimon.workshop.closed'},locat
 
 export function mission(){return missionContext||null;}
 export async function returnMission(id){return request('mission-return',{id});}
+export function preview(id){return request('preview',{id});}

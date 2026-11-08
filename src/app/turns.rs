@@ -1022,6 +1022,11 @@ pub(super) async fn process_turn(
                                 }
                                 Ok(CodexEventOutcome::None)
                             }
+                            CodexEvent::NativeGoalIdle => {
+                                Ok(if super::heartbeat::yield_collector_for_attention(&routing_app,requester_user_id,session_key) {
+                                    CodexEventOutcome::YieldGoalCollector
+                                } else { CodexEventOutcome::None })
+                            }
                             CodexEvent::NativeExternalInputSubmitting => {
                                 shared.store.heartbeat_external_input(turn_id)?;
                                 Ok(CodexEventOutcome::None)
@@ -1850,6 +1855,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeInternalReturnDetached { .. }
             | CodexEvent::NativeInputAccepted(_)
             | CodexEvent::NativeSteerAccepted { .. }
+            | CodexEvent::NativeGoalIdle
             | CodexEvent::NativeTurnStarted(_)
             | CodexEvent::NativeTurnSubmitting
             | CodexEvent::NativeExternalInputSubmitting

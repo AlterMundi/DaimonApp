@@ -4,8 +4,7 @@ The optional host resolves retained, authorized selections. No browser request
 can supply a learner, space, actor, path, observation or display-review result.
 """
 import copy
-
-from .avatar_workshop import validate_design
+import hashlib
 
 
 class AvatarMission:
@@ -30,9 +29,12 @@ class AvatarMission:
     def return_saved(self, human, request_id, revision_id):
         context = self.context(human, request_id)
         record = self.store.get(human, revision_id)
-        canonical, digest = validate_design(record['design'])
-        if digest != record['sha256']:
-            raise ValueError('Saved revision differs from the selected validator')
+        # Reuse the existing immutable read added by App785. A later validator
+        # must not rewrite bytes or identity of an already saved revision.
+        canonical = self.store.get(human, revision_id, canonical=True)
+        if (not isinstance(canonical, str) or len(canonical.encode()) > 524288
+                or hashlib.sha256(canonical.encode()).hexdigest() != record['sha256']):
+            raise ValueError('Saved revision differs from its stored canonical bytes')
         snapshot = self.store.snapshot(human)
         # The host retains exact bytes and rechecks its selection before commit.
         # It must refuse a different revision for a previously returned request.

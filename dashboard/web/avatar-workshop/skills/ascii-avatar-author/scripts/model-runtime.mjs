@@ -22,9 +22,27 @@ export function validateAvatarModel(input){
  const anchors={};for(const [k,v] of Object.entries(input.anchors||{})){if(!['rightHand','leftHand','compact'].includes(k)||!Array.isArray(v)||v.length!==(k==='compact'?4:2))fail();anchors[k]=v.map(x=>finite(x,0,720));if(k==='compact'&&(v[2]<100||v[3]<100||v[0]+v[2]>576||v[1]+v[3]>720))fail();}
  return {schema:input.schema,id:input.id,name:input.name,nodes,animations,anchors,...(layered?{atlas}:{})};
 }
-export function renderAvatarModel(model,frame=0,cue='calm'){
+// An inert node named anchor-leftHand/anchor-rightHand explicitly attaches the
+// existing rest-space anchor to its hierarchy. Models without that node retain
+// their original static anchors; no schema or saved normalization changes.
+export function resolveAvatarModelAnchors(model,frame=0,cue='calm'){
+ const anchors={...model.anchors},map=new Map(model.nodes.map(n=>[n.id,n])),f=((frame%12)+12)%12,tracks=model.animations[cue]||model.animations.calm||[];
+ for(const key of ['leftHand','rightHand']){
+  let node=map.get('anchor-'+key);if(!node||!anchors[key])continue;
+  let [x,y]=anchors[key];
+  while(node){
+   const v={x:0,y:0,rotate:0,scaleX:1,scaleY:1};for(const t of tracks)if(t.node===node.id)v[t.channel]=t.frames[f];
+   const [px,py]=node.pivot,dx=(x-px)*v.scaleX,dy=(y-py)*v.scaleY,c=Math.cos(v.rotate),s=Math.sin(v.rotate);
+   x=px+v.x+dx*c-dy*s;y=py+v.y+dx*s+dy*c;node=node.parent?map.get(node.parent):null;
+  }
+  anchors[key]=[x,y];
+ }
+ return anchors;
+}
+export function renderAvatarModel(model,frame=0,cue='calm',speechLevel=0){
+ const level=Number.isFinite(speechLevel)?Math.round(Math.min(1,Math.max(0,speechLevel))*4)/4:0;
  const canvas=document.createElement('canvas');canvas.width=576;canvas.height=720;const c=canvas.getContext('2d'),f=((frame%12)+12)%12,tracks=model.animations[cue]||model.animations.calm||[],map=new Map(model.nodes.map(n=>[n.id,n]));
- const transforms=node=>{if(node.parent)transforms(map.get(node.parent));const values={x:0,y:0,rotate:0,scaleX:1,scaleY:1};for(const t of tracks)if(t.node===node.id)values[t.channel]=t.frames[f];const [x,y]=node.pivot;c.translate(x+values.x,y+values.y);c.rotate(values.rotate);c.scale(values.scaleX,values.scaleY);c.translate(-x,-y);};
+ const transforms=node=>{if(node.parent)transforms(map.get(node.parent));const values={x:0,y:0,rotate:0,scaleX:1,scaleY:1};for(const t of tracks)if(t.node===node.id)values[t.channel]=t.frames[f];if(node.id==='anchor-mouth'&&node.type==='path'&&!node.fill&&!node.stroke){values.y+=12*level;values.rotate+=.035*level;}const [x,y]=node.pivot;c.translate(x+values.x,y+values.y);c.rotate(values.rotate);c.scale(values.scaleX,values.scaleY);c.translate(-x,-y);};
  for(const node of model.nodes){const n={...node,...node.poses?.[cue]};c.save();transforms(node);if(n.type==='raster'){if(n.clip){c.beginPath();n.clip.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.closePath();c.clip();}c.imageSmoothingEnabled=false;c.drawImage(rasterAtlas(model),...n.rect,...n.bounds);c.restore();continue;}c.beginPath();if(n.type==='ellipse')c.ellipse(n.cx,n.cy,n.rx,n.ry,0,0,Math.PI*2);else for(const [cmd,...v] of n.path)c[({M:'moveTo',L:'lineTo',Q:'quadraticCurveTo',C:'bezierCurveTo',Z:'closePath'})[cmd]](...v);if(n.fill){if(typeof n.fill==='string')c.fillStyle=n.fill;else{const g=c.createRadialGradient(n.fill.x-n.fill.r*.3,n.fill.y-n.fill.r*.35,1,n.fill.x,n.fill.y,n.fill.r);for(const [at,color] of n.fill.stops)g.addColorStop(at,color);c.fillStyle=g;}c.fill();}if(n.stroke){c.strokeStyle=n.stroke;c.lineWidth=n.width||3;c.lineJoin='round';c.lineCap='round';c.stroke();}c.restore();}return canvas;
 }
 

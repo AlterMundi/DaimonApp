@@ -10,7 +10,7 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from dashboard.openai_live_native_results import return_native_part
-from dashboard.openai_live_native_backend import return_next_native_part
+from dashboard.openai_live_native_backend import return_next_native_part,return_one_native_part
 from dashboard.openai_live_visits import LiveCreations
 from dashboard.provider import ProviderUnavailable
 import dashboard_openai_live_native_results as fixtures
@@ -39,6 +39,119 @@ class Renewal(unittest.TestCase):
         f=self.f;command=f.updates[-1]
         f.visits.event(self.current,100,f.owner,{'type':command['type']+'ed',
             'event_id':str(uuid.uuid4()),'client_event_id':command['event_id']})
+
+    def second_original(self):
+        f=self.f;value=f.visits.read(self.origin,100,f.owner)
+        other='second-client-delegation';work=copy.deepcopy(value['delegations'][f.delegation])
+        root=str(uuid.uuid4());intent=str(uuid.uuid4());old=work['native_work']['root']
+        work['native_work'].update(root=root,intent_id=intent)
+        native=copy.deepcopy(f.provider.retained[old]);native.update(id=root)
+        native['foreground_delegation']['intent_id']=intent
+        f.provider.retained[root]=native;value['delegations'][other]=work;f.visits._write(value)
+        return other
+
+    def other_emit(self,delegation,offset=0):
+        f=self.f
+        return return_native_part(f.visits,self.current,100,f.owner,delegation,
+            f.source,f.revision,offset,f.provider,f.channel,source_visit=self.origin)
+
+    def test_two_originals_share_one_historical_append_without_copying_ack(self):
+        other=self.second_original();self.replacement();first=self.emit();self.ack()
+        shared=self.other_emit(other)
+        self.assertEqual(shared['state'],'already_forwarded');self.assertEqual(len(self.f.updates),1)
+        origin=self.f.visits.read(self.origin,100,self.f.owner)
+        claim=next(v for v in origin['native_return_claims'].values() if v['delegation']==other)
+        self.assertEqual(claim['shared_delegation'],self.f.delegation)
+        target=self.f.visits.read(self.current,100,self.f.owner)
+        self.assertEqual(len(target['native_result_updates']),1,'No second append row or manufactured ACK')
+        self.assertEqual(claim['key'],next(iter(target['native_result_updates'])))
+        self.f.visits=LiveCreations(self.f.root);self.replacement()
+        self.assertEqual(self.other_emit(other)['state'],'already_forwarded')
+        self.assertEqual(len(self.f.updates),1)
+
+    def test_shared_original_first_seen_after_another_replacement_keeps_flat_reference(self):
+        other=self.second_original();target=self.replacement();self.emit();self.ack()
+        self.replacement()
+        # Close legitimately changes the old target; alias association must not.
+        before=self.f.visits._path(target).read_bytes()
+        result=self.other_emit(other)
+        self.assertEqual(result['forwarded_visit'],target);self.assertEqual(len(self.f.updates),1)
+        self.assertEqual(self.f.visits._path(target).read_bytes(),before)
+        claim=next(v for v in self.f.visits.read(self.origin,100,self.f.owner)['native_return_claims'].values() if v['delegation']==other)
+        self.assertEqual(claim['target'],target)
+        self.assertNotIn('content',claim);self.assertNotIn('command',claim)
+
+    def test_shared_unknown_holds_without_new_event_or_claim(self):
+        other=self.second_original();self.replacement();self.emit()
+        result=self.other_emit(other);self.assertEqual(result['state'],'held')
+        self.assertEqual(len(self.f.updates),1)
+        self.assertEqual(len(self.f.visits.read(self.origin,100,self.f.owner)['native_return_claims']),1)
+        self.ack();self.assertEqual(self.other_emit(other)['state'],'already_forwarded')
+        self.assertEqual(len(self.f.updates),1)
+
+    def test_shared_long_fragments_keep_each_original_cursor_order(self):
+        other=self.second_original();f=self.f;f.text='Río Cobre: fuente larga y exacta. '*45
+        self.replacement();first=self.emit();self.ack()
+        with self.assertRaises(ValueError):self.other_emit(other,first['next_offset'])
+        shared=self.other_emit(other);self.assertEqual(shared['next_offset'],first['next_offset'])
+        self.replacement();second=self.other_emit(other,first['next_offset']);self.ack()
+        self.assertEqual(self.emit(first['next_offset'])['state'],'already_forwarded')
+        self.assertEqual(len(f.updates),2)
+        recovered=''.join(v['content'].split('\n',1)[1] for v in f.updates)
+        self.assertEqual(recovered,f.text[:second['next_offset']])
+
+    def test_shared_reference_never_bypasses_fresh_original_source_proof(self):
+        other=self.second_original();self.replacement();self.emit();self.ack()
+        value=self.f.visits.read(self.origin,100,self.f.owner);root=value['delegations'][other]['native_work']['root']
+        self.f.provider.retained[root]['local_turn']=99
+        with self.assertRaises(ValueError):self.other_emit(other)
+        self.assertEqual(len(self.f.updates),1)
+        self.assertEqual(len(self.f.visits.read(self.origin,100,self.f.owner)['native_return_claims']),1)
+
+    def test_current_delegations_still_receive_their_own_provider_responses(self):
+        other=self.second_original();self.emit();self.ack()
+        result=self.other_emit(other)
+        self.assertEqual(result['state'],'sent');self.assertEqual(len(self.f.updates),2)
+        self.assertEqual(self.f.updates[-1]['delegation_id'],other)
+        self.assertNotIn('native_return_claims',self.f.visits.read(self.origin,100,self.f.owner))
+
+    def test_shared_ack_does_not_skip_another_pending_fragment_for_that_original(self):
+        other=self.second_original();self.replacement();self.emit();self.ack()
+        f=self.f;source,revision=f.source,f.revision
+        f.source='native:78';f.revision='e'*64;self.other_emit(other)
+        f.source=source;f.revision=revision
+        with self.assertRaises(ValueError):self.other_emit(other)
+        self.assertEqual(len(f.updates),2)
+
+    def test_shared_worker_still_requires_fresh_covered_association(self):
+        other=self.second_original();f=self.f
+        f.source='delivery:00000000-0000-4000-8000-000000000001';f.source_fields.update(kind='worker_result',current=True)
+        original=f.visits.read(self.origin,100,f.owner);other_root=original['delegations'][other]['native_work']['root']
+        def trace(root):
+            return {'id':root,'entry_binding':f.owner['entry_binding'],'routes':[{'target_available':True,'results':[{'source':f.source,'revision':f.revision,'instruction_covered':root!=other_root,'current':True,'correction_pending':False}]}]}
+        f.provider.conversation_input_trace=trace
+        self.replacement();self.emit();self.ack()
+        with self.assertRaises(ValueError):self.other_emit(other)
+        self.assertEqual(len(f.updates),1)
+        self.assertEqual(len(f.visits.read(self.origin,100,f.owner)['native_return_claims']),1)
+
+    def test_revocation_during_shared_association_retains_receipt_without_exposure_or_replay(self):
+        other=self.second_original();self.replacement();self.emit();self.ack();f=self.f;write=f.visits._write
+        def revoked(value):
+            write(value)
+            if any(c.get('shared_delegation') for c in value.get('native_return_claims',{}).values()):f.provider.allowed=False
+        with patch.object(f.visits,'_write',revoked):
+            with self.assertRaises(ProviderUnavailable):self.other_emit(other)
+        f.provider.allowed=True
+        self.assertEqual(self.other_emit(other)['state'],'already_forwarded')
+        self.assertEqual(len(f.updates),1)
+
+    def test_shared_claim_stays_held_if_actual_ack_row_changes(self):
+        other=self.second_original();self.replacement();self.emit();self.ack();self.other_emit(other)
+        value=self.f.visits.read(self.current,100,self.f.owner)
+        next(iter(value['native_result_updates'].values()))['state']='sent';self.f.visits._write(value)
+        with self.assertRaises(ValueError):self.other_emit(other)
+        self.assertEqual(len(self.f.updates),1)
 
     def test_late_result_uses_original_work_proof_and_no_foreign_delegation_id(self):
         target=self.replacement();result=self.emit()
@@ -155,6 +268,28 @@ class Renewal(unittest.TestCase):
         self.assertEqual(len(f.writes),1)
         self.replacement();self.assertEqual(self.emit()['state'],'already_forwarded')
         self.assertEqual(len(f.updates),1)
+
+    def test_replacement_and_fresh_reader_accept_correction_after_old_partial(self):
+        f=self.f;old='delivery:00000000-0000-4000-8000-000000000001'
+        new='delivery:00000000-0000-4000-8000-000000000003'
+        f.source=old;f.text='Previous long result. '*60;f.source_fields.update(kind='worker_result',current=True)
+        prior={'source':old,'revision':f.revision,'instruction_covered':True,'current':True,'correction_pending':False}
+        corrected={'source':new,'revision':'e'*64,'instruction_covered':True,'current':True,'correction_pending':False}
+        f.provider.conversation_input_trace=lambda root:{'id':root,'entry_binding':f.owner['entry_binding'],
+            'routes':[{'target_available':True,'results':[prior,corrected]}]}
+        f.provider.presentation_list=lambda *args:{'binding':f.owner['binding'],'items':[],
+            'cursor':{'native':77,'delivery':0},'more':False}
+        first=self.emit();self.ack();self.replacement()
+        f.visits=LiveCreations(f.root);self.replacement()
+        prior.update(current=False,revision='c'*64)
+        f.source=new;f.revision=corrected['revision'];f.text='The corrected result is Río Cobre.'
+        returned=return_one_native_part(f.visits,self.current,100,f.owner,f.delegation,
+            f.provider,f.channel,source_visit=self.origin)
+        self.assertEqual(returned['source'],new);self.assertIn(f.text,f.updates[-1]['content'])
+        self.assertEqual(len(f.updates),2);self.assertEqual(len(f.writes),1)
+        origin=f.visits.read(self.origin,100,f.owner)
+        kept=next(r for r in origin['native_result_updates'].values() if r['source']==old)
+        self.assertEqual(kept['state'],'context_injected');self.assertEqual(kept['next_offset'],first['next_offset'])
 
 
 if __name__=='__main__':unittest.main()

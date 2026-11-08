@@ -1,3 +1,11 @@
+# Integration requirements
+
+Read `CONTRIBUTING.md` before integration. Its independent-review requirement
+for binding, security and persistent-state changes remains mandatory when an old
+review-permission question is withdrawn. Reuse the existing authorized review
+route; do not create another approval question. Source checks and receiving
+adoption are separate from a completed independent review.
+
 Ordinary voice messages already recording survive browser tab visibility changes,
 as do their in-flight original uploads. Keep late microphone permission blocked
 while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
@@ -47,6 +55,20 @@ first-person action claims as belonging to that earlier encounter; a historical
 return is not newly executed work. Keep useful late answers without interrupting
 an unrelated new topic with old progress. The brief is behavior guidance, not
 proof of spoken uptake. Do not replay work or unknown appends to repair phrasing.
+
+Public-native Avatar entry reads the current integrating thread through the
+existing read-only native observer AND raw owner-scoped original/result readers;
+visible ledger updates may not yet be incorporated into native history. Merge
+them with the prior voice checkpoint by source timestamps/capture order, never
+by modality or read/append order. A native item read now can predate voice.
+Preserve whole source text, explicit earlier-history/unknown-order markers,
+source revisions and machine-transcription attribution within existing setup
+bounds. Charge startup context after both JSON escaping layers and measure the
+actual message envelope/policy against the complete32KiB specification. Do not
+replace this with raw text bytes or a fixed envelope allowance. Do not use
+media-retiring convenience readers, expose private analysis,
+start work or enable another provider to obtain startup context. Source/transport
+qualification is not proof of useful speech or physical continuity.
 
 Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
 not native playback or an advertised capability. Preserve normalized mix,
@@ -575,3 +597,10 @@ companion.permitted; add only the exact intended action and retain monitor,
 foreign actor, CSRF and unknown-path refusals. A provider socket smoke test does
 not establish browser grant admission. No grant reenrollment follows from an
 ordinary route correction.
+
+The two exact inert avatar-model fixtures (`tests/avatar_layer_model.mjs` and
+`tests/avatar_layer_model_browser.cjs`) use the existing always-run dashboard
+validator/store gate. They do not select unchanged native qualification. Unknown
+test paths and actual Rust/dependency changes retain normal native checks.
+The scope regression evaluates the actual workflow program and confirms the
+fixture's invocation through dashboard_avatar_workshop.py.

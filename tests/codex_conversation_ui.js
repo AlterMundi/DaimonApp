@@ -170,7 +170,7 @@ async function historyFixture(){
 }
 async function renewalFixture(){
  let now=0,listener,captureCount=0,permissions=0,stops=0,finishes=0,root,rootStarted=0,defer=false,deliver,changeBudget=false;
- const timers=new Set(),sockets=[],peers=[],records=[],uploads=[],states=[],audio=[];
+ const timers=new Set(),sockets=[],peers=[],records=[],uploads=[],states=[],audio=[],observers=[];
  const setTimer=(fn,ms)=>{const timer={fn,at:now+ms};timers.add(timer);return timer;};
  const clearTimer=timer=>timers.delete(timer);
  const DateClock={now:()=>now};
@@ -205,7 +205,7 @@ async function renewalFixture(){
   async setRemoteDescription(){this.connectionState='connected';this.onconnectionstatechange();this.ontrack({streams:[{peer:this}]});}
   close(){this.connectionState='closed';this.onconnectionstatechange?.();}
  }
- class Audio{constructor(){audio.push(this);this.plays=0;}play(){this.plays++;return Promise.resolve();}pause(){}}
+ class Audio{constructor(){audio.push(this);this.plays=0;this.paused=true;}play(){this.plays++;this.paused=false;return Promise.resolve();}pause(){this.paused=true;}}
  const store={list:async()=>[...records],put:async value=>{records.push(value);},
   sealNative:async(value,fragments)=>{for(const fragment of fragments){const i=records.indexOf(fragment);assert(i>=0);records.splice(i,1);}records.push(value);},
   remove:async value=>{records.splice(records.indexOf(value),1);}};
@@ -227,12 +227,27 @@ async function renewalFixture(){
   const peer=socket.peer;peer.connectionState='disconnected';peer.onconnectionstatechange();
   socket.onmessage({data:JSON.stringify({type:'closed',id:socket.id,confirmed:true,successor_ready:ready,reason:'native_transport_closed'})});
  }
+ window.WebRtcNativeAudio={observe:async(stream,options)=>{const row={stream,options,closed:false};observers.push(row);return {close(){row.closed=true;options.onActivity(0);}};}};
  assert.equal(await engine.start(),true);frame(1);assert.equal(audio[0].plays,1);
+ await until(()=>observers.length===1);observers[0].options.onActivity(.1);
+ assert.equal(states.at(-1).outputLevel,.5,'Native Codex output drives the existing transient mouth level');
+ assert.equal(states.at(-1).playback,'playing');
+ engine.pause();assert.equal(states.at(-1).outputLevel,0);observers[0].options.onActivity(.2);assert.equal(states.at(-1).outputLevel,0);
+ engine.resume();observers[0].options.onActivity(.1);assert.equal(states.at(-1).outputLevel,.5);
+ engine.setEnabled(false);observers[0].options.onActivity(.2);assert.equal(states.at(-1).outputLevel,0);
+ engine.setEnabled(true);observers[0].options.onActivity(Infinity);assert.equal(states.at(-1).outputLevel,0);
+ observers[0].options.onActivity(.1);assert.equal(states.at(-1).outputLevel,.5);
+ peers[0].ontrack({streams:[{peer:peers[0],replacement:true}]});await until(()=>observers.length===2);
+ assert.equal(states.at(-1).outputLevel,0,'Replacing a track immediately clears its old mouth level, including a silent successor');
+ observers[0].options.onActivity(.2);assert.equal(states.at(-1).outputLevel,0,'Same-peer retired-track callbacks are ignored');
+ const firstPhysicalObserver=observers[1];firstPhysicalObserver.options.onActivity(.1);assert.equal(states.at(-1).outputLevel,.5);
  now=50000;defer=true;terminal(sockets[0]);await until(()=>!!deliver);
  frame(2);assert.equal(stops,0);assert.equal(captureCount,1);
+ assert(firstPhysicalObserver.closed&&firstPhysicalObserver.options.signal.aborted,'Renewal closes the retired physical output observer');assert.equal(states.at(-1).outputLevel,0);
  engine.pause();deliver();deliver=undefined;await until(()=>peers.length===2&&peers[1].connectionState==='connected');
  assert.equal(engine.paused,true);assert.equal(audio[1].plays,0,'Renewal must not override an explicit playback pause');
  engine.resume();assert.equal(audio[1].plays,1);frame(3);
+ await until(()=>observers.length===3);observers[2].options.onActivity(.1);assert.equal(states.at(-1).outputLevel,.5);firstPhysicalObserver.options.onActivity(.2);assert.equal(states.at(-1).outputLevel,.5,'Old track callbacks cannot animate its successor');
  now=100000;peers[1].connectionState='disconnected';peers[1].onconnectionstatechange();
  now=104000;for(const timer of [...timers])if(timer.at<=now&&timers.delete(timer))timer.fn();
  await until(()=>peers.length===3&&peers[2].connectionState==='connected');frame(4);
@@ -244,6 +259,7 @@ async function renewalFixture(){
  now=599000;for(const timer of [...timers])if(timer.at<=now&&timers.delete(timer))timer.fn();
  await until(()=>!engine.active);
  assert.equal(stops,1);assert.equal(finishes,1);assert.equal(records.length,0);
+ assert(observers.every(row=>row.closed&&row.options.signal.aborted));assert.equal(states.at(-1).outputLevel,0);
  assert.equal(uploads.length,1);assert.equal(uploads[0].blob.size,4*32000+44);
  const pcm=new Uint8Array(await uploads[0].blob.slice(44).arrayBuffer());
  for(let n=0;n<4;n++)assert(pcm.subarray(n*32000,(n+1)*32000).every(value=>value===n+1),'Capture lost or duplicated a physical-generation/setup-gap frame');
@@ -261,6 +277,14 @@ async function renewalFixture(){
  assert.equal(await engine.start(),true);changeBudget=true;terminal(sockets.at(-1));await until(()=>!engine.active);
  assert.equal(sockets.at(-1).sent.some(value=>value.type==='offer'),false,'Changed PCM allowance must fail before another native start');
  console.log('Automatic renewal cancellation and changed-admission fences preserve the next explicit microphone visit.');
+ let finishObserver,lateClosed=false;
+ window.WebRtcNativeAudio.observe=()=>new Promise(resolve=>{finishObserver=()=>resolve({close(){lateClosed=true;}});});
+ assert.equal(await engine.start(),true);await until(()=>!!finishObserver);await engine.hold();finishObserver();await sleep(2);
+ assert(lateClosed,'Observer preparation completing after closure releases its own graph');assert.equal(states.at(-1).outputLevel,0);
+ window.WebRtcNativeAudio.observe=async()=>{throw Error('Synthetic cosmetic observer unavailable');};
+ assert.equal(await engine.start(),true,'Cosmetic failure must not stop voice or start another player');await sleep(2);assert.equal(engine.active,true);assert.equal(audio.at(-1).plays,1);await engine.hold();
+ console.log('Native Codex mouth: real-output callback, mute/pause/silence, track/physical retirement, late preparation and optional-observer failure fences passed.');
+
 
 }
 

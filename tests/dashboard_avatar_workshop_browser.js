@@ -46,6 +46,148 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  if(process.env.OUTPUT_MOUTH_ONLY==='1'){
+   await page.goto(origin);
+   const input=process.env.AVATAR_MOUTH_DESIGN?JSON.parse(fs.readFileSync(process.env.AVATAR_MOUTH_DESIGN,'utf8')):null;
+   const original=process.env.AVATAR_MOUTH_ORIGINAL?JSON.parse(fs.readFileSync(process.env.AVATAR_MOUTH_ORIGINAL,'utf8')).record.design:null;
+   const result=await page.evaluate(async({input,original})=>{
+    const {fresh}=await import('/assets/avatar-workshop/experiments/school-avatar-quest/model.mjs'),{prepare}=await import('/assets/avatar-workshop/renderer.mjs');
+    const design=input||{...fresh(),body:'custom-model',characterStyle:'model/v1',avatarModel:{schema:'ascii-avatar-model/v1',id:'mouth-fixture',name:'Mouth fixture',nodes:[{id:'head',type:'ellipse',cx:288,cy:200,rx:100,ry:100,fill:'#ffffff'},{id:'anchor-mouth',type:'path',path:[['M',288,230]],fill:null,pivot:[288,230]},{id:'jaw',type:'ellipse',cx:288,cy:240,rx:55,ry:12,fill:'#00ffff',parent:'anchor-mouth',pivot:[288,230]}],animations:Object.fromEntries(['calm','curious','joy','sad','anger','uncertain','focus','welcome'].map(cue=>[cue,[{node:'head',channel:'x',frames:Array(12).fill(0)}]])),anchors:{compact:[160,80,256,320]}}};
+    const frozen=JSON.stringify(design),base=original||structuredClone(design);if(!original){base.avatarModel.nodes=base.avatarModel.nodes.filter(n=>n.id!=='anchor-mouth');delete base.avatarModel.nodes.find(n=>n.id==='jaw').parent;}
+    let stills=0,mouthChanges=0;
+    for(const width of [640,148]){
+     const a=document.createElement('canvas'),b=document.createElement('canvas');a.style.width=b.style.width=width+'px';document.body.append(a,b);const old=prepare(a,base),paint=prepare(b,design);
+     for(const cue of ['calm','curious','joy','sad','anger','uncertain','focus','welcome','sleep']){
+      old.selectCue(cue);paint.selectCue(cue);paint.setSpeechLevel(0);
+      for(let frame=0;frame<12;frame++){old(frame);paint(frame);if(a.toDataURL()!==b.toDataURL())throw Error('Adding an inert mouth anchor changed the authored drawing');stills++;}
+      paint(0);const rest=b.toDataURL();if(!paint.setSpeechLevel(1))throw Error('Mouth anchor unavailable');paint(0);if(rest!==b.toDataURL())mouthChanges++;paint.setSpeechLevel(0);paint(0);if(rest!==b.toDataURL())throw Error('Speech release did not restore the exact authored expression');
+     }a.remove();b.remove();
+    }
+    return {stills,mouthChanges,unchanged:JSON.stringify(design)===frozen,draft:design};
+   },{input,original});
+   assert.equal(result.stills,216);assert.equal(result.mouthChanges,18);assert(result.unchanged);assert.equal(errors.length,0,errors.join('\n'));
+   await page.evaluate(async design=>{
+    const write=async body=>{const r=await fetch('/api/interaction/avatars',{method:'POST',headers:{'X-Test-Actor':'100','X-Dashboard-CSRF':'test-action','Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw Error(await r.text());return r.json();};
+    const id=crypto.randomUUID();await write({action:'save',id,design,parentId:null,generation:0});await write({action:'activate',id,generation:1});testAvatar.reset();testAvatar.bind('actor100');
+   },result.draft);
+   await page.locator('#conversation-companion canvas').waitFor();
+   const read=()=>page.locator('#conversation-companion canvas').evaluate(c=>c.toDataURL());
+   const still=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),still,'Reduced motion suppresses mouth motion');
+   await page.emulateMedia({reducedMotion:'no-preference'});
+   const transition=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas');testAvatar.speechLevel(0);const still=c.toDataURL();testAvatar.speechLevel(1);const open=c.toDataURL();testAvatar.speechLevel(0);return {still,open,rest:c.toDataURL()};});
+   assert.notEqual(transition.open,transition.still);assert.equal(transition.rest,transition.still,'Host restores the current exact authored frame');
+   const resume=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),pause=document.querySelector('#avatar-workshop-pause');testAvatar.speechLevel(1);const open=c.toDataURL();pause.click();const held=c.toDataURL();testAvatar.speechLevel(1);const still=c.toDataURL();pause.click();return {open,held,still,resumed:c.toDataURL()};});
+   assert.notEqual(resume.open,resume.held);assert.equal(resume.held,resume.still);assert.equal(resume.resumed,resume.open,'Resume restores current held audio level without waiting for another output change');
+   await page.locator('#avatar-workshop-pause').click();const paused=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),paused,'Explicit avatar pause suppresses live mouth movement');
+   await page.locator('#avatar-workshop-pause').click();await page.evaluate(()=>testAvatar.speechLevel(1));await page.locator('#avatar-workshop-open').click();const wardrobe=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),wardrobe,'Wardrobe keeps the active portrait still');
+   await page.evaluate(()=>{testAvatar.reset();testAvatar.speechLevel(1);testAvatar.bind('actor100');});await page.locator('#conversation-companion canvas').waitFor();
+   const loaded=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),open=c.toDataURL();testAvatar.speechLevel(0);const rest=c.toDataURL();testAvatar.speechLevel(1);return {open,rest,resumed:c.toDataURL()};});assert.notEqual(loaded.open,loaded.rest);assert.equal(loaded.resumed,loaded.open,'A portrait loaded after a current output level arrives restores that same level');
+   await page.evaluate(()=>{testAvatar.reset();testAvatar.bind('actor100');});await page.locator('#conversation-companion canvas').waitFor();
+   const reset=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),rest=c.toDataURL();testAvatar.speechLevel(0);return {rest,after:c.toDataURL()};});assert.equal(reset.rest,reset.after,'Actor reset discards the old transient output level');
+   console.log('PASS actual glyph renderer:216 authored large/compact frames unchanged at rest,18 cue/view mouth transitions restore exactly, no saved design mutation; no providers');return;
+  }
+  if(process.env.OUTPUT_ACTIVITY_ONLY==='1'){
+   await page.goto(origin);await page.addScriptTag({url:origin+'/assets/webrtc-native-audio.js'});
+   const result=await page.evaluate(async()=>{
+    const context=new AudioContext({sampleRate:24000}),osc=context.createOscillator(),gain=context.createGain(),destination=context.createMediaStreamDestination(),audio=new Audio(),levels=[];
+    gain.gain.value=0;osc.frequency.value=440;osc.connect(gain).connect(destination);osc.start();await context.resume();audio.srcObject=destination.stream;await audio.play();
+    let observer;const until=async test=>{for(let i=0;i<100;i++){if(test())return;await new Promise(r=>setTimeout(r,30));}throw Error('Actual output activity not observed');};
+    try{
+     observer=await WebRtcNativeAudio.observe(destination.stream,{sessionSeconds:300,isPlaying:()=>!audio.paused&&!audio.muted,onActivity:value=>levels.push(value)});
+     await until(()=>levels.length>=2);const silence=levels.every(v=>v===0);gain.gain.value=.2;await until(()=>levels.some(v=>v>.1));const speech=levels.at(-1);
+     audio.muted=true;await until(()=>levels.at(-1)===0);const muted=levels.at(-1);audio.muted=false;await until(()=>levels.at(-1)>.1);
+     gain.gain.value=0;await until(()=>levels.at(-1)===0);observer.close();const count=levels.length;await new Promise(r=>setTimeout(r,300));
+     return {silence,speech,muted,afterClose:levels.length-count,stillPlaying:!audio.paused,nativeOwnerCreated:!!window.NativeSpeechAudio};
+    }finally{observer?.close();audio.pause();audio.srcObject=null;osc.stop();for(const track of destination.stream.getTracks())track.stop();await context.close();}
+   });
+   assert(result.silence);assert(result.speech>.1);assert.equal(result.muted,0);assert.equal(result.afterClose,0);assert(result.stillPlaying,'Cosmetic observer close never pauses or replaces the player');assert.equal(result.nativeOwnerCreated,false);
+   assert.equal(errors.length,0,errors.join('\n'));console.log('PASS actual Chromium remote-track activity: silent graph observes synthesized PCM/silence/mute, exports no PCM, closes without stopping existing playback; no microphone/provider/device hearing claim');return;
+  }
+  if(process.env.COMPACT_PREVIEW_ONLY==='1'){
+   await page.goto(origin);await page.locator('#avatar-workshop-open').click();
+   const editor=page.frameLocator('iframe'),panel=page.locator('.avatar-workshop-compact-preview');
+   await editor.locator('#save').waitFor({state:'visible'});
+   assert(await editor.locator('#preview-saved').isDisabled(),'Unsaved designs cannot masquerade as immutable revisions');
+   await editor.locator('#save').click();
+   await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#preview-saved').disabled);
+   const snapshot=()=>page.evaluate(async()=>{const h={'X-Test-Actor':'100'},s=await(await fetch('/api/interaction/avatars',{headers:h})).json();return {state:s,record:await(await fetch('/api/interaction/avatars/'+s.editing,{headers:h})).json()};});
+   const saved=await snapshot(),writes=[];page.on('request',r=>{if(r.method()!=='GET'&&r.url().includes('/api/'))writes.push(r.url());});
+   await editor.locator('#preview-saved').click();await panel.waitFor({state:'visible'});
+   assert.equal(await panel.getAttribute('data-revision'),saved.record.id);
+   assert.equal(await panel.getAttribute('data-sha256'),saved.record.sha256);
+   const pixels=await panel.locator('canvas').evaluate(c=>({url:c.toDataURL(),ink:c.getContext('2d').getImageData(0,0,c.width,c.height).data.some((v,i)=>i%4===3&&v)}));
+   assert(pixels.ink,'Actual saved renderer paints nonempty compact canvas');
+   assert(await page.locator('#conversation-companion pre').isVisible(),'Preview does not replace the previous active avatar');
+   await page.waitForTimeout(450);assert.equal(await panel.locator('canvas').evaluate(c=>c.toDataURL()),pixels.url,'Reduced motion stays still');
+   await panel.getByRole('button',{name:'Animate once',exact:true}).click();
+   await page.waitForTimeout(4100);const ended=await panel.locator('canvas').evaluate(c=>c.toDataURL());
+   await page.waitForTimeout(400);assert.equal(await panel.locator('canvas').evaluate(c=>c.toDataURL()),ended,'Explicit animation ends without a repeating timer');
+   for(const [width,height] of [[375,812],[320,430]]){
+    await page.setViewportSize({width,height});
+    const bounds=await panel.evaluate(p=>({panel:p.getBoundingClientRect().toJSON(),close:p.querySelector('button:last-child').getBoundingClientRect().toJSON(),canvas:p.querySelector('canvas').getBoundingClientRect().toJSON(),dialog:p.parentElement.getBoundingClientRect().toJSON()}));
+    assert.equal(Math.round(bounds.canvas.width),94);assert.equal(Math.round(bounds.canvas.height),90);
+    assert(bounds.close.bottom<=bounds.dialog.bottom&&bounds.close.right<=width,'Compact preview controls remain reachable on short phones');
+   }
+   if(process.env.COMPACT_PREVIEW_SCREENSHOT)await page.screenshot({path:process.env.COMPACT_PREVIEW_SCREENSHOT});
+   assert.deepEqual(await snapshot(),saved,'Reading/painting/animation preserve the immutable record and selection generation');assert.deepEqual(writes,[]);
+   await panel.getByRole('button',{name:'Close preview',exact:true}).click();await panel.waitFor({state:'detached'});
+   let release,arrived;const blocked=new Promise(resolve=>arrived=resolve);
+   await page.route('**/api/interaction/avatars/'+saved.record.id,async route=>{const response=await route.fetch();arrived();await new Promise(resolve=>release=resolve);await route.fulfill({response});});
+   await editor.locator('#preview-saved').click();await blocked;
+   await page.evaluate(()=>{testActor='200';testAvatar.bind('actor200');});release();
+   await page.waitForTimeout(200);assert.equal(await panel.count(),0,'Late old-actor record cannot reopen the preview');
+   await page.unroute('**/api/interaction/avatars/'+saved.record.id);
+   await page.evaluate(()=>{testActor='100';testAvatar.bind('actor100');});await page.locator('#avatar-workshop-open').click();
+   await editor.locator('#preview-saved:not([disabled])').waitFor();
+   await page.route('**/api/interaction/avatars/'+saved.record.id,async route=>{const response=await route.fetch(),record=await response.json();record.sha256='0'.repeat(64);await route.fulfill({response,json:record});});
+   await editor.locator('#preview-saved').click();await editor.locator('#message').filter({hasText:'no coincide'}).waitFor();
+   assert.equal(await panel.count(),0,'Hash mismatch never displays a claimed saved revision');
+   await page.unroute('**/api/interaction/avatars/'+saved.record.id);
+   await editor.locator('#preview-saved').click();await panel.waitFor({state:'visible'});
+   await page.getByRole('button',{name:'Voice',exact:true}).click();assert.equal(await panel.count(),0,'Voice tab clears the portrait preview');
+   assert.deepEqual(await snapshot(),saved);assert.deepEqual(writes,[]);assert.equal(errors.length,0,errors.join('\n'));
+   console.log('PASS saved compact preview: exact immutable ID/hash, actual Canvas, finite animation/reduced motion, narrow phone controls, no writes/activation, stale actor refusal and hash mismatch; zero providers');return;
+  }
+  if(process.env.AVATAR_LOAD_RECOVERY_ONLY==='1'){
+   // Isolate the host's retry from the editor's independent snapshot/get reads.
+   // The full journey below exercises the real editor separately.
+   await page.route('**/assets/avatar-workshop/experiments/school-avatar-quest/index.html',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Host retry fixture</title>'}));
+   await page.goto(origin+'?defer_bind=1');
+   const before=await page.evaluate(async()=>{
+    const {fresh}=await import('/assets/avatar-workshop/experiments/school-avatar-quest/model.mjs');
+    const id=crypto.randomUUID(),write=async body=>{
+     const r=await fetch('/api/interaction/avatars',{method:'POST',headers:{'X-Test-Actor':'100','X-Dashboard-CSRF':'test-action','Content-Type':'application/json'},body:JSON.stringify(body)});
+     if(!r.ok)throw Error('Synthetic saved selection refused: '+await r.text());return r.json();
+    };
+    await write({action:'save',id,design:fresh(),parentId:null,generation:0});
+    return write({action:'activate',id,generation:1});
+   });
+   let reads=0,recordReads=0,fail=true;const writes=[];
+   await page.route('**/api/interaction/avatars/'+before.active,async route=>{recordReads++;await route.continue();});
+   page.on('request',r=>{if(r.method()!=='GET'&&r.url().includes('/api/'))writes.push(r.url());});
+   await page.route('**/api/interaction/avatars',async route=>{
+    if(route.request().method()==='GET'){reads++;if(fail){await route.fulfill({status:503,json:{detail:'Synthetic temporary read failure'}});return;}}
+    await route.continue();
+   });
+   await page.evaluate(()=>testAvatar.bind('actor100'));
+   await page.waitForFunction(()=>document.querySelector('#avatar-workshop-status').textContent.includes('workshop'));
+   assert.equal(await page.locator('.avatar-surface').getAttribute('aria-busy'),'false','Failed read is terminal, not perpetual loading');
+   assert.equal(await page.locator('#conversation-companion pre').isVisible(),false,'A failed custom read never substitutes the default');
+   await page.evaluate(()=>{testAvatar.bind('actor100');testAvatar.bind('actor100');});
+   assert.equal(reads,1,'Ordinary polling does not retry a failed load');
+   fail=false;await page.locator('#avatar-workshop-open').click();
+   await page.locator('.avatar-surface[data-avatar-state="custom"]').waitFor();
+   assert.equal(reads,2,'Explicit recovery reads the snapshot once');
+   assert.equal(recordReads,1,'Explicit recovery loads the selected revision once');
+   assert.equal(await page.locator('#avatar-workshop-status').textContent(),'');
+   const after=await page.evaluate(async()=>{
+    const r=await fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}});return r.json();
+   });
+   assert.deepEqual(after,before,'Recovery keeps immutable versions, active pointer and generation');
+   assert.deepEqual(writes,[],'Loading recovery never saves, activates or starts voice');
+   assert.equal(errors.length,0,errors.join('\n'));
+   console.log('PASS failed avatar load ends busy state; explicit workshop retry restores exact saved selection without writes/default flash/automatic retry; zero providers');return;
+  }
   if(process.env.ARTISTIC_CUES_ONLY==='1'){
    const {fixture}=await import('file://'+path.resolve('tests/avatar_layer_model.mjs'));
    await page.goto(origin);await page.waitForFunction(()=>!document.querySelector('.avatar-surface').getAttribute('aria-busy')||document.querySelector('.avatar-surface').getAttribute('aria-busy')==='false');

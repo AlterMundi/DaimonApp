@@ -58,6 +58,27 @@ pub(super) async fn tick(app: &App) -> Result<()> {
         futures_util::future::join_all(selected.into_iter().map(|selected| async move {
             let exact=app.shared.store.workflow_native_collection(selected.local)?;
             if exact.as_ref().is_some_and(|v|!v.live) {return Ok(());}
+            if exact.is_none() {
+                let handle=app.workers.lock().await.get(&selected.key).cloned();
+                let active=handle.and_then(|w|w.steer.lock().expect("steer mutex poisoned").clone());
+                if let Some(active)=active.filter(|a|a.turn_id==selected.local)
+                    && let Some(raw)=app.shared.store.bot_state_value(&format!("collector_attachment:{}",selected.local))?
+                {
+                    let receipt:serde_json::Value=serde_json::from_str(&raw)?;
+                    if receipt["native_thread"]==selected.native
+                        && let Some(physical)=receipt["native_turn"].as_str()
+                        && let Some(observation)=app.shared.codex.terminal_observation(&selected.native,physical).await?
+                    {
+                        let (response,received)=oneshot::channel();
+                        if active.sender.send(CodexSteerRequest{tool_output:None,observation:Some(observation),images:vec![],text:String::new(),client_message_id:None,goal:None,admission_check:None,response}).is_ok()
+                            && matches!(tokio::time::timeout(std::time::Duration::from_secs(2),received).await,Ok(Ok(Ok(_)))) {
+                            // Only lifecycle was reconciled. Full output and its
+                            // collection checkpoint remain retained and unread.
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             let history=if let Some(exact)=&exact {
                 if app.shared.config.telegram.enabled && app.shared.config.interaction.as_ref().is_some_and(|c|c.human_id==selected.human && c.entry()==selected.key && c.telegram_projection) {
                     app.shared.store.topic_projection_register(selected.local,selected.human,selected.key)?;

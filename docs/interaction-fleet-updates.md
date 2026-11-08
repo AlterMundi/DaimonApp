@@ -16,6 +16,18 @@ handoff; a web-only change does not restart native work. Preserve paused/blocked
 goals and uncertain inputs. Never clear journals or replay a command to manufacture
 convergence. Reuse actual outcomes after a failed verifier.
 
+Apply the short path to the whole delivery, from preparation through installation
+and verification. Reuse qualified unchanged packages and observed receipts rather
+than adding another build, review or approval gate. A task's clean checkpoint
+does not reserve native idle: active goals may immediately continue. When selected
+maintenance needs that boundary, prepare the existing finite owner-scoped
+pause/restoration transaction before pausing eligible goals, then perform the
+handoff and verify conditional restoration. Preserve prior pauses, blocked goals,
+later human direction and accounting; do not use maintenance holds as evidence
+of useful heartbeat availability. An expired uncertain transaction remains
+historical evidence after a later explicit goal control supersedes its authority;
+it must neither be replayed nor block a freshly observed operation forever.
+
 Keep one deployment checkpoint containing each actual receiver, prior/current
 selection, exact source/assets/reader/configuration preservation, adoption outcome,
 rollback and concrete pending reason. Verify own actor/grant and private API refusal
@@ -157,3 +169,62 @@ native turn after the replacement. A running local row or an owner-command ACK
 alone is insufficient. If the native turn has finished, observe its retained
 terminal/result path instead. Keep the failed operator receipt and record the
 separate verification outcome; never rerun its completed selection phases.
+
+## Matrix profile changes and same-scope web companions
+
+A running web PID is not proof that its receiving authority still matches a
+changed native profile. `Provider` freezes `receiving_authority` at construction;
+Alerts/menu/Traffic also retain their qualified binding. Adding or changing
+Matrix transport fields can therefore require requalification even when the
+paired human, allowlist, accounts and resource grants are unchanged.
+
+Use the exact retained native-profile preimage from that update. Compare its
+normalized `receiving_authority` to the actual current profile as the service
+user. A Matrix-only transition must differ only in the intended
+`interaction.matrix_transport`, `matrix_inbox_channel` and `matrix_targets`
+fields. Unexpected authority differences stay explicit; do not reset credentials
+or silently accept a broader scope.
+
+Reuse the receiver's existing same-scope companion requalification and voice
+maintenance fence. Qualify current `Provider`, `dashboard.alerts.Receiver` and
+`dashboard.traffic.Traffic` constructors with isolated temporary state first.
+Require actual journal/menu/Traffic bindings to match the exact previous proof.
+Then stop only web, retain one bounded operation preimage, conditionally update
+only those binding references, and verify every delivery attempt and other state
+field is unchanged. Reconstruct as the service user, reload web and verify the
+actual authorized owner API. Preserve native/Core/Sessions, original journals,
+provider choices and uncertain effects; never recreate a journal or replay input.
+Exact routes/preimages belong in the receiving operator binding, not this guide.
+
+Edit only an owned, delimited section of a shared operator note. Another task may
+have appended current receiving evidence between older headings; replacing a
+whole prefix can discard it. Retain other sections and distinguish this source
+publication from actual receiving adoption.
+
+### Native package copy within the existing handoff window
+
+A bounded v2 handoff keeps its original absolute deadline (at most300 seconds).
+After natural-idle maintenance, installation may use at most140 seconds and only
+the time left after reserving66 seconds for stopped recovery. A real725MiB Eko
+package copy exceeded the former15-second substep cap; the operator restored the
+previous complete selection and retained that terminal receipt. Inspect its
+actual selection/process state before a corrected successor; never replay its
+intent. The finite window, natural-idle requirement and no-input-replay policy
+are unchanged. Native-only delivery leaves the listener/web and voice settings
+running.
+
+Collector verification must use a receipt after the replacement listener actually
+started, not the earlier whole-operation preparation timestamp. Keep the failed
+verifier/queued attachment when its physical writer ended; inspect the current
+writer without repeating selection or attachment. The existing recovery loop can
+reconcile a current collector from exact terminal lifecycle metadata and current
+goal state. This does not import or retire missing output, replay input, change
+a goal or start a second scheduler. Full output recovery keeps its original
+bounds and checkpoint.
+
+Before recording a remote launch intent, materialize and read its complete public
+payload and entry script. A local missing-file error while evaluating subprocess
+arguments proves no transport invocation; retain that failed intent and continue
+only the known-unattempted remote action with a separate recovery receipt. A
+transport timeout is different: inspect the original remote process/receipt and
+never use this local-preflight recovery rule to replay an uncertain launch.

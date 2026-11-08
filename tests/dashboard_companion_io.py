@@ -246,6 +246,58 @@ class Companion(unittest.TestCase):
         shorthand=self.client.get('/?view=conversation',headers={'Host':'home.example.test'},follow_redirects=False)
         self.assertEqual(shorthand.status_code,307)
 
+    def test_explicit_home_native_decisions_keep_device_and_admin_boundaries(self):
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
+        self.config['additional_origins']=['https://home.example.test']
+        self.client.close();self.client=self.client_for()
+        identity={'contract':'dm.home-session/v1','origin':'https://home.example.test',
+                  'expires':int(time.time())+3600,'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'}}
+        headers={'Host':'home.example.test','Cookie':'__Host-home='+'h'*43,'Origin':'https://home.example.test'}
+        ident='b'*32;binding='a'*64;revision='c'*64;calls=[]
+        original=self.provider.presentation
+        self.provider.request_id=Provider.request_id
+        def presentation(command):
+            if command.startswith(('requests decide ','requests internal decide ')):
+                calls.append(command);return {'id':ident,'binding':binding,'revision':revision,'recorded':True}
+            return original(command)
+        self.provider.presentation=presentation
+        self.provider.conversation_request_decide=lambda ident,body,internal=False:Provider.conversation_request_decide(self.provider,ident,body,internal)
+        body={'binding':binding,'revision':revision,'action':{'kind':'approval','choice':'a'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=self.client.get('/api/interaction/access',headers=headers).json()
+            headers['x-dashboard-csrf']=access['csrf']
+            self.assertFalse(self.client.get('/api/interaction?can_decide_requests=true',headers=headers).json()['can_decide_requests'])
+            for path in ('/api/interaction/requests/'+ident,'/api/interaction/internal/requests/'+ident):
+                self.assertEqual(self.client.post(path,json=body,headers=headers).status_code,403)
+            self.assertEqual(calls,[])
+            self.config['shared_auth']['native_decision_access']=True
+            self.client.close();self.client=self.client_for()
+            self.assertTrue(self.client.get('/api/interaction',headers=headers).json()['can_decide_requests'])
+            path='/api/interaction/requests/'+ident
+            self.assertEqual(self.client.post(path,json=body,headers={**headers,'x-dashboard-csrf':'wrong'}).status_code,403)
+            self.assertEqual(calls,[])
+            for path in ('/api/interaction/requests/'+ident,'/api/interaction/internal/requests/'+ident):
+                result=self.client.post(path,json=body,headers=headers)
+                self.assertEqual(result.status_code,200,result.text)
+                self.assertEqual(json.loads(calls[-1].split('decide ',1)[1]),{**body,'id':ident})
+            count=len(calls)
+            limited={**headers,**self.headers}
+            self.assertFalse(self.client.get('/api/interaction',headers=limited).json()['can_decide_requests'])
+            for path in ('/api/interaction/requests/'+ident,'/api/interaction/internal/requests/'+ident):
+                self.assertEqual(self.client.post(path,json=body,headers=limited).status_code,403)
+            for path in ('/api/stop','/api/resume'):
+                self.assertEqual(self.client.post(path,json={},headers=headers).status_code,403)
+            self.assertEqual(self.client.get('/api/state',headers=headers).status_code,403)
+            self.assertEqual(len(calls),count)
+            identity['actor']['ref']='human:telegram:101'
+            self.assertEqual(self.client.post('/api/interaction/internal/requests/'+ident,json=body,headers=headers).status_code,403)
+            self.assertEqual(len(calls),count)
+
+    def test_home_native_decision_policy_requires_an_explicit_boolean(self):
+        from dashboard.home_auth import HomeAuth
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test','native_decision_access':'true'}
+        with self.assertRaises(ValueError):HomeAuth(self.config,self.provider)
+
     def test_shared_alert_read_is_explicit_and_does_not_widen_device_or_control_grants(self):
         class Alerts:
             binding='fixture-alert-scope'

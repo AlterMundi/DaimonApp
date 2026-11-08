@@ -233,7 +233,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     raise HTTPException(401, 'Companion access is unavailable; operator enrollment required')
                 if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False), coordination_control_access=grant.get('coordination_control_access', False), workspace_access=grant.get('workspace_access', False)):
                     raise HTTPException(403, 'Companion access is limited to the integrating conversation')
-                return grant
+                return {**grant, 'native_decision_access': False}
             # A restricted WebView may omit cookies. Never downgrade an invalid
             # explicit credential to a different ambient cookie session.
             if len(headers) != 1 or not (match := re.fullmatch(
@@ -625,11 +625,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return value
 
     @app.get('/api/interaction')
-    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None):
+    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None, inbox: int | None = None, responses: int | None = None):
         session = await authorize_async(request)
         try:
             from starlette.concurrency import run_in_threadpool
-            result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)
+            if inbox is not None or responses is not None:
+                result=await run_in_threadpool(provider.presentation_list,delivery,native,direction,matrix,inbox,responses)
+            else:
+                result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)
         except (ProviderUnavailable, OSError, ValueError):
             raise HTTPException(503, 'Integrating conversation unavailable; refresh before continuing') from None
         can_files=bool(getattr(provider,'receiver',{}).get('interaction',{}).get('artifact_store')) and (dict(session).get('scope') is None or dict(session).get('scope')=='interaction_only' and dict(session).get('artifact_access') is True)
@@ -641,6 +644,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 files={'state':'unavailable'}
         await authorize_async(request)
         return {**result, 'csrf':session['csrf'],
+                'can_decide_requests':dict(session).get('scope') is None or dict(session).get('native_decision_access') is True,
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),
                 'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
                 'can_listen':default_speech is not None,
@@ -1182,7 +1186,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             body=await request.json()
             # Conversation-only devices keep their existing approval/cancellation restriction.
-            if kind=='requests' and dict(session).get('scope')=='interaction_only' and (
+            if kind=='requests' and dict(session).get('scope')=='interaction_only' and dict(session).get('native_decision_access') is not True and (
                     not isinstance(body,dict) or not isinstance(body.get('action'),dict)
                     or body['action'].get('kind') not in ('answer','option')):
                 raise HTTPException(403,'Use Sessions to review this approval or cancellation')

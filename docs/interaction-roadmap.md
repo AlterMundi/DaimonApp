@@ -5,7 +5,29 @@ implemented. Human selection, 2026-10-26: move from the accepted single-chat bas
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
 
-## Current comparison receiving —7November2026
+## Current receiving —8November2026
+
+Shared Resources `interaction-current.md` selects the actual receiving record;
+all earlier component checkpoints below retain their dates and limits. Original
+three receivers now include the existing wardrobe's saved compact preview and
+public GPT-Live output-level presentation/optional mechanical jaw. The selected
+own WHITE45 version retains all previous dark/white versions. Its rest poses,
+local motion, saved/reopened/Use and synthetic audio ownership checks passed;
+this does not establish physical phone, artistic fit, phoneme alignment or hearing.
+Other engine output-level integration remains separate, and voice choices stay
+unchanged. Retained source/result continuity corrections have their exact
+receiving evidence; full in-voice memory and repeated physical renewal remain open.
+
+All four existing own basic Conversation entries have authenticated technical
+qualification; family first-device/message acceptance and social admission are
+distinct. School still needs actual retained mission/workspace/return authority.
+No workshop/Drive/voice gate, reenrollment or fabricated child input is introduced.
+The [current reading-return qualification](interaction-qualification.md#session-reading-position-across-detail-and-back-8november2026)
+adds desktop/phone-width evidence for reading position, draft and prior pin,
+including the selected Root composition. It changes no runtime. The full
+original objective and all remaining stages stay active.
+
+## Retained comparison receiving —7November2026
 
 Shared Resources `interaction-current.md` and its named current record own the
 actual selected composition. App732 retains the mounted public GPT-Live routes

@@ -1,6 +1,15 @@
 /* Foreground owner-console status and explicit conditional controls; no setup. */
 (() => {
-  function state(value) {
+  function evidenceExpiry(value,now) {
+    const e=value?.operational_evidence,lane=value?.lanes?.messaging;
+    if(value?.operational!==true || e?.schema!=='telecodex.heartbeat-operational/v1' || e.operational!==true || e.generation!==value.generation || lane?.paused!==false || e.lanes?.messaging?.operational!==true || e.lanes.messaging.generation!==lane.generation)return 0;
+    if(!Number.isSafeInteger(e.observed_at_unix_ms) || e.observed_at_unix_ms<=0 || e.observed_at_unix_ms>now || !Number.isInteger(e.valid_for_seconds) || e.valid_for_seconds<1 || e.valid_for_seconds>15)return 0;
+    const ends=[e.observed_at_unix_ms+e.valid_for_seconds*1000];
+    for(const kind of ['producer','resources'])if(value[kind]?.mode!=='continuous')ends.push(value[kind]?.contract?.expires_at_unix_ms);
+    if(ends.some(x=>!Number.isSafeInteger(x) || x<=now))return 0;
+    return Math.min(...ends);
+  }
+  function state(value,now=Date.now()) {
     if(value?.schema!=='telecodex.heartbeat-control/v1' || typeof value.admission_paused!=='boolean' || !Number.isSafeInteger(value.generation) || value.generation<0)return 'unavailable';
     if(value.error || value.attention_engine==='error' || value.producer?.state==='error' || value.resources?.state==='error')return 'error';
     if(value.admission_paused)return 'paused';
@@ -9,9 +18,10 @@
     if(['stopped','check_capacity','cursor_capacity','receipt_capacity','binding_retired','purpose_retired'].includes(value.producer?.state))return 'observation_stopped';
     if(value.resources?.state==='expired')return 'inference_expired';
     if(value.resources?.state==='exhausted')return 'inference_exhausted';
+    if(value.resources?.state==='rate_limited')return 'inference_rate_limited';
     // An open admission gate or running execution is not operational proof.
     if((value.producer?.state && value.producer.state!=='configured') || (value.resources?.state && value.resources.state!=='available'))return 'unavailable';
-    return value.operational===true?'operational':'unavailable';
+    return evidenceExpiry(value,now)>now?'operational':'unavailable';
   }
   function observation(value) {
     function time(ms){if(!Number.isSafeInteger(ms) || ms<=0 || ms>8640000000000000)return null;return new Date(ms).toISOString();}
@@ -26,6 +36,10 @@
     if(check.outcome==='failed')text+=' Last successful source check: '+(success || 'not observed')+'.';
     return text;
   }
+  function readiness(value) {
+    const reasons={attention_pending:'Heartbeat work is still being reconciled.',native_busy:'Waiting for the general conversation to become idle.',native_support_unavailable:'Native heartbeat support is not observed.',native_admission_unavailable:'Native admission is unavailable.',native_observation_unavailable:'Current native readiness could not be verified.',source_check_stale:'A fresh source check is required.',source_check_unavailable:'A successful source check at the current generation is required.',loop_unavailable:'The heartbeat loop is unavailable.',controls_changed:'Controls changed during the readiness check; refresh status.',native_binding_changed:'The native conversation changed; refresh status.'};
+    return value?.operational_evidence?.schema==='telecodex.heartbeat-operational/v1'?(reasons[value.operational_evidence.reason] || ''):'';
+  }
   function action(value,id) {
     const caps=value?.controls,global=Number.isSafeInteger(value?.generation)&&value.generation>=0;
     if(!global || typeof value.admission_paused!=='boolean' || value.schema!=='telecodex.heartbeat-control/v1' || caps?.schema!=='telecodex.heartbeat-controls/v1' || !Array.isArray(caps.actions))return null;
@@ -38,14 +52,14 @@
     const button=root.querySelector('#heartbeat-toggle'),menu=root.querySelector('#heartbeat-menu');
     if(!button || !menu)return;
     const status=root.querySelector('#heartbeat-status'),generation=root.querySelector('#heartbeat-generation'),lanes=root.querySelector('#heartbeat-lanes');
-    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational',observation_expired:'Observation window expired',observation_stopped:'Source observation stopped',inference_expired:'Inference window expired',inference_exhausted:'Inference allocation exhausted'};
+    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational',observation_expired:'Observation window expired',observation_stopped:'Source observation stopped',inference_expired:'Inference window expired',inference_exhausted:'Inference allocation exhausted',inference_rate_limited:'Hourly inference limit; observation continues'};
     let last=-Infinity,pending=false,hold,held=false,epoch=0,expiry,writing=false,current=null,notice="";
     function render(value){
       current=value;clearTimeout(expiry);
-      const selected=state(value);button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+labels[selected]);button.title='Heartbeat · '+labels[selected];
-      if(selected==='operational')expiry=setTimeout(()=>render(null),15000);
+      const selected=state(value,clock());button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+labels[selected]);button.title='Heartbeat · '+labels[selected];
+      if(selected==='operational')expiry=setTimeout(()=>render(null),Math.max(0,evidenceExpiry(value,clock())-clock()));
       status.textContent='Heartbeat · '+labels[selected];
-      generation.textContent=[Number.isSafeInteger(value?.generation)?'Generation '+value.generation:'',notice,observation(value)].filter(Boolean).join(' · ');
+      generation.textContent=[Number.isSafeInteger(value?.generation)?'Generation '+value.generation:'',notice,readiness(value),observation(value)].filter(Boolean).join(' · ');
       lanes.replaceChildren();
       for(const [id,name] of [['global','All heartbeat lanes'],['messaging','Messaging'],['issues','Issues'],['sensory','Sensory'],['tasks','Tasks'],['bitacora','Bitácora']]){
         const row=root.createElement('div'),control=root.createElement('button'),reason=root.createElement('span');

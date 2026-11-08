@@ -131,4 +131,34 @@ class Workshop(unittest.TestCase):
         self.assertEqual(foreign.read_text(),'{}')
 
 
+class WorkshopProvenance(unittest.TestCase):
+    def test_adapted_manifest_matches_current_source_bytes(self):
+        from dashboard.avatar_workshop_provenance import discrepancies
+        root=Path(__file__).resolve().parents[1]/'dashboard/web/avatar-workshop'
+        self.assertEqual(discrepancies(root),{},'Refresh adapted hashes after the final workshop edit')
+
+    def test_refresh_retains_upstream_authority_and_detects_missing_added_changed_files(self):
+        from dashboard.avatar_workshop_provenance import discrepancies,refresh,receiving_hashes
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'candidate';root.mkdir();(root/'renderer.mjs').write_text('original renderer')
+            document={'source':'upstream/example','source_revision':'unchanged source',
+                      'author':'Original artist','files':{'renderer.mjs':'original upstream hash'},
+                      'receiving_adaptations':['Retained original rationale'],
+                      'receiving_hashes':receiving_hashes(root)}
+            manifest=root/'PROVENANCE.json';manifest.write_text(json.dumps(document))
+            previous=Path(directory)/'previous.json';previous.write_bytes(manifest.read_bytes());manifest.unlink();manifest.hardlink_to(previous)
+            original_receipt=previous.read_bytes()
+            self.assertEqual(discrepancies(root),{})
+            (root/'renderer.mjs').write_text('adapted renderer')
+            (root/'new.mjs').write_text('new local adapter')
+            self.assertEqual(discrepancies(root),{'new.mjs':'unlisted','renderer.mjs':'changed'})
+            refresh(root);actual=json.loads(manifest.read_text())
+            self.assertEqual(previous.read_bytes(),original_receipt,'Candidate refresh cannot rewrite hardlinked prior metadata')
+            self.assertEqual({k:v for k,v in actual.items() if k!='receiving_hashes'},
+                             {k:v for k,v in document.items() if k!='receiving_hashes'})
+            self.assertEqual(discrepancies(root),{})
+            (root/'new.mjs').unlink()
+            self.assertEqual(discrepancies(root),{'new.mjs':'missing'})
+
+
 if __name__=='__main__':unittest.main()

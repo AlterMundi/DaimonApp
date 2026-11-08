@@ -36,7 +36,9 @@ def authority(config, provider):
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False, native_decision_access=False):
+    if method=='POST' and re.fullmatch(r'/api/interaction/requests/[a-f0-9]{32}',path):
+        return scope=='interaction_only' and native_decision_access is True
     if path in ('/api/interaction/avatars/voice','/api/interaction/avatars/voice/previews'):
         return scope=='interaction_only' and method in ('GET','POST')
     if re.fullmatch(r'/api/interaction/avatars/missions/[a-f0-9-]{36}',path):

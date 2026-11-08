@@ -722,6 +722,68 @@ Source preparation is separate from receiving selection and real trial acceptanc
 
 # Native results across fresh voice connections
 
+## Current integrating context at entry
+
+This prepared increment is evaluated against the later same-general-conversation
+direction. It does not establish another persona, native thread, login or history
+store. Voice/text windows belong to the existing authenticated native entry. The
+old PR737 review-delegation question was withdrawn after the revised direction;
+its historical pending label is not a current approval or delivery receipt.
+
+On8November the source was rebased onto798. The actual configured owner read
+12native messages and14canonical sources from the same selected general thread:
+14,516 embedded bytes within16KiB, no provider, native input or memory write.
+78startup/context/mounted API tests passed against that base. Source preparation
+and read-only authority evidence do not prove speech, receiving adoption or the
+complete shared-conversation experience.
+
+The prepared public-native entry now reads the current integrating thread with
+the existing owner-local read-only observer (`thread/items/list`) and the latest
+canonical integrating originals/results through their existing readers. This
+second window matters: a visible correction or worker return may not yet have
+been incorporated into the native thread. The previous voice producer is still
+settled through its existing semantic continuation, with its original opening
+time and relative transcript timing; it is no longer the sole startup source.
+
+The voice policy reconciles timestamps and original capture order across the
+windows, including the inverse case where voice is newer than native text.
+Read/append order does not make an old statement current. Native harness roles
+retain their attribution; original voice language remains machine interpretation.
+Private analysis and tool outputs are excluded. Current progress remains progress,
+not a completed goal or a new action. Unknown order and earlier-history coverage
+stay explicit; missing facts go to the same native integrator and memory tools.
+
+The observer reads at most four16-item pages and retains at most16 complete
+conversational items. The integrating window uses one bounded input/result page,
+at most16 selected sources, and exact canonical text cursors. A bounded window
+stops scheduling reads after12seconds; one already-issued read keeps its existing
+transport deadline and the mounting owner's late-I/O exclusion until it ends.
+A bounded window
+omits only complete older sources with an explicit earlier-history marker; an
+oversized latest source refuses for semantic preparation rather than clipping its
+text. The combined reserve is at most16KiB inside the unchanged complete32KiB
+public session specification. Charge context as JSON text embedded in the final
+JSON request, including both escaping layers; quotes/backslashes cannot use a
+raw-byte estimate. Measure the actual developer-message envelope and policy
+before allocating that reserve. Whole older sources can be omitted; the latest
+source still refuses if it cannot fit. The boundary fixture fills the complete
+32KiB specification without clipping or another context read. Existing
+native24KiB resume and64k/48k/600s limits
+are unchanged. No history store, provider call, new human original, work replay,
+memory write, daemon start, native login change or context injection is needed
+to read this startup data. Only the short-lived existing observer proxy closes.
+
+Source qualification covers current corrections and progress after voice, whole
+source bounds/cursors, changed-owner refusal and prior-voice seed preservation.
+The actual receiving owner read both current native history and newer canonical
+integrating updates without opening voice or making a paid/model request. A
+three-visit mounted fixture retains the actual wrapper/source/projection path;
+its Core observer and speech are synthetic. This is prepared source, not receiving
+selection or semantic/physical acceptance. Actual useful speech, inverse chronology,
+repeated replacements and the full original roadmap remain open.
+
+## Historical result transport
+
 The native client-delegation mode now has a source-prepared return path for work
 that outlives a voice connection. This is not provider stored-session forking or
 proof of semantic/physical continuity. The existing persistent native thread owns
@@ -841,6 +903,23 @@ roadmap acceptance remain open. Synthetic tests cover later-page return, exact
 revision changes, foreign bindings, nonadvancing cursors, retained cursor reads
 through a fresh journal reader, and no repeated native work.
 
+#### Corrected results after an acknowledged partial
+
+A long worker result may become noncurrent while its remaining text is waiting.
+Before continuing that tail, the return task checks the existing owned trace or
+its exact result lookup. An available matching source explicitly marked
+`current=false` or `correction_pending=true` does not block discovery of the new
+current result. The old acknowledged fragment, revision and continuation cursor
+remain intact; no old context event or native work is replayed.
+
+This applies only after every earlier context append is confirmed. An unknown
+append still holds the return. Missing/unavailable source metadata, a foreign
+binding or an unsupported exact lookup do not prove supersession. Every new
+fragment still uses the ordinary fresh canonical revision/association checks.
+Synthetic tests cover the live visit, paginated association, a fresh journal
+reader after replacements, unknown injection and foreign/missing-source refusal.
+They do not establish actual spoken incorporation or human hearing.
+
 ### Explicit replacement after a disconnected native visit
 
 A known-created native voice whose local capture has ended can offer a manual
@@ -937,3 +1016,47 @@ open. Follow OpenAI's
 [transcript provenance](https://developers.openai.com/api/docs/guides/live-migration#preserve-context-and-apply-corrections)
 and [saved-context](https://developers.openai.com/api/docs/guides/live-delegation#keep-the-conversation-context-in-your-application)
 guidance when qualifying the lifecycle.
+
+### Shared canonical fragments after voice renewal
+
+Several admitted originals can be covered by the same native answer. In a fresh
+voice connection their old delegation IDs no longer need separate provider
+responses. Repeating the same source/revision/offset once per old delegation
+therefore duplicated historical context, as observed in retained real journals.
+Current-connection delegations still receive their own scoped responses.
+
+The historical return path now validates the requesting original and current
+canonical association first, then reuses an exact existing acknowledged append.
+It adds one bounded flat origin claim with `shared_delegation`, pointing directly
+to the actual target visit and append key. It copies neither text nor an ACK,
+creates no alias chain, sends no second event and dispatches no work. The original
+append row remains unchanged. Each original retains its own ordered cursor;
+missing/changed destination rows and unconfirmed matching appends stay held.
+The existing128-claim/256KiB-record/32MiB-journal bounds still apply.
+
+After such a shared claim is written, web rollback must retain a compatible
+`openai_live_native_results.py` reader. The older reader refuses that association
+rather than resolving it; do not clear claims or replay work to bypass refusal.
+No real journal is migrated or deduplicated retroactively. Synthetic tests cover
+shared results across multiple replacements/restart, long fragments, unknowns,
+changed receipts, unrelated pending fragments, fresh native/worker association
+and unchanged current-connection delegation replies. Transport evidence does not
+establish semantic incorporation, memory lookup or human hearing.
+
+### Encoded reply playback and avatar activity
+
+Conversation's existing encoded-reply HTML media element can expose its decoded
+audio through `captureStream` (or `mozCaptureStream`). That optional stream reuses
+the existing outputless RMS worklet; the media element remains the only player.
+Five transient jaw levels use the same quantization as live voice. No provider,
+microphone, stored PCM, speech synthesis or new playback destination is added.
+
+Pause, mute, ended, source replacement and the existing explicit player Stop or
+capture hold retire the cosmetic stream/observer and clear the jaw. Late setup
+and callbacks cannot publish to its successor. Observer setup retains the existing
+five-second bound and600-second worklet ceiling. Each retired capture stream's
+owned tracks stop; the original media element keeps its playback and cursor.
+Unsupported browsers/native media proxies keep sound without the optional jaw
+signal; observer failure cannot stop or retry speech. Actual encoded Chromium
+sound/silence/pause/resume/mute/source replacement and delayed-setup fixtures
+qualify that boundary, not physical hearing, Android proxy support or phonemes.
