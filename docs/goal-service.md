@@ -325,7 +325,7 @@ advance while a live turn runs; this is not a changed goal or another approval
 boundary. Accounting regression and changed definition/status/budget still refuse.
 The captured observation and actual acknowledged pause/restoration receipts retain
 their accounting; no counter is rewritten or reset. Preparation then
-then retains the owner, approval reference, entry/target incarnation, admission
+retains the owner, approval reference, entry/target incarnation, admission
 epoch, goal-command generation, complete goal definition, opaque native revision
 and accounting **before** any pause. A request ID cannot select a different plan.
 The source reference is an owner assertion under the existing authenticated
