@@ -117,3 +117,37 @@ touch and school/Oca/child acceptance remain open. Native designPack qualificati
 and the full original goal remain open. Public served files and synthetic browser
 journeys do not prove a human's successful use or authorize enabling another
 pair's Avatar, voice, provider, heartbeat or native-display flags.
+
+## Current wardrobe source sync —8November2026 candidate
+
+The vendored source now selects Ani/Oliva ASCII-Interfaces e1ef54b, with original
+and adapted hashes in PROVENANCE.json. The six authored bodies support per-body
+primary color, hex prop colors, three independent prop slots, eight acting hand
+objects and nine artistic cues (including Sueño/pillow). The editor keeps the
+current game-side tools, undo/redo and one-step surprise choices. Imported inert
+models retain their existing eight-cue contract and calm fallback; no runtime
+availability/quota event automatically selects sleep.
+
+The existing receiving storage bridge is unchanged: account/CSRF authority,
+immutable revisions, lazy full-design reads, generation-fenced explicit use,
+cancel, previous-art preservation and lost-ACK readback remain authoritative.
+The editor is inert in the initial HTML until account bootstrap completes, so an
+early import cannot race the lazy initial read. The original artifact's IndexedDB
+store is not copied. No production account was written during qualification.
+
+New design semantics survive the existing bounded Node validator: bodyColors,
+hex prop colors and accessory/v1 are preserved instead of silently normalized
+away. The renderer returns finite frame/cadence metadata on its existing paint
+callback; the parent's single timer consumes12/48frame loops rather than
+truncating current acting at12. Old12-frame designs retain180ms parent cadence;
+new cadence is clamped80..320ms. Pause, hidden document, reduced motion and an open
+editor continue to suspend ambient animation. Resize redraws the current frame.
+
+Validation includes actual Node/account storage round-trip for six body colors,
+sleep and pillow; mounted grants/isolation/assets; and actual Chromium current
+editor→save→use→reload,48-frame rendering/loop closure and the retained custom,
+image, cancel, failed-activation, shared appearance and320/375journeys. Actors
+and account files are synthetic/temporary; voice checks use synthetic audio and
+no provider. These source changes are not receiving-deployed or human accepted
+merely because local tests pass. Preserve the dated receiving selection above.
+School/Oca evidence integration remains owned by the school's pending contract.

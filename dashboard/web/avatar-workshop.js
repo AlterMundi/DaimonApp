@@ -13,7 +13,7 @@ window.AvatarWorkshopUI=(()=>{
   window.addEventListener('home-style:resolved',()=>iframe?.contentWindow.postMessage({kind:'daimon.workshop.appearance',appearance:appearance()},location.origin));
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
   function stop(){clearTimeout(timer);timer=undefined;}
-  function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%12);run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},180);}
+  function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%(paint.frames||12));run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},Math.max(80,Math.min(320,paint.frameMs||180)));}
   function reset(){epoch++;studio?.reset();loaded=false;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
   async function prepared(record){
    const selected=epoch,key=credential(),renderer=await import(asset('renderer.mjs'));

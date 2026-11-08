@@ -25,6 +25,20 @@ class Workshop(unittest.TestCase):
     def save(self,ident=None,design=None,parent=None,expected=0,human=100):
         return self.store.save(human,ident or self.ident,design or self.design,parent,expected)
 
+    def test_current_color_and_acting_semantics_survive_account_roundtrip(self):
+        d=copy.deepcopy(self.design)
+        d['bodyColors']={body:'#2266ee' for body in ('pocket-dragon','modular-bot','moon-visitor','cloud-axolotl','comet-fox','little-mushroom')}
+        g=d['gestures'][0];g.update(cue='sleep',performance='accessory/v1')
+        g['props']=[{'id':'pillow','color':'#b185dc','side':'left','size':1.25}]
+        self.save(design=d)
+        actual=AvatarWorkshop(self.root).get(100,self.ident)['design']
+        self.assertEqual(actual['bodyColors'],d['bodyColors'])
+        self.assertEqual(actual['gestures'][0]['props'],g['props'])
+        self.assertEqual(actual['gestures'][0]['performance'],'accessory/v1')
+        self.assertEqual(actual['gestures'][0]['cue'],'sleep')
+        bad=copy.deepcopy(d);bad['bodyColors']['custom-model']='#ff0000'
+        with self.assertRaises(ValueError):validate_design(bad)
+
     def test_visual_and_voice_share_one_document_and_capacity_without_pointer_changes(self):
         visual=self.save()
         profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'cedar'}
