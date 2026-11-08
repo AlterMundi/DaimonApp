@@ -157,3 +157,34 @@ native turn after the replacement. A running local row or an owner-command ACK
 alone is insufficient. If the native turn has finished, observe its retained
 terminal/result path instead. Keep the failed operator receipt and record the
 separate verification outcome; never rerun its completed selection phases.
+
+## Matrix profile changes and same-scope web companions
+
+A running web PID is not proof that its receiving authority still matches a
+changed native profile. `Provider` freezes `receiving_authority` at construction;
+Alerts/menu/Traffic also retain their qualified binding. Adding or changing
+Matrix transport fields can therefore require requalification even when the
+paired human, allowlist, accounts and resource grants are unchanged.
+
+Use the exact retained native-profile preimage from that update. Compare its
+normalized `receiving_authority` to the actual current profile as the service
+user. A Matrix-only transition must differ only in the intended
+`interaction.matrix_transport`, `matrix_inbox_channel` and `matrix_targets`
+fields. Unexpected authority differences stay explicit; do not reset credentials
+or silently accept a broader scope.
+
+Reuse the receiver's existing same-scope companion requalification and voice
+maintenance fence. Qualify current `Provider`, `dashboard.alerts.Receiver` and
+`dashboard.traffic.Traffic` constructors with isolated temporary state first.
+Require actual journal/menu/Traffic bindings to match the exact previous proof.
+Then stop only web, retain one bounded operation preimage, conditionally update
+only those binding references, and verify every delivery attempt and other state
+field is unchanged. Reconstruct as the service user, reload web and verify the
+actual authorized owner API. Preserve native/Core/Sessions, original journals,
+provider choices and uncertain effects; never recreate a journal or replay input.
+Exact routes/preimages belong in the receiving operator binding, not this guide.
+
+Edit only an owned, delimited section of a shared operator note. Another task may
+have appended current receiving evidence between older headings; replacing a
+whole prefix can discard it. Retain other sections and distinguish this source
+publication from actual receiving adoption.
