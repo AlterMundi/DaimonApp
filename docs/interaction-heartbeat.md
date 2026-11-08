@@ -376,7 +376,8 @@ source tests and metadata observation.
 
 Finite Reports checks snapshot their selected fields even while ordinary native
 work is busy. A changed relevant source retains one known-unsent metadata return
-without an execution reservation or submission attempt. Existing idle recovery
+without an execution reservation or native/provider call. Existing bounded
+known-unsent retry accounting is preserved. Idle recovery
 checks current source/purpose/expiry and capacity, then makes the first actual
 admission attempt. No second scheduler, fake human queue or busy-turn steering
 is introduced. An unavailable report is a failed source observation with explicit

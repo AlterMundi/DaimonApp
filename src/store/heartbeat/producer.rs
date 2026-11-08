@@ -1168,8 +1168,8 @@ impl Store {
             collection_local: None,
             native_turn: None,
             instance: self.instance_id.clone(),
-            attempts: if retaining_review { 0 } else { 1 },
-            retry_after: None,
+            attempts: 1,
+            retry_after: retaining_review.then(|| Utc::now().timestamp()),
         };
         let result = ReturnDispatch {
             name: "heartbeat_attention",

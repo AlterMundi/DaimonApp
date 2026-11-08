@@ -5740,8 +5740,8 @@ mod tests {
         assert_eq!(retained.len(), 1);
         let r = retained.remove(0);
         assert_eq!(
-            r.attempts, 1,
-            "A busy source observation is not a submission attempt"
+            r.attempts, 2,
+            "Existing finite known-unsent recovery accounting is preserved"
         );
         let packet: Value = serde_json::from_str(&r.output).unwrap();
         let revision = packet["evidence"]["operating_purpose"]["revision"]
