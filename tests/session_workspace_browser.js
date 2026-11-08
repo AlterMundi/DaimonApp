@@ -425,6 +425,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  await page.locator('#conversation-message').fill('Keep this draft while I look around.');
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
+ await page.locator('#conversation-timeline').evaluate(node=>{node.scrollTop=400;});await page.waitForTimeout(150);const readingBefore=await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop);assert(readingBefore>100);
  await page.getByRole('button',{name:sessions[1].title,exact:true}).click();
  await page.locator('.session-message').first().waitFor();
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
@@ -440,6 +441,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I look around.');
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
  await page.getByRole('button',{name:'Back to the conversation',exact:true}).click();
+ assert.equal(await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop),readingBefore,'Back restores the exact previous reading position');
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
  await page.locator('#conversation-send').click();await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');
  assert.equal(posts.at(-1).reply.source,'session:7');assert.equal(posts.at(-1).text,'Keep this draft while I look around.');
@@ -506,6 +508,19 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
 
 
  await page.getByRole('button',{name:'Hide sessions',exact:true}).click();
+ // Exercise the shipped shell at phone widths, not a DOM-only scroll stub.
+ for(const width of [390,320]){
+  await page.setViewportSize({width,height:844});
+  const draft=await page.locator('#conversation-message').inputValue(),target=await page.evaluate(()=>workspaceFixture.microphone.getReply());
+  await page.locator('#conversation-timeline').evaluate(node=>{node.scrollTop=400;});await page.waitForTimeout(150);
+  const before=await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop);assert(before>100);
+  await page.getByRole('button',{name:'Show sessions',exact:true}).click();await page.getByRole('button',{name:sessions[1].title,exact:true}).click();await page.locator('.session-message').first().waitFor();
+  await page.getByRole('button',{name:'Show session detail and tools'}).click();await page.getByText('>_ inspect_result',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Back to the conversation',exact:true}).click();
+  assert.equal(await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop),before,'Phone Back preserves reading position');
+  assert.equal(await page.locator('#conversation-message').inputValue(),draft);const restoredTarget=await page.evaluate(()=>workspaceFixture.microphone.getReply());assert.deepEqual(restoredTarget.reference,target.reference,'Phone Back restores the exact prior destination');assert(restoredTarget.version>target.version,'Navigation retains a fresh input-admission epoch, never reuses an old capture generation');
+ }
+ await page.setViewportSize({width:390,height:844});
  const timeline=page.locator('#conversation-timeline');await timeline.evaluate(node=>{node.scrollTop=0;});await page.waitForTimeout(100);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Programmatic positioning does not compact header');
  await page.locator('#conversation-presence').evaluate(node=>{node.hidden=false;node.textContent='Pending work';});
