@@ -79,6 +79,46 @@ class Mounted(unittest.TestCase):
         self.assertEqual(response.status_code,200,response.text);return response.json()
     def body(self,row,action='render',slot='A'):
         return {'action':action,'id':row['id'],'batch_generation':row['generation'],**({'slot':slot} if action=='render' else {})}
+    def test_retained_audio_is_read_only_and_actor_bound(self):
+        row=self.prepare();body={**self.body(row),'action':'audio'}
+        before=self.store.preview_snapshot(100)
+        self.assertIsNone(self.post(body).json()['audio'])
+        self.assertEqual(self.store.preview_snapshot(100),before)
+        self.assertEqual(self.calls,[],'A prepared row cannot generate through audio reads')
+        rendered=self.post(self.body(row)).json()
+        self.assertEqual(len(self.calls),1)
+        before=self.store.preview_snapshot(100)
+        self.assertEqual(self.post(body).json()['audio'],rendered['audio'])
+        self.assertEqual(self.store.preview_snapshot(100),before)
+        for headers,code in (({},401),({'authorization':'monitor'},403),
+                ({**self.headers,'authorization':'actor200'},404),({'authorization':'actor100'},403)):
+            response=self.client.post(PATH,json=body,headers=headers)
+            self.assertEqual(response.status_code,code,response.text)
+        self.assertEqual(self.post({**body,'id':str(uuid.uuid4())}).status_code,404)
+        self.assertEqual(self.post({**body,'batch_generation':row['generation']+1}).status_code,404)
+        route,_,ident=self.app.state.voice_previews.plan(100,rendered['batch'],'A')
+        (Path(route['cache_root'])/ident/'audio.wav').unlink()
+        self.assertEqual(self.post(body).status_code,503,'Expired audio is never regenerated')
+        self.assertEqual(len(self.calls),1)
+        self.allowed=False
+        self.assertEqual(self.post(body).status_code,403)
+
+    def test_retained_unknown_and_access_revocation_do_not_start_or_leak(self):
+        row=self.prepare();self.mode='unknown';self.post(self.body(row))
+        self.assertEqual(len(self.calls),1)
+        before=self.store.preview_snapshot(100)
+        body={**self.body(row),'action':'audio'}
+        self.assertIsNone(self.post(body).json()['audio'])
+        self.assertEqual(self.store.preview_snapshot(100),before)
+        self.assertEqual(len(self.calls),1)
+        service=self.app.state.voice_previews
+        original=service.audio
+        def revoked(*args):
+            value=original(*args);self.allowed=False;return value
+        with patch.object(service,'audio',side_effect=revoked):
+            self.assertEqual(self.post(body).status_code,403)
+        self.assertEqual(len(self.calls),1)
+
     def test_exact_source_cache_once_actor_csrf_and_known_retirement(self):
         row=self.prepare();body=self.body(row)
         self.assertEqual(self.post(body,{'authorization':'actor100'}).status_code,403)

@@ -1,4 +1,4 @@
-"""Account/CSRF-owned A/B requests; same workshop, voice fence and speech cache."""
+"""Account-owned auditions and retained audio; same workshop and speech cache."""
 import asyncio
 import base64
 import copy
@@ -131,6 +131,13 @@ class PreviewService:
             raise ValueError('Recorded preview needs review')
         return {'mime':'audio/wav','data':base64.b64encode(data).decode(),'playback':'not_observed'}
 
+    def retained_audio(self,human,body):
+        row=self.store.preview_get(human,body['id'],body['batch_generation'])
+        if row['phase']=='retiring' or body['slot'] not in row['renders']:
+            raise ValueError('Select a retained sample')
+        # This path deliberately cannot reconcile, allocate, start or cancel work.
+        return {'batch':row,'audio':self.audio(human,row,body['slot'])}
+
     def retire(self,human,body):
         def remove(row):
             seen=set()
@@ -227,6 +234,9 @@ def install(app,config,provider,store,owner,call):
             if action=='prepare_sample' and set(body)=={'action','id','profile','delivery','voice_generation','generation','passage'}:
                 if body['passage'] is None:raise ValueError('Write a short sample')
                 return await call(request,service.prepare,body,write=True)
+            if action=='audio' and set(body)=={'action','id','batch_generation','slot'}:
+                if body['slot'] not in ('A','B','sample'):raise ValueError('Select an exact preview')
+                return await call(request,service.retained_audio,body,write=True)
             if action in ('render','cancel') and set(body)==({'action','id','batch_generation','slot'} if action=='render' else {'action','id','batch_generation'}):
                 if action=='render' and body['slot'] not in ('A','B','sample'):raise ValueError('Select an exact preview')
                 if action=='cancel':value=await service.cancel(human,body['id'],body['batch_generation'])
