@@ -46,6 +46,46 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  if(process.env.AVATAR_LOAD_RECOVERY_ONLY==='1'){
+   // Isolate the host's retry from the editor's independent snapshot/get reads.
+   // The full journey below exercises the real editor separately.
+   await page.route('**/assets/avatar-workshop/experiments/school-avatar-quest/index.html',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Host retry fixture</title>'}));
+   await page.goto(origin+'?defer_bind=1');
+   const before=await page.evaluate(async()=>{
+    const {fresh}=await import('/assets/avatar-workshop/experiments/school-avatar-quest/model.mjs');
+    const id=crypto.randomUUID(),write=async body=>{
+     const r=await fetch('/api/interaction/avatars',{method:'POST',headers:{'X-Test-Actor':'100','X-Dashboard-CSRF':'test-action','Content-Type':'application/json'},body:JSON.stringify(body)});
+     if(!r.ok)throw Error('Synthetic saved selection refused: '+await r.text());return r.json();
+    };
+    await write({action:'save',id,design:fresh(),parentId:null,generation:0});
+    return write({action:'activate',id,generation:1});
+   });
+   let reads=0,recordReads=0,fail=true;const writes=[];
+   await page.route('**/api/interaction/avatars/'+before.active,async route=>{recordReads++;await route.continue();});
+   page.on('request',r=>{if(r.method()!=='GET'&&r.url().includes('/api/'))writes.push(r.url());});
+   await page.route('**/api/interaction/avatars',async route=>{
+    if(route.request().method()==='GET'){reads++;if(fail){await route.fulfill({status:503,json:{detail:'Synthetic temporary read failure'}});return;}}
+    await route.continue();
+   });
+   await page.evaluate(()=>testAvatar.bind('actor100'));
+   await page.waitForFunction(()=>document.querySelector('#avatar-workshop-status').textContent.includes('workshop'));
+   assert.equal(await page.locator('.avatar-surface').getAttribute('aria-busy'),'false','Failed read is terminal, not perpetual loading');
+   assert.equal(await page.locator('#conversation-companion pre').isVisible(),false,'A failed custom read never substitutes the default');
+   await page.evaluate(()=>{testAvatar.bind('actor100');testAvatar.bind('actor100');});
+   assert.equal(reads,1,'Ordinary polling does not retry a failed load');
+   fail=false;await page.locator('#avatar-workshop-open').click();
+   await page.locator('.avatar-surface[data-avatar-state="custom"]').waitFor();
+   assert.equal(reads,2,'Explicit recovery reads the snapshot once');
+   assert.equal(recordReads,1,'Explicit recovery loads the selected revision once');
+   assert.equal(await page.locator('#avatar-workshop-status').textContent(),'');
+   const after=await page.evaluate(async()=>{
+    const r=await fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}});return r.json();
+   });
+   assert.deepEqual(after,before,'Recovery keeps immutable versions, active pointer and generation');
+   assert.deepEqual(writes,[],'Loading recovery never saves, activates or starts voice');
+   assert.equal(errors.length,0,errors.join('\n'));
+   console.log('PASS failed avatar load ends busy state; explicit workshop retry restores exact saved selection without writes/default flash/automatic retry; zero providers');return;
+  }
   if(process.env.ARTISTIC_CUES_ONLY==='1'){
    const {fixture}=await import('file://'+path.resolve('tests/avatar_layer_model.mjs'));
    await page.goto(origin);await page.waitForFunction(()=>!document.querySelector('.avatar-surface').getAttribute('aria-busy')||document.querySelector('.avatar-surface').getAttribute('aria-busy')==='false');
