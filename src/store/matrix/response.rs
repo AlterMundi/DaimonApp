@@ -17,6 +17,11 @@ pub(crate) enum Command {
         reason: String,
         condition: String,
     },
+    NoReply {
+        message_id: String,
+        revision: String,
+        reason: String,
+    },
     Reply {
         message_id: String,
         revision: String,
@@ -29,7 +34,10 @@ pub(crate) enum Command {
 
 impl Command {
     pub(crate) fn mutates(&self) -> bool {
-        matches!(self, Self::Reply { .. } | Self::Defer { .. })
+        matches!(
+            self,
+            Self::Reply { .. } | Self::Defer { .. } | Self::NoReply { .. }
+        )
     }
 }
 fn load(conn: &Connection, human: i64, session: i64, id: &str) -> Result<Option<Value>> {
@@ -117,6 +125,7 @@ impl Store {
             Command::Status { message_id }
             | Command::Inspect { message_id }
             | Command::Defer { message_id, .. }
+            | Command::NoReply { message_id, .. }
             | Command::Reply { message_id, .. } => message_id,
             Command::Pending { .. } => unreachable!(),
         };
@@ -146,7 +155,9 @@ impl Store {
         )?
         .context("Native original unavailable")?;
         let revision = match &command {
-            Command::Reply { revision, .. } | Command::Defer { revision, .. } => revision,
+            Command::Reply { revision, .. }
+            | Command::Defer { revision, .. }
+            | Command::NoReply { revision, .. } => revision,
             _ => unreachable!(),
         };
         anyhow::ensure!(
@@ -180,6 +191,23 @@ impl Store {
                 session,
                 id,
                 &json!({"phase":"deferred","reason":reason,"condition":condition,"source_revision":revision,"at":now_string(),"attention_owner":attention}),
+            )?;
+            let out = status(&tx, human, entry, id)?;
+            tx.commit()?;
+            return Ok(out);
+        }
+        if let Command::NoReply { reason, .. } = &command {
+            anyhow::ensure!(
+                !reason.trim().is_empty() && reason.len() <= 1024,
+                "Bounded no-reply disposition reason required"
+            );
+            save(
+                &tx,
+                human,
+                session,
+                id,
+                &json!({"phase":"no_reply","reason":reason,
+                "source_revision":revision,"at":now_string(),"attention_owner":attention}),
             )?;
             let out = status(&tx, human, entry, id)?;
             tx.commit()?;
@@ -352,6 +380,46 @@ mod tests {
             revision: revision.into(),
             text: "An attributed reply.".into(),
         }
+    }
+    #[test]
+    fn no_reply_is_explicit_local_disposition_and_cannot_discard_an_uncertain_send() {
+        let (_f, s, e, owner, id, revision) = setup();
+        let out = call(
+            &s,
+            e,
+            &owner,
+            Command::NoReply {
+                message_id: id.clone(),
+                revision: revision.clone(),
+                reason: "Acknowledgment needs no reply or further work".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out["handling"]["phase"], "no_reply");
+        assert!(out["handling"]["intent"].is_null());
+        assert!(out["handling"]["outcome"].is_null());
+        let pending = call(&s, e, &owner, Command::Pending { after: None }).unwrap();
+        assert_eq!(pending["items"].as_array().unwrap().len(), 0);
+        let prepared = call(&s, e, &owner, reply(&id, &revision)).unwrap();
+        let send = prepared["intent"]["send_id"].as_str().unwrap();
+        s.matrix_response_outcome(100, e, &id, send, None).unwrap();
+        assert!(
+            call(
+                &s,
+                e,
+                &owner,
+                Command::NoReply {
+                    message_id: id.clone(),
+                    revision,
+                    reason: "Do not discard uncertainty".into(),
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            call(&s, e, &owner, Command::Status { message_id: id }).unwrap()["handling"]["phase"],
+            "uncertain"
+        );
     }
     #[test]
     fn response_intent_survives_uncertainty_restart_and_cannot_be_reauthored() {

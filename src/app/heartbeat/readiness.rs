@@ -16,9 +16,10 @@ fn eligible(value: &Value, now: i64, loop_started: i64) -> Result<(), &'static s
         return Err("observation_unavailable");
     }
     for kind in ["producer", "resources"] {
-        if value[kind]["contract"]["expires_at_unix_ms"]
-            .as_i64()
-            .is_none_or(|end| end <= now)
+        if value[kind]["mode"] != "continuous"
+            && value[kind]["contract"]["expires_at_unix_ms"]
+                .as_i64()
+                .is_none_or(|end| end <= now)
         {
             return Err("window_expired");
         }
@@ -33,10 +34,11 @@ fn eligible(value: &Value, now: i64, loop_started: i64) -> Result<(), &'static s
         return Err("resources_unavailable");
     }
     let producer = &value["producer"];
-    if producer["checks"]
-        .as_u64()
-        .zip(producer["contract"]["max_checks"].as_u64())
-        .is_none_or(|(count, max)| count >= max)
+    if producer["mode"] != "continuous"
+        && producer["checks"]
+            .as_u64()
+            .zip(producer["contract"]["max_checks"].as_u64())
+            .is_none_or(|(count, max)| count >= max)
     {
         return Err("observation_capacity");
     }
@@ -216,5 +218,20 @@ mod tests {
             *value.pointer_mut(pointer).unwrap() = replacement;
             assert_eq!(eligible(&value, 100000, 80000), Err(reason), "{pointer}");
         }
+    }
+    #[test]
+    fn continuous_readiness_uses_current_rate_and_fresh_check_not_pilot_expiry() {
+        let mut value = ready();
+        for kind in ["producer", "resources"] {
+            value[kind]["mode"] = json!("continuous");
+            value[kind]["contract"]["expires_at_unix_ms"] = json!(1);
+        }
+        value["producer"]["checks"] = json!(121);
+        assert_eq!(eligible(&value, 100000, 80000), Ok(()));
+        value["resources"]["state"] = json!("rate_limited");
+        assert_eq!(
+            eligible(&value, 100000, 80000),
+            Err("resources_unavailable")
+        );
     }
 }

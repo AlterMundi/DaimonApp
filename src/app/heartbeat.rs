@@ -100,6 +100,25 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("continuous ") {
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        anyhow::ensure!(
+            fields.len() == 2,
+            "Expected heartbeat continuous GENERATION ATTEMPTS_PER_HOUR"
+        );
+        let cfg = super::routing::profile(&app.shared)?;
+        anyhow::ensure!(
+            cfg.human_id == human,
+            "Heartbeat belongs to the configured paired human"
+        );
+        app.shared.store.heartbeat_enable_continuous(
+            human,
+            cfg.entry(),
+            fields[0].parse()?,
+            fields[1].parse()?,
+        )?;
+        return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
+    }
     if let Some((action, rest)) = args
         .split_once(' ')
         .filter(|(action, _)| matches!(*action, "renew-window" | "renew-observation"))

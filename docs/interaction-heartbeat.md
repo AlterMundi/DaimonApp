@@ -228,3 +228,50 @@ exhausting the original48-attempt peer contract. Those are reserved maxima,
 not measured tokens or money. The implementation removes those automatic
 health-only batches rather than replenishing their account or moving the same
 work into another inference loop.
+
+
+## Continuous owner-selected messaging
+
+An explicit ongoing-operation request may replace the pilot's lifetime with
+`heartbeat continuous GENERATION ATTEMPTS_PER_HOUR` on the existing owner console.
+Pause first and use the exact current global generation; resume explicitly afterward.
+This command is not a model tool, does not enable another lane, and refuses an
+unresolved native execution, changed generation or replacement rate. Exact repeats
+retain the selected hourly window and every reservation. No far-future timestamp,
+new contract UUID, daily counter reset or automatic renewal job is involved.
+
+The original pilot contract and reserved attempts remain immutable historical
+accounting. A separate recurring ledger reserves each complete execution from its
+hourly allowance before provider I/O, retaining its cumulative reservations across
+hour boundaries and restarts. Clock rollback cannot reset the current hour. Each
+execution keeps its existing attempt, complete-request byte and time limits. An
+exhausted hour reports `rate_limited`; bounded model-free checks continue, originals
+remain pending, and useful attention becomes eligible when the next hour has capacity.
+Continuous operation is not unlimited inference. Pause/conditional lane controls
+and the existing owner/service stop paths remain available.
+
+The existing producer retains its cumulative check count and source frontiers,
+without the pilot's absolute expiry or cumulative check ceiling. Idle checks and
+health failure/recovery never start a model. Operational evidence still requires
+the actual live loop, current owner, eligible native entry/profile, capacity and
+fresh exact-generation source check; its proof expires after15seconds. A continuous
+mode label or open gate alone cannot pulse the heart.
+
+Continuous cache retention keeps eight completed and reviewed heartbeat batches,
+eight resolved incoming-original projections (`recipient_copy_proved` or explicit
+`no_reply`), and64 own-body echoes. Unreported/native-unresolved batches and
+pending, deferred, merely submitted or uncertain replies are preserved. Retirement
+never changes accounting or the persisted native inbox frontier. Old pages cannot
+reintroduce a retired projection. Canonical signed Matrix originals/authoring/
+delivery receipts and native conversation turns remain in their owning journals;
+this is bounded projection retirement, not history deletion or task completion.
+The existing16batch/256original/4MiB limits still refuse genuinely unresolved
+backlog, rather than discard it. Older finite policies retain their prior behavior.
+
+Use `matrix_response` action `no_reply` with the exact original/revision and a
+bounded reason only when neither a response nor further work is needed. It sends
+nothing, creates no response intent, and cannot replace a submitted/uncertain
+intent. Keep real pending work explicitly deferred. `heartbeat_reported` remains
+review acknowledgment and must not be used as proof that peer work is completed.
+Rollback to a finite-only reader stops continuous attention; do not restore an old
+journal or pretend that its expired pilot became a current allowance.

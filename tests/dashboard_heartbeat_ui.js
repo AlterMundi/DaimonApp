@@ -53,3 +53,10 @@ for(const change of [{generation:2},{valid_for_seconds:16},{observed_at_unix_ms:
 assert.equal(state({...ready,resources:{state:'available',contract:{expires_at_unix_ms:now}}},now),'unavailable');
 assert.equal(state({...ready,producer:{state:'configured',contract:{expires_at_unix_ms:now}}},now),'unavailable');
 console.log('Heartbeat: native operational evidence expires at its actual age/window and rejects changed generations.');
+
+const continuous={...ready,producer:{...ready.producer,mode:'continuous',contract:{...ready.producer.contract,expires_at_unix_ms:1}},resources:{...ready.resources,mode:'continuous',contract:{...ready.resources.contract,expires_at_unix_ms:1}}};
+assert.equal(state(continuous,now),'operational');
+assert.equal(state(continuous,now+15000),'unavailable');
+assert.equal(state({...continuous,resources:{...continuous.resources,state:'rate_limited'}},now),'inference_rate_limited');
+assert.equal(state({...continuous,producer:{...continuous.producer,mode:'finite'}},now),'unavailable');
+console.log('Heartbeat: continuous operation keeps fresh proof and rate limits without a pilot expiry.');

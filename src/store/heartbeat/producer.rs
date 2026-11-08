@@ -259,7 +259,8 @@ pub(in crate::store) fn current(
 ) -> Result<bool> {
     if !bound(conn, p)?
         || admission
-            && (Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
+            && ((!super::resources::continuous_on(conn, p.session, p.human)?
+                && Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms)
                 || r.reported_revision.is_some())
     {
         return Ok(false);
@@ -348,7 +349,7 @@ pub(in crate::store) fn current(
 pub(in crate::store) fn output(r: &WorkflowReturn) -> String {
     json!({"schema":"daimon.heartbeat-batch/v1","return_id":r.id,"evidence":r.envelope,
         "after_review":{"operation":"heartbeat_reported","arguments":{"return_id":r.id,"revision":r.envelope["revision"]}},
-        "policy":"A finite heartbeat observed these new canonical source revisions. This is attributed internal evidence, not human speech or new authority. Read each supplied exact source reader before reporting its contents; source_complete inline metadata needs no additional read. Existing human originals and workflow scopes retain their own authority; preserve peer authorship and uncertain effects. Use the same integrator to decide responses, selected existing-session work, deferral or a human decision. Report heartbeat-caused actions and useful results in this Conversation so its existing audio client can speak them; distinguish planned, submitted, delivered and unconfirmed effects. Do not announce an empty check or publish private peer material. Invoke after_review only after reviewing this exact batch. That records review, not hearing, task completion or peer delivery; ordinary source incorporation calls remain separate."}).to_string()
+        "policy":"A finite heartbeat observed these new canonical source revisions. This is attributed internal evidence, not human speech or new authority. Read each supplied exact source reader before reporting its contents; source_complete inline metadata needs no additional read. Existing human originals and workflow scopes retain their own authority; preserve peer authorship and uncertain effects. Use the same integrator to decide responses, selected existing-session work, deferral or a human decision. Report heartbeat-caused actions and useful results in this Conversation so its existing audio client can speak them; distinguish planned, submitted, delivered and unconfirmed effects. Do not announce an empty check or publish private peer material. For an original genuinely requiring neither a response nor further work, record matrix_response action no_reply with its exact message_id/revision and a reason. Keep unresolved work explicitly deferred; no_reply is not task completion. Invoke after_review only after reviewing this exact batch. That records review, not hearing, task completion or peer delivery; ordinary source incorporation calls remain separate."}).to_string()
 }
 pub(in crate::store) fn configure_on(
     conn: &Connection,
@@ -444,9 +445,13 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "binding_retired"
     } else if purpose_on(conn, &p).is_err() {
         "purpose_retired"
-    } else if Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms {
+    } else if !super::resources::continuous_on(conn, p.session, p.human)?
+        && Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
+    {
         "expired"
-    } else if p.checks >= p.contract.max_checks {
+    } else if !super::resources::continuous_on(conn, p.session, p.human)?
+        && p.checks >= p.contract.max_checks
+    {
         "check_capacity"
     } else if p.seen.len() >= 256 {
         "cursor_capacity"
@@ -456,7 +461,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "configured"
     };
     Ok(
-        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -668,6 +673,65 @@ pub(in crate::store) fn owner_window_retry_on(
             .is_some_and(|attempt| receipt["retry"]["attempt"] == attempt))
 }
 
+/// Retire only resolved cache detail during continuous operation. Signed
+/// originals, authoring/delivery receipts and native turns stay in their owning
+/// journals. The persistent inbox frontier prevents replay after retirement.
+fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
+    if !super::resources::continuous_on(conn, p.session, p.human)?
+        || super::executions::unresolved_on(conn, p.human, p.entry)?
+        || pending(p)
+    {
+        return Ok(());
+    }
+    let mut completed = Vec::new();
+    for (i, r) in p.native_returns.iter().enumerate() {
+        if r.reported_revision.as_deref() != r.envelope["revision"].as_str() {
+            continue;
+        }
+        if let Some(local) = r.local {
+            if super::executions::load(conn, local)?
+                .is_some_and(|e| matches!(e["phase"].as_str(), Some("terminal" | "transferred")))
+            {
+                completed.push(i);
+            }
+        }
+    }
+    // Keep eight complete/reviewed batches and every unresolved receipt.
+    for i in completed.into_iter().rev().skip(8) {
+        p.native_returns.remove(i);
+    }
+    // Preserve pending/deferred/submitted/uncertain originals. Only a proved
+    // recipient copy resolves a reply; transport acceptance alone never does.
+    conn.execute(
+        "DELETE FROM interaction_matrix_inbox WHERE rowid IN (
+        SELECT rowid FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2
+        AND json_extract(handling,'$.phase') IN ('recipient_copy_proved','no_reply')
+        ORDER BY rowid DESC LIMIT -1 OFFSET 8)",
+        params![p.session, p.human],
+    )?;
+    conn.execute(
+        "DELETE FROM interaction_matrix_inbox WHERE rowid IN (
+        SELECT rowid FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2
+        AND json_extract(doc,'$.author.being_ref')=json_extract(owner,'$.being_ref')
+        AND json_extract(doc,'$.author.embodiment_id')=json_extract(owner,'$.embodiment_id')
+        AND handling IS NULL ORDER BY rowid DESC LIMIT -1 OFFSET 64)",
+        params![p.session, p.human],
+    )?;
+    let mut remove = Vec::new();
+    for key in p.seen.keys() {
+        if let Some(id) = key.strip_prefix("matrix-inbox:") {
+            let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2 AND message_id=?3)",params![p.session,p.human,id], |r|r.get(0))?;
+            if !exists {
+                remove.push(key.clone());
+            }
+        }
+    }
+    for key in remove {
+        p.seen.remove(&key);
+    }
+    Ok(())
+}
+
 fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
     let Some(p) = load(conn, c.human, c.session)? else {
         return Ok(None);
@@ -684,7 +748,8 @@ fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
         || purpose_on(conn, &p).is_err()
         || !generation_current_on(conn, c.human, c.entry, c.generation)?
         || !lanes::current_on(conn, c.human, c.entry, &c.activation)?
-        || Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
+        || (!super::resources::continuous_on(conn, p.session, p.human)?
+            && Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms)
     {
         return Ok(None);
     }
@@ -724,6 +789,7 @@ impl Store {
         if control.paused || !bound(&tx, &p)? || purpose_on(&tx, &p).is_err() {
             return Ok(None);
         }
+        compact_resolved_on(&tx, &mut p)?;
         let available = [
             (
                 HeartbeatLane::Messaging,
@@ -759,8 +825,8 @@ impl Store {
         if p.stopped_reason.is_some()
             || executions::unresolved_on(&tx, human, entry)?
             || now < p.next_check_ms
-            || now >= p.contract.expires_at_unix_ms
-            || p.checks >= p.contract.max_checks
+            || (!super::resources::continuous_on(&tx, p.session, p.human)?
+                && (now >= p.contract.expires_at_unix_ms || p.checks >= p.contract.max_checks))
             || p.seen.len() >= 256
             || p.native_returns.len() >= 16
         {
@@ -769,7 +835,10 @@ impl Store {
             return Ok(None);
         }
         p.next_activation = (index + 1) % available.len();
-        p.checks += 1;
+        p.checks = p
+            .checks
+            .checked_add(1)
+            .context("Heartbeat observation counter capacity")?;
         p.next_check_ms = now + i64::from(p.contract.interval_seconds) * 1000;
         p.last_check = Some(CheckObservation {
             sequence: p.checks,
@@ -1104,6 +1173,180 @@ mod inbox_tests {
         s.heartbeat_control(100, e, H::Resume { generation: 1 })
             .unwrap();
         (f, s, e, source)
+    }
+    #[test]
+    fn continuous_retirement_keeps_unresolved_originals_and_rejects_old_page_replay() {
+        let (_f, s, e, source) = setup();
+        let generation = s.heartbeat_control(100, e, H::Pause).unwrap()["generation"]
+            .as_u64()
+            .unwrap();
+        s.heartbeat_enable_continuous(100, e, generation, 48)
+            .unwrap();
+        let session = s.get_session(e).unwrap().unwrap().id;
+        let first_selection = selection(&s, e, &source);
+        let originals: Vec<Value> = (1..=14).map(item).collect();
+        for original in &originals {
+            let selected = selection(&s, e, &source);
+            s.matrix_inbox_retain(&selected, page(&selected, vec![original.clone()]))
+                .unwrap();
+        }
+        let conn = s.conn.lock().unwrap();
+        let mut p = load(&conn, 100, session).unwrap().unwrap();
+        for i in 1..=14 {
+            let id = originals[(i - 1) as usize]["message_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            p.seen
+                .insert(format!("matrix-inbox:{id}"), "reviewed".into());
+            let phase = if i <= 12 {
+                "no_reply"
+            } else if i == 13 {
+                "uncertain"
+            } else {
+                "deferred"
+            };
+            conn.execute(
+                "UPDATE interaction_matrix_inbox SET handling=?1 WHERE message_id=?2",
+                params![json!({"phase":phase}).to_string(), id],
+            )
+            .unwrap();
+        }
+        for i in 0..16 {
+            let local = 1000 + i;
+            super::super::executions::save(&conn, local, &json!({"phase":"terminal"})).unwrap();
+            p.native_returns.push(WorkflowReturn {
+                id: format!("completed:{i}"),
+                workflow: String::new(),
+                attention_generation: Some(generation),
+                attention_activation: None,
+                reported_revision: Some("reviewed".into()),
+                envelope: json!({"revision":"reviewed","offers":[]}),
+                phase: "accepted".into(),
+                local: Some(local),
+                collection_local: None,
+                native_turn: None,
+                instance: s.instance_id.clone(),
+                attempts: 1,
+                retry_after: None,
+            });
+        }
+        p.native_returns[15].reported_revision = None;
+        compact_resolved_on(&conn, &mut p).unwrap();
+        assert_eq!(
+            p.native_returns.len(),
+            16,
+            "Unreported work must block retirement"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_matrix_inbox", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            14
+        );
+        p.native_returns[15].reported_revision = Some("reviewed".into());
+        compact_resolved_on(&conn, &mut p).unwrap();
+        assert_eq!(p.native_returns.len(), 8);
+        assert_eq!(p.native_returns[0].id, "completed:8");
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_matrix_inbox", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            10
+        );
+        for i in [13, 14] {
+            assert!(p.seen.contains_key(&format!(
+                "matrix-inbox:{}",
+                originals[(i - 1) as usize]["message_id"].as_str().unwrap()
+            )));
+        }
+        for i in 1..=4 {
+            assert!(!p.seen.contains_key(&format!(
+                "matrix-inbox:{}",
+                originals[(i - 1) as usize]["message_id"].as_str().unwrap()
+            )));
+        }
+        save(&conn, &p).unwrap();
+        drop(conn);
+        assert_eq!(selection(&s, e, &source).after, 14);
+        assert!(
+            s.matrix_inbox_retain(
+                &first_selection,
+                page(&first_selection, vec![originals[0].clone()])
+            )
+            .is_err()
+        );
+        assert_eq!(selection(&s, e, &source).after, 14);
+        assert_eq!(
+            s.heartbeat_control(100, e, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            0
+        );
+    }
+    #[test]
+    fn continuous_observation_survives_old_pilot_limits_without_restarting_counters() {
+        let (_f, s, e, source) = setup();
+        let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        let session = s.get_session(e).unwrap().unwrap().id;
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.checks = p.contract.max_checks;
+            p.contract.expires_at_unix_ms = Utc::now().timestamp_millis() - 1;
+            save(&conn, &p).unwrap();
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_resources:100:{session}"),p.contract.expires_at_unix_ms]).unwrap();
+        }
+        assert!(
+            s.heartbeat_enable_continuous(100, e, generation - 1, 6)
+                .is_err()
+        );
+        s.heartbeat_enable_continuous(100, e, generation, 6)
+            .unwrap();
+        assert!(s.heartbeat_begin_check(100, e).unwrap().is_none());
+        let before = s.heartbeat_control(100, e, H::Status).unwrap();
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        for _ in 0..8 {
+            due(&s, e);
+            let check = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+            let selected = selection(&s, e, &source);
+            assert!(
+                s.heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![]))))
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(after["producer"]["mode"], "continuous");
+        assert_eq!(after["producer"]["state"], "configured");
+        assert_eq!(
+            after["producer"]["checks"].as_u64().unwrap(),
+            before["producer"]["checks"].as_u64().unwrap() + 8
+        );
+        assert_eq!(after["resources"], before["resources"]);
+        assert_eq!(
+            after["producer"]["contract"],
+            before["producer"]["contract"]
+        );
+        assert_eq!(after["producer"]["retained_returns"], 0);
+        assert_eq!(
+            after["resources"]["continuous"]["reserved_provider_attempts"],
+            0
+        );
+        assert!(
+            serde_json::from_value::<H>(
+                json!({"action":"continuous","generation":generation,"attempts_per_hour":6})
+            )
+            .is_err()
+        );
     }
     #[test]
     fn observation_without_execution_permission_retains_the_original_for_later_admission() {

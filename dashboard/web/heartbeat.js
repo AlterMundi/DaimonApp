@@ -4,7 +4,8 @@
     const e=value?.operational_evidence,lane=value?.lanes?.messaging;
     if(value?.operational!==true || e?.schema!=='telecodex.heartbeat-operational/v1' || e.operational!==true || e.generation!==value.generation || lane?.paused!==false || e.lanes?.messaging?.operational!==true || e.lanes.messaging.generation!==lane.generation)return 0;
     if(!Number.isSafeInteger(e.observed_at_unix_ms) || e.observed_at_unix_ms<=0 || e.observed_at_unix_ms>now || !Number.isInteger(e.valid_for_seconds) || e.valid_for_seconds<1 || e.valid_for_seconds>15)return 0;
-    const ends=[e.observed_at_unix_ms+e.valid_for_seconds*1000,value.producer?.contract?.expires_at_unix_ms,value.resources?.contract?.expires_at_unix_ms];
+    const ends=[e.observed_at_unix_ms+e.valid_for_seconds*1000];
+    for(const kind of ['producer','resources'])if(value[kind]?.mode!=='continuous')ends.push(value[kind]?.contract?.expires_at_unix_ms);
     if(ends.some(x=>!Number.isSafeInteger(x) || x<=now))return 0;
     return Math.min(...ends);
   }
@@ -17,6 +18,7 @@
     if(['stopped','check_capacity','cursor_capacity','receipt_capacity','binding_retired','purpose_retired'].includes(value.producer?.state))return 'observation_stopped';
     if(value.resources?.state==='expired')return 'inference_expired';
     if(value.resources?.state==='exhausted')return 'inference_exhausted';
+    if(value.resources?.state==='rate_limited')return 'inference_rate_limited';
     // An open admission gate or running execution is not operational proof.
     if((value.producer?.state && value.producer.state!=='configured') || (value.resources?.state && value.resources.state!=='available'))return 'unavailable';
     return evidenceExpiry(value,now)>now?'operational':'unavailable';
@@ -50,7 +52,7 @@
     const button=root.querySelector('#heartbeat-toggle'),menu=root.querySelector('#heartbeat-menu');
     if(!button || !menu)return;
     const status=root.querySelector('#heartbeat-status'),generation=root.querySelector('#heartbeat-generation'),lanes=root.querySelector('#heartbeat-lanes');
-    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational',observation_expired:'Observation window expired',observation_stopped:'Source observation stopped',inference_expired:'Inference window expired',inference_exhausted:'Inference allocation exhausted'};
+    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational',observation_expired:'Observation window expired',observation_stopped:'Source observation stopped',inference_expired:'Inference window expired',inference_exhausted:'Inference allocation exhausted',inference_rate_limited:'Hourly inference limit; observation continues'};
     let last=-Infinity,pending=false,hold,held=false,epoch=0,expiry,writing=false,current=null,notice="";
     function render(value){
       current=value;clearTimeout(expiry);

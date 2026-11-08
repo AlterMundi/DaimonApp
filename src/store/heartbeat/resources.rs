@@ -16,6 +16,57 @@ pub struct HeartbeatResources {
 struct Account {
     contract: HeartbeatResources,
     reserved_provider_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuous: Option<Continuous>,
+}
+/// Recurring allowance is separate from the immutable pilot allocation. Neither
+/// restart nor adoption can refund historical reservations or restart the hour.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Continuous {
+    max_provider_attempts_per_hour: u32,
+    window_started_at_unix_ms: i64,
+    reserved_in_window: u32,
+    reserved_provider_attempts: u64,
+}
+impl Continuous {
+    fn usage(&self, now: i64) -> u32 {
+        if now >= self.window_started_at_unix_ms.saturating_add(3_600_000) {
+            0
+        } else {
+            self.reserved_in_window
+        }
+    }
+}
+pub(super) fn continuous_on(conn: &Connection, session: i64, human: i64) -> Result<bool> {
+    Ok(load(conn, session, human)?.is_some_and(|a| a.continuous.is_some()))
+}
+pub(super) fn enable_continuous_on(
+    conn: &Connection,
+    session: i64,
+    human: i64,
+    max_provider_attempts_per_hour: u32,
+) -> Result<()> {
+    let mut a = load(conn, session, human)?.context("Heartbeat resources not configured")?;
+    anyhow::ensure!(
+        (a.contract.provider_attempts_per_execution..=4096)
+            .contains(&max_provider_attempts_per_hour),
+        "Select a recurring hourly bound within4096 attempts, covering one execution"
+    );
+    if let Some(c) = &a.continuous {
+        anyhow::ensure!(
+            c.max_provider_attempts_per_hour == max_provider_attempts_per_hour,
+            "Continuous allowance already selected; no rate change or refill applied"
+        );
+        return Ok(());
+    }
+    a.continuous = Some(Continuous {
+        max_provider_attempts_per_hour,
+        window_started_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+        reserved_in_window: 0,
+        reserved_provider_attempts: 0,
+    });
+    save(conn, session, human, &a)
 }
 fn key(session: i64, human: i64) -> String {
     format!("heartbeat_resources:{human}:{session}")
@@ -105,6 +156,7 @@ pub(super) fn configure_on(
         &Account {
             contract,
             reserved_provider_attempts: 0,
+            continuous: None,
         },
     )
 }
@@ -117,6 +169,18 @@ pub(super) fn status_on(conn: &Connection, session: i64, human: i64) -> Result<V
         .max_provider_attempts
         .checked_sub(account.reserved_provider_attempts)
         .context("Heartbeat resource account is inconsistent")?;
+    if let Some(c) = &account.continuous {
+        let now = chrono::Utc::now().timestamp_millis();
+        let remaining = c
+            .max_provider_attempts_per_hour
+            .saturating_sub(c.usage(now));
+        return Ok(json!({"mode":"continuous",
+            "state":if remaining >= account.contract.provider_attempts_per_execution {"available"} else {"rate_limited"},
+            "contract":account.contract,"reserved_provider_attempts":account.reserved_provider_attempts,
+            "remaining_provider_attempts":remaining,"continuous":c,
+            "lifetime_reserved_provider_attempts":u64::from(account.reserved_provider_attempts)+c.reserved_provider_attempts,
+            "measurement":"reserved_request_attempts_not_tokens_or_money"}));
+    }
     let state = if account.contract.expires_at_unix_ms <= chrono::Utc::now().timestamp_millis() {
         "expired"
     } else if remaining < account.contract.provider_attempts_per_execution {
@@ -140,6 +204,31 @@ pub(super) fn reserve_on(
     let mut account =
         load(conn, session, human)?.context("Heartbeat resources are not configured")?;
     let now = chrono::Utc::now().timestamp_millis();
+    if let Some(c) = &mut account.continuous {
+        let usage = c.usage(now);
+        let next = usage
+            .checked_add(account.contract.provider_attempts_per_execution)
+            .context("Heartbeat hourly allocation overflow")?;
+        anyhow::ensure!(
+            next <= c.max_provider_attempts_per_hour,
+            "Heartbeat hourly allocation exhausted"
+        );
+        if now >= c.window_started_at_unix_ms.saturating_add(3_600_000) {
+            c.window_started_at_unix_ms = now;
+        }
+        c.reserved_in_window = next;
+        c.reserved_provider_attempts = c
+            .reserved_provider_attempts
+            .checked_add(u64::from(account.contract.provider_attempts_per_execution))
+            .context("Heartbeat lifetime allocation overflow")?;
+        let reservation = json!({"contract_id":account.contract.contract_id,
+            "max_provider_attempts":account.contract.provider_attempts_per_execution,
+            "max_request_bytes":account.contract.max_request_bytes,
+            "deadline_unix_ms":now.checked_add(i64::from(account.contract.execution_seconds)*1000)
+                .context("Heartbeat execution deadline overflow")?});
+        save(conn, session, human, &account)?;
+        return Ok(reservation);
+    }
     validate(&account.contract, now)?;
     let reserved = account
         .reserved_provider_attempts
@@ -176,6 +265,71 @@ pub(in crate::store) fn test_contract() -> HeartbeatResources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn continuous_rate_survives_expiry_restart_and_adoption_without_resetting_history() {
+        let (file, store, entry) = setup();
+        let mut contract = test_contract();
+        contract.max_provider_attempts = 6;
+        store
+            .heartbeat_control(
+                100,
+                entry.key,
+                HeartbeatCommand::ConfigureResources {
+                    generation: 1,
+                    contract,
+                },
+            )
+            .unwrap();
+        {
+            let mut conn = store.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            reserve_on(&tx, entry.id, 100).unwrap();
+            let mut a = load(&tx, entry.id, 100).unwrap().unwrap();
+            a.contract.expires_at_unix_ms = chrono::Utc::now().timestamp_millis() - 1;
+            save(&tx, entry.id, 100, &a).unwrap();
+            enable_continuous_on(&tx, entry.id, 100, 6).unwrap();
+            for _ in 0..2 {
+                let allowance = reserve_on(&tx, entry.id, 100).unwrap();
+                assert!(
+                    allowance["deadline_unix_ms"].as_i64().unwrap() > a.contract.expires_at_unix_ms
+                );
+                assert_eq!(allowance["max_provider_attempts"], 3);
+            }
+            assert!(reserve_on(&tx, entry.id, 100).is_err());
+            let before = status_on(&tx, entry.id, 100).unwrap();
+            enable_continuous_on(&tx, entry.id, 100, 6).unwrap();
+            assert_eq!(status_on(&tx, entry.id, 100).unwrap(), before);
+            assert!(enable_continuous_on(&tx, entry.id, 100, 12).is_err());
+            assert_eq!(before["state"], "rate_limited");
+            assert_eq!(before["reserved_provider_attempts"], 3);
+            assert_eq!(before["lifetime_reserved_provider_attempts"], 9);
+            tx.commit().unwrap();
+        }
+        drop(store);
+        let reopened = Store::open(file.path(), &[100], &crate::store::tests::defaults()).unwrap();
+        let mut conn = reopened.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        assert_eq!(
+            status_on(&tx, entry.id, 100).unwrap()["state"],
+            "rate_limited"
+        );
+        let mut a = load(&tx, entry.id, 100).unwrap().unwrap();
+        let c = a.continuous.as_mut().unwrap();
+        assert_eq!(c.usage(c.window_started_at_unix_ms - 1000), 6);
+        c.window_started_at_unix_ms -= 3_600_000;
+        save(&tx, entry.id, 100, &a).unwrap();
+        reserve_on(&tx, entry.id, 100).unwrap();
+        let after = status_on(&tx, entry.id, 100).unwrap();
+        assert_eq!(after["remaining_provider_attempts"], 3);
+        assert_eq!(after["reserved_provider_attempts"], 3);
+        assert_eq!(after["continuous"]["reserved_provider_attempts"], 9);
+        assert_eq!(after["lifetime_reserved_provider_attempts"], 12);
+        assert!(
+            after["contract"]["expires_at_unix_ms"].as_i64().unwrap()
+                < chrono::Utc::now().timestamp_millis()
+        );
+        tx.commit().unwrap();
+    }
     fn setup() -> (tempfile::NamedTempFile, Store, SessionRecord) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &crate::store::tests::defaults()).unwrap();
