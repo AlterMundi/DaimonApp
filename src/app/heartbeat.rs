@@ -100,6 +100,29 @@ pub(super) async fn execute(
     Ok(value)
 }
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(rest) = args.strip_prefix("select-review ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected heartbeat select-review GENERATION CONTRACT_JSON")?;
+        let contract: crate::store::HeartbeatReviewContract = serde_json::from_str(raw)?;
+        if matches!(
+            contract.purpose.input_ref,
+            crate::interaction::InputReference::Telegram(_)
+        ) {
+            anyhow::ensure!(
+                contract.purpose.channel == format!("telegram:{}", app.shared.bot_id),
+                "Select this receiving bot's actual original channel"
+            );
+        }
+        let cfg = super::routing::profile(&app.shared)?;
+        app.shared.store.heartbeat_select_review(
+            human,
+            cfg.entry(),
+            generation.parse()?,
+            contract,
+        )?;
+        return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
+    }
     if let Some(rest) = args.strip_prefix("continuous ") {
         let fields: Vec<_> = rest.split_whitespace().collect();
         anyhow::ensure!(
@@ -221,7 +244,7 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
             generation: generation.parse()?,
         },
         _ => bail!(
-            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
+            "Expected heartbeat status|pause [GENERATION]|resume GENERATION|select-review GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]|pause-lane LANE [GLOBAL_GENERATION LANE_GENERATION]|resume-lane LANE [GLOBAL_GENERATION] LANE_GENERATION|configure-resources GENERATION CONTRACT_JSON|configure-producer GENERATION CONTRACT_JSON"
         ),
     };
     execute(

@@ -331,3 +331,45 @@ context/allowance contract. Do not forge a user message, pause the goal, globall
 withhold goals through maintenance, or borrow an active execution's unlimited
 budget to make a readiness indicator positive. Fair per-entry checkpoint
 admission remains part of the existing heartbeat/progress-review implementation.
+
+## Finite selected progress review within standing messaging
+
+The owner console's `heartbeat select-review GENERATION CONTRACT_JSON` selects
+one initial report-review successor on the existing bound parent. It requires
+an exact paused global generation, a paused Reports lane, no unresolved execution
+or pending return, no prior review selection and no existing Reports sources.
+It changes no source frontier, seen revision, original check counter, native
+binding, global/lane generation, goal, resource contract or historical reservation.
+It does not resume either control. After selection, use the existing explicit
+lane/global resume controls; pause the Reports lane to stop this review while
+preserving Messaging.
+
+The contract contains the actual retained `purpose` (`input_ref` and `channel`),
+`reports` (the existing exact owner-file/JSON-pointer contract),
+`interval_seconds` (900 through3600), `max_checks` (1 through96) and
+`expires_at_unix_ms` (future and within24hours). Select milestone/blocker fields,
+excluding a report's changing clock. This is deterministic source observation;
+it does not certify that semantic review, child admission or delivery occurred.
+A changed eligible batch carries this review's own exact human-purpose reader,
+separately from standing Messaging's original. Empty checks reserve no inference.
+One pending/uncertain return prevents another review. The existing native entry
+worker remains the sole execution owner; there is no additional scheduler.
+
+Review executions reserve only the original shared pilot balance, at most four
+executions in total, without borrowing the recurring Messaging allowance. Other
+Messaging work can consume that balance first. With the selected12-attempt
+execution bound and48remaining, at most four executions remain shared; they are
+not earmarked reviews. Reservations are charged before native/provider work,
+never refunded after failure, uncertainty, restart, pause or expiry. The same
+hourly bound also applies while continuous operation is selected. Exhaustion or
+expiry stops new review admission and preserves standing Messaging. A review's
+native deadline is capped by both the existing execution bound and review expiry.
+There is no renewal/reset/replacement command for this selected review purpose.
+
+Selecting review installs a resource-record compatibility marker before exposing
+its sources. Strict older resource readers refuse that selected account instead
+of interpreting Reports as standing-funded work. Keep a compatible reader when
+rolling back software; preserve the current journal/account and later originals.
+An unselected successor leaves the previous account representation unchanged.
+Receiving selection and a useful native review must be verified separately from
+source tests and metadata observation.

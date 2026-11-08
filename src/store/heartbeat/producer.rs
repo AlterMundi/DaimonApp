@@ -29,7 +29,7 @@ pub struct HeartbeatPurpose {
     pub input_ref: crate::interaction::InputReference,
     pub channel: String,
 }
-fn purpose_source(
+pub(super) fn purpose_source(
     conn: &Connection,
     human: i64,
     entry: SessionKey,
@@ -121,6 +121,8 @@ struct CheckObservation {
 pub(in crate::store) struct Parent {
     #[serde(default)]
     pub purpose_revision: Option<String>,
+    #[serde(default)]
+    pub(super) review: Option<super::review::Review>,
     pub human: i64,
     pub entry: SessionKey,
     pub session: i64,
@@ -193,7 +195,7 @@ fn select_batch(p: &mut Parent, lanes: &[Vec<Offer>; 5], progress_next: Option<i
 fn key(human: i64, session: i64) -> String {
     format!("heartbeat_producer:{human}:{session}")
 }
-fn load(conn: &Connection, human: i64, session: i64) -> Result<Option<Parent>> {
+pub(super) fn load(conn: &Connection, human: i64, session: i64) -> Result<Option<Parent>> {
     conn.query_row(
         "SELECT value FROM bot_state WHERE key=?1",
         [key(human, session)],
@@ -212,7 +214,7 @@ pub(in crate::store) fn save_returns(
     p.native_returns = returns.to_vec();
     save(conn, &p)
 }
-fn save(conn: &Connection, p: &Parent) -> Result<()> {
+pub(super) fn save(conn: &Connection, p: &Parent) -> Result<()> {
     let raw = serde_json::to_string(p)?;
     anyhow::ensure!(
         p.seen.len() <= 256 && p.native_returns.len() <= 16 && raw.len() <= 256 * 1024,
@@ -330,6 +332,9 @@ pub(in crate::store) fn current(
                 return Ok(false);
             }
         } else if offer.key.starts_with("report:") {
+            if p.review.is_some() && !super::review::live(conn, p)? {
+                return Ok(false);
+            }
             if !super::reports::current(p, &offer.key, &offer.revision)? {
                 return Ok(false);
             }
@@ -411,6 +416,7 @@ pub(in crate::store) fn configure_on(
         conn,
         &Parent {
             purpose_revision,
+            review: None,
             human,
             entry,
             session,
@@ -476,7 +482,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             "originals":"retained; admitted attempt is not automatically replayed"})
         });
     Ok(
-        json!({"state":state,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -855,7 +861,11 @@ impl Store {
                 p.contract.matrix_replies || p.contract.matrix_inbox.is_some(),
             ),
             (HeartbeatLane::WorkflowReturns, p.contract.workflows),
-            (HeartbeatLane::Reports, !p.contract.reports.is_empty()),
+            (
+                HeartbeatLane::Reports,
+                !p.contract.reports.is_empty()
+                    && (p.review.is_none() || super::review::due(&tx, &p)?),
+            ),
             (HeartbeatLane::SessionProgress, p.contract.session_progress),
         ];
         let activation = (0..available.len()).find_map(|offset| {
@@ -892,6 +902,12 @@ impl Store {
             save(&tx, &p)?;
             tx.commit()?;
             return Ok(None);
+        }
+        if activation.lane == HeartbeatLane::Reports {
+            if let Some(review) = &mut p.review {
+                review.checks += 1;
+                review.next_check_ms = now + i64::from(review.contract.interval_seconds) * 1000;
+            }
         }
         p.next_activation = (index + 1) % available.len();
         p.checks = p
@@ -1093,8 +1109,19 @@ impl Store {
         }
         let id = format!("heartbeat:{human}:{session}:{}", Uuid::now_v7());
         let mut envelope = json!({"schema":"daimon.heartbeat-offer/v1","lane":c.activation.lane,"offers":selected,"internal_evidence":true,"publication_grant":false});
-        if let Some((source, revision)) = purpose_on(&tx, &p)? {
-            envelope["operating_purpose"] = json!({"input_ref":p.contract.purpose.as_ref().unwrap().input_ref,"human_id":human,"channel":source.channel,"event_id":source.event_id,"revision":revision,"reader":{"operation":"heartbeat_source","arguments":{"return_id":id,"source":"purpose:human","revision":revision,"offset":0}},"meaning":"Actual retained human operating-purpose original, not new speech or peer authority. Read before selecting an ordinary workflow under this same original and preserve peer source attribution."});
+        let finite_review = c.activation.lane == HeartbeatLane::Reports && p.review.is_some();
+        let purpose = if finite_review {
+            super::review::purpose_on(&tx, &p)?
+        } else {
+            purpose_on(&tx, &p)?
+        };
+        let purpose_ref = if finite_review {
+            Some(&p.review.as_ref().unwrap().contract.purpose)
+        } else {
+            p.contract.purpose.as_ref()
+        };
+        if let Some((source, revision)) = purpose {
+            envelope["operating_purpose"] = json!({"input_ref":purpose_ref.unwrap().input_ref,"human_id":human,"channel":source.channel,"event_id":source.event_id,"revision":revision,"reader":{"operation":"heartbeat_source","arguments":{"return_id":id,"source":"purpose:human","revision":revision,"offset":0}},"meaning":"Actual retained human operating-purpose original, not new speech or peer authority. Read before selecting an ordinary workflow under this same original and preserve peer source attribution."});
         }
         envelope["revision"] = json!(format!(
             "{:x}",

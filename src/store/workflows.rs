@@ -5624,4 +5624,148 @@ mod tests {
         assert_eq!(records.len(), 16);
         assert!(records.iter().all(|r| r["phase"] == "stopping"));
     }
+    #[test]
+    fn finite_review_selection_keeps_parent_counters_and_exact_human_purpose() {
+        use crate::store::{
+            HeartbeatCommand as H, HeartbeatProducerContract, HeartbeatPurpose,
+            HeartbeatReviewContract,
+        };
+        let (file, s, e, plan) = setup();
+        s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        let resources = crate::store::heartbeat::test_contract();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ConfigureResources {
+                generation: 1,
+                contract: resources.clone(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ConfigureProducer {
+                generation: 1,
+                contract: HeartbeatProducerContract {
+                    purpose: None,
+                    interval_seconds: 30,
+                    max_checks: 4,
+                    expires_at_unix_ms: resources.expires_at_unix_ms,
+                    matrix_replies: true,
+                    matrix_inbox: None,
+                    workflows: false,
+                    session_progress: false,
+                    reports: vec![],
+                },
+            },
+        )
+        .unwrap();
+        let report = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            report.path(),
+            r#"{"milestone":"fixture checkpoint","clock":1}"#,
+        )
+        .unwrap();
+        let contract = HeartbeatReviewContract {
+            purpose: HeartbeatPurpose {
+                input_ref: plan.input_ref,
+                channel: "conversation".into(),
+            },
+            interval_seconds: 900,
+            max_checks: 96,
+            expires_at_unix_ms: resources.expires_at_unix_ms,
+            reports: vec![crate::store::HeartbeatReportSource {
+                id: "children".into(),
+                path: report.path().to_owned(),
+                pointers: vec!["/milestone".into()],
+            }],
+        };
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        for lane in [
+            crate::store::heartbeat::lanes::HeartbeatLane::Messaging,
+            crate::store::heartbeat::lanes::HeartbeatLane::WorkflowReturns,
+            crate::store::heartbeat::lanes::HeartbeatLane::SessionProgress,
+        ] {
+            s.heartbeat_control(100, e.key, H::PauseLane { lane })
+                .unwrap();
+        }
+        let before = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert!(
+            s.heartbeat_select_review(100, e.key, 2, contract.clone())
+                .is_err()
+        );
+        s.heartbeat_select_review(100, e.key, 1, contract.clone())
+            .unwrap();
+        let after = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(before["resources"], after["resources"]);
+        for key in [
+            "checks",
+            "next_check_ms",
+            "cursor_entries",
+            "retained_returns",
+        ] {
+            assert_eq!(before["producer"][key], after["producer"][key]);
+        }
+        assert_eq!(before["lanes"], after["lanes"]);
+        assert!(s.heartbeat_select_review(100, e.key, 1, contract).is_err());
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ResumeLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+                generation: after["lanes"]["reports"]["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, e.key, H::Resume { generation: 1 })
+            .unwrap();
+        let r = s.heartbeat_produce(100, e.key).unwrap().unwrap();
+        let packet: Value = serde_json::from_str(&r.output).unwrap();
+        let revision = packet["evidence"]["operating_purpose"]["revision"]
+            .as_str()
+            .unwrap();
+        let purpose = s
+            .heartbeat_source(100, e.key, "native-1", &r.id, "purpose:human", revision, 0)
+            .unwrap();
+        assert!(purpose["retained_human_original"].as_bool().unwrap());
+        assert!(
+            purpose["text"]
+                .as_str()
+                .unwrap()
+                .contains("A produces a checkpoint")
+        );
+        assert!(s.heartbeat_produce(100, e.key).unwrap().is_none());
+        let after = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(after["producer"]["finite_review"]["checks"], 1);
+        assert_eq!(after["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(after["producer"]["pending"], true);
+        {
+            let conn = s.conn.lock().unwrap();
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.review.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_producer:100:{}", e.id), Utc::now().timestamp_millis()-1]).unwrap();
+        }
+        let expired = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(expired["producer"]["finite_review"]["state"], "expired");
+        assert_eq!(
+            expired["producer"]["contract"]["expires_at_unix_ms"],
+            resources.expires_at_unix_ms
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let restarted = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(restarted["producer"]["finite_review"]["state"], "expired");
+        assert_eq!(restarted["resources"], expired["resources"]);
+        assert_eq!(
+            restarted["producer"]["retained_returns"],
+            expired["producer"]["retained_returns"]
+        );
+    }
 }

@@ -17,6 +17,8 @@ struct Account {
     contract: HeartbeatResources,
     reserved_provider_attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    finite_review_executions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     continuous: Option<Continuous>,
 }
 /// Recurring allowance is separate from the immutable pilot allocation. Neither
@@ -164,6 +166,7 @@ pub(super) fn configure_on(
         &Account {
             contract,
             reserved_provider_attempts: 0,
+            finite_review_executions: None,
             continuous: None,
         },
     )
@@ -201,6 +204,52 @@ pub(super) fn status_on(conn: &Connection, session: i64, human: i64) -> Result<V
         json!({"state":state,"contract":account.contract,"reserved_provider_attempts":account.reserved_provider_attempts,
         "remaining_provider_attempts":remaining,"measurement":"reserved_request_attempts_not_tokens_or_money"}),
     )
+}
+/// Presence is also a compatibility fence: strict older account readers refuse
+/// this selected finite policy instead of spending standing credit for reports.
+pub(super) fn select_finite_on(conn: &Connection, session: i64, human: i64) -> Result<()> {
+    let mut account = load(conn, session, human)?.context("Heartbeat resources unavailable")?;
+    anyhow::ensure!(
+        account.finite_review_executions.is_none(),
+        "Finite review was already selected; never reset it"
+    );
+    account.finite_review_executions = Some(0);
+    save(conn, session, human, &account)
+}
+pub(super) fn finite_available_on(conn: &Connection, session: i64, human: i64) -> Result<bool> {
+    let Some(a) = load(conn, session, human)? else {
+        return Ok(false);
+    };
+    Ok(a.finite_review_executions.unwrap_or(0) < 4
+        && a.contract
+            .max_provider_attempts
+            .saturating_sub(a.reserved_provider_attempts)
+            >= a.contract.provider_attempts_per_execution)
+}
+pub(super) fn reserve_finite_on(
+    conn: &rusqlite::Transaction<'_>,
+    session: i64,
+    human: i64,
+) -> Result<Value> {
+    anyhow::ensure!(
+        finite_available_on(conn, session, human)?,
+        "Finite review requires original pilot capacity; standing allowance cannot refill it"
+    );
+    anyhow::ensure!(
+        load(conn, session, human)?
+            .unwrap()
+            .finite_review_executions
+            .is_some(),
+        "Select finite review before reservation"
+    );
+    let allowance = reserve_on(conn, session, human)?;
+    let mut account = load(conn, session, human)?.unwrap();
+    let count = account
+        .finite_review_executions
+        .context("Select the finite review resource fence first")?;
+    account.finite_review_executions = Some(count + 1);
+    save(conn, session, human, &account)?;
+    Ok(allowance)
 }
 /// Must share the transaction that claims the fresh native execution. Charge
 /// the complete possible execution before any provider packet; uncertainty is
@@ -282,6 +331,59 @@ pub(in crate::store) fn test_contract() -> HeartbeatResources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finite_review_shares_pilot_and_cannot_borrow_a_new_continuous_hour() {
+        let (_file, store, entry) = setup();
+        let mut contract = test_contract();
+        contract.max_provider_attempts = 48;
+        contract.provider_attempts_per_execution = 12;
+        let mut conn = store.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        configure_on(&tx, entry.id, 100, contract).unwrap();
+        enable_continuous_on(&tx, entry.id, 100, 48).unwrap();
+        select_finite_on(&tx, entry.id, 100).unwrap();
+        reserve_on(&tx, entry.id, 100).unwrap(); // Messaging consumes the same original balance.
+        for _ in 0..3 {
+            reserve_finite_on(&tx, entry.id, 100).unwrap();
+        }
+        assert!(!finite_available_on(&tx, entry.id, 100).unwrap());
+        let before = serde_json::to_value(load(&tx, entry.id, 100).unwrap().unwrap()).unwrap();
+        assert!(reserve_finite_on(&tx, entry.id, 100).is_err());
+        assert_eq!(
+            serde_json::to_value(load(&tx, entry.id, 100).unwrap().unwrap()).unwrap(),
+            before
+        );
+        let mut a = load(&tx, entry.id, 100).unwrap().unwrap();
+        a.continuous.as_mut().unwrap().window_started_at_unix_ms -= 3_600_001;
+        save(&tx, entry.id, 100, &a).unwrap();
+        assert!(reserve_finite_on(&tx, entry.id, 100).is_err());
+        reserve_on(&tx, entry.id, 100).unwrap(); // Standing messaging may use its new hour.
+        let a = load(&tx, entry.id, 100).unwrap().unwrap();
+        assert_eq!(a.reserved_provider_attempts, 48);
+        assert_eq!(a.finite_review_executions, Some(3));
+        tx.commit().unwrap();
+    }
+    #[test]
+    fn finite_review_has_four_execution_ceiling_even_with_larger_pilot() {
+        let (_file, store, entry) = setup();
+        let mut conn = store.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        configure_on(&tx, entry.id, 100, test_contract()).unwrap();
+        select_finite_on(&tx, entry.id, 100).unwrap();
+        for _ in 0..4 {
+            reserve_finite_on(&tx, entry.id, 100).unwrap();
+        }
+        assert!(reserve_finite_on(&tx, entry.id, 100).is_err());
+        reserve_on(&tx, entry.id, 100).unwrap();
+        assert_eq!(
+            load(&tx, entry.id, 100)
+                .unwrap()
+                .unwrap()
+                .finite_review_executions,
+            Some(4)
+        );
+        tx.commit().unwrap();
+    }
     #[test]
     fn continuous_rate_survives_expiry_restart_and_adoption_without_resetting_history() {
         let (file, store, entry) = setup();

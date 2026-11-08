@@ -70,7 +70,18 @@ pub(in crate::store) fn claim_on(
         "An unresolved heartbeat execution already exists"
     );
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
-    let allowance = super::resources::reserve_on(conn, session, human)?;
+    let finite_review = if activation.lane == HeartbeatLane::Reports {
+        super::producer::load_return(conn, source)?
+            .map(|(p, _)| p)
+            .filter(|p| p.review.is_some())
+    } else {
+        None
+    };
+    let allowance = if let Some(parent) = finite_review {
+        super::review::reserve_on(conn, &parent)?
+    } else {
+        super::resources::reserve_on(conn, session, human)?
+    };
     // Keep the live ownership plus fifteen previous terminal/transferred
     // records. Never delete native turns, source receipts or an uncertain owner.
     for old in retained.iter().skip(15) {
