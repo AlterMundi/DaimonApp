@@ -235,6 +235,18 @@ class Mounted(unittest.TestCase):
         copy_state=copy.deepcopy(state);copy_state['audio_sha256']='a'*64
         self.assertFalse(speech.preview_start_rejection(copy_state))
 
+    def test_closed_failed_preview_keeps_sanitized_cause_without_audio(self):
+        row=self.prepare();service=self.app.state.voice_previews;route,request,ident=service.plan(100,row,'A')
+        self.store.preview_start(100,row['id'],row['generation'],'A');self.cached(route,request,cancelled=True)
+        job=Path(route['cache_root'])/ident;state=json.loads((job/'state.json').read_bytes())
+        state['provider_receipt']['diagnostic']={'failure_code':'audition-event-mismatch','message':'sk-private ignored'}
+        speech.atomic(job/'state.json',speech.canonical(state))
+        response=self.post(self.body(row));self.assertEqual(response.status_code,200,response.text)
+        result=response.json();self.assertIsNone(result['audio']);render=result['batch']['renders']['A']
+        self.assertEqual(render['state'],'cancelled_verified')
+        self.assertEqual(render['outcome']['receipt']['diagnostic'],{'failure_code':'audition-event-mismatch'})
+        self.assertNotIn('sk-private',response.text);self.assertEqual(self.calls,[])
+
     def test_cancel_only_owned_attempt_and_retire_after_confirmed_close(self):
         row=self.prepare();self.mode='wait';results=[]
         thread=threading.Thread(target=lambda:results.append(self.post(self.body(row))),daemon=True);thread.start()

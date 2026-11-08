@@ -247,3 +247,9 @@ identity after access is corrected; it never replays the rejected/uncertain one.
 Old readers may show the new terminal state but cannot retire it; retain this
 reader until a claimed retirement completes. Preserve an operator receipt of
 the observed rejection and selected retirement, never invent finalization.
+
+Confirmed session closure does not make an audition successful: the bounded
+Live renderer retains its fixed provider/mismatch/no-audio classification in the
+closed receipt too. Preview readback keeps that sanitized cause even when usage
+and session.closed are confirmed. No raw provider message/credential is exposed;
+closing does not authorize replay, regenerate audio or claim human hearing.
