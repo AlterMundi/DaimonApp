@@ -8,8 +8,9 @@ const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
+const nativeDecisionCase=process.env.QUALIFICATION_HOME_DECISIONS;let nativeDecisionGranted=nativeDecisionCase==='allowed';const nativeDecisionPosts=[];
 const codexActivityCase=process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
-const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase,questionPosts=0;const voiceUploads=[];
+const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase||!!nativeDecisionCase,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -18,7 +19,8 @@ const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a close
 for(const row of sessions)row.last_activity_at=Date.now()/1000;
 sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
-const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1});
+let nativeDecisionResolved=false;
+const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1,...(nativeDecisionCase?{state:nativeDecisionResolved?'answered':'pending',actionable:!nativeDecisionResolved,kind:'approval',title:'Synthetic native operation',preview:'Review the selected operation.',body:'Allow this synthetic tool operation once?',choices:[{label:'Allow once',action:{kind:'approval',choice:'a'}}],allows_text:false,can_cancel:true}:{})});
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 if(hudCase){sources.splice(0,29);sources[0]={...sources[0],kind:'integrator_answer',preview:'Let us explore this idea together.\n\nWe can open the result and keep creating.',text_characters:85};}
@@ -55,7 +57,12 @@ const server=http.createServer(async(req,res)=>{
    return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,...(publicCase?{work_replay:'never'}:{native_replay:'never'}),...(req.headers['x-voice-capture-stop']?{capture_stop:req.headers['x-voice-capture-stop']}:{})}});
   }
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
-  if(route.startsWith('interaction/requests/')){if(req.method==='POST')questionPosts++;return json(question());}
+  if(route.startsWith('interaction/requests/')){
+   if(req.method==='POST'){
+    if(nativeDecisionCase){if(!nativeDecisionGranted)return json({detail:'Conversation-only grant'},403);let raw='';for await(const part of req)raw+=part;nativeDecisionPosts.push(JSON.parse(raw));nativeDecisionResolved=true;return json({id:question().id,binding,revision:'d'.repeat(64),recorded:true});}
+    questionPosts++;
+   }return json(question());
+  }
   if(route==='interaction/access'){accessReads++;return authDenied?json({detail:'Expired'},401):json({csrf:'fixture-csrf',label:'Synthetic operator'});}
   if(route==='interaction' && readRejections>0 && (!authCase||url.searchParams.get('qualification')==='auth')){readRejections--;return json({detail:'Synthetic access rejection'},401);}
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
@@ -72,7 +79,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_download_files:appearanceCase,can_listen:listenCase,can_speak:countdownCase||hudCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase,can_listen:listenCase,can_speak:countdownCase||hudCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -177,6 +184,33 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   // fixture has no file-upload API and must start with no selected attachment.
   if(countdownCase)await page.locator('#conversation-files-list button[aria-label="Remove appearance-fixture.txt"]').click();
   await page.locator('#conversation-visual>summary').click();
+ }
+ if(nativeDecisionCase){
+  assert(['allowed','limited'].includes(nativeDecisionCase));
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  await page.setViewportSize({width:320,height:740});
+  await page.locator('#conversation-message').fill('Keep my draft while I review this decision.');
+  await page.getByRole('button',{name:'For you · 1 pending requests',exact:true}).click();
+  const panel=page.getByRole('dialog',{name:'For you',exact:true});
+  await panel.getByRole('button',{name:'Read request',exact:true}).click();
+  await panel.getByText('Allow this synthetic tool operation once?',{exact:true}).waitFor();
+  const approve=panel.getByRole('button',{name:'Allow once',exact:true,includeHidden:true});
+  if(nativeDecisionGranted){
+   assert(await approve.isEnabled());nativeDecisionGranted=false;
+   await page.waitForFunction(()=>!document.querySelector('#conversation-refresh').disabled);await page.locator('#conversation-refresh').evaluate(node=>node.click());
+   await page.waitForFunction(()=>[...document.querySelectorAll('#conversation-request-cards button')].find(v=>v.textContent==='Allow once')?.disabled===true);
+   nativeDecisionGranted=true;await page.waitForFunction(()=>!document.querySelector('#conversation-refresh').disabled);await page.locator('#conversation-refresh').evaluate(node=>node.click());
+   await approve.waitFor({state:'visible'});await page.waitForFunction(()=>[...document.querySelectorAll('#conversation-request-cards button')].find(v=>v.textContent==='Allow once')?.disabled===false);
+   await approve.click();await page.waitForFunction(()=>document.body.textContent.includes('Decision recorded. Work may continue.'));
+   assert.deepEqual(nativeDecisionPosts,[{binding,revision:'d'.repeat(64),action:{kind:'approval',choice:'a'}}]);
+  }else{
+   assert.equal(await approve.isVisible(),false);assert.equal(await panel.getByRole('button',{name:'Cancel this turn',exact:true}).isVisible(),false);
+   assert.equal(nativeDecisionPosts.length,0);
+  }
+  await page.screenshot({path:path.join(output,'home-decisions-320.png')});
+  if(await panel.isVisible())await panel.getByRole('button',{name:'Close',exact:true}).click();
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my draft while I review this decision.');assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-shared-home-decision-'+nativeDecisionCase;report.decisions=nativeDecisionPosts;report.existingDraft='preserved';return;
  }
  if(hudCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
@@ -584,6 +618,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  report.state='qualified-synthetic-browser';report.posts=posts.map(v=>({text:v.text,reply:v.reply}));report.viewports=['1280x800','390x844','320x740'];report.errors=errors;
  }
  }finally{
+ if(nativeDecisionCase&&browser){report.decisions=nativeDecisionPosts;const page=browser.contexts()[0]?.pages()[0];if(page)report.decisionText=await page.locator('#conversation-attention').textContent().catch(()=>null);}
  if(browser)await browser.close();for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));
  report.errors=errors;fs.writeFileSync(path.join(output,'browser.json'),JSON.stringify(report,null,2));
  const bytes=fs.readdirSync(output).reduce((n,file)=>n+fs.statSync(path.join(output,file)).size,0);assert(bytes<=4*1024*1024);console.log(JSON.stringify({state:report.state,retained_bytes:bytes,errors}));

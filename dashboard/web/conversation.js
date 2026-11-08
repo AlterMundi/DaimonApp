@@ -271,7 +271,8 @@ window.Conversation = (() => {
       catch{audioState('Voice could not finish closing. Return to the conversation before listening.');return;}
       return listenTo(source);
     }
-    const requestControls = window.RequestControls.mount({api,getBinding:()=>binding,setCsrf,unauthorized:failed,onReply:(...args)=>{pendingNavigation?.close(false);voiceMode?.close();return selectFocus(...args);},onListen:listenFromAttention,getCanListen:()=>canListen,getCanDecide:()=>!readOnly&&!standalone,makeCopy:read=>copyButton(()=>copyParts(read)),onSource:offerVoice});
+    let canDecideRequests=!readOnly&&!standalone;
+    const requestControls = window.RequestControls.mount({api,getBinding:()=>binding,setCsrf,unauthorized:failed,onReply:(...args)=>{pendingNavigation?.close(false);voiceMode?.close();return selectFocus(...args);},onListen:listenFromAttention,getCanListen:()=>canListen,getCanDecide:()=>canDecideRequests,allowCancel:()=>canDecideRequests,makeCopy:read=>copyButton(()=>copyParts(read)),onSource:offerVoice});
     const taskControls=window.HumanTaskControls?.mount({api,getBinding:()=>binding,setCsrf,unauthorized:failed,canReply:()=>!readOnly,makeCopy:read=>copyButton(()=>copyParts(read)),onReply:task=>{
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();voiceContext=undefined;selectFocus({source:`task:${task.id}`,revision:task.revision,context_only:true},`${task.label} · ${task.title}`);return true;
@@ -297,7 +298,7 @@ window.Conversation = (() => {
         }
         return api(path.replace(/^interaction\/(requests|tasks)/,"interaction/internal/$1"),body);
       };
-      const requests=window.RequestControls.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal",allowCancel:false,getCanDecide:view=>view?.kind==="question"});
+      const requests=window.RequestControls.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal",allowCancel:()=>canDecideRequests,getCanDecide:view=>canDecideRequests||view?.kind==="question"});
       const tasks=window.HumanTaskControls?.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal"});
       const panel=$("#internal-attention");panel.hidden=false;
       internalNavigation=window.AttentionCarousel?.mount({line:$("#conversation-presence"),panel,getItems:()=>[...requests.attentionItems(),...(tasks?.attentionItems()||[])]});
@@ -822,6 +823,7 @@ window.Conversation = (() => {
         routing:[...inputs.values()].some(c=>["requested","queued","submitting","steering"].includes(c.value.routing?.phase))});
     }
     function resetInputs() {
+      canDecideRequests=false;
       liveUsage?.reset();
       voiceMode?.close();showResponseDraft();
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
@@ -1814,6 +1816,7 @@ window.Conversation = (() => {
       if(publicLiveEnabled)void publicLiveSession?.restoreHistory().catch(()=>{});
       setCsrf(value.csrf);void foregroundHistory();
       canListen = !readOnly && value.can_listen;canStreamSpeech=canListen && !!value.can_stream_speech;
+      if(Object.hasOwn(value,'can_decide_requests'))canDecideRequests=!readOnly&&value.can_decide_requests===true;
       canSpeakLive=canListen && value.can_speak_live_response===true;
       applyConversationServices();
       if(!canSpeakLive)liveSpeech?.reset();

@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict'), fs=require('node:fs'), vm=require('node:vm');
 const clone=value=>JSON.parse(JSON.stringify(value));
 const deferred=()=>{let release,enter;return {promise:new Promise(yes=>{release=yes;}),entered:new Promise(yes=>{enter=yes;}),release:()=>release(),enter:()=>enter()};};
-function boot(count=1, mayDecide=true,maxCards=200) {
+function boot(count=1, mayDecide=true,maxCards=200,allowCancel=true) {
   const nodes=new Map();
   const element=tag=>({tag,children:[],handlers:{},dataset:{},textContent:'',value:'',hidden:false,disabled:false,
     setAttribute(key,value){this[key]=value;},addEventListener(name,fn){this.handlers[name]=fn;},
@@ -55,7 +55,7 @@ function boot(count=1, mayDecide=true,maxCards=200) {
   }
   const context=vm.createContext({window:{},document,TextEncoder,URL,URLSearchParams});
   vm.runInContext(fs.readFileSync('dashboard/web/requests.js','utf8'),context);
-  let ui;ui=context.window.RequestControls.mount({api,getBinding:()=>binding,setCsrf(){},unauthorized(){ui.reset();},onReply:(reference,label)=>replies.push({reference:clone(reference),label}),onListen:source=>listens.push(clone(source)),getCanListen:()=>canListen,getCanDecide:()=>mayDecide,maxCards});
+  let ui;ui=context.window.RequestControls.mount({api,getBinding:()=>binding,setCsrf(){},unauthorized(){ui.reset();},onReply:(reference,label)=>replies.push({reference:clone(reference),label}),onListen:source=>listens.push(clone(source)),getCanListen:()=>canListen,getCanDecide:()=>mayDecide,allowCancel,maxCards});
   const all=(el,predicate)=>[...(predicate(el)?[el]:[]),...el.children.flatMap(child=>all(child,predicate))];
   const button=(card,text)=>all(card,el=>el.tag==='button'&&el.textContent===text)[0];
   return {ui,nodes,sources,receipts,calls,replies,listens,button,all,tasks:args=>context.window.HumanTaskControls.mount({getBinding:()=>binding,...args}),goals:args=>context.window.GoalControls.mount({getBinding:()=>binding,...args}),speech(value){canListen=value;},
@@ -134,6 +134,11 @@ function boot(count=1, mayDecide=true,maxCards=200) {
   await offline.button(off,'Check decision').handlers.click();assert.equal(offline.receipts.size,0);
   await offline.button(off,'Retry this same decision').handlers.click();assert.equal(offline.receipts.size,1);
   const posts=offline.calls.filter(v=>v.body);assert.deepEqual(posts[0].body,posts[1].body,'Explicit retry must freeze source revision and exact action');
+
+  let mayCancel=false;const granted=boot(1,true,200,()=>mayCancel);await granted.ui.refresh();const gc=granted.cards()[0];await granted.read(gc);
+  const cancel=granted.button(gc,'Cancel this turn');assert(cancel.hidden);await cancel.handlers.click();assert.equal(granted.calls.filter(v=>v.body).length,0);
+  mayCancel=true;await granted.read(gc);assert.equal(cancel.hidden,false);
+  mayCancel=false;await cancel.handlers.click();assert.equal(granted.calls.filter(v=>v.body).length,0,'A revoked cancel capability fences an already-rendered button');
 
   const draft=boot();await draft.ui.refresh();const dc=draft.cards()[0];await draft.read(dc);
   const editor=draft.all(dc,v=>v.tag==='textarea')[0];editor.value='Draft for the original question';editor.handlers.input();
