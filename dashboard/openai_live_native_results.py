@@ -139,6 +139,30 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
                             'forwarded_visit':target,'original_state':row['state']}
             related=[row for row in related if row.get('origin_visit')==origin]
             related += [row for _,row in inherited]
+            # Several admitted originals can share one canonical answer. An
+            # earlier voice's delegation IDs have no provider scope here: reuse
+            # its exact acknowledged append through one flat local association.
+            if any(row['state']!='context_injected' for row in related):
+                raise ValueError('A previous native result append is unconfirmed; never skip or repeat it')
+            if offset and not any(row['source']==source and row['revision']==revision
+                    and row['next_offset']==offset for row in related):
+                raise ValueError('Read this canonical result in exact retained cursor order')
+            shared = _shared_return(history, original, human, owner, source, revision, offset)
+            if shared:
+                current();authorize()
+                target, append_key, row = shared
+                if row['state'] != 'context_injected':
+                    return {**_receipt(row), 'state':'held', 'forwarded_visit':target,
+                            'original_state':row['state']}
+                claims=original.setdefault('native_return_claims',{})
+                if len(claims)>=128:raise ValueError('Native return reference capacity reached')
+                claims[key]={'target':target,'key':append_key,'delegation':delegation,
+                             'source':source,'revision':revision,'offset':offset,
+                             'shared_delegation':row['delegation']}
+                current();history._write(original)
+                authorize()
+                return {**_receipt(row), 'state':'already_forwarded', 'forwarded_visit':target,
+                        'original_state':row['state']}
         if any(row['state'] != 'context_injected' for row in related):
             raise ValueError('A previous native result append is unconfirmed; never skip or repeat it')
         if offset and not any(row['source'] == source and row['revision'] == revision
@@ -194,13 +218,40 @@ def _origin_returns(history,original,human,owner,delegation):
     if not isinstance(claims,dict) or len(claims)>128:raise ValueError('Native return reference bound exceeded')
     for claim in claims.values():
         if claim['delegation']!=delegation:continue
-        target=history.read(claim['target'],human,owner)
-        row=target.get('native_result_updates',{}).get(claim['key'])
-        if (row is None or row.get('origin_visit')!=ident or row['delegation']!=delegation
-                or any(row[k]!=claim[k] for k in ('source','revision','offset'))):
-            raise ValueError('Native return destination is unconfirmed; preserve the original claim')
-        rows.append((target['id'],row))
+        target,row=_resolve_claim(history,ident,claim,human,owner)
+        rows.append((target,row))
     return rows
+
+
+def _resolve_claim(history,origin,claim,human,owner,targets=None):
+    if targets is None:targets={}
+    if claim['target'] not in targets:targets[claim['target']]=history.read(claim['target'],human,owner)
+    target=targets[claim['target']]
+    row=target.get('native_result_updates',{}).get(claim['key'])
+    expected=claim.get('shared_delegation',claim['delegation'])
+    if (row is None or row.get('origin_visit',target['id'])!=origin
+            or row['delegation']!=expected
+            or any(row[k]!=claim[k] for k in ('source','revision','offset'))
+            or 'shared_delegation' in claim and row['state']!='context_injected'):
+        raise ValueError('Native return destination is unconfirmed; preserve the original claim')
+    return target['id'],row
+
+
+def _shared_return(history,original,human,owner,source,revision,offset):
+    """One bounded scan, pointing only to actual append rows, never alias chains."""
+    matches=[];targets={}
+    def same(row):return (row.get('source'),row.get('revision'),row.get('offset'))==(source,revision,offset)
+    for key,row in original.get('native_result_updates',{}).items():
+        if same(row) and row.get('origin_visit',original['id'])==original['id']:
+            matches.append((original['id'],key,row))
+    claims=original.get('native_return_claims',{})
+    if not isinstance(claims,dict) or len(claims)>128:raise ValueError('Native return reference bound exceeded')
+    for claim in claims.values():
+        if same(claim):
+            target,row=_resolve_claim(history,original['id'],claim,human,owner,targets)
+            matches.append((target,claim['key'],row))
+    # A second original never clears an unknown append for the same fragment.
+    return next((v for v in matches if v[2]['state']!='context_injected'),None) or next(iter(matches),None)
 
 
 def _receipt(row):

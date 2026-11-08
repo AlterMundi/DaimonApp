@@ -954,3 +954,29 @@ open. Follow OpenAI's
 [transcript provenance](https://developers.openai.com/api/docs/guides/live-migration#preserve-context-and-apply-corrections)
 and [saved-context](https://developers.openai.com/api/docs/guides/live-delegation#keep-the-conversation-context-in-your-application)
 guidance when qualifying the lifecycle.
+
+### Shared canonical fragments after voice renewal
+
+Several admitted originals can be covered by the same native answer. In a fresh
+voice connection their old delegation IDs no longer need separate provider
+responses. Repeating the same source/revision/offset once per old delegation
+therefore duplicated historical context, as observed in retained real journals.
+Current-connection delegations still receive their own scoped responses.
+
+The historical return path now validates the requesting original and current
+canonical association first, then reuses an exact existing acknowledged append.
+It adds one bounded flat origin claim with `shared_delegation`, pointing directly
+to the actual target visit and append key. It copies neither text nor an ACK,
+creates no alias chain, sends no second event and dispatches no work. The original
+append row remains unchanged. Each original retains its own ordered cursor;
+missing/changed destination rows and unconfirmed matching appends stay held.
+The existing128-claim/256KiB-record/32MiB-journal bounds still apply.
+
+After such a shared claim is written, web rollback must retain a compatible
+`openai_live_native_results.py` reader. The older reader refuses that association
+rather than resolving it; do not clear claims or replay work to bypass refusal.
+No real journal is migrated or deduplicated retroactively. Synthetic tests cover
+shared results across multiple replacements/restart, long fragments, unknowns,
+changed receipts, unrelated pending fragments, fresh native/worker association
+and unchanged current-connection delegation replies. Transport evidence does not
+establish semantic incorporation, memory lookup or human hearing.
