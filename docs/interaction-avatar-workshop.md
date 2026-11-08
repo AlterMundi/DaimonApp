@@ -220,3 +220,10 @@ An unavailable selection keeps the workshop retry/status path, without guessing
 that the built-in avatar was selected. Account reset removes the previous art.
 Listening/speaking evidence lights the full header for either portrait; authored
 expressions do not manufacture operational microphone state.
+
+The standalone Conversation response selects its heading, feedback and layout
+classes in the initial HTML, before deferred scripts or authenticated reads.
+The separate Sessions entry retains its own shell. Inherited Home CSS remains
+render-blocking; do not hide the application indefinitely while waiting for
+appearance events or use appearance to admit access. Shared-auth attributes and
+explicit inherited-style policy coexist on the same HTML element.

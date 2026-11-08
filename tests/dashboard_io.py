@@ -743,6 +743,12 @@ class DashboardAppearance(unittest.TestCase):
             with TestClient(create_app({**config,'conversation_appearance':'authored'},Receiver()),base_url='https://example.test') as client:
                 standalone=client.get('/?view=conversation&client=standalone').text
                 self.assertIn('data-style-policy="authored"',standalone)
+                self.assertIn('<body class="conversation-mode standalone-conversation">',standalone)
+                self.assertIn('<h1>Daimon</h1>',standalone)
+                self.assertNotIn('<h1>Sessions</h1>',standalone)
+                self.assertNotIn('Connecting to Telegram',standalone)
+                self.assertNotIn('<section id="conversation" hidden',standalone)
+                self.assertIn('<h1>Sessions</h1>',client.get('/').text)
                 self.assertNotIn('data-home-style',standalone)
                 self.assertNotIn('home-style.js',standalone)
                 self.assertIn('data-home-style',client.get('/').text)
