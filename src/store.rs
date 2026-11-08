@@ -44,7 +44,10 @@ mod live_context;
 mod live_tasks;
 pub use goal_controls::{GoalAction, GoalPlan};
 pub use goal_delegations::GoalDelegationUpdate;
-pub(crate) use live_context::LiveContextCommand;
+pub(crate) use live_context::{
+    LiveContextCommand, invalid_native_command as invalid_live_context_command,
+    rejection as live_context_rejection,
+};
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;

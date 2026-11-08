@@ -4,6 +4,66 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Finishing a retained full checkpoint reader
+
+A closed reconnect can leave an older, partly paged full reader after its native
+worker has finished. That frozen reader must remain available with its original
+revision, exact body and page offsets. Refusing every dispatch while a full reader
+exists prevents a fresh explicit reconnect request from reaching the native
+checkpoint writer at all.
+
+The existing foreground-context dispatcher can reserve one distinct control
+notice for the new reconnect request when the entry is idle and every retained
+context submission has an acknowledged, incorporated, owner-bound physical turn
+with a completed canonical observation. A boundary marker, failed-only local
+turn, uncollected ACK or uncertain submission is insufficient. Active readers and
+unchanged requests remain fenced. The notice uses the existing native dispatcher,
+not another router, source append or replay of an old submission.
+
+The notice carries the fresh `recovery_request_revision` alongside the unchanged
+frozen reader identity. Finish that exact reader and acknowledge it first; this
+cannot acknowledge the newer checkpoint request. Then read and acknowledge the
+current complete checkpoint plus tail and use its exact checkpoint-writer CAS.
+Reservation is durable and deduplicated across restart; changed owner/native/Stop
+bindings still refuse admission. No source is retired by the notice itself.
+
+Foreground known-unsent recovery uses the existing maintenance runner even when
+workflow and routed-return switches are both off. Those switches still control
+their own journals; they are not a prerequisite for finishing an already admitted
+voice-context intent. Return identity, finite attempt limits and uncertainty
+fences remain unchanged. No new source event or retry loop is introduced.
+
+`after_incorporation` names a supplied call template, not an action. Copy its
+operation and arguments exactly (`action: incorporate`) after reading every
+page. A malformed native command now returns a fixed protocol diagnostic rather
+than raw parser details. Requesting another read mode while a frozen range is
+pending returns its existing read-mode template. Neither refusal changes the
+range, its offsets, incorporation or checkpoint. Binding/authority failures keep
+the generic refusal and cannot disclose an old reader. This assists the native
+writer; it does not acknowledge language or manufacture a semantic checkpoint.
+
+Before these diagnostics, one distinct Luna-low trial on31,819bytes of synthetic
+sources completed without incorporation or a checkpoint. Its first call used
+`action: after_incorporation`; its second requested a full read while the original
+non-full reader remained. Both received the generic routing refusal. Retained
+state agrees with the selected-range guard, but the generic reply does not reveal
+which internal branch rejected the second call. The negative outcome remains;
+no model call was repeated to qualify the diagnostic correction. Socket/SQLite
+tests establish exact protocol recovery, not semantic model comprehension.
+
+In an actual-native qualification, archive the task-owned thread only after its
+owned continuations have settled. An idle observation before a new physical ACK
+is a preparation state, not proof that the new worker already completed. Keep
+the bridge alive through the exact pending admission/terminal outcome; preserve
+an uncertain submission rather than restarting it to repair the verifier.
+
+This is a persistent native-reader change: retain a compatible reader for pending
+recovery notices on rollback. An older reader can retain the document but cannot
+admit this new notice. Unit tests establish the reader/CAS and admission behavior;
+actual native semantic checkpoint completion and device/hearing acceptance remain
+separate receiving qualifications. Do not replay an uncertain native input or
+manually supply a fabricated checkpoint to satisfy those qualifications.
+
 ## Startup with a long idle integrating history
 
 The receiving owner reproduced `Native active turn selection incomplete` during
