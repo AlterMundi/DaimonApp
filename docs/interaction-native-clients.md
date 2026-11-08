@@ -53,6 +53,31 @@ This source is not installed/released. No new native stream-copy/cache is needed
 for the supported picker route. Preserve all other voice/background/Beacon/iOS
 requirements and their acceptance gaps.
 
+## Share receiving candidate0.9 —8November2026
+
+The0.9 source adds Daimon to Android's Sharesheet for literal text/links and up to
+8 ordered image/file content URIs. The existing composer offers Add or Discard;
+Add prepares attachments through the current foreground WebView file chooser and
+existing bounded FileInput. It does not upload, send or open shared URLs. The
+current draft, capture, account and destination remain selected. Access reset
+invalidates a pending Add; transient busy state after accepted attachment mutation
+does not lose the caption/ACK or permit duplicate attachment IDs.
+
+One pending offer retains at most12KiB text and8 distinct content URIs, with
+existing20MiB per-file/40MiB combined attachment admission. No native byte cache,
+background URI reader, persistable permission or new login/store is introduced.
+Added and discarded offer IDs are deduplicated in the bounded16-ID page window.
+
+Independent source review identified the post-mutation capture interleaving;
+focused Chromium red/green qualification at618ed44b fixes it. Exact native13-case
+CI42460773030 and web/speech/dashboard checks42460773020 passed. That latter
+run's unrelated native question-control boundary test failed and is retained;
+it is not claimed as passing or evidence about Share. VersionCode9 is required
+for the same-package/key forward upgrade. The version metadata delta requires
+its own exact release build/signature verification before distribution. Matching
+web delivery, signed APK installation and real phone transient URI/read/Send
+acceptance remain pending; emulator/desktop results do not establish them.
+
 ## Native Beacon candidate0.8 —7November2026
 
 The prepared `BeaconSynth` is a bounded six-carrier PCM synthesizer for the
