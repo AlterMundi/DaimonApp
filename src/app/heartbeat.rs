@@ -307,11 +307,16 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     } else {
         None
     };
-    let allow_attention = app
-        .shared
-        .store
-        .get_session(cfg.entry())?
-        .is_some_and(|s| !s.busy);
+    let current = app.shared.store.get_session(cfg.entry())?;
+    let allow_attention = if let Some(session) = current.filter(|s| !s.busy) {
+        app.shared
+            .codex
+            .bounded_idle_readiness(&session)
+            .await
+            .is_ok_and(|reason| reason == "ready")
+    } else {
+        false
+    };
     if let Some(selected) =
         app.shared
             .store
@@ -344,6 +349,18 @@ pub(super) async fn recover_unsent(app: &App) -> Result<()> {
         return Ok(());
     };
     if session.busy || session.codex_thread_id.is_none() {
+        return Ok(());
+    }
+    // A local slot can be free while the native goal has a physical writer.
+    // Observe that contention before spending a retry or execution envelope;
+    // the atomic native admission remains mandatory for races after this read.
+    if !app
+        .shared
+        .codex
+        .bounded_idle_readiness(&session)
+        .await
+        .is_ok_and(|reason| reason == "ready")
+    {
         return Ok(());
     }
     for selected in app

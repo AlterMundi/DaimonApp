@@ -445,3 +445,8 @@ smaller reservations stay charged in their original attempt units. The selected
 account exposes `effective_execution`; strict rollback requires this reader.
 No in-flight execution is extended, and failed/admitted originals are not replayed.
 Legacy finite reviews retain their original per-execution/pilot limits.
+
+Canonical checks still run while busy. Both new attention and known-unsent
+recovery observe actual native idle/profile readiness before spending an attempt;
+an empty local slot alone is insufficient. Atomic native admission still handles
+a race after observation. Known contention consumes no execution envelope.
