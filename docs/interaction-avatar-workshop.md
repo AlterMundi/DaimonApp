@@ -230,8 +230,8 @@ private data publication. Source API/storage suites remain ordinary CI.
 The selected custom portrait can follow the same optional artistic rest cue as
 new canonical replies. ConversationCompanion remains the single admission point:
 source kind, revision/time ordering, duplicate rejection and selected expression
-pack/catalog checks run before the custom renderer sees a cue. Microphone,
-playback, task, connection and question states never select this artistic cue.
+pack/catalog checks run before the custom renderer sees a cue. Microphone and playback retain their independent operational presentation.
+Temporary evidence-driven reactions can override the authored cue as described below.
 Operational captions and the header glow continue to describe their actual state.
 
 The wardrobe uses only an existing `local/v1` gesture in the active saved design.
@@ -299,7 +299,8 @@ primary color, hex prop colors, three independent prop slots, eight acting hand
 objects and nine artistic cues (including Sueño/pillow). The editor keeps the
 current game-side tools, undo/redo and one-step surprise choices. Imported inert
 models retain their existing eight-cue contract and calm fallback; no runtime
-availability/quota event automatically selects sleep.
+availability/quota event is guessed from model text. Confirmed native limits may
+select the temporary sleep reaction described below.
 
 The existing receiving storage bridge is unchanged: account/CSRF authority,
 immutable revisions, lazy full-design reads, generation-fenced explicit use,
@@ -459,3 +460,33 @@ movement with a simultaneous stationary detail, nested parent rotation/scale and
 legacy static anchors. Use the existing `PLAYWRIGHT_MODULE`/`CHROMIUM_EXECUTABLE`
 settings. It owns a temporary local HTTP server/browser and makes no provider or
 production storage calls. Physical touch and artistic contact remain separate.
+
+## Temporary receiver reactions — Ani/Oliva iteration
+
+The existing ConversationCompanion observer resolves temporary reactions before
+its admitted reply cue (or the saved design default). This only calls the existing
+in-memory renderer selector. It does not save, activate, change account generation,
+choose an accessory, call a provider, or change task/microphone state. The authored
+accessory remains selected and its existing expression interaction runs normally.
+Unsupported custom-model expressions fall back through the existing renderer.
+
+Priority: fresh observed integrator/worker execution or tools -> focused; actual
+pending question or native waiting_for_human -> curious; native blocked -> uncertain;
+all observed native sources explicitly usageLimited/budgetLimited -> sleep. A
+single limited sibling, unknown/truncated sources, idle active goal, error,
+paused goal or disconnected receiver must not imply exhaustion. Native limits
+are usage/budget observations, not a claim of remaining model context tokens.
+
+A fresh same-source active-to-complete observation yields delighted for1.6seconds;
+initial or repeated complete snapshots do not replay it. A fully observed healthy
+idle return from sleep yields welcome for1.6seconds. Work/questions/limits override
+these brief pulses. Afterwards the admitted reply cue or saved default returns.
+Freshness expires within20seconds (including source age) without another poll.
+Account reset and pack replacement clear transition memory/pulses. Existing pause,
+reduced-motion and hidden-view behavior remains. Native state is read through the
+existing sonic observer even with sound disabled; no new polling route is added.
+
+Qualified with synthetic observer transition/time tests and real Chromium
+companion-to-custom-canvas checks, preserving authenticated revision bytes,
+pointers/generation and zero write/provider requests. This is source qualification,
+not receiving deployment or physical device acceptance.
