@@ -63,6 +63,11 @@ def qualify(binary, production=False):
         waiting=j.read('heartbeat','status')['result']
         assert waiting['producer']['pending'] and waiting['resources']['reserved_provider_attempts']==(12 if production else 0)
         assert len(j.bounded)==0, 'Busy observation must retain metadata without a native/model request'
+        if production:
+            # Yield the completed collector without changing the actual goal.
+            goal=dict(threadId=j.web_thread,objective='Preserve synthetic ongoing goal',status='active',tokenBudget=None,tokensUsed=17,timeUsedSeconds=3,createdAt=1,updatedAt=1)
+            j.goals[j.web_thread]=goal.copy()
+            j.broadcast(j.web_thread,'thread/goal/updated',{'goal':goal})
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:len(j.bounded)==1,seconds=45)
         j.wait(lambda:j.row("SELECT count(*) FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.phase')='accepted'")==[(1,)])
@@ -95,6 +100,8 @@ def qualify(binary, production=False):
         assert status['producer']['finite_review']['state']==('configured' if production else 'expired')
         assert status['resources']==funding and status['producer']['mode']=='continuous'
         assert len(j.bounded)==1
+        if production:
+            assert j.goals[j.web_thread]==goal, 'Heartbeat handoff changed native goal or accounting'
         print('finite review owner selection/purpose/source/one bounded execution/no-change/pause/restart/expiry: PASS; synthetic native, real providers=0')
     finally:
         j.close()
