@@ -1,5 +1,35 @@
 # Shared avatar workshop receiving adapter
 
+## Inspect a saved revision at Conversation size
+
+In the existing workshop, **Ver junto al nombre** is available after saving or
+reopening a clean immutable revision. The parent reads that exact actor-owned
+record, verifies its ID and canonical SHA256, and renders it beside the current
+companion name using the installed renderer and compact frame dimensions.
+This is a read-only preview: no Save, Use, active/editing pointer, generation,
+voice preference or ledger mutation. Unsaved changes disable the entry.
+
+The preview runs at most one local animation cycle (up to120frames); reduced
+motion starts still and offers an explicit Animate once button. Closing it,
+leaving the workshop, switching to Voice or changing account removes it;
+backgrounding stops its timer. Delayed reads cannot reopen a closed preview or
+cross the captured account/iframe binding. A changed record digest refuses.
+No providers, external assets or animation calls to a model are involved.
+
+The bridge accepts only `preview` with `{id: revisionUUID}`. Its reply contains
+`id`, `sha256` and `view: compact_header_preview`; it is display metadata, not an
+authoritative review, child contribution, mission receipt or achievement. School
+still needs its actual retained mission/space/actor binding and private-workspace
+return. A general wardrobe preview does not create that authority.
+
+The mounted browser qualification uses synthetic actors and actual editor,
+storage API and Canvas renderer. Run with `COMPACT_PREVIEW_ONLY=1` through
+`tests/dashboard_avatar_workshop_browser.py`, selecting the existing Playwright
+module and Chromium executable via their documented environment variables.
+It checks immutable readback, no writes/activation, finite animation, reduced
+motion, short-phone controls, hash mismatch and delayed old-account refusal.
+This does not establish physical-device or artistic acceptance.
+
 ## Exact saved-design export for an authorized host
 
 `GET /api/interaction/avatars/{revision UUID}?format=canonical` returns the

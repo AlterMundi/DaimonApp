@@ -28,3 +28,5 @@ export async function save(design,parentId){
 }
 export async function activate(id){snapshot=await request('activate',{id,generation:snapshot.generation});}
 export function close(){parent.postMessage({kind:'daimon.workshop.closed'},location.origin);}
+
+export function preview(id){return request('preview',{id});}
