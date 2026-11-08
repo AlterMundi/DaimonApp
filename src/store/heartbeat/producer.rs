@@ -1816,10 +1816,11 @@ mod inbox_tests {
                     page(&selected, vec![item(256), item(257)]),
                 ))),
             )
-            .unwrap()
             .unwrap();
-        assert!(r.output.contains("inbox-unavailable"));
-        assert!(!r.output.contains("matrix_original_available"));
+        assert!(r.is_none());
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(status["producer"]["last_check"]["outcome"], "failed");
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
         assert_eq!(selection(&s, e, &source).after, 255);
         assert_eq!(
             s.conn
