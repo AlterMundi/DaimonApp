@@ -66,7 +66,7 @@ window.PublicLiveConversation=(()=>{
     });}
     function checkpoint(){
       if(fragmentBytes<32000)return;
-      if(persisting>=2){void hold('Local audio storage is falling behind. Your retained audio needs review.');return;}
+      if(persisting>=2){void hold('Local audio storage is falling behind. Your retained audio needs review.','local_storage');return;}
       const selected=segment,blob=window.StreamingVoice.wav(fragmentParts),offset=selected.offset;
       selected.offset+=fragmentBytes;fragmentParts=[];fragmentBytes=0;persisting++;
       durable=durable.then(async()=>{
@@ -74,7 +74,7 @@ window.PublicLiveConversation=(()=>{
           ordinal:selected.ordinal,blob,mime:'audio/wav',capture_started:selected.started,native_review:true,
           native_fragment:true,fragment_group:selected.id,fragment_offset:offset,audio_sha256:await digest(blob)};
         await recovery.put(value,true);selected.fragments.push(value);
-      }).catch(()=>{selected.failed=true;void hold('Local audio storage needs review. Save the retained original.');}).finally(()=>{persisting--;});
+      }).catch(()=>{selected.failed=true;void hold('Local audio storage needs review. Save the retained original.','local_storage');}).finally(()=>{persisting--;});
     }
     function flush(prefix=false){
       if(!bytes)return;
@@ -88,7 +88,7 @@ window.PublicLiveConversation=(()=>{
         originals.set(value.id,value);notify();
         await recovery.sealNative(value,selected.fragments);return value;
       });
-      durable=sealed.catch(()=>{void hold('Local audio storage needs review. Save the retained original.');});
+      durable=sealed.catch(()=>{void hold('Local audio storage needs review. Save the retained original.','local_storage');});
       uploads=uploads.then(async()=>{const value=await sealed;try{await upload(value);}catch{if(owned===epoch)state('Original audio is kept for recovery.');}}).catch(()=>{if(owned===epoch)state('Original audio is kept for review.');});
     }
     async function sealSource(value){
@@ -128,7 +128,7 @@ window.PublicLiveConversation=(()=>{
       // question authority, a provider command or permission to run native work.
       socket.send(JSON.stringify(receipt));
     }
-    async function hold(message='Voice paused. Your original audio is kept.'){
+    async function hold(message='Voice paused. Your original audio is kept.',reason='explicit_stop'){
       if(closing)return;closing=true;active=starting=false;clearTimeout(timer);
       // Local playback stops immediately; the provider receiver remains alive
       // for the final usage event and independent native work keeps its owner.
@@ -146,7 +146,7 @@ window.PublicLiveConversation=(()=>{
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
       if(socket?.readyState===WebSocket.OPEN){
         const finalized=new Promise(resolve=>{closedAck=resolve;});
-        try{socket.send(JSON.stringify({type:'close'}));}catch{closedAck(false);}
+        try{socket.send(JSON.stringify({type:'close',reason}));}catch{closedAck(false);}
         let timeout;await Promise.race([finalized,new Promise(resolve=>{timeout=setTimeout(()=>resolve(false),35000);})]);clearTimeout(timeout);
       }
       usage({closed:true});
@@ -198,10 +198,11 @@ window.PublicLiveConversation=(()=>{
               if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
               onItem({visit,item:value.event,public_live:true});
             }
+            else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · work results need review.');
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
-              if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.');
+              if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.','source_unconfirmed');
             });
-            else if(value.type==='finishing'){if(!closing)void hold(value.message||'Finishing voice; checking pending work.');}
+            else if(value.type==='finishing'){if(!closing)void hold(value.message||'Finishing voice; checking pending work.','server_finishing');}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
               if(value.finalization)usage({finalization:value.finalization,closed:true});
               if(backend==='native'&&value.replacement&&/^[a-f0-9-]{36}$/.test(value.replacement.id||'')
@@ -211,7 +212,7 @@ window.PublicLiveConversation=(()=>{
               closedAck?.(value.type==='closed');abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
               if(!closing){socket=undefined;transport.close();void hold(value.message||'Voice paused. Your original audio is kept.');}
             }
-          }catch{if(!closing)void hold('Voice paused. Review the retained original.');}
+          }catch{if(!closing)void hold('Voice paused. Review the retained original.','event_processing');}
         };
         transport.onclose=()=>{if(owned!==epoch)return;closedAck?.(false);abortOpen?.(Error('Voice connection ended.'));
           if(owned===epoch&&!closing){socket=undefined;void hold('Voice connection ended. Your original audio is kept.');}};
@@ -231,7 +232,7 @@ window.PublicLiveConversation=(()=>{
           nativeAudioAbort=new AbortController();
           const opening=window.WebRtcNativeAudio.open({sessionSeconds:Math.max(300,Math.ceil(admission.remaining_seconds)),
             signal:nativeAudioAbort.signal,onActivity:activity,
-            onUnavailable:message=>{if(current())void hold(message);}})
+            onUnavailable:message=>{if(current())void hold(message,'native_output');}})
             .then(value=>{if(!current()){value.close();throw Error('Native voice output retired');}return value;});
           opening.catch(()=>{});nativeAudio=await wait(opening,10000);
           if(!current()){nativeAudio.close();nativeAudio=undefined;throw Error('Voice activation ended');}
@@ -253,7 +254,7 @@ window.PublicLiveConversation=(()=>{
         peer.ontrack=event=>{
           if(!current())return;
           const stream=event.streams[0]||new MediaStream([event.track]);
-          if(nativeOutput){try{nativeAudio.attach(stream);}catch{void hold('Native voice output is unavailable.');}return;}
+          if(nativeOutput){try{nativeAudio.attach(stream);}catch{void hold('Native voice output is unavailable.','native_output');}return;}
           audio.srcObject=stream;audio.play().catch(()=>{if(!current())return;paused=true;state('Tap Resume audio to listen.');});
           activityAbort?.abort();activityObserver?.close();activityAbort=new AbortController();
           const signal=activityAbort.signal;
@@ -264,7 +265,7 @@ window.PublicLiveConversation=(()=>{
           // A transient ICE disconnection can recover on this same paid call.
           // Keep the explicit Stop and existing visit/capture bounds in force.
           if(peer.connectionState==='disconnected')state('Reconnecting audio. Your microphone recording is kept.');
-          if(['failed','closed'].includes(peer.connectionState))void hold('Voice connection paused. Your original audio is kept.');};
+          if(['failed','closed'].includes(peer.connectionState))void hold('Voice connection paused. Your original audio is kept.','transport_failed');};
         const recorder=window.StreamingVoice.openCapture(media,{sessionSeconds:Math.max(300,Math.ceil((deadline-Date.now())/1000))})
           .then(value=>{if(!current()){value.close();throw Error('Voice recorder retired');}return value;});
         recorder.catch(()=>{});capture=await wait(recorder,10000);
@@ -286,15 +287,15 @@ window.PublicLiveConversation=(()=>{
             return;
           }
           if(value.finished){finishAck?.(true);return;}
-          if(value.captureError){if(!closing)void hold('Microphone recording paused. Review your originals.');return;}
+          if(value.captureError){if(!closing)void hold('Microphone recording paused. Review your originals.','capture_unavailable');return;}
           if(!value.pcm)return;
           const pcm=value.pcm;
-          if(!(pcm instanceof ArrayBuffer)||!pcm.byteLength||pcm.byteLength%2||pcm.byteLength>32000||total+pcm.byteLength>admission.max_input_pcm_bytes){void hold('Voice recording reached its bound.');return;}
+          if(!(pcm instanceof ArrayBuffer)||!pcm.byteLength||pcm.byteLength%2||pcm.byteLength>32000||total+pcm.byteLength>admission.max_input_pcm_bytes){void hold('Voice recording reached its bound.','capture_bound');return;}
           parts.push(pcm);fragmentParts.push(pcm);bytes+=pcm.byteLength;fragmentBytes+=pcm.byteLength;total+=pcm.byteLength;checkpoint();
           if(bytes>=30*32000)flush();
-          if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.');
+          if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.','binding_changed');
         });
-        timer=setTimeout(()=>void hold('Voice visit reached its time limit.'),Math.max(0,deadline-Date.now()-2000));
+        timer=setTimeout(()=>void hold('Voice visit reached its time limit.','visit_deadline'),Math.max(0,deadline-Date.now()-2000));
         capture.start();for(const track of media.getAudioTracks())peer.addTrack(track,media);
         const offer=await wait(peer.createOffer(),10000);
         if(!current())throw Error('Voice offer retired');
@@ -315,7 +316,7 @@ window.PublicLiveConversation=(()=>{
         started=true;
         await wait(peer.setRemoteDescription({type:'answer',sdp:result.sdp}),10000);
         await wait(ready,15000);return true;
-      }catch(error){if(owned===epoch&&!closing)await hold(error.name==='NotAllowedError'?'Microphone access was denied.':'Voice paused. Your original audio is kept.');return false;}
+      }catch(error){if(owned===epoch&&!closing)await hold(error.name==='NotAllowedError'?'Microphone access was denied.':'Voice paused. Your original audio is kept.','activation_failed');return false;}
     }
     async function restoreHistory(older=false,explicit=false){
       const selected=getBinding(),generation=historyGeneration;

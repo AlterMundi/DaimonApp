@@ -498,6 +498,19 @@ class LiveCreations:
             self._write(value)
             return command
 
+    close_reasons=frozenset(('explicit_stop','source_unconfirmed','local_storage','event_processing',
+        'native_output','transport_failed','capture_unavailable','capture_bound','binding_changed',
+        'visit_deadline','activation_failed','server_finishing'))
+
+    def record_close_reason(self,ident,human,frozen,reason):
+        # A bounded browser diagnostic is not evidence of physical/network cause.
+        # It never changes close commands, source authority or native work.
+        if not isinstance(reason,str) or reason not in self.close_reasons:raise ValueError('Select a known voice close diagnostic')
+        with history_lock(self.root / '.lock'):
+            value=self.read(ident,human,frozen)
+            if 'client_close_reason' not in value:
+                value['client_close_reason']=reason;self._write(value)
+
     def close_intent(self,ident,human,frozen):
         """Never close over a known pending Responses delegation or retry a write."""
         with history_lock(self.root / '.lock'):

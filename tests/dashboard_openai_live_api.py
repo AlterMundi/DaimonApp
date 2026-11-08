@@ -137,6 +137,48 @@ class Mounted(unittest.TestCase):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
 
+    def test_failed_optional_result_reader_keeps_live_speech_until_explicit_stop(self):
+        app=self.app_with_history()
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        calls=[]
+        def unavailable(*args,**kwargs):
+            calls.append(1)
+            raise ProviderUnavailable('Synthetic historical result read unavailable')
+        with patch('dashboard.openai_live_api.return_next_native_part',unavailable):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket)
+                    notice=socket.receive_json()
+                    self.assertEqual(notice,{'type':'notice','code':'native_results_unavailable'})
+                    for index in range(3):
+                        event={'type':'session.output_transcript.delta','event_id':'continuing-'+str(index),'delta':'Still speaking.'}
+                        native.events.put(event)
+                        self.assertEqual(socket.receive_json(),{'type':'provider_event','event':event})
+                    self.assertFalse(native.detached)
+                    self.assertEqual(native.sent,[],'An optional read must not close the paid voice session')
+                    self.assertEqual(calls,[1],'An uncertain result failure is not automatically replayed')
+                    self.close(socket)
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
+
+    def test_client_close_reason_is_bounded_and_preserves_explicit_stop(self):
+        with self.socket() as socket:
+            native=self.start(socket)
+            socket.send_json({'type':'close','reason':'source_unconfirmed'})
+            self.assertEqual(socket.receive_json()['type'],'finishing')
+            self.assertEqual(socket.receive_json()['type'],'closed')
+        value=self.read()
+        self.assertEqual(value['client_close_reason'],'source_unconfirmed')
+        self.assertTrue(value['finalization']['voice_usage_confirmed'])
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        history=LiveCreations(self.state/'public-live-visits')
+        for invalid in ('raw private error',{},None,42):
+            with self.assertRaises(ValueError):history.record_close_reason(self.ident,100,self.owner.public_live_binding('a'*64),invalid)
+        self.assertEqual(self.read(),value)
+
     def test_studio_choice_reaches_provider_and_reconnect_keeps_frozen_delivery(self):
         from dashboard.avatar_workshop import AvatarWorkshop
         store=AvatarWorkshop(self.state)

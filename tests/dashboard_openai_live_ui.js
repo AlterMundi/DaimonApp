@@ -118,6 +118,11 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   assert.equal(slow.requests.length,1,'Waiting never creates a second upload or voice call');
   assert.equal(slow.sockets.length,1);assert.equal(slow.recovered().length,0);
  }finally{releaseSlow();await slow.engine.hold();}
+ const optional=fixture();await optional.start();
+ optional.sockets[0].onmessage({data:JSON.stringify({type:'notice',code:'native_results_unavailable'})});
+ assert(optional.engine.active,'Earlier work failure cannot end the current voice');
+ optional.pcm();await optional.engine.hold();
+ assert.equal(optional.sockets[0].sent.find(v=>v.type==='close').reason,'explicit_stop');
  const transient=fixture();await transient.start();
  try{
   transient.peers[0].connectionState='disconnected';transient.peers[0].onconnectionstatechange();
@@ -128,7 +133,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   assert.equal(transient.states.at(-1).message,'Listening');assert.equal(transient.sockets.length,1);
   assert.equal(transient.permission(),1,'Transport recovery does not reopen the microphone');
   transient.peers[0].connectionState='failed';transient.peers[0].onconnectionstatechange();
-  await until(()=>!transient.engine.active);assert.equal(transient.stops(),1);
+  await until(()=>!transient.engine.active);assert.equal(transient.stops(),1);assert.equal(transient.sockets[0].sent.find(v=>v.type==='close').reason,'transport_failed');
  }finally{await transient.engine.hold();}
  const diagnosticFailure=fixture({usageFailure:true});await diagnosticFailure.start();await diagnosticFailure.engine.hold();
  assert(!diagnosticFailure.engine.active,'A diagnostic callback failure cannot break voice cleanup');
