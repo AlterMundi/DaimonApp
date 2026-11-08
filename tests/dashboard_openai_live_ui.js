@@ -3,6 +3,12 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),crypto=require(
 const source=fs.readFileSync('dashboard/web/openai-live.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
+async function rejectsLocked(action){
+ let timeout;
+ try{return await Promise.race([assert.rejects(action,/still finishing/),new Promise((_,reject)=>{
+  timeout=setTimeout(()=>reject(Error('Recovery operation did not refuse the in-flight upload')),200);
+ })]);}finally{clearTimeout(timeout);}
+}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
 function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false}={}){
  const timers=[];
@@ -117,12 +123,12 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  await until(()=>recoveryRenewal.requests.length===1&&recoveryRenewal.recovered().length===1);
  const retained=recoveryRenewal.recovered()[0];
  assert.equal(retained.voice_visit,recoveryRenewal.sockets[1].id);
- await assert.rejects(()=>recoveryRenewal.engine.retry(retained),/still finishing/);
- await assert.rejects(()=>recoveryRenewal.engine.discard(retained),/still finishing/);
+ await rejectsLocked(()=>recoveryRenewal.engine.retry(retained));
+ await rejectsLocked(()=>recoveryRenewal.engine.discard(retained));
  assert.equal(recoveryRenewal.requests.length,1);
  await recoveryRenewal.engine.hold();
- await assert.rejects(()=>recoveryRenewal.engine.retry(retained),/still finishing/,'Stop must not release a pending automatic upload fence');
- await assert.rejects(()=>recoveryRenewal.engine.discard(retained),/still finishing/);
+ await rejectsLocked(()=>recoveryRenewal.engine.retry(retained));
+ await rejectsLocked(()=>recoveryRenewal.engine.discard(retained));
  assert.equal(recoveryRenewal.requests.length,1);assert.equal(recoveryRenewal.permission(),1);
  releaseRenewedUpload();await until(()=>!recoveryRenewal.recovered().length);await sleep(5);
  await recoveryRenewal.navigator.locks.request('daimon-native-voice:'+retained.voice_visit,{ifAvailable:true},lock=>assert(lock,'Settled queue releases its retired recovery lock'));
