@@ -46,6 +46,51 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  if(process.env.COMPACT_PREVIEW_ONLY==='1'){
+   await page.goto(origin);await page.locator('#avatar-workshop-open').click();
+   const editor=page.frameLocator('iframe'),panel=page.locator('.avatar-workshop-compact-preview');
+   await editor.locator('#save').waitFor({state:'visible'});
+   assert(await editor.locator('#preview-saved').isDisabled(),'Unsaved designs cannot masquerade as immutable revisions');
+   await editor.locator('#save').click();
+   await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#preview-saved').disabled);
+   const snapshot=()=>page.evaluate(async()=>{const h={'X-Test-Actor':'100'},s=await(await fetch('/api/interaction/avatars',{headers:h})).json();return {state:s,record:await(await fetch('/api/interaction/avatars/'+s.editing,{headers:h})).json()};});
+   const saved=await snapshot(),writes=[];page.on('request',r=>{if(r.method()!=='GET'&&r.url().includes('/api/'))writes.push(r.url());});
+   await editor.locator('#preview-saved').click();await panel.waitFor({state:'visible'});
+   assert.equal(await panel.getAttribute('data-revision'),saved.record.id);
+   assert.equal(await panel.getAttribute('data-sha256'),saved.record.sha256);
+   const pixels=await panel.locator('canvas').evaluate(c=>({url:c.toDataURL(),ink:c.getContext('2d').getImageData(0,0,c.width,c.height).data.some((v,i)=>i%4===3&&v)}));
+   assert(pixels.ink,'Actual saved renderer paints nonempty compact canvas');
+   assert(await page.locator('#conversation-companion pre').isVisible(),'Preview does not replace the previous active avatar');
+   await page.waitForTimeout(450);assert.equal(await panel.locator('canvas').evaluate(c=>c.toDataURL()),pixels.url,'Reduced motion stays still');
+   await panel.getByRole('button',{name:'Animate once',exact:true}).click();
+   await page.waitForTimeout(4100);const ended=await panel.locator('canvas').evaluate(c=>c.toDataURL());
+   await page.waitForTimeout(400);assert.equal(await panel.locator('canvas').evaluate(c=>c.toDataURL()),ended,'Explicit animation ends without a repeating timer');
+   for(const [width,height] of [[375,812],[320,430]]){
+    await page.setViewportSize({width,height});
+    const bounds=await panel.evaluate(p=>({panel:p.getBoundingClientRect().toJSON(),close:p.querySelector('button:last-child').getBoundingClientRect().toJSON(),canvas:p.querySelector('canvas').getBoundingClientRect().toJSON(),dialog:p.parentElement.getBoundingClientRect().toJSON()}));
+    assert.equal(Math.round(bounds.canvas.width),94);assert.equal(Math.round(bounds.canvas.height),90);
+    assert(bounds.close.bottom<=bounds.dialog.bottom&&bounds.close.right<=width,'Compact preview controls remain reachable on short phones');
+   }
+   if(process.env.COMPACT_PREVIEW_SCREENSHOT)await page.screenshot({path:process.env.COMPACT_PREVIEW_SCREENSHOT});
+   assert.deepEqual(await snapshot(),saved,'Reading/painting/animation preserve the immutable record and selection generation');assert.deepEqual(writes,[]);
+   await panel.getByRole('button',{name:'Close preview',exact:true}).click();await panel.waitFor({state:'detached'});
+   let release,arrived;const blocked=new Promise(resolve=>arrived=resolve);
+   await page.route('**/api/interaction/avatars/'+saved.record.id,async route=>{const response=await route.fetch();arrived();await new Promise(resolve=>release=resolve);await route.fulfill({response});});
+   await editor.locator('#preview-saved').click();await blocked;
+   await page.evaluate(()=>{testActor='200';testAvatar.bind('actor200');});release();
+   await page.waitForTimeout(200);assert.equal(await panel.count(),0,'Late old-actor record cannot reopen the preview');
+   await page.unroute('**/api/interaction/avatars/'+saved.record.id);
+   await page.evaluate(()=>{testActor='100';testAvatar.bind('actor100');});await page.locator('#avatar-workshop-open').click();
+   await editor.locator('#preview-saved:not([disabled])').waitFor();
+   await page.route('**/api/interaction/avatars/'+saved.record.id,async route=>{const response=await route.fetch(),record=await response.json();record.sha256='0'.repeat(64);await route.fulfill({response,json:record});});
+   await editor.locator('#preview-saved').click();await editor.locator('#message').filter({hasText:'no coincide'}).waitFor();
+   assert.equal(await panel.count(),0,'Hash mismatch never displays a claimed saved revision');
+   await page.unroute('**/api/interaction/avatars/'+saved.record.id);
+   await editor.locator('#preview-saved').click();await panel.waitFor({state:'visible'});
+   await page.getByRole('button',{name:'Voice',exact:true}).click();assert.equal(await panel.count(),0,'Voice tab clears the portrait preview');
+   assert.deepEqual(await snapshot(),saved);assert.deepEqual(writes,[]);assert.equal(errors.length,0,errors.join('\n'));
+   console.log('PASS saved compact preview: exact immutable ID/hash, actual Canvas, finite animation/reduced motion, narrow phone controls, no writes/activation, stale actor refusal and hash mismatch; zero providers');return;
+  }
   if(process.env.AVATAR_LOAD_RECOVERY_ONLY==='1'){
    // Isolate the host's retry from the editor's independent snapshot/get reads.
    // The full journey below exercises the real editor separately.
