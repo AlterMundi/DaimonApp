@@ -170,6 +170,7 @@ window.ConversationCompanion = (() => {
       }
       paint(face,art,!pack);
       box.dataset.pose=expression;
+      box.dataset.question=String(!!state.question);
       const caption=!state.connected?(state.connected===false?"Let’s reconnect.":"Ready when you are."):state.question?"Your turn, whenever you’re ready.":
         state.capture==="recording"?"I’m listening.":rows.length?"You can keep talking or writing.":"Where shall we go next?";
       if(title.textContent!==caption)title.textContent=caption;
