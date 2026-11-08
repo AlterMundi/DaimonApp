@@ -68,13 +68,7 @@ def qualify(binary, production=False):
             goal=dict(threadId=j.web_thread,objective='Preserve synthetic ongoing goal',status='active',tokenBudget=None,tokensUsed=17,timeUsedSeconds=3,createdAt=1,updatedAt=1)
             j.goals[j.web_thread]=goal.copy()
             j.broadcast(j.web_thread,'thread/goal/updated',{'goal':goal})
-            # Lose this terminal notification. Only exact read-only native
-            # lifecycle evidence may release the old ordinary collector.
-            j.hidden_terminal=(j.web_thread,j.web_turn)
-            j.holding.pop(j.web_thread,None)
-        else:
-            j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}})
-        j.idle()
+        j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:len(j.bounded)==1,seconds=45)
         j.wait(lambda:j.row("SELECT count(*) FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.phase')='accepted'")==[(1,)])
         packet=json.loads(j.bounded[0]['turn']['toolOutput']['output'])
