@@ -31,6 +31,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    }
    const row=previewState.batches.find(r=>r.id===body.id);
    if(body.action==='cancel'){await route.abort();return;}
+   if(body.action==='audio'){
+    if(deferPreview){blockedPreview={route,row,slot:body.slot};return;}
+    await route.fulfill({json:{batch:row,audio:row.renders[body.slot].state==='rendered'?lastPreviewAudio:null}});return;
+   }
    if(body.action==='render'){
     if(deferPreview){if(row.renders[body.slot].state!=='rendered')row.renders[body.slot]={state:'intent'};blockedPreview={route,row,slot:body.slot};return;}
     if(unknownPreview){row.renders.sample={state:'unconfirmed'};await route.abort();return;}
@@ -160,6 +164,32 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(previewPosts.length,uncertainCalls);
   await studio.getByText('My earlier samples',{exact:true}).click();
   assert(await studio.getByRole('button',{name:'Delete sample',exact:true}).evaluateAll(buttons=>buttons.some(b=>b.disabled)),'Unknown sample cannot be retired');
+  const retained=studio.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).first();
+  const originalSettings=await studio.getByLabel('Text to listen to').inputValue(),historyPlays=await page.evaluate(()=>testVoicePlays),beforeHistory=previewPosts.length;
+  await retained.click();await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.deepEqual(previewPosts.slice(beforeHistory).map(r=>r.action),['audio'],'History playback never allocates or renders');
+  assert.equal(await page.evaluate(()=>testVoicePlays),historyPlays+1);
+  assert.equal(await studio.getByLabel('Text to listen to').inputValue(),originalSettings,'History playback preserves current settings');
+  await retained.click();assert.equal(previewPosts.length,beforeHistory+1,'Repeated history Play uses bounded audio cache');
+  // Use a different retained row so the explicit read is not already cached.
+  deferPreview=true;blockedPreview=undefined;
+  await studio.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).nth(1).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  await studio.getByRole('button',{name:'Stop',exact:true}).click();
+  const lateHistoryPlays=await page.evaluate(()=>testVoicePlays);
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await page.evaluate(()=>testVoicePlays),lateHistoryPlays,'Stop fences a late retained audio read');
+  blockedPreview=undefined;
+  await studio.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).nth(2).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));});
+  const hiddenHistoryPlays=await page.evaluate(()=>testVoicePlays);
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await page.evaluate(()=>testVoicePlays),hiddenHistoryPlays,'Background fences a late retained audio read');
+  await page.evaluate(()=>{delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));});
+  deferPreview=false;
   const denied=Array.from(previewStates.values()).flatMap(s=>s.batches).find(r=>r.passage==='This is a distinct uncertain phrase.');
   assert(denied);denied.renders.sample.outcome={receipt:{diagnostic:{provider_error_code:'model_not_found'}}};
   await studio.getByRole('button',{name:'Check saved voices and samples',exact:true}).click();

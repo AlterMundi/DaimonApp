@@ -126,3 +126,14 @@ playback-device diagnosis or a confirmed audio result. Reading that same sample
 never creates a replacement generation. Generic uncertain samples keep their
 existing status and retirement protections. Choosing an available workshop engine
 and actual provider audio/hearing remain separate from this presentation fix.
+
+## Replay retained samples
+
+My earlier samples includes Listen for each rendered slot, with the original
+passage and voice visible. It reads the exact actor-owned batch/generation/slot
+using the existing preview endpoint's `audio` action. This read cannot allocate,
+reconcile, generate or cancel work; prepared/unknown rows return no audio and
+missing or expired WAVs refuse without regeneration. The existing owner/CSRF
+checks run before and after the read. Playback does not edit or apply voice
+settings. Stop, closure, background and actor changes fence late responses;
+only two in-memory audio URLs are retained and reset revokes them.
