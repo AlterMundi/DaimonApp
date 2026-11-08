@@ -7,6 +7,11 @@ window.AvatarWorkshopUI=(()=>{
   let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,studio,voiceTab,canvas,paint,frame=0,timer,paused=false;
   const motion=matchMedia('(prefers-reduced-motion: reduce)'),asset=path=>new URL('assets/avatar-workshop/'+path,document.baseURI).href;
   const voiceLabel=(en,es)=>(navigator.language||'').toLowerCase().startsWith('es')?es:en;
+  const frameBox=document.createElement('div');frameBox.className='avatar-frame';portrait.before(frameBox);frameBox.append(portrait);
+  const controls=document.createElement('nav');controls.className='avatar-frame-controls';controls.setAttribute('aria-label',voiceLabel('Avatar controls','Controles del avatar'));frameBox.append(controls);
+  const pause=document.querySelector('#avatar-workshop-pause');controls.append(button);if(pause)controls.append(pause);
+  const icon=(target,kind,label)=>{target.setAttribute('aria-label',label);target.title=label;target.innerHTML=kind==='gear'?'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m9 3-.6 2.3-2 .9-2.1-.6L2.8 8l1.5 1.8-.2 2.3L2.8 14l1.5 2.5 2.3-.4 1.8 1.3L9 20h3l.7-2.6 1.9-1.2 2.3.4 1.5-2.6-1.4-1.8.1-2.3L18.6 8l-1.5-2.5-2.2.6-2-.9L12.3 3Z"/><circle cx="10.7" cy="11.5" r="3"/></svg>':kind==='play'?'<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M8 4v16l12-8Z"/></svg>':'<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>';};
+  icon(button,'gear',voiceLabel('Personalize avatar','Personalizar avatar'));if(pause)icon(pause,'pause',voiceLabel('Pause avatar','Pausar avatar'));
   const voiceEntry=new URLSearchParams(window.location?.search||'').get('workshop')==='voice';let voiceEntryOpened=false;
   const resize=new ResizeObserver(()=>{try{paint?.(frame);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
@@ -67,8 +72,7 @@ window.AvatarWorkshopUI=(()=>{
    }catch(error){preview?.candidate.remove();respond({error:error.message||'No recibí confirmación. Consultá las versiones sin repetir la acción.'});}
    finally{busy=false;}
   });
-  const pause=document.querySelector('#avatar-workshop-pause');
-  pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));pause.textContent=paused?'Animate avatar':'Pause avatar';run();});
+  pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));icon(pause,paused?'play':'pause',paused?voiceLabel('Animate avatar','Animar avatar'):voiceLabel('Pause avatar','Pausar avatar'));run();});
   document.addEventListener('visibilitychange',run);motion.addEventListener('change',run);
   function openVoiceEntry(){
    if(!actor||!voiceEntry||voiceEntryOpened||!window.VoiceStudioUI)return;

@@ -195,3 +195,17 @@ example normalization remains byte-identical to the pre-extension result.
 After the first v2 save, keep this compatible validator/renderer in any web
 rollback; an older reader rejects the saved raster model. A software update
 alone must not create a v2 production revision or change the active avatar.
+
+## Portrait HUD controls
+
+The shared portrait frame holds compact, labelled gear and pause/play icons on
+its left edge. The existing editor and manual/reduced-motion/visibility pause
+policy are unchanged. The pending/status row paints above overlapping artwork
+and keeps its actions reachable; the scroll-compact header hides the entire
+portrait frame. This is an incremental control/layout correction, separate from
+the shared-world graphic study and any future world-engine implementation.
+
+Earlier voice-page retrieval controls live under the existing diagnostic panel,
+so the ordinary reading surface is free of engine-specific history buttons.
+The original bounded retrieval and attributed transcript rows remain unchanged;
+opening diagnostics and loading a page does not open voice or admit new work.
