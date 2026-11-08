@@ -4,6 +4,7 @@ const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
 const hudCase=process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||process.env.QUALIFICATION_AUTHORED==='1';
+const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
@@ -70,7 +71,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_listen:listenCase,can_speak:countdownCase||hudCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_download_files:appearanceCase,can_listen:listenCase,can_speak:countdownCase||hudCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -83,6 +84,7 @@ const server=http.createServer(async(req,res)=>{
  const file=path.join(publicRoot,name);if(!fs.existsSync(file)){res.writeHead(404);return res.end();}
  let body=fs.readFileSync(file);
  if(name==='index.html')body=body.toString().replace('<html lang="en">','<html lang="en" data-shared-auth="true"'+(authoredCase?' data-style-policy="authored"':'')+'>').replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>','');
+ if(name==='index.html'&&appearanceCase)body=body.toString().replace('</head>','<style>:root{--dm-background:#ffffff;--dm-surface:#ffffff;--dm-text:#111111;--dm-accent:#176241}</style></head>');
  res.writeHead(200,{'content-type':name.endsWith('.js')?'application/javascript':name.endsWith('.css')?'text/css':name.endsWith('.woff2')?'font/woff2':'text/html'});res.end(body);
  }catch(error){errors.push(String(error));res.writeHead(500);res.end('Fixture error');}
 });
@@ -148,6 +150,29 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  },{publicCase});
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
+ async function appearanceTransition(stage){
+  if(!appearanceCase)return;
+  const snapshot=()=>page.evaluate(()=>{const input=document.querySelector('#conversation-message');return {draft:input.value,start:input.selectionStart,end:input.selectionEnd,focus:document.activeElement.id,files:document.querySelector('#conversation-files-list').innerHTML,target:workspaceFixture.microphone.getReply(),recording:document.querySelector('#conversation-voice-remaining').hidden,contexts:window.countdownFixture?.contexts.length||0};});
+  const before=await snapshot();
+  for(const palette of [{background:'#090e17',surface:'#111925',text:'#f5f0e6',accent:'#87d7ee'},{background:'#ffffff',surface:'#ffffff',text:'#111111',accent:'#176241'}]){
+   await page.evaluate(p=>{for(const [k,v]of Object.entries(p))document.documentElement.style.setProperty('--dm-'+k,v);window.dispatchEvent(new Event('home-style:resolved'));},palette);
+   assert.deepEqual(await snapshot(),before,'Appearance preserves controller-owned state during '+stage);
+   assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--dm-ui-text').trim()),authoredCase?'':palette.text,'Selected authored policy or inherited roles are respected');
+  }
+  (report.appearanceTransitions??=[]).push(stage);
+ }
+ if(appearanceCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  await page.locator('#conversation-message').fill('A draft and attachment kept while appearance changes.');
+  await page.locator('#conversation-visual>summary').click();
+  await page.locator('#conversation-files').setInputFiles({name:'appearance-fixture.txt',mimeType:'text/plain',buffer:Buffer.from('An offline synthetic file, never uploaded.')});
+  await page.locator('#conversation-files-list button[aria-label="Remove appearance-fixture.txt"]').waitFor({state:'attached'});
+  await appearanceTransition('draft and prepared original file');
+  // File preparation is qualified without an upload. The separate recorder
+  // fixture has no file-upload API and must start with no selected attachment.
+  if(countdownCase)await page.locator('#conversation-files-list button[aria-label="Remove appearance-fixture.txt"]').click();
+  await page.locator('#conversation-visual>summary').click();
+ }
  if(hudCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   await page.evaluate(()=>clearInterval(timer));
@@ -177,6 +202,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   await page.locator('#conversation-talk').click();
   await page.locator('#conversation-voice-remaining').waitFor({state:'visible'});
+  await appearanceTransition('active bounded synthetic recording');
   if(authoredCase){
    await page.setViewportSize({width:320,height:740});
    for(const selector of ['#conversation-send','#conversation-voice-discard','#conversation-voice-remaining']){
