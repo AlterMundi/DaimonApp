@@ -238,6 +238,17 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    assert(await page.locator('#conversation-attachment-sheet').isVisible(),'Attachments stay available');
    await page.locator('#conversation-visual>summary').click();
    const inputBefore=await page.locator('#conversation-message').boundingBox(),composeBefore=await page.locator('#conversation-compose').boundingBox();
+   assert(inputBefore.width>=composeBefore.width-32,'The writing line spans the composer instead of sitting between attachment and microphone');
+   const attachment=await page.locator('#conversation-visual>summary').boundingBox();
+   assert(attachment.y>=inputBefore.y+inputBefore.height-1,'Attachment controls sit below the writing line');
+   const toolbar=await page.locator('#conversation-compose-bar>.session-workspace-toolbar').boundingBox();
+   const notice=await page.locator('#conversation-compose-bar>#conversation-compose-notices').boundingBox();
+   assert(toolbar&&notice&&Math.abs((toolbar.y+toolbar.height/2)-(notice.y+notice.height/2))<2,'Sessions, destination and notices share one row');
+   assert(toolbar.y+toolbar.height<=composeBefore.y,'The destination row sits above the input');
+   const menu=page.getByRole('button',{name:'Show sessions',exact:true});
+   await menu.click();assert(await page.getByRole('complementary',{name:'Your sessions'}).isVisible());
+   await page.getByRole('button',{name:'Hide sessions',exact:true}).click();
+
    await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.dataset.attention='true';message.textContent='A retained recording needs review. '.repeat(18);});
    const notices=page.locator('#conversation-compose-notices');
    assert(await notices.locator(':scope>summary').isVisible(),'A minimal notice indicator is available');
@@ -465,7 +476,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  async function bottomMenu(){
   const rect=async selector=>page.locator(selector).evaluate(node=>{const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};});
-  const bar=await rect('.session-workspace-toolbar'),body=await rect('.session-workspace-body'),menu=await rect('.session-rail'),input=await rect('#conversation-dock');
+  const bar=await rect('.session-workspace-toolbar'),body=await rect('.session-workspace-body'),menu=await rect('.session-rail'),input=await rect('#conversation-compose');
   assert(body.bottom<=bar.top+1,'Destination toolbar follows the reading area');
   assert(bar.bottom<=input.top+1,'Destination toolbar sits above the input');
   assert(menu.bottom<=bar.top+1&&menu.top>=body.top-1,'Sessions expand upward inside the reading area');
@@ -481,7 +492,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    assert.equal(buttons.length,4,'Every row retains reply, pin, mute and solo');
    for(const control of buttons){
     assert.equal(control.top,buttons[0].top,'All four controls share one compact line');
-    assert(control.width>=24&&control.width<=32&&control.height>=24&&control.height<=32,'Compact controls retain usable targets');
+    assert(authoredCase ? control.width>=44&&control.width<=48&&control.height>=44&&control.height<=48 : control.width>=24&&control.width<=32&&control.height>=24&&control.height<=32,'Controls retain the selected authored touch targets or compact inherited targets');
     if(control.icon)assert(control.icon<=18,'Icons match the small audio-control scale');
     assert(control.label,'Compact icon actions retain accessible names');
    }

@@ -120,7 +120,9 @@ window.Conversation = (() => {
       $("#conversation-sound").append($("#conversation-sound-controls"),$("#conversation-sound-feedback"));
       const compose = $("#conversation-compose"), playback = $("#conversation-audio-tools");
       const dock = node("div"); dock.id = "conversation-dock";
-      compose.before(dock); dock.append(playback, compose);
+      const bar = node("div"); bar.id = "conversation-compose-bar";
+      compose.before(dock); dock.append(bar, playback, compose);
+      bar.append($("#conversation-compose-notices"));
     }
     const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
     const companion=standalone?window.ConversationCompanion?.mount({onArtisticRest:rest=>avatarWorkshop?.artisticRest(rest)}):undefined;
@@ -756,7 +758,7 @@ window.Conversation = (() => {
       $("#conversation-focus-label").textContent=`Reply to ${label}`;$("#conversation-focus").hidden=false;
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
-    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,daimonName:$("#conversation-daimon")?.textContent,
+    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),daimonName:$("#conversation-daimon")?.textContent,
       onTarget:()=>{clearFocus();syncTitleControls();},onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
       onAudio:(action,row)=>{
