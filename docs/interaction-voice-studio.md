@@ -151,3 +151,14 @@ and legacy-client behavior; three physical journal successors preserve A before
 a new logical start takes B. Actual Chromium verifies the existing editor plus
 Voice Save/Use, lost save-ACK readback, account isolation and1200/375/320px layouts.
 These checks do not prove paid audition quality, hearing or physical devices.
+
+## Stable receiving entry
+
+The existing standalone Conversation accepts `workshop=voice` (for example
+`/interaction/?view=conversation&client=standalone&workshop=voice`). After normal
+shared authentication and the existing writable actor binding, it opens the
+existing workshop Voice panel once. Unknown values do nothing; read-only views
+do not mount the editor. No new app, login, permission, microphone or provider
+audition is created. Existing artwork/voice revisions and session selections
+remain unchanged until their usual explicit actions. Preserve the query through
+the existing shared-entry login redirect.
