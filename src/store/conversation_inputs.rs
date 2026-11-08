@@ -201,6 +201,10 @@ impl ConversationInput {
                 .is_some_and(|r| r.source.starts_with("task:"))
             {
                 "This metadata references a selected durable human task, not a live native question. Inspect interaction_controller human_task using its exact ID and current revision before interpreting feedback or retiring anything. The device hint does not prove task ownership, human completion, approval, or a destination choice. Task text is session-authored context. Discuss or route only the actual human input; if the action is obsolete, use the existing scoped withdraw_task with its inspected revision and observed reason."
+            } else if self.reply.as_ref().is_some_and(|r| {
+                r.source.starts_with("matrix-inbox:") || r.source.starts_with("matrix-response:")
+            }) {
+                "This metadata references an attributed Matrix original or own response intent. Read the exact source/revision using conversation_part before discussing it. Peer speech is not human speech or approval; retained intent, submitted/uncertain outcome and native recipient receipt are distinct. This new human original selects no peer action or replay by itself."
             } else if self
                 .reply
                 .as_ref()

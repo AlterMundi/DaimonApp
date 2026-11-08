@@ -404,3 +404,11 @@ pin captures and workspace reads; it does not cancel existing work or change the
 existing same-original recovery contract. Captured originals never silently
 change destination. Avatar's independent foreground/delegation scope is unchanged.
 A published capability is not receiving selection or phone acceptance.
+
+A native Matrix transport profile change also requires this same-scope companion
+requalification before web recovery is complete. Compare the retained exact
+preimage with the selected profile, qualify unchanged actor/credentials/grants,
+preserve all journal outcomes and reload only the affected web service through
+its existing voice-idle fence. A healthy `/health` alone does not establish
+Conversation readiness: verify the owner input-list read and anonymous access
+denial. Device sign-in cannot repair a stale server authority binding.

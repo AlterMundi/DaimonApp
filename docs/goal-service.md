@@ -295,7 +295,23 @@ running turn can be interrupted. This bridge never interrupts a turn.
 Use the existing authenticated gateway, `telecodex --control CONFIG goal
 maintenance ...`. No new socket, login, provider, background coordinator or model
 lease is introduced. Commands are `prepare JSON`, `status UUID`, `pause UUID`
-and `restore UUID`. Only the actual owner gateway installs the transaction;
+and `restore UUID`. The same restore command also reconciles an expired
+`restore_unconfirmed`/`restart_unconfirmed` marker by reading the actual native
+snapshot. It settles metadata as `superseded` only when both the transaction and
+restoration-admission windows expired, an acknowledged owned pause exists, and
+the fresh definition revision differs from both the original and paused
+revisions. It never resumes, edits or replays a native control, fabricates an ACK,
+or erases the original uncertain receipt. Usage-only, unchanged, unavailable,
+wrong-binding and potentially in-flight cases remain uncertain.
+
+After a failed/expired maintenance, inspect its existing status and invoke this
+same supported restore/reconciliation path before preparing another transaction.
+Do not repeat pause/resume or rewrite database rows to remove a stale conflict.
+A later goal revision can make the old conditional authority obsolete without
+proving what its original uncertain operation did. This closes the transaction
+metadata rather than adding an approval or another maintenance workflow.
+
+Only the actual owner gateway installs the transaction;
 model controller capabilities do not grant this owner operation.
 
 A prepare request contains `request_id` (caller-retained UUID), `source` (actual
@@ -303,8 +319,13 @@ retained human instruction reference, never invented speech), `entry`
 (`chat_id`, `thread_id`), absolute Unix-seconds `deadline`, and `targets`.
 Each of at most four targets contains `target`, exact public `binding` from
 `goal inspect CHAT TOPIC`'s `target_binding`, and its exact native `snapshot`.
-Preparation verifies the current native snapshot including observed accounting,
-then retains the owner, approval reference, entry/target incarnation, admission
+Preparation verifies the unchanged native definition revision and goal identity,
+accepting only monotone usage since the caller's observation. Token/time usage may
+advance while a live turn runs; this is not a changed goal or another approval
+boundary. Accounting regression and changed definition/status/budget still refuse.
+The captured observation and actual acknowledged pause/restoration receipts retain
+their accounting; no counter is rewritten or reset. Preparation then
+retains the owner, approval reference, entry/target incarnation, admission
 epoch, goal-command generation, complete goal definition, opaque native revision
 and accounting **before** any pause. A request ID cannot select a different plan.
 The source reference is an owner assertion under the existing authenticated
@@ -389,3 +410,30 @@ No native mutation occurs during correction. The receiving interpreter must own
 the original; a helper cannot borrow its controller lease. Later direction,
 expiry, changed binding/revision and Stop/maintenance still refuse execution.
 Other rejected, uncertain, partial or acknowledged outcomes remain immutable.
+
+### Collector continuity across native idle checkpoints
+
+The ordinary shared-native collector reads the effective per-thread
+`goals.continuation_idle_seconds` policy through `config/read`. Its continuation
+wait is that checkpoint plus the existing30-second transport grace (at most330s
+under the native300s policy bound). Thus the selected45s idle checkpoint retains
+the collector for75s. Other threads retain their own policy. Missing metadata
+keeps the legacy30s grace and emits a warning. This changes no goal, deadline of
+bounded work, native continuation, input or accounting. A collector timeout
+remains observation failure; inspect the actual writer and use exact supported
+attachment, never replay its original.
+
+Owned heartbeat collection instead ends at its exact physical terminal, after any
+already-written internal-return acknowledgment. An active ordinary goal remains
+active and may continue independently; its idle checkpoint cannot keep the finished
+heartbeat collector waiting or turn a completed result into a collection timeout.
+This releases local collection only: no goal mutation, continuation kickoff,
+allowance extension or input replay.
+
+When that ordinary goal starts after its idle checkpoint and no local worker
+remains, the existing selected heartbeat source tick may attach its exact live
+physical turn. This requires current source generation/purpose/binding, explicit
+observed native contention and an active goal. The existing attach-active path
+revalidates physical identity, local admission, Stop/maintenance and newer human
+work. It sends no input, activates no goal and reserves no inference allowance.
+No separate observer or timer is installed.

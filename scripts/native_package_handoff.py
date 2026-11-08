@@ -287,9 +287,11 @@ def _adopt(plan, receipt, *, env=None):
             code = 0
             state['installer_skipped'] = 'preserve_stopped_restore_reserve'
         else:
+            # Spend only the existing finite window, retaining the full stopped
+            # recovery reserve. A real725MiB Eko copy exceeded the old15s cap.
             try:
                 code, _ = command(['update', '--from-cli', '--if-stopped', '--yes'],
-                                  timeout=15 if deadline is not None else 140)
+                                  timeout=min(140, seconds_left(deadline) - 66) if deadline is not None else 140)
             except (subprocess.TimeoutExpired, json.JSONDecodeError):
                 # Inspect selection after the CLI is gone; never resend install.
                 code = -1

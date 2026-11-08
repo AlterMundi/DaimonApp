@@ -222,6 +222,8 @@ pub enum CodexEvent {
         effort: Option<String>,
     },
     NativeTurnStarted(String),
+    /// Completed physical turn; the native goal itself remains untouched.
+    NativeGoalIdle,
     NativeInputAccepted(String),
     /// Native accepted an internal return into a different physical turn; the
     /// current collector must not pretend to own that execution or replay it.
@@ -333,6 +335,8 @@ impl NativeInferenceAllowance {
 #[derive(Debug)]
 pub enum CodexEventOutcome {
     None,
+    /// Release only this completed collector for retained canonical attention.
+    YieldGoalCollector,
     InferenceAllowance(NativeInferenceAllowance),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
@@ -410,6 +414,7 @@ pub struct CommandSpec {
     pub current_dir: Option<PathBuf>,
 }
 struct AppServerProcess {
+    bounded_idle_turn: bool,
     child: Child,
     transport: AppServerTransport,
     stderr_buffer: Arc<Mutex<String>>,
@@ -741,6 +746,39 @@ impl CodexRunner {
     }
 
     /// Read only through an exact prior native boundary. Absence never authorizes replay.
+    /// Exact lifecycle metadata only. Missing output stays in ordinary recovery;
+    /// it must not keep a completed physical writer artificially busy.
+    pub async fn terminal_observation(
+        &self,
+        native: &str,
+        physical: &str,
+    ) -> Result<Option<NativeTerminalObservation>> {
+        tokio::time::timeout(Duration::from_secs(8),async {
+            let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;
+            let result=async {
+                process.initialize().await?;
+                let mut cursor=None::<String>;let mut seen=HashSet::new();
+                for _ in 0..6 {
+                    let id=process.send_request("thread/turns/list",json!({"threadId":native,"limit":20,"sortDirection":"desc","itemsView":"notLoaded","cursor":cursor})).await?;
+                    let page=process.await_response(id).await?;
+                    for turn in page["data"].as_array().context("Native lifecycle page malformed")? {
+                        if turn["id"]!=physical {continue;}
+                        let status=turn["status"].as_str().context("Native lifecycle status missing")?;
+                        if !matches!(status,"completed"|"failed"|"interrupted") {return Ok(None);}
+                        let status=status.to_string();
+                        let id=process.send_request("thread/goal/get",json!({"threadId":native})).await?;
+                        let goal=goals::parse_goal(&process.await_response(id).await?,native)?;
+                        return Ok(Some(NativeTerminalObservation{turn_id:physical.to_string(),status,goal_active:goal.is_some_and(|g|g.status=="active"),assistant_text:None}));
+                    }
+                    cursor=page["nextCursor"].as_str().map(str::to_string);
+                    if cursor.is_none() || !seen.insert(cursor.clone()) {return Ok(None);}
+                }
+                Ok(None)
+            }.await;
+            process.shutdown().await?;result
+        }).await.context("Native lifecycle observation timed out")?
+    }
+
     pub async fn recovery_history(
         &self,
         native: &str,
@@ -812,6 +850,73 @@ impl CodexRunner {
         self.session_profiles
             .iter()
             .find(|profile| profile.key() == key)
+    }
+
+    /// Read current serving support and the selected existing native thread.
+    /// No resume, admission probe, input, reservation or provider call is sent.
+    pub async fn bounded_idle_readiness(&self, session: &SessionRecord) -> Result<&'static str> {
+        if !self.shared_app_server || session.force_fresh_thread {
+            return Ok("native_binding_unavailable");
+        }
+        let Some(native) = session.codex_thread_id.as_deref() else {
+            return Ok("native_binding_unavailable");
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut process = AppServerProcess::spawn(&self.binary, true).await?;
+            let result = async {
+                process.initialize().await?;
+                if !process.bounded_idle_turn {
+                    return Ok("native_support_unavailable");
+                }
+                let id = process
+                    .send_request(
+                        "thread/read",
+                        json!({"threadId":native,"includeTurns":false}),
+                    )
+                    .await?;
+                let response = process.await_response(id).await?;
+                let thread = &response["thread"];
+                anyhow::ensure!(
+                    thread["id"] == native,
+                    "Native observation identity changed"
+                );
+                if let Some(selected) = self.session_profile(session.key) {
+                    NativeModelProfile::load(&default_codex_home(), selected)?.verify(thread)?;
+                } else {
+                    anyhow::ensure!(
+                        thread["model"].as_str().is_some_and(|s| !s.is_empty())
+                            && thread["modelProvider"]
+                                .as_str()
+                                .is_some_and(|s| !s.is_empty()),
+                        "Native model route unavailable"
+                    );
+                    anyhow::ensure!(
+                        session
+                            .model
+                            .as_deref()
+                            .is_none_or(|m| thread["model"] == m)
+                            && session
+                                .reasoning_effort
+                                .as_deref()
+                                .is_none_or(|e| thread["reasoningEffort"] == e),
+                        "Native model selection changed"
+                    );
+                }
+                if thread["canAcceptDirectInput"] != true {
+                    return Ok("native_admission_unavailable");
+                }
+                Ok(match thread["status"]["type"].as_str() {
+                    Some("idle") => "ready",
+                    Some("active") => "native_busy",
+                    _ => "native_binding_unavailable",
+                })
+            }
+            .await;
+            process.shutdown().await?;
+            result
+        })
+        .await
+        .context("Native readiness observation timed out")?
     }
 
     /// Apply a configured model to an existing idle native cache entry without
@@ -1387,6 +1492,20 @@ impl CodexDeviceAuthSession {
     }
 }
 
+// Native idle checkpoints intentionally defer automatic goal continuation. Keep
+// the original transport grace beyond that actual per-thread policy, not inside it.
+fn goal_continuation_collection_wait(config: &Value, thread: &str) -> Duration {
+    let checkpoint = config
+        .get("config")
+        .and_then(|c| c.get("goals"))
+        .and_then(|g| g.get("continuation_idle_seconds"))
+        .and_then(|m| m.get(thread))
+        .and_then(Value::as_u64)
+        .filter(|seconds| *seconds <= 300)
+        .unwrap_or(0);
+    Duration::from_secs(checkpoint + 30)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_app_server_turn<F, Fut>(
     binary: &Path,
@@ -1471,6 +1590,19 @@ where
         elapsed_ms = preparation_started.elapsed().as_millis(),
         "native turn preparation"
     );
+    let goal_collection_wait = if shared_app_server && bounded.is_none() && !idle_only {
+        let read = async {
+            let id = process.send_request("config/read", json!({"includeLayers":false})).await?;
+            process.await_response(id).await
+        };
+        match tokio::time::timeout(Duration::from_secs(5), read).await {
+            Ok(Ok(config)) => goal_continuation_collection_wait(&config, &thread_id),
+            _ => {
+                tracing::warn!("Native checkpoint metadata unavailable; retaining legacy collector grace");
+                Duration::from_secs(30)
+            }
+        }
+    } else { Duration::from_secs(30) };
     let mut effective_session = session.clone();
     effective_session.model = session.model.clone().or(native_model);
     if session.collaboration_mode.is_some() && effective_session.model.is_none() {
@@ -1726,6 +1858,14 @@ where
     let mut seen_tool_requests = HashSet::new();
     let mut seen_tool_calls = HashSet::new();
     loop {
+        // A heartbeat allowance owns one physical execution. An unrelated active
+        // ordinary goal must not keep its completed collector open for the next
+        // automatic continuation. This releases collection only, never the goal.
+        if idle_only && turn_completed {
+            goal_active = false;
+            goal_snapshot_request_id = None;
+            goal_gap = None;
+        }
         if turn_completed && goal_snapshot_request_id.is_some() {
             goal_snapshot_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
         }
@@ -1756,7 +1896,7 @@ where
               goal_snapshot_deadline=None;
           }
           _=async{if let Some(deadline)=goal_gap{sleep_until(deadline).await;}}, if goal_gap.is_some() => {
-              turn_error=Some("Native goal is active but no continuation arrived within 30 seconds. Inspect /goal before resuming; no input was replayed.".to_string());
+              turn_error=Some(format!("Native goal is active but no continuation arrived within {} seconds (configured checkpoint plus transport grace). Inspect /goal before resuming; no input was replayed.",goal_collection_wait.as_secs()));
               break;
           }
           _=async{if let Some(bound)=bounded{sleep_until(bound.deadline).await;}}, if bounded.is_some() && !cancel.is_cancelled() => { cancel.cancel(); }
@@ -1809,7 +1949,12 @@ where
                         goal_active=observed.goal_active;
                         if let Some(text)=observed.assistant_text {summary.assistant_text=text;}
                         if observed.status!="completed" {turn_error=Some(format!("Native turn {} (history observation)",observed.status));}
-                        if goal_active {goal_gap=Some(Instant::now()+Duration::from_secs(30));}
+                        if goal_active {
+                            goal_gap=Some(Instant::now()+goal_collection_wait);
+                            if matches!(on_event(CodexEvent::NativeGoalIdle).await?,CodexEventOutcome::YieldGoalCollector) {
+                                goal_active=false;goal_gap=None;goal_snapshot_request_id=None;
+                            }
+                        }
                         let _=steer.response.send(Ok(None));
                         continue;
                     }
@@ -2054,8 +2199,13 @@ where
             }
             if active_turn_id.is_some() { turn_completed=false; goal_gap=None; }
             else if turn_completed && goal_active && goal_gap.is_none() {
-                goal_gap=Some(Instant::now()+Duration::from_secs(30));
+                goal_gap=Some(Instant::now()+goal_collection_wait);
                 let _=on_event(CodexEvent::Progress("Waiting for native goal continuation".to_string())).await?;
+                if matches!(on_event(CodexEvent::NativeGoalIdle).await?,CodexEventOutcome::YieldGoalCollector) {
+                    // Local collection ends at an acknowledged physical terminal;
+                    // no native goal state, input or continuation is changed.
+                    goal_active=false;goal_gap=None;goal_snapshot_request_id=None;
+                }
             }
             if let Some(turn_id)=active_turn_id.as_deref() {
                 while let Some(steer)=queued_steers.pop_front() {
@@ -2648,7 +2798,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -3366,6 +3516,7 @@ impl AppServerProcess {
             }
         };
         Ok(Self {
+            bounded_idle_turn: false,
             child,
             transport,
             stderr_buffer,
@@ -3376,9 +3527,11 @@ impl AppServerProcess {
     }
     async fn initialize(&mut self) -> Result<()> {
         let request_id=self.send_request("initialize",json!({"clientInfo":{"name":"telecodex","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
-        let _ = tokio::time::timeout(Duration::from_secs(15), self.await_response(request_id))
-            .await
-            .context("Codex App Server initialize timed out")??;
+        let response =
+            tokio::time::timeout(Duration::from_secs(15), self.await_response(request_id))
+                .await
+                .context("Codex App Server initialize timed out")??;
+        self.bounded_idle_turn = response["boundedIdleTurn"] == true;
         self.send_notification("initialized").await?;
         Ok(())
     }
@@ -3868,6 +4021,7 @@ mod tests {
                 let id = &request["id"];
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"approval-thread"},"model":"synthetic-model"})
@@ -4090,6 +4244,88 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_idle_readiness_is_read_only_and_checks_actual_native_metadata() {
+        for (support, status, returned_id, model, expected) in [
+            (true, "idle", "selected-native", "gpt-5.4", Some("ready")),
+            (
+                true,
+                "active",
+                "selected-native",
+                "gpt-5.4",
+                Some("native_busy"),
+            ),
+            (
+                false,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some("native_support_unavailable"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                Some("native_binding_unavailable"),
+            ),
+            (true, "idle", "another-native", "gpt-5.4", None),
+            (true, "idle", "selected-native", "another-model", None),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut reads = 0;
+                while let Some(Ok(message)) = socket.next().await {
+                    if message.is_close() {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => json!({"boundedIdleTurn":support}),
+                        Some("initialized") => continue,
+                        Some("thread/read") => {
+                            assert!(support);
+                            reads += 1;
+                            assert_eq!(
+                                request["params"],
+                                json!({"threadId":"selected-native","includeTurns":false})
+                            );
+                            json!({"thread":{"id":returned_id,"model":model,"modelProvider":"openai","canAcceptDirectInput":true,"status":{"type":status}}})
+                        }
+                        other => panic!(
+                            "Readiness must never resume, admit, mutate or call a provider: {other:?}"
+                        ),
+                    };
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"id":request["id"],"result":result})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(reads, usize::from(support));
+            });
+            let mut session = session_with_sandbox("read-only");
+            session.codex_thread_id = Some("selected-native".into());
+            let actual = CodexRunner::new(binary)
+                .with_shared_app_server(true)
+                .bounded_idle_readiness(&session)
+                .await;
+            match expected {
+                Some(reason) => assert_eq!(actual.unwrap(), reason),
+                None => assert!(actual.is_err()),
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[cfg(unix)]
     async fn heartbeat_inference_fixture(
         allowance: Option<NativeInferenceAllowance>,
         expected_send: bool,
@@ -4123,6 +4359,7 @@ mod tests {
                         assert_eq!(request["params"]["allowance"]["maxProviderAttempts"],2);
                         assert_eq!(request["params"]["allowance"]["maxRequestBytes"],1024);
                         if accepted {
+                            socket.send(WsMessage::Text(json!({"method":"thread/goal/updated","params":{"threadId":"idle-only-thread","goal":{"threadId":"idle-only-thread","objective":"Existing ordinary work","status":"active","tokenBudget":null,"tokensUsed":17,"timeUsedSeconds":9,"createdAt":1,"updatedAt":2}}}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"turn":{"id":"exact-owned-turn"}}}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"method":"item/completed","params":{"threadId":"idle-only-thread","turnId":"exact-owned-turn","item":{"type":"agentMessage","id":"exact-final","phase":"final_answer","text":"Owned result"}}}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"method":"thread/status/changed","params":{"threadId":"idle-only-thread","status":{"type":"idle"}}}).to_string().into())).await.unwrap();
@@ -4160,6 +4397,7 @@ mod tests {
         let deferred_observation = deferred.clone();
         let terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_observation = terminal.clone();
+        let started = Instant::now();
         let result = runner
             .run_turn(
                 &session_with_sandbox("read-only"),
@@ -4189,7 +4427,14 @@ mod tests {
                 },
             )
             .await;
-        assert_eq!(result.is_ok(), accepted);
+        if accepted {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "Completed heartbeat must not await the ordinary goal checkpoint"
+            );
+            assert_eq!(result.as_ref().unwrap().assistant_text, "Owned result");
+        }
+        assert_eq!(result.is_ok(), accepted, "{:?}", result.as_ref().err());
         assert_eq!(terminal.load(std::sync::atomic::Ordering::SeqCst), accepted);
         assert_eq!(
             rejected.load(std::sync::atomic::Ordering::SeqCst),
@@ -4224,6 +4469,7 @@ mod tests {
                     let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
                     let result = match request["method"].as_str() {
                         Some("initialize") => json!({}),
+                        Some("config/read") => json!({"config":{}}),
                         Some("initialized") => continue,
                         Some("thread/start") => {
                             json!({"thread":{"id":"owned-thread"},"model":"synthetic-model"})
@@ -4325,6 +4571,7 @@ mod tests {
                 let id = &request["id"];
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"prepared-thread"},"model":"synthetic-model"})
@@ -4426,6 +4673,7 @@ mod tests {
                 let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"cancel-before-write"},"model":"synthetic"})
@@ -5265,6 +5513,31 @@ model = "ignored-tui-field"
                 Err(CodexSteerError::Undetermined(_))
             ));
         }
+    }
+
+    #[test]
+    fn collector_grace_follows_only_selected_native_checkpoint() {
+        let config =
+            json!({"config":{"goals":{"continuation_idle_seconds":{"selected":45,"other":300}}}});
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "selected"),
+            Duration::from_secs(75)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "other"),
+            Duration::from_secs(330)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "absent"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(
+                &json!({"config":{"goals":{"continuation_idle_seconds":{"selected":301}}}}),
+                "selected"
+            ),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]

@@ -99,6 +99,9 @@ pub struct App {
 }
 
 struct AppShared {
+    heartbeat_loop: StdMutex<Option<tokio::task::AbortHandle>>,
+    heartbeat_loop_started_at: std::sync::atomic::AtomicI64,
+    heartbeat_owner_held: std::sync::atomic::AtomicBool,
     goal_recovery_wakeup: tokio::sync::Notify,
     config: Config,
     store: Store,
@@ -440,6 +443,9 @@ impl App {
         );
         Ok(Self {
             shared: Arc::new(AppShared {
+                heartbeat_loop: StdMutex::new(None),
+                heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+                heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
                 goal_recovery_wakeup: tokio::sync::Notify::new(),
                 config,
                 store,
@@ -527,9 +533,14 @@ impl App {
             }
         });
         let heartbeat_app = self.clone();
-        tokio::spawn(async move {
+        let heartbeat_loop = tokio::spawn(async move {
             heartbeat_app.run_instance_heartbeat_loop().await;
         });
+        *self
+            .shared
+            .heartbeat_loop
+            .lock()
+            .expect("heartbeat loop mutex poisoned") = Some(heartbeat_loop.abort_handle());
 
         if self.shared.config.background_maintenance {
             let maintenance_app = self.clone();
@@ -641,6 +652,10 @@ impl App {
     }
 
     async fn run_instance_heartbeat_loop(&self) {
+        self.shared.heartbeat_loop_started_at.store(
+            Utc::now().timestamp_millis(),
+            std::sync::atomic::Ordering::Release,
+        );
         crate::backend::run(
             self,
             &self.shared.shutdown,

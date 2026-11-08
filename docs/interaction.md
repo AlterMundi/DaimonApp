@@ -724,8 +724,8 @@ Other titles use `#tID` directly, including titles that could impersonate a stab
 selector or collide with a Matrix target. Discovery does not change client grant
 scope or expiry. Changing the receiving configuration changes its binding bytes;
 existing companion credentials require the supported explicit owner
-reauthorization before they can use that binding. The shared 64-target limit
-still applies; an oversized profile is
+reauthorization before they can use that binding. The shared limit is 127 local targets plus the entry,
+within the existing 128-session reader; an oversized profile is
 rejected rather than silently omitting candidates. Native tool restoration for
 existing work threads follows the same existing enrolled-session lifecycle.
 
@@ -800,7 +800,7 @@ delivery and return path. Enrolled created destinations appear in observer
 inventory, explicit selectors and status without modifying the static config,
 and remain available across restarts. Creation cannot change an existing input's
 selected target plan or grant access to another human's sessions. Configured and
-created contexts share the existing 64-target bound; pending uncertain creation
+created contexts share the existing 127-local-target bound; pending uncertain creation
 intents reserve capacity. A new topic or native acceptance is not proof of
 incorporation or task completion.
 

@@ -1291,7 +1291,7 @@ window.Conversation = (() => {
       selected.followed=true;
     }
     let enabled = false, ready = false, reading = false, binding, canListen = false, canStreamSpeech = false, canReportPlayback=false,canReportWordPosition=false,canLimitCaptureQuestions=false;
-    let newest = {delivery:0, native:0, matrix:0}, oldest = {delivery:0, native:0, matrix:0};
+    let newest = {delivery:0, native:0, matrix:0,inbox:0,responses:0}, oldest = {delivery:0, native:0, matrix:0,inbox:0,responses:0};
     let initialized = false, active, generation = 0, requestAbort, blobUrl, prefetched;
     function playerStatus() {
       if(nativeEnabled&&nativeVoiceSession?.active){
@@ -1489,6 +1489,8 @@ window.Conversation = (() => {
       voiceFinalTimes.set(key,Math.max(voiceFinalTimes.get(key)||0,time));
     }
     function offerVoice(source) {
+      // Attributed peer speech/own delivery intents are visible, not automatic speech as this daimon.
+      if(["matrix_inbox","matrix_response"].includes(source.kind))return;
       if(nativeEnabled&&nativeVoiceSession?.active)return;
       if(automaticInterrupted(source)){rememberSkipped(source);return;}
       if(!voiceEnabled || voiceSeen.has(voiceKey(source)) || skippedMessages.has(messageKey(source)))return;
@@ -1688,6 +1690,13 @@ window.Conversation = (() => {
       return listenTo(card.source,saved?.revision===card.source.revision?saved.offset:0);
     }
     function upsert(source) {
+      // One visible card per signed event when both ordinary reply and inbox projections exist.
+      const matrixEvent=source.kind==="matrix_result"?source.id.slice("matrix:".length):source.kind==="matrix_response"?source.handling?.outcome?.message_id:undefined;
+      if(matrixEvent){const echo=cards.get(`matrix-inbox:${matrixEvent}`);if(echo){echo.box.remove();cards.delete(echo.source.id);}}
+      if(source.kind==="matrix_inbox"){
+        const event=source.id.slice("matrix-inbox:".length);
+        if(cards.has(`matrix:${event}`)||[...cards.values()].some(card=>card.source.kind==="matrix_response"&&card.source.handling?.outcome?.message_id===event))return;
+      }
       const followingLive=atTimelineEnd();
       let card = cards.get(source.id);
       if (!card) {
@@ -1700,7 +1709,7 @@ window.Conversation = (() => {
         const read = node("button", "Read reply"); read.type = "button";
         const listen = node("button", "Listen"); listen.type = "button";
         const error = node("p", "", "reply-error"); error.setAttribute("role", "status");
-        const reply=node("button",source.kind.startsWith("integrator_")?"Reply to this message":"Reply to this session");reply.type="button";reply.hidden=readOnly || !["worker_result","matrix_result","integrator_answer","integrator_progress"].includes(source.kind);
+        const reply=node("button",source.kind.startsWith("integrator_")?"Reply to this message":"Reply to this session");reply.type="button";reply.hidden=readOnly || !["worker_result","matrix_result","matrix_inbox","matrix_response","integrator_answer","integrator_progress"].includes(source.kind);
         const time=node("time",undefined,"message-time");
         actions.append(read, listen,reply,copyButton(()=>copySource(card))); box.append(title, status, body, actions, error,time);
         box.dataset.sequence = String(source.sequence);
@@ -1708,7 +1717,7 @@ window.Conversation = (() => {
         if(!timeline || source.kind==="worker_progress")container.insertBefore(box, following || null);
         card = {source, box, title, status, body, read, listen, error,time, offset:0, expanded:false};
         cards.set(source.id, card);
-        reply.addEventListener("click",()=>selectFocus({source:card.source.id,revision:card.source.revision,...(card.source.kind==="matrix_result" || card.source.kind.startsWith("integrator_")?{context_only:true}:{})},card.source.label||"this session"));
+        reply.addEventListener("click",()=>selectFocus({source:card.source.id,revision:card.source.revision,...(["matrix_result","matrix_inbox","matrix_response"].includes(card.source.kind) || card.source.kind.startsWith("integrator_")?{context_only:true}:{})},card.source.label||"this session"));
         read.addEventListener("click",()=>readCard(card));
         listen.hidden=readOnly;listen.addEventListener("click",()=>listenCard(card));
       } else if (card.source.text_sha256 !== source.text_sha256) {
@@ -1730,12 +1739,27 @@ window.Conversation = (() => {
       const integrator=source.kind.startsWith("integrator_");
       const progress=source.kind.endsWith("_progress");
       sessionTitle(card,source,integrator ? "Conversation" : source.label);
-      card.status.textContent = progress ? "Progress update." : source.kind === "integrator_answer" ? "Reply from this conversation."
+      const matrix=source.kind==="matrix_inbox"||source.kind==="matrix_response";
+      const deliveryPhase=source.handling?.phase;
+      card.status.textContent = matrix ? (source.kind==="matrix_response" ?
+        deliveryPhase==="recipient_copy_proved" ? "Recipient receiving copy proved. Reading and work completion are unconfirmed." :
+        deliveryPhase==="uncertain" ? "Delivery uncertain. The original response intent is retained; it has not been resent." :
+        deliveryPhase==="submitted" ? "Submitted; recipient delivery is not proved." : "Response intent retained; delivery is not proved."
+        : source.direction==="outgoing" ? "Own message retained in the signed Matrix inbox. Recipient delivery is not established by this copy." : "SDK-authenticated incoming message. Peer speech is not human instruction or proof of completed work.") : progress ? "Progress update." : source.kind === "integrator_answer" ? "Reply from this conversation."
         : source.correction_pending ? "A later correction is pending."
         : !source.native_binding_current ? "From an earlier session."
         : !source.current ? "Instruction coverage has not been confirmed."
         : source.kind === "matrix_result" ? "Reply from the selected daimon. Work completion is not independently verified."
         : source.completed ? "Session reports this request complete." : "Session progress; work may continue.";
+      if(matrix){
+        if(!card.matrixDetails){
+          card.matrixDetails=node("details");card.matrixDetails.append(node("summary","Matrix details"));card.matrixReceipt=node("pre",undefined,"route-identity");card.matrixDetails.append(card.matrixReceipt);card.box.append(card.matrixDetails);
+        }
+        card.matrixReceipt.textContent=JSON.stringify({direction:source.direction,author:source.source_author,
+          original:source.kind==="matrix_inbox"?source.id.slice("matrix-inbox:".length):undefined,
+          parent:source.parent_message_id,thread:source.thread_id,send:source.send_id,
+          handling:source.handling,verification:source.verification},null,2);
+      }
       card.box.dataset.pending = String(!!source.correction_pending || source.native_binding_current === false);
       card.listen.hidden = !canListen;
       if(source.current===false || source.correction_pending || source.native_binding_current===false
@@ -1753,7 +1777,7 @@ window.Conversation = (() => {
       const value = await api(`interaction?${new URLSearchParams({...cursor, direction})}`);
       if (binding && value.binding !== binding) {
         workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
-        newest = {delivery:0,native:0,matrix:0}; oldest = {delivery:0,native:0,matrix:0};
+        newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0}; oldest = {delivery:0,native:0,matrix:0,inbox:0,responses:0};
         $("#conversation-answers").replaceChildren(); $("#conversation-results").replaceChildren();
       }
       if(standalone){
@@ -1801,7 +1825,7 @@ window.Conversation = (() => {
         const card=cards.get(source.id);
         if(card)card.listen.disabled=canSpeakLive && liveSpeech?.needsReconcile(source)===true;
       }
-      if(direction==="after")for(const source of value.items)companion?.reply(source);
+      if(direction==="after")for(const source of value.items)if(!["matrix_inbox","matrix_response"].includes(source.kind))companion?.reply(source);
       for(const source of [...value.items].sort((a,b)=>(Date.parse(a.observed_at)||0)-(Date.parse(b.observed_at)||0))){
         if(active?.source.kind==="integrator_live" && active.source.native_turn===source.native_turn && active.source.native_item===source.native_item)rememberPosition();
         const reconciled=canSpeakLive && (direction==="after" || liveSpeech?.needsReconcile(source))?await liveSpeech?.reconcile(source,part):undefined;
@@ -1833,6 +1857,7 @@ window.Conversation = (() => {
         newest.delivery = Math.max(newest.delivery, value.newest.delivery);
         newest.native = Math.max(newest.native, value.newest.native);
         newest.matrix = Math.max(newest.matrix || 0, value.newest.matrix || 0);
+        for(const key of ["inbox","responses"])newest[key]=Math.max(newest[key]||0,value.newest[key]||0);
       }
       return value;
     }
@@ -1856,18 +1881,18 @@ window.Conversation = (() => {
       $("#conversation-older").disabled = true;
       try {
         if (!initialized) {
-          newest = {delivery:0,native:0,matrix:0};
-          await page({delivery:0,native:0,matrix:0}, "before");
+          newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0};
+          await page({delivery:0,native:0,matrix:0,inbox:0,responses:0}, "before");
           initialized = true;
         } else {
           let more = true;
           for (let n = 0; n < 4 && more && enabled && playbackAllowed(); n++) {
             const value = await page(newest, "after");
-            if (!initialized) { newest = {delivery:0,native:0,matrix:0}; await page(newest,"before"); initialized = true; break; }
+            if (!initialized) { newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0}; await page(newest,"before"); initialized = true; break; }
             more = value.more;
             if(n===3 && more)refreshAgain=true;
           }
-          if (enabled && playbackAllowed()) await page({delivery:0,native:0,matrix:0}, "before", false);
+          if (enabled && playbackAllowed()) await page({delivery:0,native:0,matrix:0,inbox:0,responses:0}, "before", false);
         }
         void workspace?.refresh(binding);
         // Resolve current questions before starting newly observed speech. Input

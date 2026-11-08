@@ -154,6 +154,10 @@ def qualify(binary, *, funded=False):
         paused = j.read("heartbeat", "pause")["result"]
         assert paused["admission_paused"] is True
         same = j.call("route-heartbeat-shared-status", "heartbeat_control", {"action": "status"})
+        # Both entry points expose the same durable gate; readiness is freshly
+        # observed for each read and must not freeze its observation timestamp.
+        assert same["operational_evidence"]["observed_at_unix_ms"] >= paused["operational_evidence"]["observed_at_unix_ms"]
+        same["operational_evidence"]["observed_at_unix_ms"] = paused["operational_evidence"]["observed_at_unix_ms"]
         assert same == paused
         j.call("route-heartbeat-stale-resume", "heartbeat_control", {"action": "resume", "generation": 0}, ok=False)
         resumed = j.call("route-heartbeat-explicit-resume", "heartbeat_control", {"action": "resume", "generation": paused["generation"]})
@@ -327,6 +331,18 @@ def qualify(binary, *, funded=False):
         assert exact["kind"]=="matrix_inbox" and exact["text"]=="New peer original; no human instruction or execution grant."
         assert exact["source_author"]["being_ref"]==sdk.receiver.lane.being_ref
         assert exact["completed"] is None and exact["current"] is True
+        projection=b.get("/api/interaction?matrix=0&inbox=0&responses=0")
+        projected=next(v for v in projection["items"] if v["id"]==native_source["source"])
+        assert projected["direction"]=="incoming" and projected["revision"]==native_source["revision"]
+        assert "Matrix" in projected["label"] and projected["source_author"]==exact["source_author"]
+        assert projection["cursor"]["inbox"]>0 and projection["cursor"]["responses"]==0
+        assert b.get("/api/interaction/part?source="+projected["id"]+"&revision="+projected["revision"])["text"]==exact["text"]
+        assert inbox_reads==[0],"Rendering retained sources must not perform live Matrix I/O"
+        context={"source":projected["id"],"revision":projected["revision"],"context_only":True}
+        b.provider.check_reply(context)
+        try:b.provider.check_reply({k:v for k,v in context.items() if k!="context_only"})
+        except ValueError:pass
+        else:raise AssertionError("A Matrix original cannot select peer routing without contextual scope")
         duplicate=j.call("route-read-after-native-cursor","matrix_status",{"inbox_next":True})
         assert duplicate["items"]==[] and duplicate["next_cursor"]==intake["next_cursor"]
         assert inbox_reads==[0,intake["next_cursor"]]

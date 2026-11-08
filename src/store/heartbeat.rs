@@ -12,10 +12,12 @@ pub use producer::{HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPur
 mod reports;
 pub use reports::HeartbeatReportSource;
 mod resources;
+mod review;
 pub(super) use executions::claim_on as execution_claim_on;
 pub use resources::HeartbeatResources;
 #[cfg(test)]
 pub(in crate::store) use resources::test_contract;
+pub use review::HeartbeatReviewContract;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -87,6 +89,71 @@ pub(super) fn generation_current_on(
 }
 
 impl Store {
+    /// Actual owner-selected production defaults; no counter, hour or gate reset.
+    pub fn heartbeat_production_defaults(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        source: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let c: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            c.paused && c.generation == generation,
+            "Pause and inspect the exact generation before production policy selection"
+        );
+        resources::production_defaults_on(&tx, session, human, source)?;
+        producer::production_recovery_on(&tx, session, human, source)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Explicit owner selection of persistent operation, with a recurring rate.
+    /// Historical contracts/counters and all controls remain untouched.
+    pub fn heartbeat_enable_continuous(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        attempts_per_hour: u32,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let control: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            control.paused && control.generation == generation,
+            "Pause and select the exact heartbeat generation before owner continuous adoption"
+        );
+        anyhow::ensure!(
+            !executions::unresolved_on(&tx, human, entry)?,
+            "Heartbeat execution unresolved"
+        );
+        let status = producer::status_on(&tx, human, session)?;
+        anyhow::ensure!(
+            matches!(
+                status["state"].as_str(),
+                Some("configured" | "expired" | "check_capacity")
+            ),
+            "Select the existing bound heartbeat producer; preserve stopped or uncertain work"
+        );
+        resources::enable_continuous_on(&tx, session, human, attempts_per_hour)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Explicit owner-only model-free observation successor. No account change.
     pub fn heartbeat_renew_observation(
         &self,
