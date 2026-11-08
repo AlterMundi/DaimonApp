@@ -25,7 +25,8 @@ has a5second bound; observer failure closes only that cosmetic branch, never
 starts a second player/provider or stops the existing browser player.
 
 Avatar pause, reduced motion, hidden pages and the wardrobe suppress live mouth
-motion; silence and output closure restore the authored pose. This is an audio
+motion; resuming restores the current account-scoped output level even if it
+has not changed. Silence and output closure restore the authored pose. This is an audio
 amplitude approximation, not phoneme/viseme alignment or proof of human hearing.
 The native Codex/legacy speech paths do not acquire this output-level signal
 merely because their custom renderer supports the optional anchor.

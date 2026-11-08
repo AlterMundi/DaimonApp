@@ -74,10 +74,16 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    const read=()=>page.locator('#conversation-companion canvas').evaluate(c=>c.toDataURL());
    const still=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),still,'Reduced motion suppresses mouth motion');
    await page.emulateMedia({reducedMotion:'no-preference'});
-   const transition=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),still=c.toDataURL();testAvatar.speechLevel(1);const open=c.toDataURL();testAvatar.speechLevel(0);return {still,open,rest:c.toDataURL()};});
+   const transition=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas');testAvatar.speechLevel(0);const still=c.toDataURL();testAvatar.speechLevel(1);const open=c.toDataURL();testAvatar.speechLevel(0);return {still,open,rest:c.toDataURL()};});
    assert.notEqual(transition.open,transition.still);assert.equal(transition.rest,transition.still,'Host restores the current exact authored frame');
+   const resume=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),pause=document.querySelector('#avatar-workshop-pause');testAvatar.speechLevel(1);const open=c.toDataURL();pause.click();const held=c.toDataURL();testAvatar.speechLevel(1);const still=c.toDataURL();pause.click();return {open,held,still,resumed:c.toDataURL()};});
+   assert.notEqual(resume.open,resume.held);assert.equal(resume.held,resume.still);assert.equal(resume.resumed,resume.open,'Resume restores current held audio level without waiting for another output change');
    await page.locator('#avatar-workshop-pause').click();const paused=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),paused,'Explicit avatar pause suppresses live mouth movement');
    await page.locator('#avatar-workshop-pause').click();await page.evaluate(()=>testAvatar.speechLevel(1));await page.locator('#avatar-workshop-open').click();const wardrobe=await read();await page.evaluate(()=>testAvatar.speechLevel(1));assert.equal(await read(),wardrobe,'Wardrobe keeps the active portrait still');
+   await page.evaluate(()=>{testAvatar.reset();testAvatar.speechLevel(1);testAvatar.bind('actor100');});await page.locator('#conversation-companion canvas').waitFor();
+   const loaded=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),open=c.toDataURL();testAvatar.speechLevel(0);const rest=c.toDataURL();testAvatar.speechLevel(1);return {open,rest,resumed:c.toDataURL()};});assert.notEqual(loaded.open,loaded.rest);assert.equal(loaded.resumed,loaded.open,'A portrait loaded after a current output level arrives restores that same level');
+   await page.evaluate(()=>{testAvatar.reset();testAvatar.bind('actor100');});await page.locator('#conversation-companion canvas').waitFor();
+   const reset=await page.evaluate(()=>{const c=document.querySelector('#conversation-companion canvas'),rest=c.toDataURL();testAvatar.speechLevel(0);return {rest,after:c.toDataURL()};});assert.equal(reset.rest,reset.after,'Actor reset discards the old transient output level');
    console.log('PASS actual glyph renderer:216 authored large/compact frames unchanged at rest,18 cue/view mouth transitions restore exactly, no saved design mutation; no providers');return;
   }
   if(process.env.OUTPUT_ACTIVITY_ONLY==='1'){
