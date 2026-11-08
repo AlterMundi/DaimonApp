@@ -86,6 +86,12 @@ class PreviewService:
             receipt.update(audio_sha256=state['audio_sha256'],format=info,voice=route['voice'],language=route['language'])
             return {'state':'rendered','receipt':receipt}
         if finalized:return {'state':'cancelled_verified','receipt':receipt}
+        if state.get('phase')=='unconfirmed':
+            from scripts.openai_live_speech import diagnostic
+            details=diagnostic(provider.get('diagnostic'))
+            if details:
+                receipt.update(automatic_retry=False,diagnostic=details)
+                return {'state':'unconfirmed','receipt':receipt}
         return None
 
     def reconcile(self,human,row):

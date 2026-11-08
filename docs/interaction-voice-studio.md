@@ -6,6 +6,12 @@ This source adds the existing-workshop Voice panel and its authenticated adapter
 Resolve actual receiving selection through Shared Resources `interaction-current.md`.
 Source and synthetic qualification do not establish listening acceptance; bounded
 provider auditions remain unfinished.
+An actual bounded selected-source attempt ended before a confirmed session start
+and produced no audio; its unknown outcome is retained without replay. Failed
+transport-failure receipts in this candidate preserve fixed local classifications and allowlisted
+provider codes. Provider messages, credentials and request payloads are excluded.
+These optional diagnostics never make an unknown attempt eligible for regeneration
+or retirement. Earlier attempts without diagnostics remain unknown.
 The first adapter targets public GPT-Live Avatar. Ordinary Conversation speech
 keeps its current Realtime route; API-specific voice identities are not pooled.
 

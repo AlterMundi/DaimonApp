@@ -121,6 +121,27 @@ class Mounted(unittest.TestCase):
         self.assertEqual(response.status_code,503,response.text)
         self.assertEqual(self.store.preview_get(100,row['id'],row['generation'])['renders']['A']['state'],'prepared')
         self.assertEqual(self.calls,[]);self.assertFalse(self.app.state.voice_active)
+    def test_unknown_preview_diagnostic_readback_never_regenerates_or_retires(self):
+        row=self.prepare();service=self.app.state.voice_previews
+        route,request,ident=service.plan(100,row,'A')
+        self.store.preview_start(100,row['id'],row['generation'],'A')
+        state={'schema':'telecodex.speech-render/v1','identity_sha256':ident,
+            'phase':'unconfirmed','provider':'openai-live','voice':route['voice'],
+            'language':route['language'],'text_sha256':speech.sha(request['text'].encode()),
+            'provider_receipt':{'stage':'transport_released','finalized':False,
+                'diagnostic':{'failure_code':'audition-provider-error','provider_error_code':'invalid_value',
+                              'message':'sk-private must not be exposed'}}}
+        job=speech.directory(Path(route['cache_root'])/ident)
+        speech.atomic(job/'state.json',speech.canonical(state))
+        result=self.post(self.body(row));self.assertEqual(result.status_code,200,result.text)
+        render=result.json()['batch']['renders']['A']
+        self.assertEqual(render['state'],'unconfirmed');self.assertIsNone(result.json()['audio'])
+        self.assertEqual(render['outcome']['receipt']['diagnostic'],
+            {'failure_code':'audition-provider-error','provider_error_code':'invalid_value'})
+        self.assertNotIn('sk-private',result.text)
+        self.assertEqual(self.post(self.body(row)).status_code,200)
+        self.assertEqual(self.post({**self.body(row,'retire'),'generation':1}).status_code,400)
+        self.assertEqual(self.calls,[]);self.assertTrue((job/'state.json').exists())
     def test_cancel_only_owned_attempt_and_retire_after_confirmed_close(self):
         row=self.prepare();self.mode='wait';results=[]
         thread=threading.Thread(target=lambda:results.append(self.post(self.body(row))),daemon=True);thread.start()

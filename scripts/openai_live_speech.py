@@ -20,6 +20,25 @@ class SpeechError(Exception):
     pass
 
 
+FAILURES=frozenset(('audition-finalization-unconfirmed','audition-start-unconfirmed',
+    'audition-connection-unconfirmed','audition-cancelled','audition-provider-error',
+    'audition-event-mismatch','audition-event-count-bound','audition-no-audio'))
+PROVIDER_CODES=frozenset(('invalid_request_error','invalid_api_key','model_not_found',
+    'rate_limit_exceeded','insufficient_quota','invalid_value','unknown_parameter',
+    'missing_required_parameter','invalid_json','permission_denied'))
+
+
+def diagnostic(value):
+    """Only fixed classifications; never provider messages, headers or payloads."""
+    if not isinstance(value,dict):return {}
+    result={}
+    if isinstance(value.get('failure_code'),str) and value['failure_code'] in FAILURES:
+        result['failure_code']=value['failure_code']
+    if isinstance(value.get('provider_error_code'),str) and value['provider_error_code'] in PROVIDER_CODES:
+        result['provider_error_code']=value['provider_error_code']
+    return result
+
+
 def connect(endpoint,model,token,timeout):
     import websocket
     return websocket.create_connection(endpoint,header={'Authorization':'Bearer '+token},
@@ -37,6 +56,7 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
     socket=(connector or connect)(config['endpoint'],config['model'],token,config['timeout_seconds'])
     pcm=bytearray();transcript='';seen={};session=None;closing=False;failure=None
     first_audio=None;last_audio=None;next_silence=None;closed=False;sent_silence=0;close_deadline=None
+    details={}
     max_pcm=min(max_audio-44,30*48000)
     def send(value):socket.send(json.dumps(value,ensure_ascii=False,separators=(',',':')))
     def report(value):
@@ -121,10 +141,22 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     with wave.open(output,'wb') as wav:
                         wav.setnchannels(1);wav.setsampwidth(2);wav.setframerate(24000);wav.writeframes(pcm)
                     return output.getvalue(),receipt
-                elif kind in ('error','session.delegation.created'):failure=failure or 'audition-provider-error'
+                elif kind in ('error','session.delegation.created'):
+                    if kind=='error':
+                        error=event.get('error')
+                        if isinstance(error,dict) and error.get('code') in PROVIDER_CODES:
+                            details['provider_error_code']=error['code']
+                    failure=failure or 'audition-provider-error'
             except SpeechError:raise
             except (ValueError,KeyError,TypeError):failure=failure or 'audition-event-mismatch'
         raise SpeechError('audition-event-count-bound')
+    except SpeechError as error:
+        # Prefer the observed provider/mismatch/cancellation failure to the
+        # subsequent startup/drain deadline. The attempt remains unconfirmed.
+        code=failure or str(error)
+        if code in FAILURES:details['failure_code']=code
+        raise
     finally:
-        if not closed:report({'stage':'transport_released','finalized':False,'session_id':session})
+        if not closed:report({'stage':'transport_released','finalized':False,'session_id':session,
+                              'diagnostic':diagnostic(details)})
         with suppress(Exception):socket.close(timeout=1)
