@@ -109,6 +109,23 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   assert(renewal.requests[0].url.includes(first.id));
   await renewal.engine.hold();assert.equal(renewal.stops(),1);assert.equal(renewal.sockets.length,2);
  }finally{await renewal.engine.hold();}
+ const recoveryRenewal=fixture({nativeChoice:true,continuous:true});await recoveryRenewal.start();
+ recoveryRenewal.renew();await until(()=>recoveryRenewal.peers[1]?.listeners.has('icegatheringstatechange'));
+ recoveryRenewal.peers[1].ice();await until(()=>recoveryRenewal.states.at(-1).active);
+ let releaseRenewedUpload;recoveryRenewal.uploads(()=>new Promise(resolve=>{releaseRenewedUpload=resolve;}));
+ for(let n=0;n<30;n++)recoveryRenewal.pcm();
+ await until(()=>recoveryRenewal.requests.length===1&&recoveryRenewal.recovered().length===1);
+ const retained=recoveryRenewal.recovered()[0];
+ assert.equal(retained.voice_visit,recoveryRenewal.sockets[1].id);
+ await assert.rejects(()=>recoveryRenewal.engine.retry(retained),/still finishing/);
+ await assert.rejects(()=>recoveryRenewal.engine.discard(retained),/still finishing/);
+ assert.equal(recoveryRenewal.requests.length,1);
+ await recoveryRenewal.engine.hold();
+ await assert.rejects(()=>recoveryRenewal.engine.retry(retained),/still finishing/,'Stop must not release a pending automatic upload fence');
+ await assert.rejects(()=>recoveryRenewal.engine.discard(retained),/still finishing/);
+ assert.equal(recoveryRenewal.requests.length,1);assert.equal(recoveryRenewal.permission(),1);
+ releaseRenewedUpload();await until(()=>!recoveryRenewal.recovered().length);await sleep(5);
+ await recoveryRenewal.navigator.locks.request('daimon-native-voice:'+retained.voice_visit,{ifAvailable:true},lock=>assert(lock,'Settled queue releases its retired recovery lock'));
  const stopRenewal=fixture({nativeChoice:true,continuous:true,deferRenewalReady:true});await stopRenewal.start();
  stopRenewal.renew();await until(()=>stopRenewal.sockets[0].sent.some(v=>v.reason==='transport_renewal'));
  const stopped=stopRenewal.engine.hold();

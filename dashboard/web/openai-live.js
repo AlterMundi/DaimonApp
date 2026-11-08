@@ -11,6 +11,7 @@ window.PublicLiveConversation=(()=>{
     let active=false,starting=false,closing=false,renewing=false,renewalReadyAck,logicalGeneration=0,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
+    let captureLocks;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
     let replacementReview,voiceContinuation,outputLevel=0;
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -154,7 +155,11 @@ window.PublicLiveConversation=(()=>{
       if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
       // Durable local originals survive slow uploads. Do not hold the media
       // lock or freeze navigation for a whole queue of network timeouts.
-      await durable;unlock?.();unlock=undefined;closing=false;state(completionMessage||message);notify();
+      await durable;
+      // Keep every physical visit's recovery fence until its automatic upload
+      // queue settles, without holding Stop/navigation on network completion.
+      const retired=unlock;unlock=undefined;uploads.then(()=>retired?.(),()=>retired?.());
+      closing=false;state(completionMessage||message);notify();
     }
     async function renew(){
       if(!active||starting||closing||renewing||document.hidden||binding!==getBinding())return;
@@ -195,7 +200,7 @@ window.PublicLiveConversation=(()=>{
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       if(renewal&&(logical!==logicalGeneration||!media||!unlock))return false;
-      if(!renewal)logicalGeneration++;
+      if(!renewal){logicalGeneration++;captureLocks=new Map();}
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
       const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
@@ -210,14 +215,18 @@ window.PublicLiveConversation=(()=>{
       state('Preparing voice');
       try{
         if(!renewal)await review();if(!current())throw Error('Voice activation ended');
-        if(!renewal){
+        const locksForCapture=captureLocks;
         let granted;
         const locked=new Promise(resolve=>{granted=resolve;});
         void navigator.locks.request('daimon-native-voice:'+visit,{ifAvailable:true},async lock=>{
-          if(!lock||!current()){granted(false);return;}await new Promise(resolve=>{unlock=resolve;granted(true);});
+          if(!lock||!current()){granted(false);return;}
+          await new Promise(resolve=>{
+            locksForCapture.set(visit,resolve);
+            unlock=()=>{for(const release of locksForCapture.values())release();locksForCapture.clear();};
+            granted(true);
+          });
         }).catch(()=>granted(false));
         if(!await wait(locked,3000))throw Error('Microphone capture is owned by another page');
-        }
         const url=new URL('api/interaction/voice/gpt-live',window.location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
         const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
@@ -291,7 +300,7 @@ window.PublicLiveConversation=(()=>{
         if(!current())throw Error('Voice activation ended');
         peer=new RTCPeerConnection();channel=peer.createDataChannel('oai-events');
         let sessionId,started=false,connected=false;
-        const listening=()=>{if(current()&&started&&connected){starting=false;active=true;state('Listening');readyResolve();}};
+        const listening=()=>{if(current()&&!renewing&&started&&connected){starting=false;active=true;state('Listening');readyResolve();}};
         channel.onmessage=event=>{
           try{const value=JSON.parse(event.data);if(value.type==='session.started'&&(value.session_id||value.session?.id)===sessionId){started=true;listening();}}catch{}
         };
