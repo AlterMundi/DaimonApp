@@ -56,6 +56,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(await editor.locator('.application-bar').innerText(),'avatar.exe');
   await editor.locator('body').evaluate(()=>document.fonts.ready);
   assert(await editor.locator('body').evaluate(()=>document.fonts.check('20px ArchivePixel')&&document.fonts.check('16px ArchiveText')),'Selected local game fonts loaded');
+  assert(await editor.locator('.stage.world').evaluate(stage=>['#use-avatar','#cancel-workshop'].every(id=>{const b=getComputedStyle(document.querySelector(id)),s=getComputedStyle(stage);return b.backgroundColor===s.backgroundColor&&b.color===s.color;})),'Account actions retain readable receiving colors');
   assert.equal(await editor.locator('.upload-symbol svg').count(),1,'Selected letter envelope replaces the old text placeholder');
   await editor.locator('#appearance summary').click();
   assert(await editor.locator('.appearance-popover').evaluate(e=>e.scrollHeight<=e.clientHeight+2),'Appearance controls fit without scroll');
