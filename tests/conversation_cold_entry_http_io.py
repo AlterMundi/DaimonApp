@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """First browser text/voice needs no Telegram seed or paid bootstrap model."""
 import hashlib,json,sqlite3,sys,uuid
+import time
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
@@ -264,5 +266,45 @@ def known_unsent_recovery(binary):
         if b:b.client.close()
         j.close()
 
+def web_only_first_text(binary):
+    j=Requests(str(Path(binary).resolve()));client=None
+    try:
+        config=j.config.read_text().replace('[telegram]','[telegram]\nenabled=false')
+        config='\n'.join(line for line in config.splitlines() if not line.startswith('bot_token_file='))+'\n'
+        j.config.write_text(config);(j.root/'bot.token').unlink()
+        j.start();j.wait_control_socket(j.socket)
+        entry=j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1')
+        assert entry==[(None,)],'Web-only bootstrap started native reasoning'
+        c={'receiver_config':str(j.config),'state_dir':str(j.root/'web-only'),
+           'origin':'https://child.example.test','prefix':'/interaction',
+           'application_id':str(uuid.uuid4()),
+           'shared_auth':{'enabled':True,'home_origin':'https://child.example.test',
+                          'human_ref':'human:passkey:synthetic-child'}}
+        provider=Provider(c);assert provider.authorized(100)
+        client=TestClient(create_app(c,provider),base_url=c['origin'])
+        headers={'Host':'child.example.test','Origin':c['origin'],'Cookie':'__Host-home='+'h'*43}
+        identity={'contract':'dm.home-session/v1','origin':c['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':c['shared_auth']['human_ref']}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=client.get('/api/interaction/access',headers=headers);assert access.status_code==200,access.text
+            listing=client.get('/api/interaction/inputs',headers=headers);assert listing.status_code==200,listing.text
+            original={'id':str(uuid.uuid4()),'binding':listing.json()['binding'],
+                      'text':'Synthetic child web-only first original; no Telegram account.'}
+            submitted=client.post('/api/interaction/inputs',json=original,
+                headers={**headers,'X-Dashboard-CSRF':access.json()['csrf']})
+            assert submitted.status_code==200,submitted.text
+            j.wait(lambda:bool(j.packets))
+            assert len(j.packets)==1
+            status=provider.conversation_input_status(original['id'])
+            assert status['text']==original['text'] and status['id']==original['id']
+            assert j.row('SELECT count(*) FROM incoming_updates')==[(0,)]
+            assert not j.telegram_methods and not j.messages
+            assert not (j.root/'bot.token').exists()
+        print('PASS actual token-free native bootstrap and first shared-login HTTP original; exact original/native handoff, no Telegram I/O, zero models. Shared identity response is synthetic, not real child acceptance.')
+    finally:
+        if client:client.close()
+        j.close()
+
 if __name__=='__main__':
-    binary=str(Path(sys.argv[1]).resolve());first_text(binary);first_voice(binary);temporary_review(binary);sonic_registry(binary);known_unsent_recovery(binary)
+    binary=str(Path(sys.argv[1]).resolve());first_text(binary);first_voice(binary);temporary_review(binary);sonic_registry(binary);known_unsent_recovery(binary);web_only_first_text(binary)

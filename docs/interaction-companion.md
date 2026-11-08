@@ -150,6 +150,43 @@ manual reading remains available when the browser lacks intersection observation
 The enrollment commands above remain for physical Talk clients and the selected
 read-only monitor. They are not human browser onboarding.
 
+### Web-only receiving instances
+
+The same web application supports a native receiver with `telegram.enabled=false`
+without creating a bot, requesting a token, calling `getMe` or registering a menu.
+In the dashboard configuration omit `bot_id`, `bot_username` and
+`miniapp_short_name`. Set `application_id` to one stable, canonical UUID selected
+for that receiving instance. This is a scope identifier, not an account or grant.
+The native receiver still supplies its actual configured human/destination and
+existing native user authorization. Historical database field names do not
+require a Telegram account or transport.
+
+Reuse `[shared_auth]` and the registered Home route above. Configure `human_ref`
+as the **exact existing authoritative human reference** returned by shared login
+for this pairing. The App compares that reference and separately rechecks the
+native human grant. Do not fabricate a human reference, map one child's identity
+to another, infer it from a name, or substitute a hostname for identity. Missing
+signed pairing or Home registration is an onboarding dependency, not permission
+to create another login. These settings grant no access by themselves.
+
+`application_id` cannot coexist with bot fields, an enabled native Telegram
+transport, or enabled Telegram Alerts/Traffic adapters. The Telegram launch and
+attention exchange endpoints refuse this mode before signature validation.
+Existing shared-login Host/Origin/CSRF checks, per-actor workshop storage, device
+grants and native execution remain in use. The application UUID participates in
+device authority, web binding and shared-login CSRF, together with the exact
+registered human reference: changing either invalidates those scopes without
+rewriting a journal. Existing bot configurations preserve
+their previous binding bytes and defaults. Telegram menu CLI operations refuse
+web-only configuration before reading a receiver token or issuing network I/O.
+
+For the four children's receiving route, Clúster owns signed native admission,
+actual per-child human grants and registered HTTPS Home entry. App owns this
+configuration contract, the existing avatar/Voice workshops and provider routes.
+Keep each being's own identity/history/storage and authorized account custody;
+no bot-shaped placeholder values are needed. Configuration and synthetic HTTP
+qualification do not establish child login, voice hearing or physical acceptance.
+
 ## Standalone read-only routing monitor
 
 The existing browser UI also supports ?view=monitor without Telegram. An

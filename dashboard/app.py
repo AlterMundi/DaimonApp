@@ -30,7 +30,7 @@ from .menu_attention import attention_projection
 from .operator import sessions_selection
 from .speech import Speech, SpeechUnavailable, speech_part
 from .media_retention import MediaRetention, RetentionUnavailable
-from .companion import Grants as CompanionGrants, permitted as companion_permitted
+from .companion import Grants as CompanionGrants, permitted as companion_permitted, application_identity
 from .home_auth import HomeAuth
 from scripts.speech_render import RenderError
 
@@ -60,6 +60,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     if config is None:
         config = tomllib.loads(Path(os.environ['TELECODEX_DASHBOARD_CONFIG']).read_text())
     provider = provider or Provider(config)
+    application = application_identity(config, provider)
+    telegram_launch = 'application_id' not in config
     companions = CompanionGrants(config, provider)
     home_auth = HomeAuth(config, provider)
     speech = Speech(config['speech']) if config.get('speech') else None
@@ -132,7 +134,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         traffic = Traffic(config, provider)
     if traffic is not None and alerts is not None:
         alerts.dispatch_ready = traffic.notification_ready
-    scope_binding = [config['bot_id'],
+    scope_binding = [application,
         getattr(provider, 'binding_bytes', getattr(provider, 'receiver_bytes', b'')).hex()]
     if alerts is not None:
         scope_binding.append(alerts.binding)
@@ -435,6 +437,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.post('/api/session')
     async def exchange(request: Request):
+        if not telegram_launch:
+            raise HTTPException(403, 'Use this conversation’s shared sign-in')
         try:
             body = await request.json()
             raw = body['init_data']
@@ -1324,6 +1328,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.post('/api/alerts/attention')
     async def launcher_attention(request: Request):
+        if not telegram_launch:
+            raise HTTPException(403, 'Telegram launch is not configured')
         # Read-only signed-launch route. It mints no control/session credential.
         try:
             body = await request.json()
