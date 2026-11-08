@@ -2,7 +2,7 @@
 
 Nicolas selected integration into the existing DaimonApp goal on6November2026.
 Oliva authored the original handoff for Ani. The pinned MIT implementation is
-ASCII-Interfaces e86b940, handoff990dce9; module hashes and the original license
+ASCII-Interfaces 4acdb30, handoff990dce9; module hashes and the original license
 are retained in `dashboard/web/avatar-workshop/PROVENANCE.json`. The original wardrobe editor, model/design validator, rendering dependency
 closure and authored firefly example are included. The receiving adaptations
 are listed separately from pinned original hashes. School media, viewer state, private histories and credentials
@@ -17,7 +17,8 @@ An actor ID in an imported design or browser request is never authoritative.
 This adapter creates no account, grant, provider session or peer activation.
 
 The original `model.mjs` validator normalizes `ascii-quest-design/v2` and its
-distinct inert `ascii-avatar-model/v1` extension. It is invoked only for a manual
+distinct inert `ascii-avatar-model/v1` and backwards-compatible raster-layer
+`ascii-avatar-model/v2` extensions. It is invoked only for a manual
 save/import through the fixed local Node entry, never as a rendering loop or
 imported program. Node20+ is a receiving dependency: at most two validators,
 four seconds each,64MiB JS heap,1MiB input and512KiB canonical output. Missing or
@@ -151,3 +152,46 @@ and account files are synthetic/temporary; voice checks use synthetic audio and
 no provider. These source changes are not receiving-deployed or human accepted
 merely because local tests pass. Preserve the dated receiving selection above.
 School/Oca evidence integration remains owned by the school's pending contract.
+
+## Raster part authoring — prepared receiving extension
+
+The existing model import accepts `ascii-avatar-model/v2`. It retains path and
+ellipse nodes and adds raster nodes: `rect: [x,y,width,height]` selects integer
+pixels from one inline atlas; `bounds: [x,y,width,height]` places them in the
+576 by720 drawing space. Optional `clip` is a3–64point closed polygon in drawing
+coordinates. Node parent/pivot and the existing12-frame x/y/rotate/scale tracks
+move each part independently. A cue pose can change its atlas rectangle, bounds
+or clip. The eight v1 cues remain required; v2 also permits authored `sleep`
+poses/tracks without changing v1 or inventing missing poses.
+
+The atlas is at most256 by256 pixels, with1–256RGBA `#rrggbbaa` palette entries
+and canonical base64 of exactly one palette-index byte per pixel. It contains
+no URL, executable content, image decoder, SVG or asynchronous media request.
+Existing64nodes,4096geometry-command/clip-point budget, depth8,128tracks/cue,
+12frames/channel, transform limits and App import/storage quotas remain. One
+WeakMap cache holds one decoded atlas per live normalized model; no extra timer
+or persistent browser store is added. Saving remains separate from Use.
+
+Reuse `skills/ascii-avatar-author/scripts/raster-model-author.mjs` to pack
+transparent part canvases into this format. Its fixed216color palette plus
+transparent index fits the existing256KiB model importer; it quantizes color
+and binary alpha rather than claiming lossless source-image fidelity. Supply
+separate torso, head, eye/shutter, mouth, arms, hands and individual finger parts,
+with clean overlap pixels, pivots and authored cue changes. A flat PNG cannot
+supply unseen joints or hidden surfaces. Cutting a portrait into rough rectangles
+is a prototype, not accepted faithful articulation. Preserve the original art
+and source hashes outside the model; import the prepared JSON through the
+existing wardrobe. No separate editor, account or publication is required.
+
+`tests/avatar_layer_model.mjs` checks bounds, rejected external/malformed pixels,
+hierarchy/cue validation and canonical roundtrip. The durable storage suite covers
+save/reopen/hash and actor isolation. `tests/avatar_layer_model_browser.cjs`
+checks actual Canvas pose textures, head-relative finger movement, clipping,
+sleep and unchanged pixels outside moving parts, plus the authoring packer.
+These synthetic checks prove renderer capability, not completed character art,
+deployment, live-avatar activation or human/device acceptance. Existing v1
+example normalization remains byte-identical to the pre-extension result.
+
+After the first v2 save, keep this compatible validator/renderer in any web
+rollback; an older reader rejects the saved raster model. A software update
+alone must not create a v2 production revision or change the active avatar.

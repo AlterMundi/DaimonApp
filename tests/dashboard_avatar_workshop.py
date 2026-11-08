@@ -66,6 +66,20 @@ class Workshop(unittest.TestCase):
         self.assertEqual(cancelled['active'],self.ident);self.assertEqual(cancelled['editing'],self.ident)
         self.assertEqual(self.store.get(100,self.ident),first,'Editing never mutates the previous version')
 
+    def test_layered_model_validator_and_durable_revision(self):
+        script=Path(__file__).with_name('avatar_layer_model.mjs')
+        subprocess.run(['node',str(script)],check=True,timeout=4)
+        module=script.as_uri()
+        layered=json.loads(subprocess.check_output(['node','--input-type=module','-e',
+            'import {fixture} from '+json.dumps(module)+'; console.log(JSON.stringify(fixture));'],timeout=4).decode().splitlines()[-1])
+        d=copy.deepcopy(self.design);d.update(avatarModel=layered,body='custom-model',characterStyle='model/v1',image=None)
+        self.save(design=d)
+        actual=AvatarWorkshop(self.root).get(100,self.ident)
+        self.assertEqual(actual['design']['avatarModel']['schema'],'ascii-avatar-model/v2')
+        self.assertEqual(actual['sha256'],validate_design(d)[1])
+        self.assertIsNone(self.store.snapshot(100)['active'])
+        with self.assertRaises(KeyError):self.store.get(200,self.ident)
+
     def test_custom_firefly_model_uses_same_original_validator_and_hash(self):
         model=json.loads((self.vendor/'skills/ascii-avatar-author/assets/example.avatar.json').read_text())
         d=copy.deepcopy(self.design);d.update(avatarModel=model,body='custom-model',characterStyle='model/v1',image=None)
