@@ -154,6 +154,10 @@ def qualify(binary, *, funded=False):
         paused = j.read("heartbeat", "pause")["result"]
         assert paused["admission_paused"] is True
         same = j.call("route-heartbeat-shared-status", "heartbeat_control", {"action": "status"})
+        # Both entry points expose the same durable gate; readiness is freshly
+        # observed for each read and must not freeze its observation timestamp.
+        assert same["operational_evidence"]["observed_at_unix_ms"] >= paused["operational_evidence"]["observed_at_unix_ms"]
+        same["operational_evidence"]["observed_at_unix_ms"] = paused["operational_evidence"]["observed_at_unix_ms"]
         assert same == paused
         j.call("route-heartbeat-stale-resume", "heartbeat_control", {"action": "resume", "generation": 0}, ok=False)
         resumed = j.call("route-heartbeat-explicit-resume", "heartbeat_control", {"action": "resume", "generation": paused["generation"]})
