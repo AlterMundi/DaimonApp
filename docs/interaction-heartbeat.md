@@ -395,58 +395,54 @@ an observed Oliva deadlock at completed local581; do not forge its review mark.
 
 The owner-only `heartbeat production-defaults GENERATION SOURCE_JSON_STRING`
 selects normal operating capacity after an exact global pause. Retain the actual
-owner direction as the JSON string; it is operator provenance, not new speech
-from the receiving paired human. This selection never resumes a control, resets
-an hour, refunds history, replaces an execution allowance or changes accounts.
-It preserves the pilot and lifetime reservations, source frontiers and uncertain
-originals. Its strict account marker requires the compatible reader on rollback.
+owner direction as operator provenance, never new speech from the receiving paired
+human. Selection does not resume a control, reset an hour, refund history, change
+an account or extend an already admitted native execution.
 
-The default is48 execution envelopes per hour, shared by selected work. With the
-existing12-attempt execution ceiling this is576 reserved possible provider
-attempts/hour, rather than the former48-attempt pilot setting's four envelopes.
-Reservations are conservative upper bounds, not observed model calls, token use
-or money. Each execution keeps its existing request-byte and time limits. Empty,
-unchanged and health observations use no inference. Existing pause/stop controls
-remain available; the production service has no hour-lifetime expiry.
+Production uses64 provider attempts and600seconds per new execution, keeping the
+configured request-byte limit. Its recurring bound funds48 full new execution
+envelopes/hour: at most3072 reserved possible provider attempts, shared by selected
+work. Empty, unchanged and health observations use no inference. Reservations
+are conservative upper bounds, not actual model calls, token use or money. The
+service has no trial lifetime; existing pause controls remain available.
 
-A newly selected review may specify `production:true`, with `max_checks:null`
-and `expires_at_unix_ms:null`. It keeps the exact retained human purpose and
-owned JSON-pointer sources, runs through the same parent at15minutes or slower,
-and uses that shared production hourly allowance. Unchanged projections remain
-model-free. It has no trial lifetime/check cutoff; retiring its purpose or pausing
-Reports/global stops admission. No other lane is selected. Legacy finite review
-contracts retain their original pilot-only funding, expiry and four-execution
-ceiling; production selection cannot relabel or reset a previously selected review.
+The immutable pilot contract, previous native allowances, lifetime/hour counters,
+source frontiers and uncertain originals remain unchanged. Production's separate
+`effective_execution` is the active envelope; the pilot's12/300 fields are not its
+current limit. Historic smaller reservations stay charged in original attempt
+units. Strict account readers require the compatible production reader on rollback.
+Actual receiving failures exhausted12 attempts and the300s deadline; these are
+observed reasons for selecting the supported production envelope.
 
-When a physical goal turn completes with admitted canonical attention pending,
-current unpaused controls and available resources, the ordinary collector yields
-its completed local ownership. The existing parent admits the retained attention
-through the usual native idle check. No goal pause/edit, native interrupt, input
-replay or parallel scheduler occurs. Without pending eligible work the collector
-stays across the configured idle checkpoint. This prevents a permanently attached
-active-goal collector from starving the messaging/review parent.
+A newly selected review specifies `production:true`, `max_checks:null` and
+`expires_at_unix_ms:null`. It keeps its exact retained human purpose and owned
+JSON-pointer sources, runs through the same parent at15minutes or slower, and
+shares production funding. Unchanged projections stay model-free. Retiring the
+purpose or pausing Reports/global stops admission. Legacy finite reviews retain
+original pilot funding, per-execution limits, expiry and four-execution ceiling.
+No other lane, scheduler or silent finite-review conversion is selected.
 
-Production selection also records one bounded recovery permission for an already
-exhausted original whose native non-submission is proved. Its exact return ID and
-next attempt are retained in one replaceable-size account record; no counter or
-expiry resets. Repeating the selection cannot grant another attempt. Admitted,
-uncertain and completed executions are excluded. This lets production finish an
-old test-era non-submitted original without inventing a new message or renewing
-a fictitious trial lifetime. Existing generation reconciliation still requires
-explicit resume.
-
-Actual production failures exhausted12 attempts and the300s execution deadline.
-Normal production selection therefore uses a separate effective envelope of64
-provider attempts and600seconds, within existing native support; request bytes
-keep the configured bound. The immutable pilot contract and all previous native
-allowances remain unchanged.48 full new envelopes/hour reserve at most3072
-possible provider attempts, shared with selected production review. Historic
-smaller reservations stay charged in their original attempt units. The selected
-account exposes `effective_execution`; strict rollback requires this reader.
-No in-flight execution is extended, and failed/admitted originals are not replayed.
-Legacy finite reviews retain their original per-execution/pilot limits.
-
-Canonical checks still run while busy. Both new attention and known-unsent
-recovery observe actual native idle/profile readiness before spending an attempt;
-an empty local slot alone is insufficient. Atomic native admission still handles
+Canonical checks continue while busy. New attention and known-unsent recovery
+observe actual native idle/profile readiness before spending an attempt; an empty
+local slot alone is insufficient. Atomic native admission remains mandatory for
 a race after observation. Known contention consumes no execution envelope.
+
+At an acknowledged physical goal terminal, eligible pending canonical attention
+can release the completed ordinary collector. The existing parent then admits
+attention through the normal native idle check. Without eligible pending work,
+collection stays across the configured idle checkpoint. Exact terminal metadata
+can reconcile a missed terminal without importing or retiring missing output.
+No goal pause/edit, native interrupt or input replay is needed for this handoff.
+
+Production selection retains one bounded recovery permission for an already
+exhausted original proved never submitted. Its exact return ID/next attempt stay
+in one account-sized receipt. Repeating selection grants no further attempt.
+Admitted, uncertain and completed executions are excluded. Explicit resume still
+reconciles only proved-unsent generations; no fictitious trial renewal is used.
+
+During listener delivery, inspect actual owned execution before pausing admission.
+Let admitted work finish; preserve its original allowance and terminal outcome.
+Use the current conditional heartbeat controls around the selected handoff and
+restore only that operation's unchanged pause. A queued attachment is not actual
+collection. Its final proof must postdate the replacement listener's process start,
+not the earlier whole-operation preparation timestamp.
