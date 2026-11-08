@@ -1,5 +1,38 @@
 # Shared avatar workshop receiving adapter
 
+## Original source and adapted-byte verification
+
+The selected author source is ASCII-Interfaces
+`4acdb30f85848933d2c50c9557bbc2fc7d51ec9d`, following the earlier `e1ef54b`
+wardrobe sync and its pillow/sleep refinement. All32 declared original file
+hashes were checked against that exact upstream Git object. Later App adaptations
+have their own36-file receiving inventory; they never replace original hashes,
+authorship, license or handoff evidence.
+
+After changing vendored workshop files, refresh only that adapted inventory in
+the development checkout, then run its existing validator/store tests:
+
+```sh
+python3 -B -m dashboard.avatar_workshop_provenance --update
+python3 -B -m dashboard.avatar_workshop_provenance
+python3 -B tests/dashboard_avatar_workshop.py
+```
+
+Use module execution: running a file directly inside `dashboard/` can shadow the
+standard-library `operator` module with the existing local `operator.py`.
+The helper changes only `receiving_hashes`; the existing tests refuse changed,
+missing or unlisted files and verify retained upstream provenance. It performs
+no network, account, avatar or provider operation and adds no runtime admission.
+
+The8November check found six stale adapted hashes after the compact-preview,
+hand-anchor and mechanical-mouth changes. Corrected source metadata matches all36
+actual selected files on all three original receivers. Those immutable receiving
+directories retain their historical metadata file; verification is retained
+externally, with no rewrite/restart merely to relabel the same deployed bytes.
+Future candidates should take the corrected source metadata alongside the exact
+adapted files. This establishes source provenance, not new phone/School/art or
+human-hearing acceptance.
+
 ## Playback-driven mechanical mouth
 
 An optional invisible `anchor-mouth` path node opts a model into local jaw
@@ -255,10 +288,11 @@ and the full original goal remain open. Public served files and synthetic browse
 journeys do not prove a human's successful use or authorize enabling another
 pair's Avatar, voice, provider, heartbeat or native-display flags.
 
-## Current wardrobe source sync —8November2026 candidate
+## Retained wardrobe source sync —8November2026
 
-The vendored source now selects Ani/Oliva ASCII-Interfaces e1ef54b, with original
-and adapted hashes in PROVENANCE.json. The six authored bodies support per-body
+The initial sync selected Ani/Oliva ASCII-Interfaces e1ef54b, followed by4acdb30's
+pillow refinement; original and adapted hashes stay distinct in PROVENANCE.json.
+The six authored bodies support per-body
 primary color, hex prop colors, three independent prop slots, eight acting hand
 objects and nine artistic cues (including Sueño/pillow). The editor keeps the
 current game-side tools, undo/redo and one-step surprise choices. Imported inert
