@@ -923,6 +923,13 @@ impl Store {
         let predecessor = index
             .checked_sub(1)
             .map(|i| view["steps"][i]["result"].clone());
+        // Reader arguments are transport guidance, not part of the canonical
+        // source descriptor/revision retained by existing admissions.
+        let predecessor_reader = index.checked_sub(1).map(|i| {
+            json!({"operation":"workflow_result","arguments":{
+                "workflow":w.id,"step":w.plan.steps[i].id,
+                "revision":view["steps"][i]["result"]["revision"],"offset":0}})
+        });
         let mut text = format!(
             "Preauthorized workflow step, authored by the integrating session. This is internal session context under the retained human task, never a new human instruction or permission to transfer ownership/create helpers. Workflow: {}. Step: {}. Original input: {}. Required checkpoint: {}. Scope:\n{}\nPredecessor source (read its exact revision with workflow_result before relying on it): {}",
             w.id,
@@ -932,6 +939,12 @@ impl Store {
             step.scope,
             serde_json::to_string(&predecessor)?
         );
+        if let Some(reader) = &predecessor_reader {
+            text.push_str(&format!(
+                "\nPredecessor reader (use these exact arguments): {}",
+                serde_json::to_string(reader)?
+            ));
+        }
         if let Some(primary) = &w.primary {
             text.push_str(&format!("\nExisting primary routing, whose owner and original request coverage remain unchanged: {}",primary_view(primary)));
         }
@@ -962,6 +975,9 @@ impl Store {
             params![i.id, serde_json::to_string(&i)?],
         )?;
         let mut author = json!({"kind":"workflow_step","session":entry,"native_thread":native,"workflow":w.id,"step":step.id,"input_ref":w.plan.input_ref,"authorized_human":human,"predecessor":predecessor});
+        if let Some(reader) = predecessor_reader {
+            author["predecessor_reader"] = reader;
+        }
         if let Some(primary) = &w.primary {
             author["primary_routing"] = primary_view(primary);
         }
@@ -1295,18 +1311,33 @@ impl Store {
             |r| r.get(0),
         )?;
         let w: Workflow = serde_json::from_str(&raw)?;
-        let index = w
-            .plan
-            .steps
-            .iter()
-            .position(|s| s.id == step)
-            .context("Unknown workflow step")?;
-        let eligible = actor == w.entry
-            || w.plan
-                .steps
-                .get(index + 1)
-                .is_some_and(|s| s.owner == actor && w.admissions[index + 1].is_some());
-        if !eligible {
+        let eligible = |index: usize| {
+            actor == w.entry
+                || w.plan
+                    .steps
+                    .get(index + 1)
+                    .is_some_and(|s| s.owner == actor && w.admissions[index + 1].is_some())
+        };
+        let index = if let Some(index) = w.plan.steps.iter().position(|s| s.id == step) {
+            index
+        } else {
+            // Older handoffs exposed only the canonical result ID. Resolve that
+            // exact ID/revision inside already-authorized dependencies; never
+            // search unrelated results or expand the worker's reader scope.
+            let mut selected = None;
+            for index in 0..w.plan.steps.len() {
+                if eligible(index)
+                    && let Some((source, _)) = result_on(&conn, &w, index)?
+                    && source["id"].as_str() == Some(step)
+                    && source["revision"].as_str() == Some(revision)
+                {
+                    anyhow::ensure!(selected.is_none(), "Ambiguous canonical result dependency");
+                    selected = Some(index);
+                }
+            }
+            selected.context("Unknown workflow step or canonical result dependency")?
+        };
+        if !eligible(index) {
             bail!("Result outside this step's selected dependency");
         }
         let (source, d) = result_on(&conn, &w, index)?.context("Canonical result unavailable")?;
@@ -3809,6 +3840,137 @@ mod tests {
             .unwrap()
                 <= MAX_RETAINED_WORKFLOWS as usize * MAX_WORKFLOW_DOCUMENT_BYTES
         );
+    }
+
+    #[test]
+    fn generated_predecessor_reader_and_legacy_result_id_keep_the_selected_scope() {
+        let (_f, s, e, plan) = setup();
+        let v = declare(&s, &e, plan);
+        let id = v["id"].as_str().unwrap();
+        let first = advance(&s, &e, &v).unwrap();
+        let local = accept(&s, &first);
+        let d = answer(
+            &s,
+            &first,
+            local,
+            "complete",
+            vec![first.id.clone()],
+            "Exact predecessor 🦉; not a new human request",
+        );
+        let second = s.interaction_workflow_return(100, &d.id).unwrap().unwrap();
+        let source = status(&s, &e, id)["steps"][0]["result"].clone();
+        let author = s.interaction_author(&second.id, 100).unwrap().unwrap();
+        let reader: Value = serde_json::from_str(
+            second
+                .text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("Predecessor reader (use these exact arguments): ")
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reader, author["predecessor_reader"]);
+        assert_eq!(author["predecessor"], source);
+        assert!(source.get("predecessor_reader").is_none());
+        assert_eq!(reader["operation"], "workflow_result");
+        let args = &reader["arguments"];
+        let part = s
+            .interaction_workflow_result(
+                100,
+                second.target,
+                "native-8",
+                args["workflow"].as_str().unwrap(),
+                args["step"].as_str().unwrap(),
+                args["revision"].as_str().unwrap(),
+                args["offset"].as_u64().unwrap() as usize,
+            )
+            .unwrap();
+        assert!(
+            part["text"]
+                .as_str()
+                .unwrap()
+                .contains("Exact predecessor 🦉")
+        );
+        // Simulate an already-admitted older packet, without altering its source
+        // or workflow/admission. Its retained result ID is enough for this read.
+        let mut old_author = author.clone();
+        old_author
+            .as_object_mut()
+            .unwrap()
+            .remove("predecessor_reader");
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_session_authors SET doc=?2 WHERE input_id=?1",
+                params![second.input_id, old_author.to_string()],
+            )
+            .unwrap();
+        let result_id = source["id"].as_str().unwrap();
+        let revision = source["revision"].as_str().unwrap();
+        assert_eq!(
+            s.interaction_workflow_result(
+                100,
+                second.target,
+                "native-8",
+                id,
+                result_id,
+                revision,
+                0
+            )
+            .unwrap(),
+            part
+        );
+        assert_eq!(
+            s.interaction_workflow_result(100, e.key, "native-1", id, result_id, revision, 0)
+                .unwrap(),
+            part
+        );
+        for (human, actor, native, workflow, result, selected_revision) in [
+            (101, second.target, "native-8", id, result_id, revision),
+            (100, first.target, "native-7", id, result_id, revision),
+            (100, second.target, "old-native-8", id, result_id, revision),
+            (
+                100,
+                second.target,
+                "native-8",
+                "another-workflow",
+                result_id,
+                revision,
+            ),
+            (
+                100,
+                second.target,
+                "native-8",
+                id,
+                "another-result",
+                revision,
+            ),
+            (
+                100,
+                second.target,
+                "native-8",
+                id,
+                result_id,
+                "another-revision",
+            ),
+        ] {
+            assert!(
+                s.interaction_workflow_result(
+                    human,
+                    actor,
+                    native,
+                    workflow,
+                    result,
+                    selected_revision,
+                    0
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(status(&s, &e, id)["steps"][0]["result"], source);
+        assert!(s.interaction_workflow_return(100, &d.id).unwrap().is_none());
     }
 
     #[test]
