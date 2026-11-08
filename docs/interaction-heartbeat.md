@@ -423,9 +423,11 @@ original pilot funding, per-execution limits, expiry and four-execution ceiling.
 No other lane, scheduler or silent finite-review conversion is selected.
 
 Canonical checks continue while busy. New attention and known-unsent recovery
-observe actual native idle/profile readiness before spending an attempt; an empty
-local slot alone is insufficient. Atomic native admission remains mandatory for
-a race after observation. Known contention consumes no execution envelope.
+observe native contention before spending an attempt; a free local slot alone is
+not proof that native is idle. A known busy native defers admission without a
+reservation. An unloaded cache retains the existing model-free resume path;
+missing metadata is not a new permanent activation gate. Mandatory atomic native
+admission still verifies readiness/profile and handles later races.
 
 At an acknowledged physical goal terminal, eligible pending canonical attention
 can release the completed ordinary collector. The existing parent then admits

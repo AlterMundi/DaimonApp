@@ -386,6 +386,12 @@ pub(super) async fn recover_unsent(app: &App) -> Result<()> {
 
 // Yield only the finished ordinary collector. The existing parent then performs
 // its usual exact idle admission; this neither starts work nor touches a goal.
+// Only observed contention postpones dispatch. An unloaded cache may need
+// the existing model-free resume before mandatory atomic native admission;
+// missing metadata is not another permanent activation gate.
+fn native_preflight_allows_dispatch(observation: Result<&'static str>) -> bool {
+    !matches!(observation, Ok("native_busy"))
+}
 fn pending_attention_can_take_idle(value: &Value) -> bool {
     value["admission_paused"] == false
         && value["producer"]["pending"] == true
@@ -412,6 +418,17 @@ pub(super) fn yield_collector_for_attention(app: &App, human: i64, entry: Sessio
 #[cfg(test)]
 mod idle_handoff_tests {
     use super::*;
+    #[test]
+    fn contention_is_not_an_unloaded_cache_gate() {
+        assert!(!native_preflight_allows_dispatch(Ok("native_busy")));
+        assert!(native_preflight_allows_dispatch(Ok("ready")));
+        assert!(native_preflight_allows_dispatch(Ok(
+            "native_binding_unavailable"
+        )));
+        assert!(native_preflight_allows_dispatch(Err(anyhow::anyhow!(
+            "metadata unavailable"
+        ))));
+    }
     #[test]
     fn pending_attention_yields_only_with_current_controls_and_capacity() {
         let value = serde_json::json!({"admission_paused":false,"producer":{"pending":true,"state":"configured"},"resources":{"state":"available"},"lanes":{"messaging":{"paused":false,"supported":true}}});
