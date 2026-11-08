@@ -410,3 +410,15 @@ No native mutation occurs during correction. The receiving interpreter must own
 the original; a helper cannot borrow its controller lease. Later direction,
 expiry, changed binding/revision and Stop/maintenance still refuse execution.
 Other rejected, uncertain, partial or acknowledged outcomes remain immutable.
+
+### Collector continuity across native idle checkpoints
+
+The ordinary shared-native collector reads the effective per-thread
+`goals.continuation_idle_seconds` policy through `config/read`. Its continuation
+wait is that checkpoint plus the existing30-second transport grace (at most330s
+under the native300s policy bound). Thus the selected45s idle checkpoint retains
+the collector for75s. Other threads retain their own policy. Missing metadata
+keeps the legacy30s grace and emits a warning. This changes no goal, deadline of
+bounded work, native continuation, input or accounting. A collector timeout
+remains observation failure; inspect the actual writer and use exact supported
+attachment, never replay its original.

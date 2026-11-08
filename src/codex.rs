@@ -1456,6 +1456,20 @@ impl CodexDeviceAuthSession {
 }
 
 #[allow(clippy::too_many_arguments)]
+// Native idle checkpoints intentionally defer automatic goal continuation. Keep
+// the original transport grace beyond that actual per-thread policy, not inside it.
+fn goal_continuation_collection_wait(config: &Value, thread: &str) -> Duration {
+    let checkpoint = config
+        .get("config")
+        .and_then(|c| c.get("goals"))
+        .and_then(|g| g.get("continuation_idle_seconds"))
+        .and_then(|m| m.get(thread))
+        .and_then(Value::as_u64)
+        .filter(|seconds| *seconds <= 300)
+        .unwrap_or(0);
+    Duration::from_secs(checkpoint + 30)
+}
+
 async fn run_app_server_turn<F, Fut>(
     binary: &Path,
     shared_app_server: bool,
@@ -1539,6 +1553,19 @@ where
         elapsed_ms = preparation_started.elapsed().as_millis(),
         "native turn preparation"
     );
+    let goal_collection_wait = if shared_app_server {
+        let read = async {
+            let id = process.send_request("config/read", json!({"includeLayers":false})).await?;
+            process.await_response(id).await
+        };
+        match tokio::time::timeout(Duration::from_secs(5), read).await {
+            Ok(Ok(config)) => goal_continuation_collection_wait(&config, &thread_id),
+            _ => {
+                tracing::warn!("Native checkpoint metadata unavailable; retaining legacy collector grace");
+                Duration::from_secs(30)
+            }
+        }
+    } else { Duration::from_secs(30) };
     let mut effective_session = session.clone();
     effective_session.model = session.model.clone().or(native_model);
     if session.collaboration_mode.is_some() && effective_session.model.is_none() {
@@ -1824,7 +1851,7 @@ where
               goal_snapshot_deadline=None;
           }
           _=async{if let Some(deadline)=goal_gap{sleep_until(deadline).await;}}, if goal_gap.is_some() => {
-              turn_error=Some("Native goal is active but no continuation arrived within 30 seconds. Inspect /goal before resuming; no input was replayed.".to_string());
+              turn_error=Some(format!("Native goal is active but no continuation arrived within {} seconds (configured checkpoint plus transport grace). Inspect /goal before resuming; no input was replayed.",goal_collection_wait.as_secs()));
               break;
           }
           _=async{if let Some(bound)=bounded{sleep_until(bound.deadline).await;}}, if bounded.is_some() && !cancel.is_cancelled() => { cancel.cancel(); }
@@ -1877,7 +1904,7 @@ where
                         goal_active=observed.goal_active;
                         if let Some(text)=observed.assistant_text {summary.assistant_text=text;}
                         if observed.status!="completed" {turn_error=Some(format!("Native turn {} (history observation)",observed.status));}
-                        if goal_active {goal_gap=Some(Instant::now()+Duration::from_secs(30));}
+                        if goal_active {goal_gap=Some(Instant::now()+goal_collection_wait);}
                         let _=steer.response.send(Ok(None));
                         continue;
                     }
@@ -2122,7 +2149,7 @@ where
             }
             if active_turn_id.is_some() { turn_completed=false; goal_gap=None; }
             else if turn_completed && goal_active && goal_gap.is_none() {
-                goal_gap=Some(Instant::now()+Duration::from_secs(30));
+                goal_gap=Some(Instant::now()+goal_collection_wait);
                 let _=on_event(CodexEvent::Progress("Waiting for native goal continuation".to_string())).await?;
             }
             if let Some(turn_id)=active_turn_id.as_deref() {
@@ -5418,6 +5445,31 @@ model = "ignored-tui-field"
                 Err(CodexSteerError::Undetermined(_))
             ));
         }
+    }
+
+    #[test]
+    fn collector_grace_follows_only_selected_native_checkpoint() {
+        let config =
+            json!({"config":{"goals":{"continuation_idle_seconds":{"selected":45,"other":300}}}});
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "selected"),
+            Duration::from_secs(75)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "other"),
+            Duration::from_secs(330)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "absent"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(
+                &json!({"config":{"goals":{"continuation_idle_seconds":{"selected":301}}}}),
+                "selected"
+            ),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]

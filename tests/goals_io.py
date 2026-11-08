@@ -31,7 +31,7 @@ class Goals(Journey):
         self.broadcast(thread,'turn/completed',{'turn':{'id':turn,'status':'completed'}})
         if self.goals.get(thread,{}).get('status')=='active' and not continuation:
             def follow():
-                time.sleep(.6 if self.mode=='delayed_snapshot' else .1)
+                time.sleep(45 if self.mode=='checkpoint45' else .6 if self.mode=='delayed_snapshot' else .1)
                 if self.goals.get(thread,{}).get('status')!='active': return
                 next_turn=turn+'-continued'; self.native_turns+=1
                 self.broadcast(thread,'turn/started',{'turn':{'id':next_turn,'status':'inProgress'}})
@@ -69,6 +69,7 @@ class Goals(Journey):
                 if hasattr(self, 'handle_extra_rpc') and self.handle_extra_rpc(m, send):
                     continue
                 if method=='initialize':send({'id':ident,'result':{}})
+                elif method=='config/read':send({'id':ident,'result':{'config':{'goals':{'continuation_idle_seconds':{'native-topic-7':45}}} if self.mode=='checkpoint45' else {}}})
                 elif method=='thread/read':
                     # Subclass foreground peers own their detached turns. This
                     # base cannot infer idle from its ordinary holding map.
@@ -296,6 +297,21 @@ def exhausted_budget(binary):
         print('PASS exhausted resume rejected without effects; objective edits retain usage and explicit pause')
     finally:j.close()
 
+
+def checkpoint_collector(binary):
+    j=Goals(binary,'checkpoint45')
+    try:
+        j.start();j.admit('/goal start Preserve checkpoint continuation')
+        j.wait(lambda:j.has('Initial goal turn delivered.'))
+        j.wait(lambda:j.has('Continuation delivered.'),seconds=65)
+        j.idle()
+        assert j.native_turns==2
+        assert sum(m.get('method')=='turn/start' for m in j.rpc)==1
+        assert not any(m.get('method')=='turn/interrupt' for m in j.rpc)
+        assert j.goals['native-topic-7']['status']=='complete'
+        print('PASS collector retains same active goal across actual45s native checkpoint; one original start, no attach/replay')
+    finally:j.close()
+
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     lifecycle(binary);live_controls(binary);unsupported(binary);staged_controls(binary,'pause');staged_controls(binary,'clear');adopt_live_turn(binary);delayed_snapshot(binary);long_summary(binary)
@@ -303,3 +319,4 @@ if __name__=='__main__':
     resume_preserves_goal(binary,'complete',True)
     resume_preserves_goal(binary,'budgetLimited',False)
     exhausted_budget(binary)
+    checkpoint_collector(binary)
