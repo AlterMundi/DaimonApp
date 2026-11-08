@@ -39,9 +39,10 @@ export function resolveAvatarModelAnchors(model,frame=0,cue='calm'){
  }
  return anchors;
 }
-export function renderAvatarModel(model,frame=0,cue='calm'){
+export function renderAvatarModel(model,frame=0,cue='calm',speechLevel=0){
+ const level=Number.isFinite(speechLevel)?Math.round(Math.min(1,Math.max(0,speechLevel))*4)/4:0;
  const canvas=document.createElement('canvas');canvas.width=576;canvas.height=720;const c=canvas.getContext('2d'),f=((frame%12)+12)%12,tracks=model.animations[cue]||model.animations.calm||[],map=new Map(model.nodes.map(n=>[n.id,n]));
- const transforms=node=>{if(node.parent)transforms(map.get(node.parent));const values={x:0,y:0,rotate:0,scaleX:1,scaleY:1};for(const t of tracks)if(t.node===node.id)values[t.channel]=t.frames[f];const [x,y]=node.pivot;c.translate(x+values.x,y+values.y);c.rotate(values.rotate);c.scale(values.scaleX,values.scaleY);c.translate(-x,-y);};
+ const transforms=node=>{if(node.parent)transforms(map.get(node.parent));const values={x:0,y:0,rotate:0,scaleX:1,scaleY:1};for(const t of tracks)if(t.node===node.id)values[t.channel]=t.frames[f];if(node.id==='anchor-mouth'&&node.type==='path'&&!node.fill&&!node.stroke){values.y+=12*level;values.rotate+=.035*level;}const [x,y]=node.pivot;c.translate(x+values.x,y+values.y);c.rotate(values.rotate);c.scale(values.scaleX,values.scaleY);c.translate(-x,-y);};
  for(const node of model.nodes){const n={...node,...node.poses?.[cue]};c.save();transforms(node);if(n.type==='raster'){if(n.clip){c.beginPath();n.clip.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.closePath();c.clip();}c.imageSmoothingEnabled=false;c.drawImage(rasterAtlas(model),...n.rect,...n.bounds);c.restore();continue;}c.beginPath();if(n.type==='ellipse')c.ellipse(n.cx,n.cy,n.rx,n.ry,0,0,Math.PI*2);else for(const [cmd,...v] of n.path)c[({M:'moveTo',L:'lineTo',Q:'quadraticCurveTo',C:'bezierCurveTo',Z:'closePath'})[cmd]](...v);if(n.fill){if(typeof n.fill==='string')c.fillStyle=n.fill;else{const g=c.createRadialGradient(n.fill.x-n.fill.r*.3,n.fill.y-n.fill.r*.35,1,n.fill.x,n.fill.y,n.fill.r);for(const [at,color] of n.fill.stops)g.addColorStop(at,color);c.fillStyle=g;}c.fill();}if(n.stroke){c.strokeStyle=n.stroke;c.lineWidth=n.width||3;c.lineJoin='round';c.lineCap='round';c.stroke();}c.restore();}return canvas;
 }
 

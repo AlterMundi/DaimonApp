@@ -7,15 +7,15 @@ window.PublicLiveConversation=(()=>{
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
-    let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,nativeAudioAbort,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen;
+    let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,nativeAudioAbort,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen,activityObserver,activityAbort;
     let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
-    let replacementReview,voiceContinuation;
+    let replacementReview,voiceContinuation,outputLevel=0;
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     const state=message=>onState({active,starting,working:closing,pending:originals.size>0,floor:false,
-      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':'idle',...(message?{message}:{})});
+      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,...(message?{message}:{})});
     const notify=()=>onRecovery([...originals.values()]);
     const usage=value=>{try{onUsage({visit,binding,...value});}catch{/* Diagnostics never fail voice cleanup. */}};
     async function request(value,path,options={}){
@@ -134,7 +134,7 @@ window.PublicLiveConversation=(()=>{
       // for the final usage event and independent native work keeps its owner.
       if(audio){audio.pause();audio.srcObject=null;}
       nativeAudioAbort?.abort();nativeAudioAbort=undefined;
-      nativeAudio?.close();nativeAudio=undefined;
+      nativeAudio?.close();nativeAudio=undefined;activityAbort?.abort();activityAbort=undefined;activityObserver?.close();activityObserver=undefined;outputLevel=0;
       state(message);
       sourceBoundary?.reject(Error('Recording ended before source boundary confirmation'));sourceBoundary=undefined;
       abortOpen?.(Error('Voice activation ended'));abortOpen=undefined;
@@ -164,6 +164,7 @@ window.PublicLiveConversation=(()=>{
       const backend=getBackend(),voiceParent=continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined;
       usage({});
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
+      const activity=rms=>{if(!current())return;const level=audible&&!paused?Math.round(Math.min(1,Math.max(0,Number.isFinite(rms)?rms:0)*6)*4)/4:0;if(level!==outputLevel){outputLevel=level;state();}};
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
       confirmed.clear();seals.clear();
       segment={id:crypto.randomUUID(),binding,visit,ordinal,started:Date.now(),offset:0,fragments:[]};
@@ -229,7 +230,7 @@ window.PublicLiveConversation=(()=>{
           if(!window.WebRtcNativeAudio?.supported())throw Error('Native voice output is unavailable');
           nativeAudioAbort=new AbortController();
           const opening=window.WebRtcNativeAudio.open({sessionSeconds:Math.max(300,Math.ceil(admission.remaining_seconds)),
-            signal:nativeAudioAbort.signal,
+            signal:nativeAudioAbort.signal,onActivity:activity,
             onUnavailable:message=>{if(current())void hold(message);}})
             .then(value=>{if(!current()){value.close();throw Error('Native voice output retired');}return value;});
           opening.catch(()=>{});nativeAudio=await wait(opening,10000);
@@ -254,6 +255,10 @@ window.PublicLiveConversation=(()=>{
           const stream=event.streams[0]||new MediaStream([event.track]);
           if(nativeOutput){try{nativeAudio.attach(stream);}catch{void hold('Native voice output is unavailable.');}return;}
           audio.srcObject=stream;audio.play().catch(()=>{if(!current())return;paused=true;state('Tap Resume audio to listen.');});
+          activityAbort?.abort();activityObserver?.close();activityAbort=new AbortController();
+          const signal=activityAbort.signal;
+          if(window.WebRtcNativeAudio?.observe)void window.WebRtcNativeAudio.observe(stream,{sessionSeconds:Math.max(300,Math.ceil(admission.remaining_seconds)),signal,isPlaying:()=>current()&&!audio?.paused&&!audio?.muted,onActivity:activity})
+            .then(value=>{if(!current()||signal.aborted)value.close();else activityObserver=value;}).catch(()=>{if(current()&&!signal.aborted)activity(0);});
         };
         peer.onconnectionstatechange=()=>{if(!current())return;connected=peer.connectionState==='connected';listening();
           // A transient ICE disconnection can recover on this same paid call.
@@ -363,8 +368,8 @@ window.PublicLiveConversation=(()=>{
     return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyVisit=historyFailed=undefined;historySeen=new Set();onHistory({loading:false,more:false});},
       retry:value=>withLock(value.voice_visit,()=>upload(value)),
       discard:value=>withLock(value.voice_visit,async()=>{if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);originals.delete(value.id);notify();}),
-      setEnabled:value=>{audible=value===true;if(audio)audio.muted=!audible;nativeAudio?.setEnabled(audible);state();},
-      pause:()=>{paused=true;audio?.pause();nativeAudio?.pause();state();},resume:()=>{paused=false;nativeAudio?.resume();const selected=audio;selected?.play().catch(()=>{if(selected===audio){paused=true;state();}});state();},
+      setEnabled:value=>{audible=value===true;if(!audible)outputLevel=0;if(audio)audio.muted=!audible;nativeAudio?.setEnabled(audible);state();},
+      pause:()=>{paused=true;outputLevel=0;audio?.pause();nativeAudio?.pause();state();},resume:()=>{paused=false;nativeAudio?.resume();const selected=audio;selected?.play().catch(()=>{if(selected===audio){paused=true;state();}});state();},
       release:()=>false,get originals(){return [];},get active(){return active||starting||closing;},get hasAudio(){return active;},get paused(){return paused;},get floor(){return false;}};
   }
   return {supported,create};

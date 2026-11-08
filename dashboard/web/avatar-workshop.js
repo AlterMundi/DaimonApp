@@ -19,6 +19,10 @@ window.AvatarWorkshopUI=(()=>{
   function appearance(){const style=getComputedStyle(document.body),value={};for(const role of ['background','surface','text','accent','body-font','heading-font','radius','gap']){const v=style.getPropertyValue('--dm-'+role).trim();if(v&&v.length<256&&!/url\(/i.test(v))value['--dm-'+role]=v;}return value;}
   window.addEventListener('home-style:resolved',()=>iframe?.contentWindow.postMessage({kind:'daimon.workshop.appearance',appearance:appearance()},location.origin));
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
+  function speechLevel(value){
+   const level=paused||motion.matches||document.hidden||dialog?.open?0:value;
+   try{if(paint?.setSpeechLevel?.(level))paint(frame);}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}
+  }
   function stop(){clearTimeout(timer);timer=undefined;}
   function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%(paint.frames||12));run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},Math.max(80,Math.min(320,paint.frameMs||180)));}
   function reset(){clearCompactPreview();epoch++;studio?.reset();loaded=loadFailed=false;message('');artisticCue=undefined;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
@@ -79,7 +83,7 @@ window.AvatarWorkshopUI=(()=>{
   }
   function close(){if(studio&&!studio.mayClose())return;clearCompactPreview();if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;button.focus();run();}
   button.addEventListener('click',()=>{
-   if(!actor)return;clearCompactPreview();
+   if(!actor)return;clearCompactPreview();speechLevel(0);
    if(loadFailed)void refresh(true);
    if(!dialog){dialog=document.createElement('dialog');dialog.className='avatar-workshop-dialog';dialog.setAttribute('aria-label',voiceLabel('Avatar workshop','Taller de avatar'));const back=document.createElement('button');back.textContent=voiceLabel('Back to conversation','Volver a la charla');back.type='button';back.addEventListener('click',()=>{if(!editorReady)close();else iframe?.contentWindow.postMessage({kind:'daimon.workshop.close'},location.origin);});const toolbar=document.createElement('nav');toolbar.className='avatar-workshop-toolbar';toolbar.setAttribute('aria-label',voiceLabel('Workshop navigation','Navegación del taller'));dialog.append(toolbar);toolbar.append(back);voiceTab=document.createElement('button');voiceTab.type='button';voiceTab.textContent=voiceLabel('Voice','Voces');voiceTab.setAttribute('aria-expanded','false');toolbar.append(voiceTab);studio=window.VoiceStudioUI?.mount({parent:dialog,api,credential});voiceTab.addEventListener('click',()=>{if(!studio)return;clearCompactPreview();const opening=studio.panel.hidden;if(!opening)studio.hide();studio.panel.hidden=!opening;if(iframe)iframe.hidden=opening;voiceTab.setAttribute('aria-expanded',String(opening));voiceTab.textContent=opening?voiceLabel('Back to avatar','Volver al avatar'):voiceLabel('Voice','Voces');if(opening)studio.open();});document.body.append(dialog);dialog.addEventListener('cancel',event=>{event.preventDefault();if(!editorReady)close();else iframe?.contentWindow.postMessage({kind:'daimon.workshop.close'},location.origin);});}
    if(studio)studio.panel.hidden=true;voiceTab?.setAttribute('aria-expanded','false');if(voiceTab)voiceTab.textContent=voiceLabel('Voice','Voces');
@@ -113,13 +117,13 @@ window.AvatarWorkshopUI=(()=>{
    }catch(error){preview?.candidate.remove();respond({error:error.message||'No recibí confirmación. Consultá las versiones sin repetir la acción.'});}
    finally{busy=false;}
   });
-  pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));icon(pause,paused?'play':'pause',paused?voiceLabel('Animate avatar','Animar avatar'):voiceLabel('Pause avatar','Pausar avatar'));run();});
-  document.addEventListener('visibilitychange',()=>{run();stopCompactPreview();});motion.addEventListener('change',()=>{run();stopCompactPreview();});window.addEventListener('pagehide',clearCompactPreview);
+  pause?.addEventListener('click',()=>{paused=!paused;if(paused)speechLevel(0);pause.setAttribute('aria-pressed',String(paused));icon(pause,paused?'play':'pause',paused?voiceLabel('Animate avatar','Animar avatar'):voiceLabel('Pause avatar','Pausar avatar'));run();});
+  document.addEventListener('visibilitychange',()=>{speechLevel(0);run();stopCompactPreview();});motion.addEventListener('change',()=>{speechLevel(0);run();stopCompactPreview();});window.addEventListener('pagehide',clearCompactPreview);
   function openVoiceEntry(){
    if(!actor||!voiceEntry||voiceEntryOpened||!window.VoiceStudioUI)return;
    voiceEntryOpened=true;button.click();if(studio?.panel.hidden)voiceTab.click();
   }
-  return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset,artisticRest};
+  return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset,artisticRest,speechLevel};
  }
  return {mount};
 })();

@@ -8,7 +8,7 @@ import {organicMaster,organicBodies} from './surface-organic-masters.mjs';
 import {dragonMaster,dragonExpressions,glyphAtlas,convertMaster} from './precision-renderer.mjs';
 import {sceneState,renderScene} from '../avatar-studio/scenes.mjs';
 const cache=new Map(),references=new Map();let atlas;
-function master(body,frame,cue,design){if(design.avatarModel)return renderAvatarModel(design.avatarModel,frame,cue);return design.characterStyle==='surface/v2'&&organicBodies.includes(body)?organicMaster(body,frame,cue,design):legacyMaster(body,frame,cue,design);}
+function master(body,frame,cue,design){if(design.avatarModel)return renderAvatarModel(design.avatarModel,frame,cue,design.speechLevel);return design.characterStyle==='surface/v2'&&organicBodies.includes(body)?organicMaster(body,frame,cue,design):legacyMaster(body,frame,cue,design);}
 export function surfaceSource(design,frame,cue,compact=false,blend=1,performer=null){
  const bodyFrame=((frame%12)+12)%12,state=performer?preparePerformance(design,performer,performanceState(performer.id,cue,frame),bodyFrame):null,passiveProps=(design.activeProps||[]).filter(p=>p.id!==performer?.id);
  const illustration=master(design.body,bodyFrame,cue,{...design,strength:blend,actionPose:state?.face}),base=document.createElement('canvas');base.width=576;base.height=720;
@@ -27,7 +27,7 @@ export function surfaceFrame(design,frame=0,gesture=false,compact=false,blend=1,
  atlas??=glyphAtlas();const g=design.gestures.find(g=>g.id===design.activeGestureId),cue=scene?.cue||(gesture&&blend>0&&g.rig==='local/v1'?g.cue:'calm'),cols=scene?40:compact?32:96;
  const propGesture=scene?.cue?design.gestures.find(g=>g.cue===scene.cue):g;const activeProps=gesture?propGesture?.props||[]:[];design={...design,activeProps};
  const performer=!scene&&gesture?performanceFor(design,g):null,count=performer?playbackSpec(design,g).frames:12;frame=((frame%count)+count)%count;
- const appearance=[performer?.id||'',g.performance||'',JSON.stringify(design.avatarModel),JSON.stringify(activeProps),design.characterStyle,design.body,JSON.stringify(design.bodyColors),design.palette,design.aperture,design.curvature,design.material,design.motion,blend,compact,cols,cue].join(':'),key=appearance+':'+frame;let art=cache.get(key);
+ const appearance=[performer?.id||'',g.performance||'',JSON.stringify(design.avatarModel),JSON.stringify(activeProps),design.characterStyle,design.body,JSON.stringify(design.bodyColors),design.palette,design.aperture,design.curvature,design.material,design.motion,blend,compact,cols,cue,design.speechLevel||0].join(':'),key=appearance+':'+frame;let art=cache.get(key);
  if(!art){const ref=references.get(appearance)||convertMaster(surfaceSource(design,0,cue,compact,blend,performer),'structure',cols,atlas);references.set(appearance,ref);if(references.size>10)references.delete(references.keys().next().value);art=convertMaster(surfaceSource(design,frame,cue,compact,blend,performer),'structure',cols,atlas,ref);cache.set(key,art);if(cache.size>40)cache.delete(cache.keys().next().value);}
  const colors=Array.from({length:art.rows},()=>Array(art.cols).fill(null));for(const p of art.cells)colors[p.y][p.x]=p.color;
  return {text:art.text,colors,flat:true,emphasis:'surface',characterStyle:design.characterStyle};

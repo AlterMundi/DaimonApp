@@ -4,7 +4,7 @@ const crypto=require('node:crypto').webcrypto;
 const source=fs.readFileSync('dashboard/web/webrtc-native-audio.js','utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture({blocked=false,rejectModule=false,blockModule=false}={}){
-  const contexts=[],nodes=[],writes=[],events=[];let release;
+  const contexts=[],nodes=[],writes=[],events=[];let release,driverOptions;
   const stalled=blocked?new Promise(resolve=>release=resolve):Promise.resolve();
   const driver={ready:Promise.resolve(),close(){events.push('close');},flush(){events.push('flush');return [];},
     pause(){events.push('pause');},resume(){events.push('resume');},
@@ -21,10 +21,10 @@ function fixture({blocked=false,rejectModule=false,blockModule=false}={}){
     disconnect(){events.push('node-disconnect');}
   }
   const window={AudioContext:Context,NativeSpeechAudio:{webrtcPcm:true,pcmMaxSeconds:600,
-    openPcm(options){assert.equal(options.sessionSeconds,600);return driver;}}};
+    openPcm(options){assert.equal(options.sessionSeconds,600);driverOptions=options;return driver;}}};
   vm.runInNewContext(source,{window,crypto,AudioWorkletNode:Node,ArrayBuffer,Uint8Array});
-  const send=()=>nodes[0].port.onmessage?.({data:{pcm:new Uint8Array(4800).buffer}});
-  return {api:window.WebRtcNativeAudio,contexts,nodes,writes,events,driver,send,release};
+  const send=(rms=0)=>nodes[0].port.onmessage?.({data:{pcm:new Uint8Array(4800).buffer,rms}});
+  return {api:window.WebRtcNativeAudio,contexts,nodes,writes,events,driver,send,release,progress:(id,count)=>driverOptions.onProgress(id,count)};
 }
 (async()=>{
   const f=fixture(),failures=[];const output=await f.api.open({onUnavailable:message=>failures.push(message)});
@@ -36,6 +36,14 @@ function fixture({blocked=false,rejectModule=false,blockModule=false}={}){
   output.resume();f.send();await tick();assert.equal(f.writes[3].end,4800);
   output.close();output.close();assert.equal(f.events.filter(v=>v==='close').length,1);assert.equal(f.contexts[0].state,'closed');assert.deepEqual(failures,[]);
 
+  const observed=fixture(),levels=[];const observedOutput=await observed.api.open({onActivity:value=>levels.push(value)});
+  observed.send(.2);await tick();assert.equal(levels.length,0,'Received/queued audio is not playback');
+  observed.progress(observed.writes[0].id,2400);assert.equal(levels.at(-1),.2,'Actual native progress selects the bounded corresponding PCM window');
+  observedOutput.pause();assert.equal(levels.at(-1),0);const stoppedLevels=levels.length;
+  observed.progress(observed.writes[0].id,4800);assert.equal(levels.length,stoppedLevels,'Old progress is ignored while paused');
+  observedOutput.resume();observed.send(0);await tick();observed.progress(observed.writes.at(-1).id,4800);assert.equal(levels.at(-1),0,'Silence remains silent');
+  observedOutput.close();
+
   const late=fixture({blocked:true}),held=await late.api.open();late.send();await tick();late.send();held.pause();
   late.release();await tick();await tick();assert.equal(late.writes.length,1,'Queued old epoch must not replay after pause');held.close();
   const overload=fixture(),errors=[];await overload.api.open({onUnavailable:message=>errors.push(message)});
@@ -46,8 +54,8 @@ function fixture({blocked=false,rejectModule=false,blockModule=false}={}){
   await assert.rejects(opening,/retired/);assert.equal(stalled.events.filter(v=>v==='close').length,1);
   assert.equal(stalled.contexts[0].state,'closed','Abort releases native output and context even if addModule never settles');
 
-  let Processor;let bytes=0,first,error;
-  class Worklet{constructor(){this.port={postMessage(value){if(value.pcm){bytes+=value.pcm.byteLength;first??=value.pcm;}else error=value.error;}};}}
+  let Processor;let bytes=0,first,error;const activityLevels=[];
+  class Worklet{constructor(){this.port={postMessage(value){if(value.pcm){bytes+=value.pcm.byteLength;first??=value.pcm;}else if(value.rms!==undefined)activityLevels.push(value.rms);else error=value.error;}};}}
   vm.runInNewContext(fs.readFileSync('dashboard/web/voice-output-pcm.js','utf8'),{
     AudioWorkletProcessor:Worklet,sampleRate:24000,registerProcessor:(name,value)=>{assert.equal(name,'interaction-output-pcm');Processor=value;},ArrayBuffer,DataView});
   assert.throws(()=>new Processor({processorOptions:{sessionSeconds:601}}),/bound/);
@@ -55,5 +63,9 @@ function fixture({blocked=false,rejectModule=false,blockModule=false}={}){
   for(let n=0;n<600*24000/128;n++)assert.equal(pcm.process([[left,right]]),true);
   assert.equal(bytes,600*48000);assert.equal(new DataView(first).getInt16(0,true),4096,'Stereo must downmix rather than double amplitude');
   assert.equal(pcm.process([[left,right]]),false);assert.equal(error,'output_limit');assert.equal(pcm.process([[left,right]]),false);
+  const beforeBytes=bytes,activity=new Processor({processorOptions:{sessionSeconds:300,activityOnly:true}});
+  for(let n=0;n<19;n++)activity.process([[left,right]]);
+  assert.equal(bytes,beforeBytes,'Activity-only worklet never exports or retains PCM');assert.equal(activity.frames.length,0);assert.equal(activityLevels.length,1);assert.equal(activityLevels[0],Math.sqrt((.5*.5+.25*.25)/2));
+  activity.port.onmessage({data:'stop'});assert.equal(activity.process([[left,right]]),false);
   console.log('WebRTC native output: one silent browser graph/native owner, exact bounded24k PCM,600s cap, mute/pause retirement, cleanup and overload refusal passed; no provider/device calls.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
