@@ -122,8 +122,8 @@ window.Conversation = (() => {
       const dock = node("div"); dock.id = "conversation-dock";
       compose.before(dock); dock.append(playback, compose);
     }
-    const companion=standalone?window.ConversationCompanion?.mount():undefined;
     const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
+    const companion=standalone?window.ConversationCompanion?.mount({onArtisticRest:rest=>avatarWorkshop?.artisticRest(rest)}):undefined;
     if(standalone){
       const line=$("#conversation-presence"),caption=$("#conversation-companion .companion-caption"),phases=$("#conversation-companion .companion-phases");
       if(line && caption){
