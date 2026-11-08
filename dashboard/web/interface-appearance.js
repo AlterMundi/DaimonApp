@@ -44,7 +44,7 @@ function refresh(){
  const css=getComputedStyle(root),read=n=>css.getPropertyValue('--dm-'+n).trim();
  try{
   const roles=interfaceRoles({contract:'homemaker.appearance/v1',background:read('background'),surface:read('surface'),text:read('text'),accent:read('accent')});
-  for(const key of ['surface','text','accent','muted','border','focus','warning','positive','danger','secondary']){
+  for(const key of ['background','surface','text','accent','muted','border','focus','warning','positive','danger','secondary']){
    const name='--dm-ui-'+key;
    if(!owned.has(name))owned.set(name,{value:root.style.getPropertyValue(name),priority:root.style.getPropertyPriority(name)});
    root.style.setProperty(name,roles[key]);

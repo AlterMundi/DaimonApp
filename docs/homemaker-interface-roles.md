@@ -32,3 +32,8 @@ and restoration of pre-existing inline overrides including priority. This found
 and fixed retained derived colors when returning to authored policy. Existing
 dashboard bootstrap tests also pass. Controller-specific draft/file/audio
 journeys and first paint remain unqualified; no deployment occurred.
+
+Canvas fallback correction: the derived background now participates in the same
+owned-role mapping as foregrounds. Invalid provider updates therefore cannot
+leak a raw canvas color around the retained last-valid text/panel mapping.
+The authored transition releases this override with the other roles.

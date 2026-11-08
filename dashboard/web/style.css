@@ -7,7 +7,7 @@
 }
 :root {
   color-scheme: light dark;
-  --bg: var(--dm-background, #090e17);
+  --bg: var(--dm-ui-background, var(--dm-background, #090e17));
   --panel: var(--dm-ui-surface, var(--dm-surface, #111925));
   --ink: var(--dm-ui-text, var(--dm-text, #f5f0e6));
   --muted: var(--dm-ui-muted, #bec0c5);
