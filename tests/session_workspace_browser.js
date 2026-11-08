@@ -18,7 +18,7 @@ sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:D
 const originals=[];let seen=0,workspaceAllowed=true;
 const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1});
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
-sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
+sources[29]={...sources[29],kind:recoveryCase?'worker_progress':'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 const base=()=>({binding,csrf:'fixture-csrf',items:[],cursor:0,newest:0,more:false});
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fixture.invalid');
@@ -190,6 +190,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
  if(recoveryCase){
   await page.setViewportSize({width:390,height:844});
+  const update=page.locator('#conversation-timeline article.session-update');
+  await update.getByRole('button',{name:'Reply to this update',exact:true}).click();
+  await page.locator('#conversation-focus').waitFor({state:'visible'});
   await page.locator('#conversation-message').fill('Keep this answer after a lost acknowledgement.');
   await page.locator('#conversation-compose').evaluate(form=>form.requestSubmit());
   const check=page.locator('#conversation-send-check');await check.waitFor({state:'visible'});
@@ -197,6 +200,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   const bounds=await page.locator('#conversation-compose-status').boundingBox();assert(bounds.height>20,'Recovery must not remain inside a visually clipped status parent');
   await page.screenshot({path:path.join(output,'reply-recovery-phone.png')});
   await check.click();await check.waitFor({state:'hidden'});assert.equal(posts.length,1,'Status recovery never resubmits the answer');
+  assert.equal(posts[0].reply.source,'native:30','Recovery retains the exact update reply');
   report.state='qualified-visible-reply-recovery';report.original_posts=posts.length;report.status_parent_height=bounds.height;return;
  }
  assert.equal(await page.locator('#conversation-compose #conversation-voice-engine').count(),0,'Voice engine is not an ordinary composer control');
