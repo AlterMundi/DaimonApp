@@ -230,7 +230,7 @@ claim and frozen voice/owner. Stop/hidden teardown/binding change wins over late
 readiness. Retain closing-gap audio as the old interrupted prefix, never replay
 it as new speech. Unknown outcomes, content closures, restart and exhausted
 existing storage pause; no fallback/refill. Default-off/Responses/legacy finite
-behavior stays. Source tests do not prove sustained provider/device audio.
+behavior stays. Source tests do not prove sustained provider/device audio. Capture transport statistics before retiring a peer; missing post-close statistics are unavailable, never zero audio. Reuse retained PCM/source/closure proof rather than repeating a paid journey to repair its verifier.
 
 Native public-voice renewal keeps work on its original native thread. Historical
 returns need current original/result proofs and flat origin-to-destination claims;

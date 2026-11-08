@@ -1062,7 +1062,7 @@ sound/silence/pause/resume/mute/source replacement and delayed-setup fixtures
 qualify that boundary, not physical hearing, Android proxy support or phonemes.
 
 
-### Continuous public-native transport renewal (prepared)
+### Continuous public-native transport renewal
 
 `openai_live.continuous_renewal = true` explicitly enables the native backend's
 planned physical-transport replacement. It does not select that backend, change
@@ -1102,3 +1102,35 @@ two physical calls and 660 seconds total, a corrected fact before the handover
 and semantic readback afterward, followed by Stop. Retain both finalization and
 original-audio receipts; never replay a completed call to repair its verifier.
 Human hearing and phone/OS acceptance remain distinct.
+
+
+Receiving qualification, 8 November 2026: source `a4fc9d8` (PR803, merge
+`6ad0e7fc`) passed seven applicable CI checks, the mounted receiver API/lifecycle
+fixtures on all three original receivers, and actual receiving asset/health/auth
+checks. The three receivers adopted the compatible implementation; only the
+requesting CompAII receiver enables continuous renewal. Other pairs keep their
+own finite policy. Keep the803 renewal-claim reader/API on rollback; disabling
+this feature does not erase old claims, originals or uncertain outcomes.
+
+One finite public-provider journey used the existing configured GPT-Live project
+and Cedar, one synthetic microphone permission, the actual native owning writer
+and a synthetic Core harness. The first call confirmed476 usage seconds, the
+successor15; these are separate cumulative provider totals, not latency or an
+invoice. The successor recalled the corrected fictional project Faro/nine after
+the planned handover. Both provider closures were confirmed, Stop left two calls
+with no third opening, and17 originals/15,768,490 bytes matched their retained
+hashes. Both decoded output streams had nonzero PCM peaks. No physical microphone,
+human hearing, native reasoning/compaction or mobile-background proof follows.
+
+The raw verifier exited unsuccessfully: it queried `getStats()` on the already
+closed predecessor and treated unavailable byte statistics as zero audio. Its
+failed result remains retained. The existing on-track decoded PCM observations,
+trusted output transcripts and finalization/original receipts established the
+outcome without another provider call. Read transport statistics before retiring
+a peer; missing post-close statistics are unavailable, not zero delivery. Two
+pre-provider fixture errors (wrong executable, missing explicit synthetic voice
+metadata) were corrected before any paid creation; their original failures stay.
+One peer's daemon-reload client timed out after its manager loaded the new unit.
+Recovery observed that completed reload and performed only the unattempted start;
+a later missing verifier variable was repaired by observation alone. No stop,
+reload, selector, native input or provider action was replayed.
