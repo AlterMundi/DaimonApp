@@ -115,12 +115,35 @@ class PreviewService:
                     row=self.store.preview_observe(human,row['id'],row['generation'],slot,current['id'],outcome)
         return row
 
+    def describe(self,human,row):
+        # Availability is a current read projection, never a rewrite/refund of
+        # the frozen generation receipt or authority to render another sample.
+        shown=copy.deepcopy(row)
+        for slot,render in shown['renders'].items():
+            if render['state']!='rendered':continue
+            try:
+                route,request,ident=self.plan(human,row,slot);job=Path(route['cache_root'])/ident
+                state=json.loads(speech.private_bytes(job/'state.json',32768))
+                proof=render['outcome']['receipt']
+                if (state.get('phase')!='audio_expired' or state.get('identity_sha256')!=ident
+                        or state.get('provider')!='openai-live' or state.get('voice')!=route['voice']
+                        or state.get('language')!=route['language']
+                        or state.get('text_sha256')!=speech.sha(request['text'].encode())
+                        or state.get('audio_sha256')!=proof.get('audio_sha256')
+                        or state.get('format')!=proof.get('format')):continue
+                try:(job/'audio.wav').lstat()
+                except FileNotFoundError:render['audio_state']='expired'
+            except (OSError,ValueError,KeyError,TypeError,speech.RenderError):pass
+        return shown
+
     def snapshot(self,human):
         state=self.store.preview_snapshot(human)
         for row in state['batches']:
             try:self.reconcile(human,row)
             except (OSError,ValueError,KeyError,TypeError,speech.RenderError):pass
-        return self.store.preview_snapshot(human)
+        result=self.store.preview_snapshot(human)
+        result['batches']=[self.describe(human,row) for row in result['batches']]
+        return result
 
     def audio(self,human,row,slot):
         if row['renders'][slot]['state']!='rendered':return None
@@ -136,7 +159,17 @@ class PreviewService:
         if row['phase']=='retiring' or body['slot'] not in row['renders']:
             raise ValueError('Select a retained sample')
         # This path deliberately cannot reconcile, allocate, start or cancel work.
-        return {'batch':row,'audio':self.audio(human,row,body['slot'])}
+        row=self.describe(human,row);slot=body['slot']
+        if row['renders'][slot].get('audio_state')=='expired':
+            return {'batch':row,'audio':None,'audio_state':'expired'}
+        try:audio=self.audio(human,row,slot)
+        except FileNotFoundError:
+            # Retention can finish after the initial metadata observation.
+            row=self.describe(human,row)
+            if row['renders'][slot].get('audio_state')=='expired':
+                return {'batch':row,'audio':None,'audio_state':'expired'}
+            raise
+        return {'batch':row,'audio':audio}
 
     def retire(self,human,body):
         def remove(row):
@@ -162,7 +195,7 @@ class PreviewService:
         row=await asyncio.to_thread(self.reconcile,human,row)
         if row['phase']=='retiring':raise ValueError('Preview retirement needs completion')
         if row['renders'].get(slot,{}).get('state')=='rendered':
-            return {'batch':row,'audio':await asyncio.to_thread(self.audio,human,row,slot)}
+            return await asyncio.to_thread(self.retained_audio,human,body)
         if row['renders'].get(slot,{}).get('state')!='prepared':return {'batch':row,'audio':None}
         route,payload,render_id=self.plan(human,row,slot)
         if render_id!=row['renders'][slot]['id']:raise ValueError('Preview source identity changed')
