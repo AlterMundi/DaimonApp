@@ -466,6 +466,13 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
     } else {
         "configured"
     };
+    // Already-retained fresh originals are canonical work even before a busy
+    // entry can allocate a native return. This is local metadata, no inbox I/O.
+    let unoffered_inbox = state == "configured"
+        && p.contract.matrix_inbox.as_ref().is_some_and(|source| {
+            super::super::matrix::inbox::offers_on(conn, human, p.entry, source, &p.seen)
+                .is_ok_and(|offers| !offers.is_empty())
+        });
     let last_attention_failure = p
         .native_returns
         .iter()
@@ -492,7 +499,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             "originals":"retained; exact attempted revisions are not automatically replayed"})
         });
     Ok(
-        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -2345,6 +2352,10 @@ mod inbox_tests {
         assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
         assert_eq!(status["producer"]["retained_returns"], 0);
+        assert_eq!(
+            status["producer"]["unoffered_inbox"], true,
+            "A completed goal collector must see unallocated real work"
+        );
         let visible = s
             .interaction_presentation_page_messages(100, e, 0, 0, None, Some(0), None, false)
             .unwrap();
@@ -2364,6 +2375,11 @@ mod inbox_tests {
         assert!(
             attention.output.contains(&id),
             "Observation must leave the original eligible for actual later attention"
+        );
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(
+            status["producer"]["unoffered_inbox"], false,
+            "Already attempted revisions must not trigger a second handoff"
         );
     }
     #[test]

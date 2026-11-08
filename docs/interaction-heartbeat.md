@@ -448,3 +448,9 @@ Use the current conditional heartbeat controls around the selected handoff and
 restore only that operation's unchanged pause. A queued attachment is not actual
 collection. Its final proof must postdate the replacement listener's process start,
 not the earlier whole-operation preparation timestamp.
+
+Fresh canonical Matrix originals retained during busy work expose
+`producer.unoffered_inbox` before any return or reservation exists. They can
+release a finished ordinary collector when Messaging is enabled. Already
+attempted source revisions and a paused Messaging lane cannot trigger that
+handoff. Status reads only local retained metadata and perform no live inbox I/O.

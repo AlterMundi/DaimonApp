@@ -384,7 +384,9 @@ fn native_preflight_allows_dispatch(observation: Result<&'static str>) -> bool {
 }
 fn pending_attention_can_take_idle(value: &Value) -> bool {
     value["admission_paused"] == false
-        && value["producer"]["pending"] == true
+        && (value["producer"]["pending"] == true
+            || (value["producer"]["unoffered_inbox"] == true
+                && value["lanes"]["messaging"]["paused"] == false))
         && value["producer"]["state"] == "configured"
         && value["resources"]["state"] == "available"
         && value["lanes"].as_object().is_some_and(|lanes| {
@@ -423,6 +425,13 @@ mod idle_handoff_tests {
     fn pending_attention_yields_only_with_current_controls_and_capacity() {
         let value = serde_json::json!({"admission_paused":false,"producer":{"pending":true,"state":"configured"},"resources":{"state":"available"},"lanes":{"messaging":{"paused":false,"supported":true}}});
         assert!(pending_attention_can_take_idle(&value));
+        let mut retained = value.clone();
+        retained["producer"]["pending"] = serde_json::json!(false);
+        retained["producer"]["unoffered_inbox"] = serde_json::json!(true);
+        assert!(pending_attention_can_take_idle(&retained));
+        retained["lanes"]["messaging"]["paused"] = serde_json::json!(true);
+        retained["lanes"]["reports"] = serde_json::json!({"paused":false,"supported":true});
+        assert!(!pending_attention_can_take_idle(&retained));
         for (pointer, v) in [
             ("/admission_paused", serde_json::json!(true)),
             ("/producer/pending", serde_json::json!(false)),
