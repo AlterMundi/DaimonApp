@@ -162,7 +162,7 @@ def install(app, config, provider, authorize, origins):
                 lease.release()
         result_index=0;result_poll=0
         preparation_stopped=threading.Event()
-        visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
+        visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False;returns_unavailable=False
         async def message(limit):
             raw=await socket.receive_text()
             if len(raw.encode())>limit:raise ValueError('Public voice control exceeds bound')
@@ -307,14 +307,23 @@ def install(app, config, provider, authorize, origins):
                             receipt=await asyncio.to_thread(accept_seal,history,visit,human,owner,action,provider)
                             await send({'type':'source_seal_recorded','visit':visit,'seal':receipt})
                         else:
-                            if action!={'type':'close'}:raise ValueError('Select a matching source acknowledgment or an explicit close')
+                            if action.get('type')!='close' or set(action)-{'type','reason'}:
+                                raise ValueError('Select a matching source acknowledgment or an explicit close')
+                            if 'reason' in action:
+                                await asyncio.to_thread(history.record_close_reason,visit,human,owner,action['reason'])
                             await begin_close()  # A duplicate close observes the same intent.
                         read_browser=asyncio.create_task(message(1024))
                     if returning is not None and returning.done():
                         completed=returning;returning=None
                         try:completed.result()
-                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable):
-                            if not closing:native_failure=True;await begin_close()
+                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable) as error:
+                            # Returning older work is optional to this live transport.
+                            # Keep its exact uncertain cursor/append; do not retry it
+                            # or terminate otherwise healthy current speech. Owner
+                            # authorization is still rechecked by send/the main loop.
+                            returns_unavailable=True
+                            logging.getLogger(__name__).warning('Public voice result reading stopped: %s',type(error).__name__)
+                            if not closing:await send({'type':'notice','code':'native_results_unavailable'})
                     if syncing is not None and syncing.done():
                         completed=syncing;syncing=None
                         try:completed.result()
@@ -363,7 +372,7 @@ def install(app, config, provider, authorize, origins):
                             if (native_context is not None and syncing is None and preparing is None
                                     and native_context.sync_due()):
                                 syncing=asyncio.create_task(synchronize_context())
-                            if native_backend and returning is None and asyncio.get_running_loop().time()>=result_poll:
+                            if native_backend and not returns_unavailable and returning is None and asyncio.get_running_loop().time()>=result_poll:
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
                                     result_index,provider,sideband,stopped=preparation_stopped))
@@ -376,6 +385,7 @@ def install(app, config, provider, authorize, origins):
                             break
         except (OSError,ValueError,RenderError,LiveUnavailable,CodexVoiceUnavailable,
                 ProviderUnavailable,HTTPException,TimeoutError,WebSocketDisconnect) as error:
+            logging.getLogger(__name__).warning('Public voice transport ended: %s',type(error).__name__)
             messages={
                 'stored_continuation_needs_review':'The previous conversation needs review before continuing. No new voice call was created.',
                 'prior_creation_needs_review':'The previous voice connection is not confirmed closed. Your recordings and work are kept for review.',
