@@ -53,5 +53,5 @@ timeout 150s "$decoder_adb" logcat -v brief DaimonFocusProbe:I DaimonFocusTest:I
 decoder_focus_log_pid=$!
 timeout 140s "$decoder_adb" shell am instrument -w -r -e class homes.dmn.interaction.NativePcmSpeechTest,homes.dmn.interaction.ProgressiveSpeechTest,homes.dmn.interaction.BackgroundSpeechTest,homes.dmn.interaction.FileExportTest,homes.dmn.interaction.MicrophoneCaptureTest,homes.dmn.interaction.WebRtcNativeOutputTest,homes.dmn.interaction.BeaconNativeOutputTest,homes.dmn.interaction.SharedTextTest homes.dmn.interaction.pilot.test/androidx.test.runner.AndroidJUnitRunner | tee decoder-evidence/test.log
 "$decoder_adb" logcat -d -t 2000 >decoder-evidence/logcat.log
-grep -q 'OK (11 tests)' decoder-evidence/test.log
+grep -q 'OK (12 tests)' decoder-evidence/test.log
 test "$(du -sk decoder-evidence | cut -f1)" -lt 2048
