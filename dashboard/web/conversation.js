@@ -1182,6 +1182,10 @@ window.Conversation = (() => {
     const audio = standalone && window.NativeSpeechAudio?.mount(audioElement) || audioElement;
     audio.controls = false;
     audio.hidden = true;
+    const replyActivity=window.WebRtcNativeAudio?.watchElement?.(audio,{
+      isPlaying:()=>!!active&&!active.verifying&&!active.segmentEnded&&enabled&&!captureBusy&&!voiceSuspended&&playbackAllowed(),
+      onActivity:rms=>{const level=Math.round(Math.min(1,Math.max(0,Number.isFinite(rms)?rms:0)*6)*4)/4;presentState({outputLevel:level});}
+    });
     const toggle = node("button", "Play audio");
     toggle.type = "button";
     toggle.id = "conversation-play";
@@ -1461,6 +1465,7 @@ window.Conversation = (() => {
         position_millis:position,duration_millis:duration>0?duration:null,state:interrupted?'interrupted':audio.paused?'paused':'playing'};
     }
     function beginVoiceCapture() {
+      replyActivity?.clear();
       const pauseStarted=active && !audio.paused && !audio.muted?window.performance?.now?.():undefined;
       liveSpeech?.interrupt(active?.source);
       if(active?.source.kind.startsWith("integrator_") && typeof active.source.native_turn==="string"){
@@ -1602,6 +1607,7 @@ window.Conversation = (() => {
       }
     });
     function stop(text = voiceEnabled?"Waiting for replies":"Audio off") {
+      replyActivity?.clear();
       rememberPosition();
       presentState({playback:undefined});
       cancelSpeechWait();voiceBusy=false;generation++;
@@ -1619,6 +1625,7 @@ window.Conversation = (() => {
       $("#conversation-playing").textContent="Audio";playerStatus();
     }
     function pause(reason="manual") {
+      replyActivity?.clear();
       if(nativeEnabled&&nativeVoiceSession?.active){nativeVoiceSession.pause(reason);return;}
       if(voiceEnabled && !voiceSuspended){
         const button=$("#conversation-voice-replies");

@@ -93,5 +93,36 @@ window.WebRtcNativeAudio=(()=>{
       await Promise.race([context.resume(),cancelled,new Promise((resolve,no)=>{timeout=setTimeout(()=>no(Error('Output activity unavailable')),5000);})]);clearTimeout(timeout);if(closed||context.state!=='running')throw Error('Output activity unavailable');return {close};
     }catch(error){close();throw error;}
   }
-  return {supported,open,observe};
+  // Observe the existing encoded-reply element without routing its sound through
+  // Web Audio. captureStream is optional; unsupported/native proxies keep speech.
+  function watchElement(element,{isPlaying=()=>true,onActivity=()=>{}}={}){
+    let epoch=0,pending=false,observer,controller,stream,closed=false;
+    const emit=value=>{try{onActivity(value);}catch{/* Cosmetic only. */}};
+    const playing=()=>!closed&&!element.paused&&!element.muted&&!element.ended&&isPlaying();
+    function clear(){
+      epoch++;pending=false;controller?.abort();controller=undefined;
+      observer?.close();observer=undefined;
+      for(const track of stream?.getTracks?.()||[])track.stop();stream=undefined;emit(0);
+    }
+    function sync(){
+      if(!playing()){clear();return;}
+      if(pending||observer)return;
+      const capture=element.captureStream||element.mozCaptureStream;
+      if(typeof capture!=='function')return;
+      const own=++epoch;pending=true;controller=new AbortController();const signal=controller.signal;
+      try{
+        stream=capture.call(element);
+        if(!stream?.getAudioTracks?.().length){clear();return;}
+        void observe(stream,{signal,isPlaying:()=>own===epoch&&playing(),onActivity:value=>{
+          if(own===epoch&&!signal.aborted)emit(playing()?value:0);
+        }}).then(value=>{if(own!==epoch||signal.aborted)value.close();else{pending=false;observer=value;}})
+          .catch(()=>{if(own===epoch)clear();});
+      }catch{if(own===epoch)clear();}
+    }
+    const events=['playing','pause','ended','emptied','volumechange'];
+    const event=value=>{if(value.type==='emptied')clear();else sync();};
+    for(const name of events)element.addEventListener(name,event);
+    return {sync,clear,close(){if(closed)return;closed=true;for(const name of events)element.removeEventListener(name,event);clear();}};
+  }
+  return {supported,open,observe,watchElement};
 })();

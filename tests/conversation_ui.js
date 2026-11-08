@@ -251,6 +251,12 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
+  if(options.replyActivity){
+    const activity=options.replyActivity;activity.levels=[];activity.clears=0;
+    context.window.AvatarWorkshopUI={mount:()=>({bind(){},reset(){},speechLevel:v=>activity.levels.push(v)})};
+    context.window.WebRtcNativeAudio={watchElement(element,hooks){activity.element=element;activity.hooks=hooks;
+      return {clear(){activity.clears++;hooks.onActivity(0);}};}};
+  }
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
   if(options.autoText)context.window.IntersectionObserver=class{
     constructor(callback){intersection=callback;}observe(){}unobserve(){}disconnect(){}
@@ -1248,6 +1254,14 @@ function boot(readOnly=false,standalone=false,options={}) {
   followed.nodes.get('#conversation-voice-replies').handlers.click();followSwitch.handlers.click();
   await listenButton(spokenCard(7)).handlers.click();
   assert.equal(scrolls.length,2,'Turning Voice off also prevents subsequent Follow movement');followed.ui.stop();
+
+  const replyActivity={},replyJaw=boot(false,true,{capture:true,playback:true,replyActivity});replyJaw.audio();await replyJaw.ui.refresh();
+  assert.equal(replyActivity.hooks.isPlaying(),false);
+  const jawCard=replyJaw.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+  await listenButton(jawCard).handlers.click();assert.equal(replyActivity.hooks.isPlaying(),true);
+  replyActivity.hooks.onActivity(.08);assert.equal(replyActivity.levels.at(-1),.5,'Existing workshop receives the live-path five-step quantization');
+  replyJaw.capture();assert.equal(replyActivity.hooks.isPlaying(),false);assert.equal(replyActivity.levels.at(-1),0,'Microphone hold retires reply jaw observation');
+  replyJaw.finishCapture();replyJaw.ui.stop();assert.equal(replyActivity.levels.at(-1),0);assert(replyActivity.clears>0);
 
   const playbackHint=boot(false,true,{capture:true,playback:true});playbackHint.audio();
   playbackHint.overrideSource(8,{revision:'a'.repeat(64)});await playbackHint.ui.refresh();

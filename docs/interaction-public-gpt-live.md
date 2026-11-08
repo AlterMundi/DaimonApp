@@ -980,3 +980,21 @@ shared results across multiple replacements/restart, long fragments, unknowns,
 changed receipts, unrelated pending fragments, fresh native/worker association
 and unchanged current-connection delegation replies. Transport evidence does not
 establish semantic incorporation, memory lookup or human hearing.
+
+### Encoded reply playback and avatar activity
+
+Conversation's existing encoded-reply HTML media element can expose its decoded
+audio through `captureStream` (or `mozCaptureStream`). That optional stream reuses
+the existing outputless RMS worklet; the media element remains the only player.
+Five transient jaw levels use the same quantization as live voice. No provider,
+microphone, stored PCM, speech synthesis or new playback destination is added.
+
+Pause, mute, ended, source replacement and the existing explicit player Stop or
+capture hold retire the cosmetic stream/observer and clear the jaw. Late setup
+and callbacks cannot publish to its successor. Observer setup retains the existing
+five-second bound and600-second worklet ceiling. Each retired capture stream's
+owned tracks stop; the original media element keeps its playback and cursor.
+Unsupported browsers/native media proxies keep sound without the optional jaw
+signal; observer failure cannot stop or retry speech. Actual encoded Chromium
+sound/silence/pause/resume/mute/source replacement and delayed-setup fixtures
+qualify that boundary, not physical hearing, Android proxy support or phonemes.
