@@ -1856,6 +1856,16 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.match(composerState.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"Composer progress follows later native acceptance");
   sent.phase="queued";await composerState.ui.refresh();
   assert.match(composerState.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"Older source observations cannot regress acceptance");
+  const composerRecovery=boot();await composerRecovery.ui.refresh();composerRecovery.lose();
+  composerRecovery.nodes.get('#conversation-message').value='Keep my answer while checking receipt';
+  await composerRecovery.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});
+  const composerCheck=composerRecovery.nodes.get('#conversation-send-check');
+  assert.equal(composerCheck.hidden,false,'An unconfirmed Send exposes status beside the composer');
+  assert.equal(composerRecovery.nodes.get('#conversation-message').value,'Keep my answer while checking receipt');
+  const originalCount=composerRecovery.originals.size;
+  await composerCheck.handlers.click();
+  assert.equal(composerRecovery.originals.size,originalCount,'Status recovery never resubmits the answer');
+  assert.equal(composerCheck.hidden,true,'A confirmed receipt retires the composer recovery action');
   const composerLoss=boot();await composerLoss.ui.refresh();composerLoss.lose();const releaseLoss=composerLoss.holdPost();
   composerLoss.nodes.get("#conversation-message").value="Accepted before the POST acknowledgment was lost";
   const uncertainPost=composerLoss.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
