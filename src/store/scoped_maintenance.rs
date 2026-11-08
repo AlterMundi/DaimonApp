@@ -222,13 +222,32 @@ impl Store {
             return Ok(false);
         }
         let selected: SessionKey = serde_json::from_value(target["target"].clone())?;
-        self.validate_owned_binding(selected, human, &goal.thread_id)?;
-        self.maintenance_transition(human, id, index, expected, "superseded", json!({
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut doc = read(&tx, human, id)?;
+        if doc["plan"] != expected["plan"]
+            || doc["armed"] != expected["armed"]
+            || doc["targets"][index] != *target
+            || super::goal_controls::binding_on(&tx, human, selected)?
+                != target["admission_binding"]
+        {
+            bail!("Maintenance or current owner/native binding changed; inspect again");
+        }
+        doc["targets"][index]["phase"] = json!("superseded");
+        doc["targets"][index]["superseded_receipt"] = json!({
             "native_mutation":false,"automatic_retry":false,
             "reason":"Fresh native definition revision superseded expired restoration authority; original uncertain outcome retained",
             "observed_snapshot":observed,
             "restoration_acknowledged":false,"notification_delivered":false
-        }))?;
+        });
+        if doc.to_string().len() > 262144 {
+            bail!("Maintenance receipt bound exceeded");
+        }
+        tx.execute(
+            "UPDATE bot_state SET value=?2 WHERE key=?1",
+            params![key(id)?, doc.to_string()],
+        )?;
+        tx.commit()?;
         Ok(true)
     }
     pub(crate) fn maintenance_pending(&self) -> Result<Vec<(i64, String)>> {
@@ -359,136 +378,155 @@ mod tests {
     }
     #[test]
     fn scoped_maintenance_expired_unknown_restore_yields_only_to_fresh_definition() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let store = Store::open(file.path(), &[100, 200], &defaults()).unwrap();
-        let plan = fixture(&store, "active");
-        let doc = store.maintenance_prepare(100, &plan).unwrap();
-        let mut paused = plan.targets[0].snapshot.clone();
-        paused.revision = "opaque-goal-incarnation:2".into();
-        paused.goal.as_mut().unwrap().status = "paused".into();
-        let doc = store
-            .maintenance_transition(
-                100,
-                &plan.request_id,
-                0,
-                &doc,
-                "paused",
-                json!({"phase":"acknowledged","receipt":{"native_receipt":paused}}),
-            )
-            .unwrap();
-        let doc = store
-            .maintenance_transition(
-                100,
-                &plan.request_id,
-                0,
-                &doc,
-                "restore_submitted",
-                json!({"admit_until":Utc::now().timestamp()+20,"automatic_retry":false}),
-            )
-            .unwrap();
-        let unknown = json!({"phase":"uncertain","receipt":{"original_id":"keep-exact","automatic_retry":false}});
-        let doc = store
-            .maintenance_transition(
-                100,
-                &plan.request_id,
-                0,
-                &doc,
-                "restore_unconfirmed",
-                unknown.clone(),
-            )
-            .unwrap();
-        let mut later = paused.clone();
-        later.revision = "opaque-goal-incarnation:3".into();
-        later.goal.as_mut().unwrap().status = "active".into();
-        later.goal.as_mut().unwrap().objective = "Later human direction".into();
-        assert!(
-            !store
-                .maintenance_reconcile_observed(100, &plan.request_id, 0, &doc, &later)
-                .unwrap(),
-            "An unexpired restoration may still be admitted"
-        );
-        // Synthetic clock setup, never an operational database repair route.
-        store.conn.lock().unwrap().execute(
-            "UPDATE bot_state SET value=json_set(value,'$.plan.deadline',?2,'$.targets[0].restore_submitted_receipt.admit_until',?2) WHERE key=?1",
-            params![key(&plan.request_id).unwrap(),Utc::now().timestamp()-1]).unwrap();
-        let expired = store.maintenance_read(100, &plan.request_id).unwrap();
-        let mut usage = paused.clone();
-        usage.goal.as_mut().unwrap().tokens_used += 42;
-        assert!(
-            !store
-                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &usage)
-                .unwrap()
-        );
-        assert!(
-            !store
-                .maintenance_reconcile_observed(
+        for change_binding in [false, true] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let store = Store::open(file.path(), &[100, 200], &defaults()).unwrap();
+            let plan = fixture(&store, "active");
+            let doc = store.maintenance_prepare(100, &plan).unwrap();
+            let mut paused = plan.targets[0].snapshot.clone();
+            paused.revision = "opaque-goal-incarnation:2".into();
+            paused.goal.as_mut().unwrap().status = "paused".into();
+            let doc = store
+                .maintenance_transition(
                     100,
                     &plan.request_id,
                     0,
-                    &expired,
-                    &plan.targets[0].snapshot
+                    &doc,
+                    "paused",
+                    json!({"phase":"acknowledged","receipt":{"native_receipt":paused}}),
                 )
-                .unwrap()
-        );
-        let mut wrong = later.clone();
-        wrong.goal.as_mut().unwrap().thread_id = "another-native".into();
-        assert!(
-            !store
-                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &wrong)
-                .unwrap()
-        );
-        assert!(
-            store
-                .maintenance_reconcile_observed(200, &plan.request_id, 0, &expired, &later)
-                .is_err()
-        );
-        let submitted = store.maintenance_transition(
-            100,
-            &plan.request_id,
-            0,
-            &expired,
-            "restore_submitted",
-            json!({}),
-        );
-        assert!(submitted.is_err(), "An unknown write cannot be rearmed");
-        assert!(
-            store
-                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
-                .unwrap()
-        );
-        let settled = store.maintenance_read(100, &plan.request_id).unwrap();
-        assert_eq!(settled["targets"][0]["phase"], "superseded");
-        assert_eq!(
-            settled["targets"][0]["restore_unconfirmed_receipt"],
-            unknown
-        );
-        assert_eq!(
-            settled["targets"][0]["snapshot"],
-            expired["targets"][0]["snapshot"]
-        );
-        assert_eq!(
-            settled["targets"][0]["paused_receipt"],
-            expired["targets"][0]["paused_receipt"]
-        );
-        assert_eq!(
-            settled["targets"][0]["superseded_receipt"]["native_mutation"],
-            false
-        );
-        assert_eq!(
-            settled["targets"][0]["superseded_receipt"]["restoration_acknowledged"],
-            false
-        );
-        assert!(
-            store
-                .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
-                .is_err(),
-            "Stale observation cannot overwrite settlement"
-        );
-        let fresh = fixture(&store, "active");
-        assert!(
-            store.maintenance_prepare(100, &fresh).is_ok(),
-            "Settled metadata no longer blocks a separate fresh plan"
-        );
+                .unwrap();
+            let doc = store
+                .maintenance_transition(
+                    100,
+                    &plan.request_id,
+                    0,
+                    &doc,
+                    "restore_submitted",
+                    json!({"admit_until":Utc::now().timestamp()+20,"automatic_retry":false}),
+                )
+                .unwrap();
+            let unknown = json!({"phase":"uncertain","receipt":{"original_id":"keep-exact","automatic_retry":false}});
+            let doc = store
+                .maintenance_transition(
+                    100,
+                    &plan.request_id,
+                    0,
+                    &doc,
+                    "restore_unconfirmed",
+                    unknown.clone(),
+                )
+                .unwrap();
+            let mut later = paused.clone();
+            later.revision = "opaque-goal-incarnation:3".into();
+            later.goal.as_mut().unwrap().status = "active".into();
+            later.goal.as_mut().unwrap().objective = "Later human direction".into();
+            assert!(
+                !store
+                    .maintenance_reconcile_observed(100, &plan.request_id, 0, &doc, &later)
+                    .unwrap(),
+                "An unexpired restoration may still be admitted"
+            );
+            // Synthetic clock setup, never an operational database repair route.
+            store.conn.lock().unwrap().execute(
+            "UPDATE bot_state SET value=json_set(value,'$.plan.deadline',?2,'$.targets[0].restore_submitted_receipt.admit_until',?2) WHERE key=?1",
+            params![key(&plan.request_id).unwrap(),Utc::now().timestamp()-1]).unwrap();
+            let expired = store.maintenance_read(100, &plan.request_id).unwrap();
+            let mut usage = paused.clone();
+            usage.goal.as_mut().unwrap().tokens_used += 42;
+            assert!(
+                !store
+                    .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &usage)
+                    .unwrap()
+            );
+            assert!(
+                !store
+                    .maintenance_reconcile_observed(
+                        100,
+                        &plan.request_id,
+                        0,
+                        &expired,
+                        &plan.targets[0].snapshot
+                    )
+                    .unwrap()
+            );
+            let mut wrong = later.clone();
+            wrong.goal.as_mut().unwrap().thread_id = "another-native".into();
+            assert!(
+                !store
+                    .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &wrong)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .maintenance_reconcile_observed(200, &plan.request_id, 0, &expired, &later)
+                    .is_err()
+            );
+            if change_binding {
+                // A real binding change after observation must refuse settlement
+                // and retain both the uncertain receipt and unresolved conflict.
+                store
+                    .set_session_codex_thread(plan.targets[0].target, "replacement-native")
+                    .unwrap();
+                assert!(
+                    store
+                        .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
+                        .is_err()
+                );
+                assert_eq!(
+                    store.maintenance_read(100, &plan.request_id).unwrap(),
+                    expired
+                );
+                continue;
+            }
+            let submitted = store.maintenance_transition(
+                100,
+                &plan.request_id,
+                0,
+                &expired,
+                "restore_submitted",
+                json!({}),
+            );
+            assert!(submitted.is_err(), "An unknown write cannot be rearmed");
+            assert!(
+                store
+                    .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
+                    .unwrap()
+            );
+            let settled = store.maintenance_read(100, &plan.request_id).unwrap();
+            assert_eq!(settled["targets"][0]["phase"], "superseded");
+            assert_eq!(
+                settled["targets"][0]["restore_unconfirmed_receipt"],
+                unknown
+            );
+            assert_eq!(
+                settled["targets"][0]["snapshot"],
+                expired["targets"][0]["snapshot"]
+            );
+            assert_eq!(
+                settled["targets"][0]["paused_receipt"],
+                expired["targets"][0]["paused_receipt"]
+            );
+            assert_eq!(
+                settled["targets"][0]["superseded_receipt"]["native_mutation"],
+                false
+            );
+            assert_eq!(
+                settled["targets"][0]["superseded_receipt"]["restoration_acknowledged"],
+                false
+            );
+            assert!(
+                store
+                    .maintenance_reconcile_observed(100, &plan.request_id, 0, &expired, &later)
+                    .is_err(),
+                "Stale observation cannot overwrite settlement"
+            );
+            let fresh = fixture(&store, "active");
+            assert!(
+                store.maintenance_prepare(100, &fresh).is_ok(),
+                "Settled metadata no longer blocks a separate fresh plan"
+            );
+        }
     }
 
     #[test]
