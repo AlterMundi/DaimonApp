@@ -22,6 +22,10 @@ class HeartbeatJourney(WorkflowJourney):
             raise AssertionError(str(error).split('; messages=', 1)[0]) from None
 
     def handle_extra_rpc(self, message, send):
+        hidden=getattr(self,'hidden_terminal',None)
+        if message.get('method')=='thread/turns/list' and message.get('params',{}).get('itemsView')=='notLoaded' and hidden and message['params']['threadId']==hidden[0]:
+            send({'id':message['id'],'result':{'data':[{'id':hidden[1],'status':'completed'}],'nextCursor':None}})
+            return True
         if message.get('method') == 'turn/startBoundedIfIdle':
             p = message['params']
             turn = p['turn']

@@ -212,3 +212,12 @@ actual selection/process state before a corrected successor; never replay its
 intent. The finite window, natural-idle requirement and no-input-replay policy
 are unchanged. Native-only delivery leaves the listener/web and voice settings
 running.
+
+Collector verification must use a receipt after the replacement listener actually
+started, not the earlier whole-operation preparation timestamp. Keep the failed
+verifier/queued attachment when its physical writer ended; inspect the current
+writer without repeating selection or attachment. The existing recovery loop can
+reconcile a current collector from exact terminal lifecycle metadata and current
+goal state. This does not import or retire missing output, replay input, change
+a goal or start a second scheduler. Full output recovery keeps its original
+bounds and checkpoint.

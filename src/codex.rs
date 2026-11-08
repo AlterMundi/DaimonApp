@@ -746,6 +746,39 @@ impl CodexRunner {
     }
 
     /// Read only through an exact prior native boundary. Absence never authorizes replay.
+    /// Exact lifecycle metadata only. Missing output stays in ordinary recovery;
+    /// it must not keep a completed physical writer artificially busy.
+    pub async fn terminal_observation(
+        &self,
+        native: &str,
+        physical: &str,
+    ) -> Result<Option<NativeTerminalObservation>> {
+        tokio::time::timeout(Duration::from_secs(8),async {
+            let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;
+            let result=async {
+                process.initialize().await?;
+                let mut cursor=None::<String>;let mut seen=HashSet::new();
+                for _ in 0..6 {
+                    let id=process.send_request("thread/turns/list",json!({"threadId":native,"limit":20,"sortDirection":"desc","itemsView":"notLoaded","cursor":cursor})).await?;
+                    let page=process.await_response(id).await?;
+                    for turn in page["data"].as_array().context("Native lifecycle page malformed")? {
+                        if turn["id"]!=physical {continue;}
+                        let status=turn["status"].as_str().context("Native lifecycle status missing")?;
+                        if !matches!(status,"completed"|"failed"|"interrupted") {return Ok(None);}
+                        let status=status.to_string();
+                        let id=process.send_request("thread/goal/get",json!({"threadId":native})).await?;
+                        let goal=goals::parse_goal(&process.await_response(id).await?,native)?;
+                        return Ok(Some(NativeTerminalObservation{turn_id:physical.to_string(),status,goal_active:goal.is_some_and(|g|g.status=="active"),assistant_text:None}));
+                    }
+                    cursor=page["nextCursor"].as_str().map(str::to_string);
+                    if cursor.is_none() || !seen.insert(cursor.clone()) {return Ok(None);}
+                }
+                Ok(None)
+            }.await;
+            process.shutdown().await?;result
+        }).await.context("Native lifecycle observation timed out")?
+    }
+
     pub async fn recovery_history(
         &self,
         native: &str,
