@@ -72,11 +72,22 @@ Independent source review identified the post-mutation capture interleaving;
 focused Chromium red/green qualification at618ed44b fixes it. Exact native13-case
 CI42460773030 and web/speech/dashboard checks42460773020 passed. That latter
 run's unrelated native question-control boundary test failed and is retained;
-it is not claimed as passing or evidence about Share. VersionCode9 is required
-for the same-package/key forward upgrade. The version metadata delta requires
-its own exact release build/signature verification before distribution. Matching
-web delivery, signed APK installation and real phone transient URI/read/Send
-acceptance remain pending; emulator/desktop results do not establish them.
+it is not claimed as passing or evidence about Share. Exact final source4fdd35d5 (merge7173ca58) passed Android/decoder13-case
+CI42462842015 and applicable dashboard/speech checks42462842014. The text job
+was still running at receiving selection; its previous unrelated question-boundary
+failure is not counted as passing. Two web deltas were applied over each actual779
+composition, preserving its existing773/770/Matrix/recovery changes. Each composed
+Conversation/FileInput check and owner constructor passed, as did actual Chromium
+with the exact signed APK adapter. All3 voice-fenced web selections verified
+assets/health/private denial and preserved native/Core/configuration.
+
+The same-key v2/v3-verified0.9/versionCode9 APK is published in the existing
+paired-human Android download, preserving its audience and immutable0.8 version.
+Its SHA256 is1f489f633940be5fd4f0fcec3c4b4be569481d65c9ae060247c3497c558d9b6f
+(1,752,588bytes). This is publication, not observed phone installation. Upgrade
+without uninstalling or clearing data; normal rollback requires a higher-versionCode
+forward build. Real phone transient URI/read/lifecycle/Share/Send acceptance remains
+pending; emulator/desktop results do not establish it.
 
 ## Native Beacon candidate0.8 —7November2026
 
