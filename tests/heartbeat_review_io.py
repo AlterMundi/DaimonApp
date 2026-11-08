@@ -35,12 +35,13 @@ def qualify(binary, production=False):
         j.read('heartbeat', 'continuous', generation, '12')
         if production:
             # Disposable fixture: prove production never revives the exhausted pilot.
-            j.row("UPDATE bot_state SET value=json_set(value,'$.reserved_provider_attempts',12) WHERE key LIKE 'heartbeat_resources:%'")
+            j.row("UPDATE bot_state SET value=json_set(value,'$.reserved_provider_attempts',12,'$.continuous.reserved_in_window',12,'$.continuous.reserved_provider_attempts',12) WHERE key LIKE 'heartbeat_resources:%'")
             prior=j.read('heartbeat','status')['result']['resources']
             selected=j.read('heartbeat','production-defaults',generation,json.dumps('synthetic explicit production direction'))['result']['resources']
             assert selected['reserved_provider_attempts']==prior['reserved_provider_attempts']==12
             assert selected['continuous']['window_started_at_unix_ms']==prior['continuous']['window_started_at_unix_ms']
             assert selected['production']['max_executions_per_hour']==48
+            assert selected['remaining_execution_envelopes']==44
         report = j.root / 'selected-progress.json'
         report.write_text(json.dumps({'milestone':'synthetic checkpoint A','clock':1}))
         review = dict(purpose={'input_ref':original['id'],'channel':'conversation'},
