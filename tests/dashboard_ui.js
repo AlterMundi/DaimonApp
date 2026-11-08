@@ -385,3 +385,6 @@ const hung = (options) => new Promise((resolve, reject) => {
   await require("./dashboard_health_ui.js")();
   console.log("dashboard UI: hidden launch, retry, HTTP deadlines and uncertain Stop passed");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
+
+// Run appearance recovery through the existing dashboard CI entrypoint.
+require("./dashboard_homemaker_ui.js");
