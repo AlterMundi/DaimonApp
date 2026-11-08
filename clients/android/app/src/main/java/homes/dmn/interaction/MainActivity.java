@@ -43,9 +43,13 @@ public final class MainActivity extends ComponentActivity {
     private boolean foreground;
     private PermissionRequest microphone;
     private ValueCallback<Uri[]> chooser;
+    private SharedText incomingShare;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        if (state != null) {
+            try { incomingShare = SharedText.restore(state); } catch (RuntimeException ignored) { }
+        } else acceptShare(getIntent());
         exports = new FileExport(this, value -> { if (reply != null) try { reply.postMessage(value.toString()); } catch (Exception ignored) { } },
             (name, mime) -> {
                 if (!foreground || !appPage()) { exports.cancel("Save interrupted; the original remains available"); return; }
@@ -58,6 +62,30 @@ public final class MainActivity extends ComponentActivity {
         });
         String saved = getPreferences(MODE_PRIVATE).getString("home", "");
         if (saved.isEmpty()) setup(); else open(saved);
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); setIntent(intent); acceptShare(intent); notifyShare();
+    }
+    @Override protected void onSaveInstanceState(Bundle state) {
+        if (incomingShare != null) incomingShare.save(state);
+        super.onSaveInstanceState(state);
+    }
+    private void acceptShare(Intent intent) {
+        try {
+            SharedText value = SharedText.from(intent);
+            if (value == null) return;
+            if (incomingShare != null) throw new IllegalArgumentException("Review the pending shared content first.");
+            incomingShare = value;
+        } catch (RuntimeException error) {
+            new AlertDialog.Builder(this).setMessage(error instanceof IllegalArgumentException
+                ? error.getMessage() : "Shared content could not be opened. Nothing was sent.")
+                .setPositiveButton("OK", null).show();
+        }
+    }
+    private void notifyShare() {
+        if (!foreground || !appPage() || incomingShare == null) return;
+        try { web.evaluateJavascript("window.NativeSharedText?.receive(" + incomingShare.json() + ")", null); }
+        catch (org.json.JSONException ignored) { }
     }
     private void setup() {
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
@@ -125,6 +153,10 @@ public final class MainActivity extends ComponentActivity {
             String data = message.getData(); if (data == null || data.length() > 45000) return;
             try {
                 JSONObject value = new JSONObject(data); reply = proxy;
+                if (value.optString("command").equals("share_ack")) {
+                    if (foreground && incomingShare != null && incomingShare.id.equals(value.optString("id"))) incomingShare = null;
+                    return;
+                }
                 if (value.optString("command").startsWith("pcm_") && !foreground) return;
                 if (value.optString("command").startsWith("beacon_") && !foreground
                     && !value.optString("command").equals("beacon_stop")) return;
@@ -148,6 +180,12 @@ public final class MainActivity extends ComponentActivity {
                 while ((count = input.read(buffer)) != -1) scriptBytes.write(buffer, 0, count);
             }
             script += scriptBytes.toString(StandardCharsets.UTF_8.name());
+            scriptBytes.reset();
+            try (java.io.InputStream input = getAssets().open("native-share.js")) {
+                byte[] buffer = new byte[8192]; int count;
+                while ((count = input.read(buffer)) != -1) scriptBytes.write(buffer, 0, count);
+            }
+            script += "\n" + scriptBytes.toString(StandardCharsets.UTF_8.name());
             WebViewCompat.addDocumentStartJavaScript(web, script, Collections.singleton(home));
         } catch (Exception error) { throw new IllegalStateException("Missing native audio adapter", error); }
         web.setWebViewClient(new WebViewClient() {
@@ -158,6 +196,7 @@ public final class MainActivity extends ComponentActivity {
                 if ("https".equals(uri.getScheme()) && request.hasGesture()) startActivity(new Intent(Intent.ACTION_VIEW, uri));
                 return true;
             }
+            @Override public void onPageFinished(WebView view, String url) { notifyShare(); }
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
                 exports.cancel("Page changed; the original remains available"); speech.shutdown(); reply = null;
                 if (microphone != null) { microphone.deny(); microphone = null; }
@@ -195,7 +234,7 @@ public final class MainActivity extends ComponentActivity {
         if (request == 3) exports.result(result == RESULT_OK && data != null ? data.getData() : null);
         if (request == 2 && chooser != null) { chooser.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); chooser = null; }
     }
-    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) web.onResume(); }
+    @Override protected void onResume() { super.onResume(); foreground = true; if (web != null) web.onResume(); notifyShare(); }
     @Override protected void onStop() {
         foreground = false;
         if (microphone != null) { microphone.deny(); microphone = null; }

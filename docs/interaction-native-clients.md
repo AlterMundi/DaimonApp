@@ -6,6 +6,36 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
+## Android Share intake candidate —8November2026
+
+The selected requirement is a system Share destination for the existing Android
+App: text/links, images and files must enter a reviewable existing composer,
+not submit a message, upload or alter capture merely because an intent arrived.
+This first source increment registers `ACTION_SEND`/`text/plain` as **Daimon**.
+It handles both cold start and `singleTop` delivery without recreating a running
+WebView/audio session. One pending text offer is bounded to12KiB UTF-8 and kept
+in Activity saved state until explicitly added/discarded or the task is cleared.
+A second incoming offer refuses visibly rather than overwriting the first.
+The existing exact-origin/main-frame native bridge acknowledges only that offer.
+
+After existing writable conversation admission, the offer shows literal text
+and requires Add to message. Existing draft text and reply destination stay;
+recording/busy capture blocks Add. The person still presses Send. No shared URL
+is opened, no server input is authored, and no new login/grant/store is created.
+An activity recreation retains the offer ID; the same in-page ID cannot append
+again after acknowledgement. Page/home changes do not automatically append it.
+
+Images, multiple images, arbitrary files and their bounded URI-permission/private
+byte staging remain **unfinished**. This increment does not advertise those MIME
+types and refuses a binary extra instead of silently dropping the attachment.
+Full Share delivery also requires native compilation/lint, actual emulator
+Intent/lifecycle and real phone Sharesheet acceptance plus a signed update.
+The two new native parser tests join the existing emulator instrumentation run;
+actual Chromium covers ready gating, literal HTML/URL text, preserved draft,
+no Send/network, duplicate IDs, busy capture and discard. Source preparation is
+not APK installation or physical acceptance. Preserve all other Android/voice,
+background, Beacon and iOS requirements.
+
 ## Native Beacon candidate0.8 —7November2026
 
 The prepared `BeaconSynth` is a bounded six-carrier PCM synthesizer for the

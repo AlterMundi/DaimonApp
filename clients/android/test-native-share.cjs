@@ -1,0 +1,18 @@
+const assert=require('assert'),path=require('path');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+(async()=>{const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});try{
+ const page=await browser.newPage();await page.setContent('<form id="compose"><textarea id="draft" disabled>Existing draft.</textarea></form>');
+ await page.evaluate(()=>{window.acks=[];window.submits=0;window.binding=undefined;window.busy=false;window.DaimonAudio={postMessage:s=>acks.push(JSON.parse(s))};window.fetch=()=>{throw Error('Share must not use network');};document.querySelector('form').addEventListener('submit',e=>{e.preventDefault();submits++;});});
+ await page.addScriptTag({path:path.join(__dirname,'app/src/main/assets/native-share.js')});
+ await page.evaluate(()=>{window.view=NativeSharedText.mount({parent:document.querySelector('form'),draft:document.querySelector('textarea'),getBinding:()=>binding,isBusy:()=>busy});NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000001',text:'https://example.test/\n<img src=x onerror=alert(1)>'});});
+ assert(await page.locator('.native-share-offer').isHidden());assert.equal(await page.locator('textarea').inputValue(),'Existing draft.');
+ await page.evaluate(()=>{binding='synthetic-owner';document.querySelector('textarea').disabled=false;view.refresh();});
+ assert(await page.locator('.native-share-offer').isVisible());assert.equal(await page.locator('.native-share-offer img').count(),0);
+ await page.getByRole('button',{name:'Add to message'}).click();
+ assert.equal(await page.locator('textarea').inputValue(),'Existing draft.\nhttps://example.test/\n<img src=x onerror=alert(1)>');
+ assert.equal(await page.evaluate(()=>submits),0);assert.equal(await page.evaluate(()=>acks.length),1);
+ await page.evaluate(()=>NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000001',text:'https://example.test/\n<img src=x onerror=alert(1)>'}));assert.equal(await page.locator('textarea').inputValue(),'Existing draft.\nhttps://example.test/\n<img src=x onerror=alert(1)>');
+ await page.evaluate(()=>{busy=true;NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000002',text:'Another share'});});assert(await page.getByRole('button',{name:'Add to message'}).isDisabled());
+ await page.evaluate(()=>{busy=false;view.refresh();});await page.getByRole('button',{name:'Discard share'}).click();assert.equal(await page.evaluate(()=>submits),0);
+ assert(await page.locator('.native-share-offer').isHidden());console.log('PASS actual Chromium: private-ready gate, preserved draft, literal URL/HTML, no Send/network, one append, busy capture and discard');
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1);});
