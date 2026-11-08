@@ -169,6 +169,14 @@ to another, infer it from a name, or substitute a hostname for identity. Missing
 signed pairing or Home registration is an onboarding dependency, not permission
 to create another login. These settings grant no access by themselves.
 
+The current Homes authority resolves paired human references as
+`human:telegram:<registered-provider-human-id>` even when authentication uses a
+passkey. This patch does not add a passkey-identity namespace or mint an identity
+for a child. Actual child pairing still requires the owning authority's supported
+registration. If that reference is unavailable without inventing a provider
+identity, return that exact dependency to Clúster; never fill it with a fake ID.
+Owning hooks: Cluster `homes.authority.Authority.actors()` and `paired_human()`.
+
 `application_id` cannot coexist with bot fields, an enabled native Telegram
 transport, or enabled Telegram Alerts/Traffic adapters. The Telegram launch and
 attention exchange endpoints refuse this mode before signature validation.

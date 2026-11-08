@@ -279,7 +279,7 @@ def web_only_first_text(binary):
            'origin':'https://child.example.test','prefix':'/interaction',
            'application_id':str(uuid.uuid4()),
            'shared_auth':{'enabled':True,'home_origin':'https://child.example.test',
-                          'human_ref':'human:passkey:synthetic-child'}}
+                          'human_ref':'human:telegram:100'}}
         provider=Provider(c);assert provider.authorized(100)
         client=TestClient(create_app(c,provider),base_url=c['origin'])
         headers={'Host':'child.example.test','Origin':c['origin'],'Cookie':'__Host-home='+'h'*43}

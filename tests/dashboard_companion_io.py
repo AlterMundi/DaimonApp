@@ -66,7 +66,7 @@ class Companion(unittest.TestCase):
         self.config['application_id']='fa34f9ac-3ee0-435f-87be-d91dded19b52'
         self.provider.receiver={'telegram':{'enabled':False}}
         self.config['shared_auth']={'enabled':True,'home_origin':self.config['origin'],
-                                    'human_ref':'human:passkey:synthetic-child'}
+                                    'human_ref':'human:telegram:100'}
         self.client.close();self.client=self.client_for()
 
     def test_web_only_shared_identity_has_no_telegram_exchange_or_fake_bot(self):
@@ -76,7 +76,7 @@ class Companion(unittest.TestCase):
         self.provider.conversation_input_submit=lambda body:calls.append(body) or {'phase':'queued'}
         identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
                   'expires':int(time.time())+3600,
-                  'actor':{'kind':'human','ref':'human:passkey:synthetic-child'}}
+                  'actor':{'kind':'human','ref':'human:telegram:100'}}
         headers={'Host':'example.test','Origin':self.config['origin'],'Cookie':'__Host-home='+'h'*43}
         # A prior device grant from a bot-scoped app never gains the web scope.
         self.assertEqual(self.client.get('/api/interaction/access',headers=self.headers).status_code,401)
@@ -91,7 +91,7 @@ class Companion(unittest.TestCase):
             self.assertEqual(calls,[])
             self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=write).status_code,200)
             self.assertEqual(calls,[payload])
-            identity['actor']['ref']='human:passkey:another-child'
+            identity['actor']['ref']='human:telegram:101'
             self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
         for route in ['/api/session','/api/alerts/attention']:
             self.assertEqual(self.client.post(route,json={'init_data':'100'},headers=headers).status_code,403)
@@ -125,7 +125,7 @@ class Companion(unittest.TestCase):
         self.assertNotEqual(before,HomeAuth(self.config,self.provider).binding)
         prior=authority(self.config,self.provider)
         before=HomeAuth(self.config,self.provider).binding
-        self.config['shared_auth']['human_ref']='human:passkey:another-child'
+        self.config['shared_auth']['human_ref']='human:telegram:101'
         self.assertNotEqual(prior,authority(self.config,self.provider))
         self.assertNotEqual(before,HomeAuth(self.config,self.provider).binding)
 
