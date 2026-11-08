@@ -53,7 +53,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await page.goto(origin);await page.locator('#avatar-workshop-open').click();
   const editor=page.frameLocator('iframe');await editor.locator('#save').waitFor({state:'visible'});
   await editor.locator('main:not([inert])').waitFor();
-  assert.equal(await editor.locator('.application-bar').innerText(),'avatar.exe');
+  assert.equal(await editor.locator('.application-bar').innerText(),'ascii-avatar.exe');
   await editor.locator('body').evaluate(()=>document.fonts.ready);
   assert(await editor.locator('body').evaluate(()=>document.fonts.check('20px ArchivePixel')&&document.fonts.check('16px ArchiveText')),'Selected local game fonts loaded');
   assert(await editor.locator('.stage.world').evaluate(stage=>['#use-avatar','#cancel-workshop'].every(id=>{const b=getComputedStyle(document.querySelector(id)),s=getComputedStyle(stage);return b.backgroundColor===s.backgroundColor&&b.color===s.color;})),'Account actions retain readable receiving colors');

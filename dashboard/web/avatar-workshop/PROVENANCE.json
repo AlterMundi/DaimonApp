@@ -26,7 +26,7 @@
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "skills/ascii-avatar-author/assets/example.avatar.json": "f8aae8c3186762828994c16ed5e2bb04f6698c2a68c9cfd75098a74f3a1a36d6",
     "experiments/school-avatar-quest/app.mjs": "63534d3385102ee1acbae3116e126a1076e77a0ff6853b9d5131f27c78040a28",
-    "experiments/school-avatar-quest/index.html": "bf68cc9d7b410b8969ce7a43105532704faf1ba4720fb9532017c8da3f71ad44",
+    "experiments/school-avatar-quest/index.html": "1cf66e85d7b64cfd5caae71fd98ee5d8c73a82bfd3657c738b70c3961a2c20a7",
     "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
     "experiments/school-avatar-quest/wardrobe.css": "cd80ba71e899b207352ae3c1ec51f6209a3ac0555b1d4e42ed7bee6822a9b39a",
     "experiments/school-avatar-quest/wardrobe.mjs": "8508c3ae0f328461bd3eb1b96e4c2859046e1c70d3368414e3f658c1ceec5a92",
@@ -52,7 +52,7 @@
     "renderer.mjs": "6c6fb66a7ed6db7fa8cd83dfc8c39c515bf253a4e2fc8476f312030d7d121624",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
-    "experiments/school-avatar-quest/index.html": "bf68cc9d7b410b8969ce7a43105532704faf1ba4720fb9532017c8da3f71ad44",
+    "experiments/school-avatar-quest/index.html": "1cf66e85d7b64cfd5caae71fd98ee5d8c73a82bfd3657c738b70c3961a2c20a7",
     "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
     "experiments/school-avatar-quest/storage.mjs": "10a2274bed0bee349c8fa08adeaee39e736ad872623fcffd89605322e446f324",
     "experiments/school-avatar-quest/wardrobe.mjs": "8508c3ae0f328461bd3eb1b96e4c2859046e1c70d3368414e3f658c1ceec5a92",
@@ -106,7 +106,7 @@
       "archive.css": "515b1b849a5bc34be128d9a1ea0022b1c29a5113a8f824186c56c3372a2d2b48",
       "archive-icons.mjs": "971fe96f604e7eb76b8dcdd7ce2e8082e3358f279ba8d93bae1b4d57cd5790b5",
       "app.mjs": "63534d3385102ee1acbae3116e126a1076e77a0ff6853b9d5131f27c78040a28",
-      "index.html": "bf68cc9d7b410b8969ce7a43105532704faf1ba4720fb9532017c8da3f71ad44",
+      "index.html": "1cf66e85d7b64cfd5caae71fd98ee5d8c73a82bfd3657c738b70c3961a2c20a7",
       "surface-renderer.mjs": "5622276b66a1a69057eb0af728995858ab5106d6aede1c9a8b7c3e5585ea87fd",
       "archive-assets/phosphor-LICENSE.txt": "b5b1f1da112d18ea2147decfd48ddc1bf2b5aeb6c265381579340e95b15a2bb2",
       "archive-assets/pixelifysans-OFL.txt": "b66ba46f511a851ab09998b5a5a9fdbb102545a3864cb993095e1745996873a7",
@@ -119,5 +119,10 @@
     "school_contract": "school-creativity.ascii-workshop-request/v1",
     "selection_authority": "Injected trusted school host; unconnected by default. No URL/browser participant authority.",
     "effects": "Save, return, trusted display review/learning evidence and explicit activation remain separate."
+  },
+  "header_adjustment": {
+    "source_revision": "5967ee3",
+    "selection": "Ani requested removing the slogan, centering the folder check and selecting ascii-avatar.exe.",
+    "receiving_index_sha256": "1cf66e85d7b64cfd5caae71fd98ee5d8c73a82bfd3657c738b70c3961a2c20a7"
   }
 }
