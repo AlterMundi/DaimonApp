@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import shutil
 import subprocess
 import sys
@@ -39,13 +40,20 @@ class HandoffBoundaries(unittest.TestCase):
         self.receipt = self.root / 'receipt.json'
 
     def process(self):
-        child = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'])
+        child = subprocess.Popen([sys.executable, '-c',
+                                  'import time;print("ready",flush=True);time.sleep(60)'],
+                                 stdout=subprocess.PIPE)
         def cleanup():
             if child.poll() is None:
                 child.send_signal(signal.SIGCONT)
                 child.terminate()
                 child.wait(timeout=5)
         self.addCleanup(cleanup)
+        self.addCleanup(child.stdout.close)
+        # Capture identity only after exec: the pre-exec argv may briefly still
+        # belong to the parent, correctly refused by the real generation fence.
+        self.assertTrue(select.select([child.stdout], [], [], 5)[0], 'Fixture child did not become ready')
+        self.assertEqual(child.stdout.readline(), b'ready\n')
         return child
 
     def state(self, child):
