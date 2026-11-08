@@ -1751,7 +1751,7 @@ window.Conversation = (() => {
         : source.completed ? "Session reports this request complete." : "Session progress; work may continue.";
       if(matrix){
         if(!card.matrixDetails){
-          card.matrixDetails=node("details");card.matrixDetails.append(node("summary","Matrix details"));card.matrixReceipt=node("pre");card.matrixDetails.append(card.matrixReceipt);card.box.append(card.matrixDetails);
+          card.matrixDetails=node("details");card.matrixDetails.append(node("summary","Matrix details"));card.matrixReceipt=node("pre",undefined,"route-identity");card.matrixDetails.append(card.matrixReceipt);card.box.append(card.matrixDetails);
         }
         card.matrixReceipt.textContent=JSON.stringify({direction:source.direction,author:source.source_author,
           original:source.kind==="matrix_inbox"?source.id.slice("matrix-inbox:".length):undefined,
