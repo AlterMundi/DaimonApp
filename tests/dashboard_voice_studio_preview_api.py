@@ -92,6 +92,27 @@ class Mounted(unittest.TestCase):
         retired=self.post({**self.body(row,'retire'),'generation':1})
         self.assertEqual(retired.status_code,200,retired.text);self.assertEqual(retired.json()['batches'],[])
         self.assertEqual(self.post(body).status_code,404);self.assertEqual(len(self.calls),1)
+    def test_one_play_freezes_own_text_and_selected_voice_without_comparison(self):
+        self.config['voice_studio']={'voices':['cedar','marin']}
+        profile={**self.profile,'voice':'marin'}
+        request={'action':'prepare_sample','id':str(uuid.uuid4()),'profile':profile,'delivery':'Warm.',
+                 'voice_generation':0,'generation':0,'passage':'¡Hola! ¿Qué vamos a descubrir hoy?'}
+        reply=self.post(request);self.assertEqual(reply.status_code,200,reply.text);row=reply.json()
+        self.assertEqual(set(row['renders']),{'sample'});self.assertEqual(row['passage'],request['passage'])
+        self.assertEqual(self.post(request).json(),row)
+        changed={**request,'passage':'Different text'};self.assertEqual(self.post(changed).status_code,409)
+        body=self.body(row,slot='sample');reply=self.post(body);self.assertEqual(reply.status_code,200,reply.text)
+        self.assertEqual(reply.json()['batch']['renders']['sample']['state'],'rendered')
+        self.assertEqual(self.calls[0]['text'],request['passage'])
+        self.assertEqual(self.post(body).json()['audio'],reply.json()['audio']);self.assertEqual(len(self.calls),1)
+        self.assertIsNone(self.store.voice_snapshot(100)['active'])
+        self.assertEqual(self.post({**self.body(row,'retire'),'generation':1}).status_code,200)
+    def test_custom_text_bounds_reject_before_allocation_or_worker(self):
+        for text in ('','word '*41,'x'*1025,'\0',None):
+            request={'action':'prepare_sample','id':str(uuid.uuid4()),'profile':self.profile,'delivery':'',
+                     'voice_generation':0,'generation':0,'passage':text}
+            self.assertEqual(self.post(request).status_code,400)
+        self.assertEqual(self.store.preview_snapshot(100)['batches'],[]);self.assertEqual(self.calls,[])
     def test_maintenance_and_active_capture_refuse_before_attempt(self):
         row=self.prepare()
         with maintenance_guard(self.config['state_dir']):self.assertEqual(self.post(self.body(row)).status_code,409)
@@ -121,6 +142,27 @@ class Mounted(unittest.TestCase):
         self.assertEqual(response.status_code,503,response.text)
         self.assertEqual(self.store.preview_get(100,row['id'],row['generation'])['renders']['A']['state'],'prepared')
         self.assertEqual(self.calls,[]);self.assertFalse(self.app.state.voice_active)
+    def test_unknown_preview_diagnostic_readback_never_regenerates_or_retires(self):
+        row=self.prepare();service=self.app.state.voice_previews
+        route,request,ident=service.plan(100,row,'A')
+        self.store.preview_start(100,row['id'],row['generation'],'A')
+        state={'schema':'telecodex.speech-render/v1','identity_sha256':ident,
+            'phase':'unconfirmed','provider':'openai-live','voice':route['voice'],
+            'language':route['language'],'text_sha256':speech.sha(request['text'].encode()),
+            'provider_receipt':{'stage':'transport_released','finalized':False,
+                'diagnostic':{'failure_code':'audition-provider-error','provider_error_code':'invalid_value',
+                              'message':'sk-private must not be exposed'}}}
+        job=speech.directory(Path(route['cache_root'])/ident)
+        speech.atomic(job/'state.json',speech.canonical(state))
+        result=self.post(self.body(row));self.assertEqual(result.status_code,200,result.text)
+        render=result.json()['batch']['renders']['A']
+        self.assertEqual(render['state'],'unconfirmed');self.assertIsNone(result.json()['audio'])
+        self.assertEqual(render['outcome']['receipt']['diagnostic'],
+            {'failure_code':'audition-provider-error','provider_error_code':'invalid_value'})
+        self.assertNotIn('sk-private',result.text)
+        self.assertEqual(self.post(self.body(row)).status_code,200)
+        self.assertEqual(self.post({**self.body(row,'retire'),'generation':1}).status_code,400)
+        self.assertEqual(self.calls,[]);self.assertTrue((job/'state.json').exists())
     def test_cancel_only_owned_attempt_and_retire_after_confirmed_close(self):
         row=self.prepare();self.mode='wait';results=[]
         thread=threading.Thread(target=lambda:results.append(self.post(self.body(row))),daemon=True);thread.start()

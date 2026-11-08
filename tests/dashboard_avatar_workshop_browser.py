@@ -29,7 +29,7 @@ def qualify():
             if actor not in ('100','200'):raise HTTPException(401,'Synthetic test actor required')
             return {'human':int(actor),'scope':'interaction_only','csrf':'test-action'}
         sock=socket.socket();sock.bind(('127.0.0.1',0));origin='http://127.0.0.1:'+str(sock.getsockname()[1])
-        install(app,{'state_dir':root,'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin])
+        install(app,{'state_dir':root,'voice_studio':{'voices':['cedar','marin']},'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin])
         @app.get('/assets/{name}')
         def asset(name:str):
             if name not in ('avatar-workshop.js','voice-studio.js','style.css'):raise HTTPException(404)

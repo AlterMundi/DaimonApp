@@ -128,6 +128,31 @@ class Preview(unittest.TestCase):
         with self.assertRaisesRegex(live.SpeechError,'finalization-unconfirmed'):self.run_preview()
         self.assertTrue(self.socket.closed)
 
+    def test_failed_start_retains_bounded_reason_without_provider_message(self):
+        self.socket.events=[{'type':'error','event_id':'error',
+            'error':{'code':'invalid_value','message':'sk-private must never be retained',
+                     'param':'private-account-resource'}}]
+        receipts=[]
+        with self.assertRaisesRegex(live.SpeechError,'start-unconfirmed'):
+            self.run_preview(progress=receipts.append)
+        final=receipts[-1]
+        self.assertFalse(final['finalized'])
+        self.assertEqual(final['diagnostic'],{'failure_code':'audition-provider-error',
+                                            'provider_error_code':'invalid_value'})
+        self.assertNotIn('sk-private',json.dumps(receipts))
+        self.assertNotIn('private-account-resource',json.dumps(receipts))
+        self.assertTrue(self.socket.closed);self.assertEqual(self.connects,1)
+
+    def test_diagnostics_reject_unknown_codes_and_arbitrary_values(self):
+        self.assertEqual(live.diagnostic({'failure_code':'private','provider_error_code':'sk-secret',
+                                         'message':'secret'}),{})
+        self.assertEqual(live.diagnostic(None),{})
+        self.assertEqual(live.diagnostic({'failure_code':{},'provider_error_code':[]}),{})
+        self.socket.events=[];receipts=[]
+        with self.assertRaisesRegex(live.SpeechError,'start-unconfirmed'):
+            self.run_preview(progress=receipts.append)
+        self.assertEqual(receipts[-1]['diagnostic'],{'failure_code':'audition-start-unconfirmed'})
+
     def test_explicit_retirement_reuses_exact_cache_and_preserves_unknown_jobs(self):
         actual=live.render
         with patch.object(live,'render',lambda *a,**kw:actual(*a,**kw,connector=self.connect,clock=self.clock)):

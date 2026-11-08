@@ -1,164 +1,120 @@
-# Voice studio receiving integration
+# Voice workshop receiving integration
 
-DaimonApp owns implementation; Voces owns the attributed product candidate.
-Continue inside the existing avatar workshop and shared account authentication.
-This source adds the existing-workshop Voice panel and its authenticated adapter.
-Resolve actual receiving selection through Shared Resources `interaction-current.md`.
-Source and synthetic qualification do not establish listening acceptance; bounded
-provider auditions remain unfinished.
-The first adapter targets public GPT-Live Avatar. Ordinary Conversation speech
-keeps its current Realtime route; API-specific voice identities are not pooled.
+DaimonApp owns implementation. The maintained Voices v2 contract selects a direct
+voice → Play → change → Play → save a named configuration → reopen loop. It
+supersedes the historical A/B-first UI. Reuse the existing avatar workshop,
+shared authentication, actor document, speech renderer/cache and voice admission.
+Resolve actual installation through Shared Resources `interaction-current.md`.
+Source qualification does not establish provider access or human listening.
 
-Voice revisions now share the existing atomic account document, lock and quota
-with visual revisions. They use a separate `voice` namespace and generation;
-voice data never enters ascii-avatar-model/v1 or ascii-quest-design/v2. The
-combined visual and voice revision count stays within32 and the existing8MiB
-actor/32MiB aggregate limits. Quota refusal keeps prior selections; no recorder,
-provider call or automatic deletion is added by revision actions.
+## Choose, listen and save
 
-A revision retains an exact OpenAI API/model/voice reference, delivery instruction
-at most1024UTF8bytes, parent, timestamp and digest. Save does not select. Exact
-save readback under the original revision ID does not replay a mutation. Explicit
-selection uses the current generation and the authenticated adapter's actually
-compatible profiles. Foreign, stale or incompatible actions keep the old pointer.
-The store returns a copy for a newly created logical conversation. Updating the
-account selection cannot change that copy or the visual selection.
+The workshop offers receiving-configured compatible voices, delivery presets and
+an optional delivery description. Each voice's explicit Play uses that voice and
+the current delivery/text. Editing alone generates nothing. Expression buttons
+reuse the authored workshop gallery cue IDs (welcome, joy, curious, calm, sleep,
+sad, anger, uncertain and focus). Each has a separate Play; choosing a cue alone
+only changes the sample text. These are artistic examples, not sensor states or
+a change to the live avatar. A separate text field has its own Play button.
 
-## Account actions and frozen conversations
+Each Play freezes one exact profile, delivery and phrase. Text must be nonempty,
+at most40words/1024UTF8bytes; reject visibly before a paid attempt, without
+truncation, a fixed substitute or a native delegation. Existing Markdown spoken
+projection remains part of the speech renderer. The phrase is developer-framed
+preview content, not authority to execute tools or replace identity instructions.
+A completed exact cached sample plays again without synthesis. A changed phrase,
+voice or delivery requires another explicit Play. Only one generation is pending
+per panel/actor; older playback stops and at most two audio object URLs are kept.
+A browser refusing autoplay leaves the verified sample ready for explicit Play.
 
-The Voice panel lives in the existing workshop wrapper, preserving the original
-editor and visual selection. It shows the current receiving-configured identity,
-current A and editable B, delivery starting descriptions, immutable Save and
-separate Use on next conversation. It performs no broad account catalogue or
-entitlement discovery. Existing workshop owner/CSRF checks authorize its exact
-`avatars/voice` endpoint; read-only monitors and foreign actors cannot use it.
-Save/Use outcomes are reconciled through reads under the retained revision and
-expected generation. A lost response never starts another automatic write.
+Save uses a bounded name (80Unicode characters/320UTF8bytes), immutable revision,
+exact API/model/voice, delivery, parent, timestamp and digest. A name is app
+metadata, not a provider voice ID or cloning request. Reopening a saved voice
+restores its exact identity/delivery/name before Play. Legacy unnamed revisions
+stay readable. A lost Save ACK reads the same revision ID; it never repeats the
+write. Explicit Use is separate: it selects the next own logical voice chat.
+Save, audition and reopening never select a voice, provider, avatar or account.
 
-New clients explicitly mark a new logical voice start. It reads the selected
-revision once, before microphone permission or paid creation. Physical reconnects
-supply their owned previous visit, retaining that exact voice snapshot across
-repeated replacements. An explicitly reviewed disconnected visit supplies its
-own snapshot. The reference is flat, not a nested voice archive. Wrong owners,
-changed API/model/voice or corrupted snapshots refuse before paid creation.
-Legacy clients keep the configured default delivery and cannot silently consume
-an account selection intended for the new studio. Native context, identity,
-language, name pronunciation and execution instructions stay in the base brief;
-the saved delivery is appended as voice-only guidance within the existing8KiB
-instruction bound. It is not a SOUL or execution-policy replacement.
+New logical visits copy the selected compatible revision once. Ongoing visits,
+reviewed disconnections and physical replacements keep their frozen choice,
+including when another saved voice becomes active. Wrong owners, stale selection,
+corrupt profiles and incompatible API/model choices refuse before paid creation.
+The saved delivery is voice-only guidance within the existing8KiB instruction
+bound; native identity, language, name pronunciation and execution remain intact.
 
-Opening/editing/saving requests no microphone or audio. Existing connections
-cannot change through a workshop pointer update. Studio changes are not yet
-served and no per-pair defaults or provider flags were changed by preparation.
+## Receiving capability and actual access
 
-## Preview transport source
+The initial transport is GPT-Live; ordinary Conversation speech retains its
+separate Realtime route. API identities are not silently pooled or substituted.
+The current configured voice is always first. Additional documented GPT-Live
+identities require an explicit receiving `voice_studio.voices` list, qualified
+for that project's account. The list is bounded by the maintained public model
+catalogue; it performs no provider/custom-voice or entitlement discovery.
 
-The source renderer now supports the same GPT-Live API through one primary
-WebSocket, using the existing speech intent/cache/audio reservation. It sends
-only synthetic silence and developer-attributed preview text, with client
-delegation and no native work or Responses tools. It never opens a microphone.
-A greeting is seeded and appended once after startup as the official guide
-recommends. Input/output share PCM16/24kHz; model, voice and final session ID
-must match. The deadline is30seconds including finalization, with at most5seconds
-of close drain,40words and the existing8MiB audio bound. Wave output is at most
-30seconds. Captions are not certified word alignment or human hearing.
+A real configured-source preview ended without a confirmed session start/audio.
+A distinct candidate-source single sample retained `model_not_found`; a bounded
+project-model metadata read also omitted GPT-Live while listing the existing
+Realtime speech model. These outcomes do not establish provider acceptance or
+hearing. Keep both attempts and their uncertain final usage without replay.
+A supported transport/account decision remains separate from this UI change.
+Do not silently change Avatar, its configured model, accounts or live captures.
 
-There is no per-utterance completion event. A full passage caption plus a quiet
-audio interval requests close; otherwise the generation deadline requests close.
-A valid `session.closed` with final usage is required before a successful cached
-preview. Missing/changed output, cancellation and unknown closure never start
-another session. Expired auditions can refuse regeneration while ordinary speech
-retains its existing explicit-render contract. The transport itself creates no
-new store or provider defaults. This is source/synthetic qualification only.
+Failed transport receipts retain fixed local failure classifications and
+allowlisted provider codes. Raw provider messages, headers, credentials and
+request payloads are excluded. Optional diagnostics do not authorize retry,
+retirement or a retroactive diagnosis for older receipts without them.
 
-References: [GPT-Live conversations](https://developers.openai.com/api/docs/guides/live-conversations),
-[primary WebSocket lifecycle](https://developers.openai.com/api/docs/guides/voice-websockets?api=live).
+Official capability/lifecycle references:
+[voice options](https://developers.openai.com/api/docs/guides/live-conversations#voice-options),
+[WebSocket startup and close](https://developers.openai.com/api/docs/guides/voice-websockets#connect-a-server-to-gpt-live).
+Regional voice influences are not evidence of pronunciation or account access.
 
-## Remaining comparison and acceptance
+## One-preview lifecycle, bounds and recovery
 
-The source workshop now exposes the authenticated preview adapter and explicit
-Prepare comparison, Generate A/B, cached Play, Stop generation/playback and Retire
-controls. The account-document batch layer freezes A/B and the same passage before
-any attempt, with at
-most4batches/2slots per actor. Existing64actor and document/audio limits remain;
-new preview job metadata therefore has at most512jobs. Batch identity includes
-its monotonic generation. Exact prepare readback never replans or changes A;
-a started slot can only be observed after restart, never launched again.
-Cancel preserves in-flight attempts and marks unstarted slots as unsent.
+The existing account `voice_previews` allocation now supports a single `sample`
+slot and custom passage through `prepare_sample`, immediately followed by the
+explicit Play's render. There is no user-facing Prepare or comparison selection.
+Legacy A/B rows remain available for truthful inspection/cleanup; they are not
+new default interactions and are not rewritten. Exact source/profile/generation
+bind each attempt. A lost preparation response is observed under its original
+identity, without another allocation or automatic generation.
 
-Retirement first persists its claim, then removes only the exact known-completed
-preview cache bytes/job. Unknown or active attempts remain. A partial deletion
-or final metadata failure retains `retiring`; only that cleanup can continue.
-Old generation requests cannot reallocate retired batches or regenerate audio.
-The cleanup reuses the speech job locks, verifies source/header/audio hashes and
-never touches human originals, ordinary speech jobs or selected voice revisions.
+The same four-row/two-slot ceiling (at most8legacy slots),64actors,32combined
+visual+voice revisions,8MiB actor document and32MiB aggregate limits remain.
+A full library may reclaim only an exact settled task-owned single-sample row
+under the existing retirement claim/locks before new allocation. Unknown/active
+attempts and human originals stay protected; capacity refusal starts no provider.
+Account selection and frozen visits are unaffected by disposable sample cleanup.
 
-The internal preview CLI reuses the speech renderer and the existing capacity
-semaphore. Its runner bounds stdout at64KiB and owns only its isolated process
-group, with a35second wait and5second termination drain. SIGTERM cooperatively
-requests a graceful Live close; an unresponsive owned process is terminated.
-The runner validates the returned cache ID, source hash, WAV bytes/format and
-30second duration. Tests exercise the actual subprocess/cache-hit and cancellation
-while an unrelated process remains alive. No real provider was contacted.
+The renderer still has one primary GPT-Live WebSocket with synthetic silence,
+no microphone/Responses/native tools and no fallback. The provider attempt is
+30seconds including finalization, at most5seconds close drain,35seconds worker
+wait,45seconds render HTTP, <=30seconds mono PCM16/24kHz audio and8MiB. A confirmed
+`session.closed` with final usage is required for successful cache proof. Unknown
+closure remains unknown and cannot regenerate or be disguised by a new ID.
 
-The exact `/api/interaction/avatars/voice/previews` endpoint reuses workshop
-owner/CSRF authorization. Generation acquires the existing HTTP voice admission
-and actor voice lease, using the same semaphore as ordinary TTS. A receiving
-configuration fingerprint prevents old attempts or cleanup from being rerouted.
-Only current configured GPT-Live profiles and the existing approved project key
-reference/cache are accepted; arbitrary renderer input is not exposed.
+Stop/Close sends at most one cancellation to the owned pending generation.
+Close immediately releases the panel/audio and ignores late replies. A cached
+read cannot cancel another unstarted attempt. Actor changes clear private labels,
+drafts and playback; late old-account reads cannot repopulate them. Hiding the
+page stops playback. The existing owner/CSRF checks, HTTP admission, actor lease,
+shared synthesis capacity and receiving fingerprint apply before every attempt.
+A changed catalogue does not erase old journal identities or account outcomes.
 
-A lost generation response only reads the retained cache/outcome. Unknown or
-expired jobs cannot regenerate. Closing immediately releases the panel and client
-audio, requests at most one stop for its pending generation, and ignores late
-responses. Choosing Stop and then Close does not repeat the same cancellation.
-Closing a cached audio read does not cancel a different unstarted slot. Discarding
-an unsaved edit restores the selected saved revision. Actor reset immediately
-clears batch labels, notices and client audio before the next account read. Late
-closed-panel or old-account reads cannot change current controls, and each
-server-owned attempt remains bounded. An unconfirmed stop stays unconfirmed.
-The render HTTP deadline is45seconds to accommodate the existing30second provider
-attempt and bounded process cleanup; other preview writes retain20seconds.
-Neither timeout nor closing retries synthesis.
-Playback starts only on explicit Play, keeps at most A/B object URLs for the
-selected batch and revokes them on close, actor change or batch change. Hiding
-the panel or page stops playback. Recorded usage and first-audio timing are
-reported separately from unmeasured live-conversation latency and hearing.
+## Entry, appearance and acceptance
 
-Mounted synthetic tests cover owner/CSRF isolation, maintenance and capture
-exclusion before intent, exact cache readback without another worker, lost worker
-responses, unknown outcome retention, configuration drift and owned cancellation.
-The actual Chromium editor verifier additionally exercises synthetic preview
-routes: no generation on open/save/use, explicit A/B, recorded playback controls,
-lost B response without retry, keeping A while B is generated and refusing
-retirement of the unknown B. Deferred-response cases verify immediate close,
-ignored late audio, cached-load close, discarded-edit restoration and one
-cancellation for Stop followed by Close. It also checks1200/375/320 layouts. These UI fixtures
-are separate from mounted API/cache ownership tests; none contacts a provider.
+Each existing shared-login Conversation accepts
+`?view=conversation&client=standalone&workshop=voice`. Its writable own-actor
+binding opens this same panel once. No new app/login, grant, media store,
+automatic provider request or microphone permission is introduced.
+Spanish browser language selects Spanish labels; other browsers keep English.
+The existing Home appearance applies to all controls/surfaces. Support320/375px,
+keyboard focus, readable text, touch targets and reduced motion. Earlier samples
+and optional details live behind a disclosure, outside the child's primary loop.
 
-Paid comparison remains explicit and bounded: two compatible identities at most,
-the same passage of at most40words,30seconds/16MiB each, retained uncertain result
-and no automatic provider retry. Use the existing bounded media cache if audition
-media is implemented; no separate store or login. Recorded previews are not live
-conversation latency measurements. Actual listening, mobile and receiving delivery
-remain separate acceptance.
-
-Qualification covers real actor-document save/reload, exact readback,
-immutable revisions, isolated actors, stale generations, incompatible selection,
-frozen copies, shared visual/voice capacity and failed-write preservation. It
-calls no real provider. Mounted API-to-provider fixtures prove delivery selection
-and legacy-client behavior; three physical journal successors preserve A before
-a new logical start takes B. Actual Chromium verifies the existing editor plus
-Voice Save/Use, lost save-ACK readback, account isolation and1200/375/320px layouts.
-These checks do not prove paid audition quality, hearing or physical devices.
-
-## Stable receiving entry
-
-The existing standalone Conversation accepts `workshop=voice` (for example
-`/interaction/?view=conversation&client=standalone&workshop=voice`). After normal
-shared authentication and the existing writable actor binding, it opens the
-existing workshop Voice panel once. Unknown values do nothing; read-only views
-do not mount the editor. No new app, login, permission, microphone or provider
-audition is created. Existing artwork/voice revisions and session selections
-remain unchanged until their usual explicit actions. Preserve the query through
-the existing shared-entry login redirect.
+Qualification must exercise custom Unicode and expression Play, exact identity
+and text, inert changes, named Save/reopen/lost ACK, explicit Use, cached playback,
+unknown generation/prepare, Stop then Close, late replies, actor isolation and
+capacity cleanup/refusal. Reuse valid unchanged lifecycle/store evidence.
+Report source tests, receiving delivery, finite provider audio, human listening
+and child/device acceptance separately. The full original App goal remains open.

@@ -61,6 +61,13 @@ class Choices(unittest.TestCase):
         self.assertEqual(configured_profiles({}),[])
         config={'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}}
         self.assertEqual(configured_profiles(config),[{'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'cedar'}])
+        config['voice_studio']={'voices':['marin']}
+        profiles=configured_profiles(config);self.assertEqual([p['voice'] for p in profiles],['cedar','marin'])
+        selected=choice(None,profiles[1])
+        spec={**self.spec,'audio':{'output':{'voice':'cedar'}}}
+        self.assertEqual(apply_choice(spec,selected,profiles)['audio']['output']['voice'],'marin')
+        self.assertEqual(spec['audio']['output']['voice'],'cedar')
+        with self.assertRaises(ValueError):apply_choice(spec,selected,profiles[:1])
         config['openai_live']['enabled']=False
         self.assertEqual(configured_profiles(config),[])
 

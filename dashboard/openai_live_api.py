@@ -244,13 +244,13 @@ def install(app, config, provider, authorize, origins):
                 voice_choice=None
                 if profiles and workshop is not None:
                     revision=await asyncio.to_thread(workshop.voice_for_conversation,human,profiles) if meta.get('voice_start')=='new' else None
-                    voice_choice=choice(revision,profiles[0])
+                    voice_choice=choice(revision,revision['profile'] if revision is not None else profiles[0])
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
                     voice_choice=voice_choice,voice_continuation=meta.get('voice_continuation'))
                 admitted=True
-                if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'])
+                if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'],profiles)
                 if native_backend:
                     await send({'type':'context_preparing','id':visit})
                     native_context=PublicLiveSessionContext(app.state.native_history,history,provider,human,visit,owner,context_operation)

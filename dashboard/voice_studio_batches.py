@@ -33,9 +33,13 @@ class WorkshopPreviewBatches:
     def preview_snapshot(self,human):
         with history_lock(self.root/'.lock'):return copy.deepcopy(preview_state(self._read(human)))
 
-    def preview_prepare(self,human,ident,profile,delivery,voice_generation,generation,planner,*,receiving_fingerprint=None):
+    def preview_prepare(self,human,ident,profile,delivery,voice_generation,generation,planner,*,receiving_fingerprint=None,passage=None):
         self._ident(ident);voice_profile(profile,delivery)
-        request=digest([profile,delivery,voice_generation,generation,receiving_fingerprint])
+        if passage is not None and (not isinstance(passage,str) or not passage.strip()
+                or '\0' in passage or len(passage.encode())>1024 or len(passage.split())>40):
+            raise ValueError('Write a short sample of at most40words and1024bytes')
+        fields=[profile,delivery,voice_generation,generation,receiving_fingerprint]
+        request=digest(fields if passage is None else [*fields,passage])
         with history_lock(self.root/'.lock'):
             value=self._read(human);previews=preview_state(value)
             old=next((r for r in previews['batches'] if r['id']==ident),None)
@@ -45,13 +49,14 @@ class WorkshopPreviewBatches:
             self._expected(previews,generation);voices=voice_state(value);self._expected(voices,voice_generation)
             if len(previews['batches'])>=MAX_BATCHES:raise ValueError('Preview library is full; retire a completed batch')
             active=next((r for r in voices['versions'] if r['id']==voices['active']),None)
-            current=choice(active,profile)
+            current=choice(active,profile) if passage is None else None
             candidate={'revision':None,'profile':copy.deepcopy(profile),'delivery':delivery,
                        'sha256':voice_profile(profile,delivery)[1]}
             row={'id':ident,'generation':generation+1,'request_sha256':request,'createdAt':int(time.time()*1000),
-                 'phase':'prepared','receiving_fingerprint':receiving_fingerprint,'passage':PASSAGE,'choices':{'A':current,'B':candidate}}
+                 'phase':'prepared','receiving_fingerprint':receiving_fingerprint,'passage':PASSAGE if passage is None else passage,
+                 'choices':{'A':current,'B':candidate} if passage is None else {'sample':candidate}}
             planned=planner(copy.deepcopy(row))
-            if (not isinstance(planned,dict) or set(planned)!={'A','B'}
+            if (not isinstance(planned,dict) or set(planned)!=set(row['choices'])
                     or any(not isinstance(v,str) or len(v)!=64 or any(c not in '0123456789abcdef' for c in v) for v in planned.values())):
                 raise ValueError('Preview needs exact receiving render identities')
             row['renders']={k:{'id':v,'state':'prepared'} for k,v in planned.items()}
@@ -72,7 +77,7 @@ class WorkshopPreviewBatches:
             return copy.deepcopy(self._preview_row(preview_state(self._read(human)),ident,generation))
 
     def preview_start(self,human,ident,generation,slot):
-        if slot not in ('A','B'):raise ValueError('Select preview A or B')
+        if slot not in ('A','B','sample'):raise ValueError('Select an exact preview')
         with history_lock(self.root/'.lock'):
             value=self._read(human);previews=copy.deepcopy(preview_state(value));row=self._preview_row(previews,ident,generation)
             if row['phase']=='retiring':raise ValueError('Preview retirement is incomplete; no new work')
@@ -93,7 +98,7 @@ class WorkshopPreviewBatches:
             return copy.deepcopy(row)
 
     def preview_observe(self,human,ident,generation,slot,render_id,outcome):
-        if slot not in ('A','B') or not isinstance(outcome,dict) or set(outcome)!={'state','receipt'}:
+        if slot not in ('A','B','sample') or not isinstance(outcome,dict) or set(outcome)!={'state','receipt'}:
             raise ValueError('Select one bounded preview outcome')
         if outcome['state'] not in TERMINAL|{'unconfirmed'} or len(json.dumps(outcome).encode())>32768:
             raise ValueError('Preview outcome exceeds its bound')
