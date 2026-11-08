@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import tempfile
 from pathlib import Path
 
 
@@ -31,7 +32,21 @@ def refresh(root):
     ordered = [name for name in document['receiving_hashes'] if name in actual]
     ordered.extend(name for name in actual if name not in document['receiving_hashes'])
     document['receiving_hashes'] = {name: actual[name] for name in ordered}
-    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + '\n')
+    # Receiving candidates reuse unchanged files through hard links. Replace the
+    # metadata inode so refreshing an unselected candidate cannot edit its base.
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf8', dir=root,
+                                     prefix='.provenance-', delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(json.dumps(document, indent=2, ensure_ascii=False) + '\n')
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.chmod(path.stat().st_mode & 0o777)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

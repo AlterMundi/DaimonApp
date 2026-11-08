@@ -23,6 +23,8 @@ standard-library `operator` module with the existing local `operator.py`.
 The helper changes only `receiving_hashes`; the existing tests refuse changed,
 missing or unlisted files and verify retained upstream provenance. It performs
 no network, account, avatar or provider operation and adds no runtime admission.
+Its atomic metadata replacement preserves a previous hardlinked release;
+refreshing an unselected candidate must not edit the selected base inode.
 
 The8November check found six stale adapted hashes after the compact-preview,
 hand-anchor and mechanical-mouth changes. Corrected source metadata matches all36
