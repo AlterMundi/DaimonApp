@@ -103,6 +103,55 @@ class Mounted(unittest.TestCase):
         self.allowed=False
         self.assertEqual(self.post(body).status_code,403)
 
+    def test_expired_audio_is_read_only_and_never_offered_as_playable(self):
+        row=self.prepare();rendered=self.post(self.body(row)).json()
+        service=self.app.state.voice_previews
+        route,_,ident=service.plan(100,rendered['batch'],'A')
+        job=Path(route['cache_root'])/ident;path=job/'state.json'
+        state=json.loads(path.read_text());state.update(created_at=1000,last_used_at=1000)
+        speech.atomic(path,speech.canonical(state))
+        before=self.store.preview_snapshot(100)
+        speech._prune_audio(route,now=5000)
+        self.assertEqual(json.loads(path.read_text())['phase'],'audio_expired')
+        self.assertFalse((job/'audio.wav').exists())
+        response=self.client.get(PATH,headers=self.headers)
+        self.assertEqual(response.status_code,200,response.text)
+        shown=response.json()['batches'][0]['renders']['A']
+        self.assertEqual(shown['state'],'rendered','Historical generation receipt stays intact')
+        self.assertEqual(shown.get('audio_state'),'expired')
+        for action in ('audio','render'):
+            result=self.post({**self.body(row),'action':action})
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertIsNone(result.json()['audio'])
+            self.assertEqual(result.json()['audio_state'],'expired')
+        self.assertEqual(self.store.preview_snapshot(100),before)
+        self.assertEqual(len(self.calls),1,'Expiry cannot regenerate or refund a sample')
+        # An altered cache receipt cannot masquerade as confirmed expiry.
+        state=json.loads(path.read_text());state['audio_sha256']='0'*64
+        speech.atomic(path,speech.canonical(state))
+        shown=self.client.get(PATH,headers=self.headers).json()['batches'][0]['renders']['A']
+        self.assertNotIn('audio_state',shown)
+        self.assertEqual(self.post({**self.body(row),'action':'audio'}).status_code,503)
+        self.assertEqual(self.store.preview_snapshot(100),before)
+        self.assertEqual(len(self.calls),1)
+
+    def test_expiry_between_history_and_audio_read_is_not_a_new_attempt(self):
+        row=self.prepare();self.post(self.body(row));service=self.app.state.voice_previews
+        route,_,ident=service.plan(100,row,'A');job=Path(route['cache_root'])/ident
+        path=job/'state.json';state=json.loads(path.read_text());state.update(created_at=1000,last_used_at=1000)
+        speech.atomic(path,speech.canonical(state));before=self.store.preview_snapshot(100)
+        read=service.audio
+        def expire_then_read(*args):
+            speech._prune_audio(route,now=5000)
+            return read(*args)
+        with patch.object(service,'audio',side_effect=expire_then_read):
+            response=self.post({**self.body(row),'action':'audio'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['audio_state'],'expired')
+        self.assertIsNone(response.json()['audio'])
+        self.assertEqual(self.store.preview_snapshot(100),before)
+        self.assertEqual(len(self.calls),1)
+
     def test_retained_unknown_and_access_revocation_do_not_start_or_leak(self):
         row=self.prepare();self.mode='unknown';self.post(self.body(row))
         self.assertEqual(len(self.calls),1)

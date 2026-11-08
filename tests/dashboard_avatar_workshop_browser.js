@@ -32,6 +32,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    const row=previewState.batches.find(r=>r.id===body.id);
    if(body.action==='cancel'){await route.abort();return;}
    if(body.action==='audio'){
+    if(row.passage==='Expires while loading.'){row.renders[body.slot].audio_state='expired';await route.fulfill({json:{batch:row,audio:null,audio_state:'expired'}});return;}
     if(deferPreview){blockedPreview={route,row,slot:body.slot};return;}
     await route.fulfill({json:{batch:row,audio:row.renders[body.slot].state==='rendered'?lastPreviewAudio:null}});return;
    }
@@ -413,6 +414,18 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
   await studio.getByText('The configured OpenAI voice model is not available for this account. This sample has no confirmed audio. Repeating Play will not fix access.',{exact:true}).first().waitFor();
   assert.equal(previewPosts.length,deniedCalls,'Retained model denial only reads status; no generation replay');
+
+  const currentPreviews=previewStates.get(String(await page.evaluate(()=>testActor))),expiredID='b2af94be-4293-4a74-86ca-202611080001';
+  currentPreviews.batches.push({id:expiredID,generation:++currentPreviews.generation,phase:'prepared',passage:'Expires while loading.',choices:{sample:{profile:{provider:'openai',api:'gpt-live',model:'gpt-live-1',voice:'cedar'},delivery:''}},renders:{sample:{state:'rendered'}}});
+  await studio.getByRole('button',{name:'Check saved voices and samples',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  const expiring=studio.locator('.voice-studio-history').filter({hasText:'Expires while loading.'}),expiryPosts=previewPosts.length,expiryPlays=await page.evaluate(()=>testVoicePlays);
+  await expiring.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).click();
+  await studio.getByText('This sample’s audio has expired. Your voice settings are kept. Nothing was generated.',{exact:true}).waitFor();
+  assert.equal(await expiring.getByRole('button',{name:'▶ Listen to saved sample',exact:true}).count(),0);
+  assert.equal(await expiring.getByText('cedar · Audio expired',{exact:true}).count(),1);
+  assert.equal(previewPosts.length,expiryPosts+1);assert.equal(previewPosts.at(-1).action,'audio');
+  assert.equal(await page.evaluate(()=>testVoicePlays),expiryPlays,'Expiry cannot fabricate playback or regeneration');
 
   for(const width of [1200,375,320]){await page.setViewportSize({width,height:900});assert(await studio.evaluate(e=>e.scrollWidth<=e.clientWidth+1));}
   // Stop alone and hidden-tab results cannot restart playback, even if the

@@ -490,3 +490,21 @@ Qualified with synthetic observer transition/time tests and real Chromium
 companion-to-custom-canvas checks, preserving authenticated revision bytes,
 pointers/generation and zero write/provider requests. This is source qualification,
 not receiving deployment or physical device acceptance.
+
+## Expired audition audio is separate from its receipt
+
+A rendered generation receipt remains historical evidence after the bounded
+speech cache removes its WAV. The workshop must not keep advertising that row
+as playable. Preview reads add `audio_state: expired` only when the owner-bound
+cache identity, source-text hash, voice/language and stored audio digest/format
+match the receipt, the cache records expiry, and the WAV is absent. A missing or
+altered file alone is not proof of expiry.
+
+This is a read projection: original render state, finalization, counters, saved
+voice and avatar revisions remain unchanged. An exact retained-audio read (or
+Render of an already-rendered row) returns no audio with that status instead of
+starting synthesis. Retention finishing between the history view and the audio
+read follows the same path. The client labels the sample Audio expired, removes
+its Play action and explains the race without claiming playback or generating a
+replacement. Unknown attempts and normal explicit retirement retain their
+existing rules; expiry does not refill the four-batch allowance.
