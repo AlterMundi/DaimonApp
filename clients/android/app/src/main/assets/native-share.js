@@ -31,9 +31,13 @@ window.NativeSharedText=(()=>{
    }
    box.hidden=false;preview.textContent=offer.text+(offer.fileCount?`\n${offer.fileCount} ${say('files','archivos')}`:'');add.disabled=isBusy()||reading;discard.disabled=reading;
   },reset(){epoch++;selection=undefined;reading=false;box.hidden=true;preview.textContent='';picker.value='';}};
-  const current=own=>own&&own.epoch===epoch&&offer===own.offer&&ready()&&getBinding()===own.binding&&!isBusy();
+  // Admission may pause for capture; a completed attachment mutation still
+  // settles once under its unchanged epoch/binding. Access reset invalidates
+  // that ownership explicitly, independently of transient disabled controls.
+  const owned=own=>own&&own.epoch===epoch&&offer===own.offer&&!!getBinding()&&getBinding()===own.binding;
+  const current=own=>owned(own)&&ready()&&!isBusy();
   function commit(own){
-   if(!current(own))return;
+   if(!owned(own))return;
    if(own.offer.text){draft.value+=(draft.value?'\n':'')+own.offer.text;draft.dispatchEvent(new Event('input',{bubbles:true}));draft.focus();}
    offer=undefined;reading=false;selection=undefined;refresh();settle(own.offer.id);
   }

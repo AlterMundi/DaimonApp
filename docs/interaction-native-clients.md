@@ -33,9 +33,13 @@ existing behavior. Chromium reads the files through its existing file-input
 path; the parent reuses `FileInput.addFiles` for atomic preparation, existing
 8file/20MiB each/40MiB total limits, original-byte SHA256 and binding fences.
 No upload or message occurs until the ordinary explicit Send/recording path.
-Only successful full preparation appends the caption and acknowledges the offer;
-unavailable grants, count/size failures or changed access preserve an unconsumed
-offer. Android task removal releases the transient authority; a restored stale
+Only successful full preparation appends the caption and acknowledges the offer.
+Capture/busy/disabled controls govern admission; once FileInput has accepted the
+attachments, settle that same operation under its retained epoch/binding even if
+capture starts meanwhile. Access reset still invalidates ownership. This keeps
+file IDs/caption/ACK together and prevents a second Add from duplicating already
+accepted attachments. Unavailable grants, count/size failures or changed access
+preserve an unconsumed offer. Android task removal releases the transient authority; a restored stale
 URI must fail visibly rather than fabricate bytes or request broad storage access.
 
 Qualification includes actual Chromium offer→FileList→existing attachment

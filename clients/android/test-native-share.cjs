@@ -1,9 +1,10 @@
 const assert=require('assert'),path=require('path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const shareSource=process.env.NATIVE_SHARE_SOURCE||path.join(__dirname,'app/src/main/assets/native-share.js');
 (async()=>{const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});try{
  const page=await browser.newPage();await page.setContent('<form id="compose"><textarea id="draft" disabled>Existing draft.</textarea></form>');
  await page.evaluate(()=>{window.acks=[];window.submits=0;window.binding=undefined;window.busy=false;window.DaimonAudio={postMessage:s=>{const v=JSON.parse(s);if(v.command==='share_bind'){window.lastBind=v;return;}acks.push(v);}};window.fetch=()=>{throw Error('Share must not use network');};document.querySelector('form').addEventListener('submit',e=>{e.preventDefault();submits++;});});
- await page.addScriptTag({path:path.join(__dirname,'app/src/main/assets/native-share.js')});
+ await page.addScriptTag({path:shareSource});
  await page.evaluate(()=>{window.view=NativeSharedText.mount({parent:document.querySelector('form'),draft:document.querySelector('textarea'),getBinding:()=>binding,isBusy:()=>busy});NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000001',text:'https://example.test/\n<img src=x onerror=alert(1)>'});});
  assert(await page.locator('.native-share-offer').isHidden());assert.equal(await page.locator('textarea').inputValue(),'Existing draft.');
  await page.evaluate(()=>{binding='synthetic-owner';document.querySelector('textarea').disabled=false;view.refresh();});
@@ -30,10 +31,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
  await page.evaluate(()=>{window.receivedFiles=[];});
  // A separate page mounts the actual host attachment admission through its callback.
  const binary=await browser.newPage();await binary.route('https://shared.example.test/**',route=>route.fulfill({contentType:'text/html',body:'<form><textarea>Existing.</textarea><div id="compose"></div><input type=file id="conversation-files" multiple><div id="conversation-files-list"></div><p id="conversation-files-state"></p></form>'}));await binary.goto('https://shared.example.test/');
- await binary.evaluate(()=>{window.DaimonAudio={postMessage:()=>{}};window.binding='owner';window.received=[];window.busy=false;});
- await binary.addScriptTag({path:require('path').resolve('clients/android/app/src/main/assets/native-share.js')});
+ await binary.evaluate(()=>{window.nativeAcks=[];window.DaimonAudio={postMessage:raw=>{const value=JSON.parse(raw);if(value.command==='share_ack')nativeAcks.push(value.id);}};window.binding='owner';window.received=[];window.busy=false;});
+ await binary.addScriptTag({path:shareSource});
  await binary.addScriptTag({path:require('path').resolve('dashboard/web/files.js')});
- await binary.evaluate(()=>{window.attachments=FileInput.mount({headers:()=>({'X-Synthetic':'owner'}),getBinding:()=>binding,unauthorized:()=>{throw Error('access changed');}});window.uploads=[];window.fetch=async(url,options)=>{const ref=JSON.parse(decodeURIComponent(options.headers['X-File-Reference']));uploads.push({name:ref.name,hash:ref.sha256,body:new TextDecoder().decode(options.body)});return {ok:true,json:async()=>ref};};window.view=NativeSharedText.mount({parent:document.querySelector('#compose'),draft:document.querySelector('textarea'),getBinding:()=>binding,onFiles:async files=>{await attachments.addFiles(files);received=await Promise.all(files.map(async f=>({name:f.name,size:f.size,text:await f.text()})));},isBusy:()=>busy});NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000005',text:'Caption',fileCount:2,binding});});
+ await binary.evaluate(()=>{window.attachments=FileInput.mount({headers:()=>({'X-Synthetic':'owner'}),getBinding:()=>binding,unauthorized:()=>{throw Error('access changed');}});window.uploads=[];window.fetch=async(url,options)=>{const ref=JSON.parse(decodeURIComponent(options.headers['X-File-Reference']));uploads.push({name:ref.name,hash:ref.sha256,body:new TextDecoder().decode(options.body)});return {ok:true,json:async()=>ref};};window.view=NativeSharedText.mount({parent:document.querySelector('#compose'),draft:document.querySelector('textarea'),getBinding:()=>binding,onFiles:async files=>{await attachments.addFiles(files);window.afterFiles?.();received=await Promise.all(files.map(async f=>({name:f.name,size:f.size,text:await f.text()})));},isBusy:()=>busy});NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000005',text:'Caption',fileCount:2,binding});});
  await binary.getByRole('button',{name:'Add to message'}).click();
  await binary.locator('.native-share-offer input[type=file]').setInputFiles([{name:'one.png',mimeType:'image/png',buffer:Buffer.from('first exact original')},{name:'two.pdf',mimeType:'application/pdf',buffer:Buffer.from('second exact original')}]);
  await binary.waitForFunction(()=>received.length===2);
@@ -44,6 +45,20 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
  assert.equal(await binary.locator('#conversation-files-list > div').count(),2);
  await binary.evaluate(()=>attachments.capture());
  assert.deepEqual(await binary.evaluate(()=>uploads.map(f=>f.body)),['first exact original','second exact original']);
+ // Reproduce capture becoming busy after FileInput mutation, before share commit.
+ await binary.evaluate(()=>{window.afterFiles=()=>{busy=true;document.querySelector('textarea').disabled=true;};NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000006',text:'Late caption',fileCount:1,binding});});
+ await binary.getByRole('button',{name:'Add to message'}).click();
+ await binary.locator('.native-share-offer input[type=file]').setInputFiles([{name:'late.bin',mimeType:'application/octet-stream',buffer:Buffer.from('one late original')}]);
+ await binary.waitForFunction(()=>received[0]?.name==='late.bin');
+ assert(await binary.evaluate(()=>nativeAcks.includes('00000000-0000-4000-8000-000000000006')),'Mutation settles once even when capture becomes busy after attachment admission');
+ assert.equal(await binary.locator('#conversation-files-list > div').count(),3);
+ assert.equal(await binary.locator('textarea').inputValue(),'Existing.\nCaption\nLate caption');
+ assert(await binary.locator('.native-share-offer').isHidden(),'Completed attachment mutation settles despite transient capture/disabled draft');
+ await binary.evaluate(()=>{busy=false;document.querySelector('textarea').disabled=false;view.refresh();NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000006',text:'Late caption',fileCount:1,binding});});
+ assert(await binary.locator('.native-share-offer').isHidden(),'Same resolved identity cannot offer a duplicate Add after recording');
+ assert.equal(await binary.locator('#conversation-files-list > div').count(),3);
+ const finalRefs=await binary.evaluate(()=>attachments.capture());assert.equal(new Set(finalRefs.map(f=>f.file_id)).size,3);
+ assert.equal(await binary.locator('textarea').inputValue(),'Existing.\nCaption\nLate caption');
  await binary.close();
  console.log('PASS actual Chromium: private-ready gate, preserved draft, literal URL/HTML, no Send/network, one append, busy capture and discard');
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1);});
