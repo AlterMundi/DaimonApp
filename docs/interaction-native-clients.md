@@ -11,35 +11,41 @@ unfinished continuous-voice/foreground/attention obligations in #301.
 The selected requirement is a system Share destination for the existing Android
 App: text/links, images and files must enter a reviewable existing composer,
 not submit a message, upload or alter capture merely because an intent arrived.
-This first source increment registers `ACTION_SEND`/`text/plain` as **Daimon**.
-It handles both cold start and `singleTop` delivery without recreating a running
-WebView/audio session. One pending text offer is bounded to12KiB UTF-8 and kept
-in Activity saved state until explicitly added/discarded or the task is cleared.
-A second incoming offer refuses visibly rather than overwriting the first.
-The existing exact-origin/main-frame native bridge acknowledges only that offer.
+The candidate registers `ACTION_SEND` and `ACTION_SEND_MULTIPLE` as **Daimon**.
+It accepts literal text/links and up to eight distinct `content:` URI references,
+retaining source order. Stream and ClipData descriptions must agree when both
+are present; file/http URIs, duplicate files and excessive selections refuse.
+One pending offer (12KiB text plus8URI references) survives Activity recreation
+until Add/Discard or task removal. Android owns transient read grants; there is
+no persistable permission, new native byte cache or background file reader.
+A second offer refuses instead of overwriting the first.
 
-After existing writable conversation admission, the offer shows literal text
-and requires Add to message. Existing draft text and reply destination stay;
-recording/busy capture blocks Add. The person still presses Send. No shared URL
-is opened, no server input is authored, and no new login/grant/store is created.
-An activity recreation retains the offer ID plus its native-pinned home/binding.
-The first writable destination is bound before text is displayed. Access reset
-hides and clears the visible text; another destination cannot show it. Returning
-to the original destination retains the pending offer. Added and discarded IDs
-are both settled in a bounded16-ID page set, so a delayed ACK cannot resurrect
-the same offer. Page/home changes do not automatically append or transfer it.
+The first writable conversation binds the pending home/account before display.
+Add/Discard require that same destination; reset hides text and cancels pending
+browser admission. Existing draft/reply/capture remain. Added/discarded IDs stay
+in the bounded16-ID page set, preventing delayed-ACK resurrection. URI strings
+are never sent to the web page. The offer shows file count and literal caption.
 
-Images, multiple images, arbitrary files and their bounded URI-permission/private
-byte staging remain **unfinished**. This increment does not advertise those MIME
-types and refuses a binary extra instead of silently dropping the attachment.
-Full Share delivery also requires native compilation/lint, actual emulator
-Intent/lifecycle and real phone Sharesheet acceptance plus a signed update.
-Three new native tests (including actual Activity new-intent/recreation in the
-isolated setup screen without network) join the existing emulator run;
-actual Chromium covers ready gating, literal HTML/URL text, preserved draft,
-no Send/network, duplicate IDs, busy capture and discard. Source preparation is
-not APK installation or physical acceptance. Preserve all other Android/voice,
-background, Beacon and iOS requirements.
+Explicit Add opens an offer-specific HTML file input. The actual Android
+`onShowFileChooser` supplies only that offer's granted URIs, only on the current
+foreground App page/home and after binding. Ordinary file pickers keep their
+existing behavior. Chromium reads the files through its existing file-input
+path; the parent reuses `FileInput.addFiles` for atomic preparation, existing
+8file/20MiB each/40MiB total limits, original-byte SHA256 and binding fences.
+No upload or message occurs until the ordinary explicit Send/recording path.
+Only successful full preparation appends the caption and acknowledges the offer;
+unavailable grants, count/size failures or changed access preserve an unconsumed
+offer. Android task removal releases the transient authority; a restored stale
+URI must fail visibly rather than fabricate bytes or request broad storage access.
+
+Qualification includes actual Chromium offer→FileList→existing attachment
+admission→explicit capture, exact ordered bytes/hash, no upload on Add, draft
+preservation and access/ACK fences. Native parser/Activity recreation tests cover
+ordered8URI references and no URI leak in the page offer; final Android build,
+lint/emulator and real phone Sharesheet/byte-read acceptance remain required.
+This source is not installed/released. No new native stream-copy/cache is needed
+for the supported picker route. Preserve all other voice/background/Beacon/iOS
+requirements and their acceptance gaps.
 
 ## Native Beacon candidate0.8 —7November2026
 

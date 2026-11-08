@@ -225,6 +225,17 @@ public final class MainActivity extends ComponentActivity {
             }
             @Override public void onPermissionRequestCanceled(PermissionRequest request) { if (microphone == request) microphone = null; }
             @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                String[] types=params.getAcceptTypes();
+                if (types.length==1 && types[0].startsWith(SharedText.PICKER)) {
+                    // Only the explicit offer's input receives its granted URIs.
+                    // Chromium then reads them through the ordinary file-input
+                    // path; no general content URI bridge or native staging.
+                    boolean allowed=foreground && appPage() && incomingShare!=null
+                        && shareBinding!=null && origin.equals(shareHome)
+                        && types[0].equals(SharedText.PICKER+incomingShare.id);
+                    callback.onReceiveValue(allowed ? incomingShare.files.toArray(new Uri[0]) : null);
+                    return true;
+                }
                 if (chooser != null) chooser.onReceiveValue(null); chooser = callback;
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
                 intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE);

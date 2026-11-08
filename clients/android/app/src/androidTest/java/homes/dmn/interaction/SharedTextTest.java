@@ -23,13 +23,31 @@ public class SharedTextTest {
         assertNull(SharedText.from(new Intent(Intent.ACTION_MAIN)));
         assertNull(SharedText.restore(new Bundle()));
     }
-    @Test public void binaryOrOversizedInputIsNotSilentlyTruncatedToText() {
+    @Test public void unsupportedOrOversizedInputIsNotSilentlyTruncatedToText() {
         refuse(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, " "));
         refuse(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "🧭".repeat(4000)));
         refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_TEXT, "caption"));
-        refuse(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "caption").putExtra(Intent.EXTRA_STREAM, Uri.parse("content://example.test/photo")));
+        refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, Uri.parse("file:///private/example.png")));
+        refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, Uri.parse("https://example.test/photo")));
         Intent hidden = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "caption");
-        ClipData clips = ClipData.newPlainText("text", "caption"); clips.addItem(new ClipData.Item(Uri.parse("content://example.test/photo"))); hidden.setClipData(clips); refuse(hidden);
+        ClipData clips = ClipData.newRawUri("photo", Uri.parse("content://example.test/photo"));
+        hidden.setClipData(clips); SharedText clip=SharedText.from(hidden);
+        assertEquals(1,clip.files.size());assertEquals("caption",clip.text);
+
+    }
+    @Test public void multipleContentUrisKeepOrderAndGrantReferencesAcrossRecreation() {
+        java.util.ArrayList<Uri> uris=new java.util.ArrayList<>();
+        for(int n=0;n<8;n++)uris.add(Uri.parse("content://synthetic.test/photo/"+n));
+        Intent intent=new Intent(Intent.ACTION_SEND_MULTIPLE).setType("image/*")
+            .putParcelableArrayListExtra(Intent.EXTRA_STREAM,uris)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        SharedText selected=SharedText.from(intent);assertEquals(uris,selected.files);
+        Bundle state=new Bundle();selected.save(state);SharedText reopened=SharedText.restore(state);
+        assertEquals(selected.id,reopened.id);assertEquals(uris,reopened.files);
+        try{assertEquals(8,reopened.json().getInt("fileCount"));assertFalse(reopened.json().toString().contains("content://"));}
+        catch(org.json.JSONException e){throw new AssertionError(e);}
+        uris.add(Uri.parse("content://synthetic.test/ninth"));refuse(intent);
+        uris.remove(8);uris.set(1,uris.get(0));refuse(intent);
     }
     @Test public void actualActivityNewIntentAndRecreationPreservePendingIdentityAndDestination() {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();

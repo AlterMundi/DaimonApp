@@ -25,5 +25,25 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
  await page.evaluate(()=>{document.querySelector('textarea').disabled=false;binding='different-owner';view.refresh();});
  assert(await page.locator('.native-share-offer').isHidden(),'Offer cannot cross its native-bound destination');
  await page.evaluate(()=>{binding='synthetic-owner';view.refresh();});assert(await page.locator('.native-share-offer').isVisible(),'Original destination retains its unconsumed offer');
+ await page.evaluate(()=>{view.reset();binding='synthetic-owner';NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000004',text:'Files caption',fileCount:2,binding});});
+ // Exercise actual DOM FileList delivery rather than fetching a content URI.
+ await page.evaluate(()=>{window.receivedFiles=[];});
+ // A separate page mounts the actual host attachment admission through its callback.
+ const binary=await browser.newPage();await binary.route('https://shared.example.test/**',route=>route.fulfill({contentType:'text/html',body:'<form><textarea>Existing.</textarea><div id="compose"></div><input type=file id="conversation-files" multiple><div id="conversation-files-list"></div><p id="conversation-files-state"></p></form>'}));await binary.goto('https://shared.example.test/');
+ await binary.evaluate(()=>{window.DaimonAudio={postMessage:()=>{}};window.binding='owner';window.received=[];window.busy=false;});
+ await binary.addScriptTag({path:require('path').resolve('clients/android/app/src/main/assets/native-share.js')});
+ await binary.addScriptTag({path:require('path').resolve('dashboard/web/files.js')});
+ await binary.evaluate(()=>{window.attachments=FileInput.mount({headers:()=>({'X-Synthetic':'owner'}),getBinding:()=>binding,unauthorized:()=>{throw Error('access changed');}});window.uploads=[];window.fetch=async(url,options)=>{const ref=JSON.parse(decodeURIComponent(options.headers['X-File-Reference']));uploads.push({name:ref.name,hash:ref.sha256,body:new TextDecoder().decode(options.body)});return {ok:true,json:async()=>ref};};window.view=NativeSharedText.mount({parent:document.querySelector('#compose'),draft:document.querySelector('textarea'),getBinding:()=>binding,onFiles:async files=>{await attachments.addFiles(files);received=await Promise.all(files.map(async f=>({name:f.name,size:f.size,text:await f.text()})));},isBusy:()=>busy});NativeSharedText.receive({id:'00000000-0000-4000-8000-000000000005',text:'Caption',fileCount:2,binding});});
+ await binary.getByRole('button',{name:'Add to message'}).click();
+ await binary.locator('.native-share-offer input[type=file]').setInputFiles([{name:'one.png',mimeType:'image/png',buffer:Buffer.from('first exact original')},{name:'two.pdf',mimeType:'application/pdf',buffer:Buffer.from('second exact original')}]);
+ await binary.waitForFunction(()=>received.length===2);
+ assert.deepEqual(await binary.evaluate(()=>received.map(f=>f.text)),['first exact original','second exact original']);
+ assert.equal(await binary.locator('textarea').inputValue(),'Existing.\nCaption');
+ assert(await binary.locator('.native-share-offer').isHidden());
+ assert.equal(await binary.evaluate(()=>uploads.length),0,'Add does not upload or Send');
+ assert.equal(await binary.locator('#conversation-files-list > div').count(),2);
+ await binary.evaluate(()=>attachments.capture());
+ assert.deepEqual(await binary.evaluate(()=>uploads.map(f=>f.body)),['first exact original','second exact original']);
+ await binary.close();
  console.log('PASS actual Chromium: private-ready gate, preserved draft, literal URL/HTML, no Send/network, one append, busy capture and discard');
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1);});
