@@ -468,11 +468,23 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
     };
     // Already-retained fresh originals are canonical work even before a busy
     // entry can allocate a native return. This is local metadata, no inbox I/O.
-    let unoffered_inbox = state == "configured"
-        && p.contract.matrix_inbox.as_ref().is_some_and(|source| {
-            super::super::matrix::inbox::offers_on(conn, human, p.entry, source, &p.seen)
-                .is_ok_and(|offers| !offers.is_empty())
-        });
+    let unoffered_inbox =
+        state == "configured"
+            && p.contract.matrix_inbox.as_ref().is_some_and(|source| {
+                super::super::matrix::inbox::offers_on(conn, human, p.entry, source, &p.seen)
+                    .is_ok_and(|offers| {
+                        offers.iter().any(|offer| {
+                            !p.native_returns.iter().any(|r| {
+                                r.envelope["offers"].as_array().into_iter().flatten().any(
+                                    |allocated| {
+                                        allocated["key"] == offer.key
+                                            && allocated["revision"] == offer.revision
+                                    },
+                                )
+                            })
+                        })
+                    })
+            });
     let last_attention_failure = p
         .native_returns
         .iter()
