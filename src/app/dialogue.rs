@@ -344,7 +344,7 @@ pub(super) fn tool_call(
             if request.tool=="interaction_live_context" {
                 let cfg=super::routing::profile(shared)?;
                 if cfg.human_id!=human || cfg.entry()!=key {bail!("Live context belongs to the integrating entry");}
-                let selected:crate::store::LiveContextCommand=serde_json::from_value(request.arguments)?;
+                let selected:crate::store::LiveContextCommand=serde_json::from_value(request.arguments).map_err(|_|crate::store::invalid_live_context_command())?;
                 if !matches!(selected,crate::store::LiveContextCommand::Read {..}
                     |crate::store::LiveContextCommand::Part {..}
                     |crate::store::LiveContextCommand::Incorporate {..}
@@ -490,7 +490,7 @@ pub(super) fn tool_call(
             }
             Ok(json!({"kind":"integrator_routing_outcomes","input_ref":args.input_ref,"original_ingress_update":args.input_ref.update(),"original_human":human,"results":results}))
         }.await;
-        let result=match outcome {Ok(value)=>crate::codex::dynamic_tool_result(true,value.to_string()),Err(error)=>crate::codex::dynamic_tool_result(false,super::creation::rejection(&error).or_else(||crate::store::workflow_rejection(&error)).map(|value|value.to_string()).unwrap_or_else(||"Routing unavailable for this original input, binding, generation or selection. No uncertain operation was retried. Inspect any retained per-target outcomes before recovery.".into()))};
+        let result=match outcome {Ok(value)=>crate::codex::dynamic_tool_result(true,value.to_string()),Err(error)=>crate::codex::dynamic_tool_result(false,super::creation::rejection(&error).or_else(||crate::store::workflow_rejection(&error)).or_else(||crate::store::live_context_rejection(&error)).map(|value|value.to_string()).unwrap_or_else(||"Routing unavailable for this original input, binding, generation or selection. No uncertain operation was retried. Inspect any retained per-target outcomes before recovery.".into()))};
         let _ = send.send(result);
     });
     recv

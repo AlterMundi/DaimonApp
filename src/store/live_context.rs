@@ -20,6 +20,36 @@ const CONTINUATION_TARGET: usize = 8192;
 const CONTINUATION_GROWTH: usize = 4096;
 const MAX_CONTINUATION_REQUESTS: u32 = 32;
 
+/// Closed diagnostics for protocol mistakes; never forward raw store/SQL errors.
+#[derive(Debug)]
+enum LiveContextRejection {
+    InvalidCommand,
+    SelectedRange { dialogue: String, full: bool },
+}
+impl std::fmt::Display for LiveContextRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Live context protocol rejected")
+    }
+}
+impl std::error::Error for LiveContextRejection {}
+pub(crate) fn invalid_native_command() -> anyhow::Error {
+    LiveContextRejection::InvalidCommand.into()
+}
+pub(crate) fn rejection(error: &anyhow::Error) -> Option<Value> {
+    let (code, recovery) = match error.downcast_ref::<LiveContextRejection>()? {
+        LiveContextRejection::InvalidCommand => (
+            "live_context_invalid_command",
+            json!({"instruction":"Copy operation and arguments from the supplied template. after_incorporation is a template field, not an action; its arguments.action is incorporate. Supported native actions: read, part, incorporate, checkpoint, guide, guide_status. Never invent an ACK or checkpoint."}),
+        ),
+        LiveContextRejection::SelectedRange { dialogue, full } => (
+            "live_context_selected_range_pending",
+            json!({"instruction":"Finish the existing frozen range before switching read mode. Read it with this template, follow every part until complete, then copy its after_incorporation template exactly. This refusal did not acknowledge any content.",
+                "reader":{"operation":"live_context","arguments":{"action":"read","dialogue":dialogue,"full":full}}}),
+        ),
+    };
+    Some(json!({"kind":"live_context_rejected","code":code,"mutated":false,"recovery":recovery}))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum LiveContextCommand {
@@ -787,8 +817,12 @@ fn human_context_missing(conn: &Connection, p: &Projection) -> Result<bool> {
         params![p.human,p.session,p.native,p.dialogue,serde_json::to_string(&p.sources)?],|r|r.get(0))?)
 }
 fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
-    if p.range.as_ref().is_some_and(|r| r.full != full) {
-        bail!("Finish the selected frozen Live range first");
+    if let Some(r) = p.range.as_ref().filter(|r| r.full != full) {
+        return Err(LiveContextRejection::SelectedRange {
+            dialogue: p.dialogue.clone(),
+            full: r.full,
+        }
+        .into());
     }
     if p.range.is_none() {
         let from = if full {
@@ -831,6 +865,9 @@ fn freeze(p: &mut Projection, full: bool) -> Result<Value> {
 fn reader_actions(result: &mut Value, r: &Frozen) -> Result<()> {
     result["after_incorporation"] = json!({"operation":"live_context","arguments":{
         "action":"incorporate","dialogue":result["dialogue"],"revision":r.revision}});
+    result["after_incorporation_notes"] = json!(
+        "After reading every exact page, call this template's operation and arguments unchanged. after_incorporation is the field name, not an action; arguments.action must be incorporate. Finish this range before requesting another read mode."
+    );
     if r.full && r.supplied == r.body.chars().count() {
         let frozen: Value = serde_json::from_str(&r.body)?;
         result["checkpoint_writer"] = json!({"operation":"live_context","arguments":{
@@ -841,7 +878,7 @@ fn reader_actions(result: &mut Value, r: &Frozen) -> Result<()> {
             "required_text_field":"text",
             "pressure_seed_max_bytes":MAX_ROLLOVER_SEED,
             "continuation_target_bytes":CONTINUATION_TARGET,
-            "meaning":"After invoking after_incorporation, add your compact semantic checkpoint in arguments.text and call this exact template. Keep arguments.revision and through unchanged. For a complete pressure or closed reconnect checkpoint, the serialized checkpoint envelope must fit pressure_seed_max_bytes, including JSON escaping and metadata. If rejected for capacity, shorten text and retry this unchanged revision; exact context has not been retired. Guidance and complete provider setup have separate readiness/capacity gates. This is semantic continuity, not work admission or a memory-write receipt."});
+            "meaning":"After calling the after_incorporation template with action incorporate, add your compact semantic checkpoint in arguments.text and call this exact checkpoint_writer template with action checkpoint. Keep arguments.revision and through unchanged. For a complete pressure or closed reconnect checkpoint, the serialized checkpoint envelope must fit pressure_seed_max_bytes, including JSON escaping and metadata. If rejected for capacity, shorten text and retry this unchanged revision; exact context has not been retired. Guidance and complete provider setup have separate readiness/capacity gates. This is semantic continuity, not work admission or a memory-write receipt."});
     }
     Ok(())
 }
@@ -2030,6 +2067,63 @@ mod tests {
                 "request_revision":basis["checkpoint_request"]["revision"],
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn protocol_refusal_preserves_frozen_pages_and_does_not_disclose_retired_binding() {
+        let f = Fixture::new();
+        for _ in 0..2 {
+            f.append(
+                &Uuid::now_v7().to_string(),
+                &"bounded original ".repeat(600),
+            )
+            .unwrap();
+        }
+        let initial = f.read(false);
+        let doc = || {
+            f.store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT doc FROM live_context WHERE dialogue=?1",
+                    [&f.dialogue],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        let before = doc();
+        let error = f
+            .call(json!({"action":"read","dialogue":f.dialogue,"full":true}))
+            .unwrap_err();
+        let diagnostic = rejection(&error).unwrap();
+        assert_eq!(diagnostic["code"], "live_context_selected_range_pending");
+        assert_eq!(diagnostic["mutated"], false);
+        assert_eq!(doc(), before);
+        let recovered = f
+            .call(diagnostic["recovery"]["reader"]["arguments"].clone())
+            .unwrap();
+        assert_eq!(recovered["range"]["revision"], initial["range"]["revision"]);
+        assert_eq!(doc(), before);
+        assert!(
+            f.ack(&recovered).is_err(),
+            "Recovery cannot acknowledge unread pages"
+        );
+        let complete = f.read_all(false);
+        assert_eq!(complete["range"]["revision"], initial["range"]["revision"]);
+        f.ack(&complete).unwrap();
+        assert_eq!(f.read(true)["range"]["full"], true);
+        f.store
+            .set_session_codex_thread(f.entry, "replacement-native")
+            .unwrap();
+        let error = f
+            .call(json!({"action":"read","dialogue":f.dialogue,"full":false}))
+            .unwrap_err();
+        assert!(
+            rejection(&error).is_none(),
+            "Binding failures retain the generic refusal"
+        );
+        assert!(rejection(&anyhow::anyhow!("raw private SQL or provider failure")).is_none());
     }
 
     fn transcript(f: &Fixture, speaker: &str, text: &str) -> Value {

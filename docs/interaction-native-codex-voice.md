@@ -33,6 +33,24 @@ their own journals; they are not a prerequisite for finishing an already admitte
 voice-context intent. Return identity, finite attempt limits and uncertainty
 fences remain unchanged. No new source event or retry loop is introduced.
 
+`after_incorporation` names a supplied call template, not an action. Copy its
+operation and arguments exactly (`action: incorporate`) after reading every
+page. A malformed native command now returns a fixed protocol diagnostic rather
+than raw parser details. Requesting another read mode while a frozen range is
+pending returns its existing read-mode template. Neither refusal changes the
+range, its offsets, incorporation or checkpoint. Binding/authority failures keep
+the generic refusal and cannot disclose an old reader. This assists the native
+writer; it does not acknowledge language or manufacture a semantic checkpoint.
+
+Before these diagnostics, one distinct Luna-low trial on31,819bytes of synthetic
+sources completed without incorporation or a checkpoint. Its first call used
+`action: after_incorporation`; its second requested a full read while the original
+non-full reader remained. Both received the generic routing refusal. Retained
+state agrees with the selected-range guard, but the generic reply does not reveal
+which internal branch rejected the second call. The negative outcome remains;
+no model call was repeated to qualify the diagnostic correction. Socket/SQLite
+tests establish exact protocol recovery, not semantic model comprehension.
+
 In an actual-native qualification, archive the task-owned thread only after its
 owned continuations have settled. An idle observation before a new physical ACK
 is a preparation state, not proof that the new worker already completed. Keep
