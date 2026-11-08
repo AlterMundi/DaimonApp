@@ -8,19 +8,21 @@
 :root {
   color-scheme: light dark;
   --bg: var(--dm-background, #090e17);
-  --panel: var(--dm-surface, #111925);
-  --ink: var(--dm-text, #f5f0e6);
-  --muted: #bec0c5;
-  --accent: var(--dm-accent, #87d7ee);
-  --line: #505660;
-  --warn: var(--dm-accent, #f4c283);
-  --secondary: var(--dm-accent, #dcb3c3);
-  --good: var(--dm-accent, #a8dac6);
+  --panel: var(--dm-ui-surface, var(--dm-surface, #111925));
+  --ink: var(--dm-ui-text, var(--dm-text, #f5f0e6));
+  --muted: var(--dm-ui-muted, #bec0c5);
+  --accent: var(--dm-ui-accent, var(--dm-accent, #87d7ee));
+  --line: var(--dm-ui-border, #505660);
+  --warn: var(--dm-ui-warning, #f4c283);
+  --secondary: var(--dm-ui-secondary, #dcb3c3);
+  --good: var(--dm-ui-positive, #a8dac6);
+  --danger: var(--dm-ui-danger, #ffb5b5);
+  --focus: var(--dm-ui-focus, var(--accent));
 }
 @supports (color: color-mix(in srgb, black, white)) {
   :root {
-    --muted: color-mix(in srgb, var(--ink) 78%, var(--bg));
-    --line: color-mix(in srgb, var(--ink) 30%, var(--bg));
+    --muted: var(--dm-ui-muted, color-mix(in srgb, var(--ink) 78%, var(--bg)));
+    --line: var(--dm-ui-border, color-mix(in srgb, var(--ink) 30%, var(--bg)));
   }
 }
 * {
@@ -147,7 +149,7 @@ button:disabled {
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 a {
@@ -512,7 +514,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .visual-preview { max-height: 320px; overflow: auto; margin-block: 8px; }
 #conversation-image-view { display: block; max-width: 100%; height: auto; cursor: crosshair; }
 #conversation-image-view[hidden] { display: none; }
-#conversation-image-view:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+#conversation-image-view:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 #conversation-visual input[type="number"] { width: 90px; min-height: 44px; padding: 8px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
 
 .input-visual { display: block; max-width: 100%; height: auto; margin-block: 8px; }
@@ -543,7 +545,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
   border: 1px solid var(--line); border-radius: var(--dm-radius, 10px);
   background: var(--bg); overscroll-behavior: contain;
 }
-#routing-graph-viewport:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+#routing-graph-viewport:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 #routing-graph-surface { position: relative; isolation: isolate; }
 .routing-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .routing-edge { fill: none; stroke: var(--accent); stroke-width: 2; opacity: .75; }
@@ -557,7 +559,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
   box-shadow: 0 3px 12px color-mix(in srgb, var(--bg) 65%, transparent);
 }
 .routing-node:hover { border-color: var(--accent); }
-.routing-node:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.routing-node:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .routing-route { border-inline-start: 4px solid var(--accent); }
 .routing-response { border-inline-start: 4px solid var(--good); }
 .routing-decision { border-style: dashed; }
@@ -769,8 +771,8 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 
 #conversation-visual > summary .attachment-icon { display:block; width:24px; height:24px; flex:none; }
 
-#conversation-compose #conversation-voice-discard { width:48px; min-width:48px; height:48px; padding:6px; border-radius:50%; font-size:28px; color:var(--ink); background:var(--panel); border:2px solid #bd4949; }
-#conversation-compose #conversation-voice-discard:hover { background:color-mix(in srgb,#bd4949 16%,var(--panel)); }
+#conversation-compose #conversation-voice-discard { width:48px; min-width:48px; height:48px; padding:6px; border-radius:50%; font-size:28px; color:var(--ink); background:var(--panel); border:2px solid var(--danger); }
+#conversation-compose #conversation-voice-discard:hover { background:color-mix(in srgb,var(--danger) 16%,var(--panel)); }
 
 /* Compact fixed presence above the large, independently scrolling conversation. */
 .standalone-conversation header { position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; min-height:88px; height:88px; padding:4px 0; }
@@ -853,7 +855,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation header .header-tools { flex-wrap:wrap; justify-content:flex-end; max-width:150px; }
 .standalone-conversation #conversation-account { display:block; text-align:left; color:var(--muted); font-size:14px; line-height:20px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-#conversation-compose #conversation-voice-discard { position:relative; display:grid; place-items:center; font-size:0; border-radius:14px; border-width:1px; background:color-mix(in srgb,#bd4949 12%,var(--panel)); color:#ffb5b5; }
+#conversation-compose #conversation-voice-discard { position:relative; display:grid; place-items:center; font-size:0; border-radius:14px; border-width:1px; background:color-mix(in srgb,var(--danger) 12%,var(--panel)); color:var(--danger); }
 #conversation-compose #conversation-voice-discard::before,#conversation-compose #conversation-voice-discard::after { content:""; position:absolute; left:50%; top:50%; width:16px; height:2px; border-radius:2px; background:currentColor; transform:translate(-50%,-50%) rotate(45deg); }
 #conversation-compose #conversation-voice-discard::after { transform:translate(-50%,-50%) rotate(-45deg); }
 
@@ -1018,7 +1020,7 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .session-status-list {padding-left:1.3rem;}
 .session-status-list li {margin-block:.6rem;overflow-wrap:anywhere;}
 .session-status-list strong,.session-status-list span {display:block;}
-.session-status-list span {font-size:.9em;color:var(--dm-text);opacity:.82;font-variant-numeric:tabular-nums;}
+.session-status-list span {font-size:.9em;color:var(--ink);opacity:.82;font-variant-numeric:tabular-nums;}
 
 .routing-node[data-selected="true"] {outline:2px solid var(--accent);outline-offset:2px;}
 #routing-graph-viewport {cursor:grab;}
@@ -1039,7 +1041,7 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .standalone-conversation #conversation-player #conversation-follow-control:not([hidden]) {grid-row:3;gap:4px;min-height:24px;font-size:11px;}
 #conversation-audio-state,.standalone-conversation #conversation-player #conversation-audio-state {position:relative;width:44px;min-width:44px;height:44px;padding:0;margin:0;font-size:0;border-radius:12px;}
 #conversation-audio-state::before {content:"";position:absolute;inset:10px;background:currentColor;mask:var(--audio-status-icon) center/contain no-repeat;}
-#conversation-audio-hint {position:fixed;z-index:30;box-sizing:border-box;width:max-content;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--dm-text);font-size:14px;line-height:1.4;box-shadow:0 4px 16px #0005;overflow-wrap:anywhere;}
+#conversation-audio-hint {position:fixed;z-index:30;box-sizing:border-box;width:max-content;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);font-size:14px;line-height:1.4;box-shadow:0 4px 16px #0005;overflow-wrap:anywhere;}
 .standalone-conversation #conversation-player #conversation-play,.standalone-conversation #conversation-player #conversation-voice-replies,.standalone-conversation #conversation-player #conversation-audio-state {width:36px;min-width:36px;height:36px;min-height:36px;padding:0;border-radius:10px;}
 .standalone-conversation #conversation-voice-replies .control-icon {width:20px;height:20px;}
 .standalone-conversation #conversation-play::before {border-top-width:6px;border-bottom-width:6px;border-left-width:10px;}
