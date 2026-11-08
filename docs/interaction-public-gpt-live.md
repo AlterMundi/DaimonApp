@@ -841,6 +841,23 @@ roadmap acceptance remain open. Synthetic tests cover later-page return, exact
 revision changes, foreign bindings, nonadvancing cursors, retained cursor reads
 through a fresh journal reader, and no repeated native work.
 
+#### Corrected results after an acknowledged partial
+
+A long worker result may become noncurrent while its remaining text is waiting.
+Before continuing that tail, the return task checks the existing owned trace or
+its exact result lookup. An available matching source explicitly marked
+`current=false` or `correction_pending=true` does not block discovery of the new
+current result. The old acknowledged fragment, revision and continuation cursor
+remain intact; no old context event or native work is replayed.
+
+This applies only after every earlier context append is confirmed. An unknown
+append still holds the return. Missing/unavailable source metadata, a foreign
+binding or an unsupported exact lookup do not prove supersession. Every new
+fragment still uses the ordinary fresh canonical revision/association checks.
+Synthetic tests cover the live visit, paginated association, a fresh journal
+reader after replacements, unknown injection and foreign/missing-source refusal.
+They do not establish actual spoken incorporation or human hearing.
+
 ### Explicit replacement after a disconnected native visit
 
 A known-created native voice whose local capture has ended can offer a manual
