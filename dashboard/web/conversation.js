@@ -520,10 +520,11 @@ window.Conversation = (() => {
     const foregroundCards=new Map();let foregroundBefore=0,foregroundNewest=0,foregroundReading=false;
     const foregroundOlder=$("#conversation-foreground-older");foregroundOlder.hidden=true;
     historyTools?.append(foregroundOlder);
+    const voiceHistoryPanel=node('section',undefined,'voice-history-controls');voiceHistoryPanel.hidden=true;voiceHistoryPanel.append(node('h3','Voice history'));$('#conversation-diagnostics .conversation-diagnostics-content')?.append(voiceHistoryPanel);
     const codexHistoryOlder=node('button','Earlier voice conversation');codexHistoryOlder.type='button';codexHistoryOlder.hidden=true;
     const codexHistoryTools=node('div',undefined,'conversation-tools timeline-history');codexHistoryTools.hidden=true;
     codexHistoryTools.dataset.timelineTime='-Infinity';codexHistoryTools.dataset.timelineKey='voice-history';
-    codexHistoryTools.append(codexHistoryOlder);timeline?.prepend(codexHistoryTools);let retryCodexHistoryOlder=false;
+    codexHistoryTools.append(codexHistoryOlder);voiceHistoryPanel.append(codexHistoryTools);let retryCodexHistoryOlder=false;
     codexHistoryOlder.addEventListener('click',async()=>{
       const selected=binding,scroll=timeline?.scrollTop,height=timeline?.scrollHeight,older=retryCodexHistoryOlder;
       try{await codexVoiceSession?.restoreHistory(older);}catch{}
@@ -532,7 +533,7 @@ window.Conversation = (() => {
     const publicHistoryOlder=node('button','Earlier voice conversation');publicHistoryOlder.type='button';publicHistoryOlder.hidden=true;
     const publicHistoryTools=node('div',undefined,'conversation-tools timeline-history');publicHistoryTools.hidden=true;
     publicHistoryTools.dataset.timelineTime='-Infinity';publicHistoryTools.dataset.timelineKey='voice-history-public';
-    publicHistoryTools.append(publicHistoryOlder);timeline?.append(publicHistoryTools);let retryPublicHistoryOlder=false;
+    publicHistoryTools.append(publicHistoryOlder);voiceHistoryPanel.append(publicHistoryTools);let retryPublicHistoryOlder=false;
     publicHistoryOlder.addEventListener('click',async()=>{
       const selected=binding,scroll=timeline?.scrollTop,height=timeline?.scrollHeight,older=retryPublicHistoryOlder;
       try{await publicLiveSession?.restoreHistory(older,true);}catch{}
@@ -824,8 +825,8 @@ window.Conversation = (() => {
       voiceMode?.close();showResponseDraft();
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();graph?.reset();graphCursor=0;timeline?.replaceChildren();
-      codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;timeline?.append(codexHistoryTools);
-      publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;timeline?.append(publicHistoryTools);
+      codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;voiceHistoryPanel.append(codexHistoryTools);
+      publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;voiceHistoryPanel.append(publicHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
       inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = undefined;
       latestComposerId = undefined; composerNotice("",false);clearFocus();routingChoices=[];
@@ -2245,7 +2246,7 @@ window.Conversation = (() => {
     if(standalone&&!readOnly&&microphone)codexVoiceSession=window.CodexConversation?.create({
       headers,getBinding:()=>binding,
       onCaption:text=>voiceMode?.update({caption:text}),
-      onHistory:value=>{codexHistoryTools.hidden=codexHistoryOlder.hidden=!value.more&&!value.error;codexHistoryOlder.disabled=value.loading===true;
+      onHistory:value=>{codexHistoryTools.hidden=codexHistoryOlder.hidden=!value.more&&!value.error;voiceHistoryPanel.hidden=codexHistoryTools.hidden&&publicHistoryTools.hidden;codexHistoryOlder.disabled=value.loading===true;
         codexHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';
         retryCodexHistoryOlder=value.error?value.older===true:true;},
       onItem:value=>{
@@ -2283,7 +2284,7 @@ window.Conversation = (() => {
       let speech;const retained=[];
       publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,getBackend:()=>voiceChoice==='gpt-live-native'?'native':undefined,
         onUsage:value=>{if(value.binding===binding)liveUsage?.observe(value);},
-        onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;publicHistoryOlder.disabled=value.loading===true;
+        onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;voiceHistoryPanel.hidden=codexHistoryTools.hidden&&publicHistoryTools.hidden;publicHistoryOlder.disabled=value.loading===true;
           publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
         onItem:value=>{
           const event=value?.item,role=event?.type==='session.input_transcript.delta'?'user':event?.type==='session.output_transcript.delta'?'assistant':undefined;
@@ -2328,7 +2329,7 @@ window.Conversation = (() => {
     }
     nativeVoiceSession=providerVoiceSession;
     if(standalone && !readOnly)voiceMode=window.ConversationVoiceMode?.mount({
-      portrait:$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
+      portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
       canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
         if(voiceEngine)voiceEngine.disabled=true;

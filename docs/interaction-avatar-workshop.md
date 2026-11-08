@@ -268,3 +268,34 @@ observations and temporary actual stores, with no provider calls or real learner
 Production participant selection, Oca entry/return navigation, host injection,
 private report publication, deployment and human-device acceptance are separate
 receiving dependencies. This candidate creates none of those grants or identities.
+## Portrait HUD controls
+
+The shared portrait frame holds compact, labelled gear and pause/play icons on
+its left edge. The existing editor and manual/reduced-motion/visibility pause
+policy are unchanged. The pending/status row paints above overlapping artwork
+and keeps its actions reachable; the scroll-compact header hides the entire
+portrait frame. This is an incremental control/layout correction, separate from
+the shared-world graphic study and any future world-engine implementation.
+
+Earlier voice-page retrieval controls live under the existing diagnostic panel,
+so the ordinary reading surface is free of engine-specific history buttons.
+The original bounded retrieval and attributed transcript rows remain unchanged;
+opening diagnostics and loading a page does not open voice or admit new work.
+
+The selected portrait uses one stable interaction surface for both the built-in
+and custom drawing. Click or Enter/Space opens the existing Avatar voice view;
+that same surface moves into the view and returns on close. Gear/pause controls
+are siblings, so editing or pausing does not start voice. The canvas and built-in
+portrait share the top origin. While authenticated selection is unresolved, the
+built-in drawing stays hidden instead of flashing before the custom revision.
+An unavailable selection keeps the workshop retry/status path, without guessing
+that the built-in avatar was selected. Account reset removes the previous art.
+Listening/speaking evidence lights the full header for either portrait; authored
+expressions do not manufacture operational microphone state.
+
+The standalone Conversation response selects its heading, feedback and layout
+classes in the initial HTML, before deferred scripts or authenticated reads.
+The separate Sessions entry retains its own shell. Inherited Home CSS remains
+render-blocking; do not hide the application indefinitely while waiting for
+appearance events or use appearance to admit access. Shared-auth attributes and
+explicit inherited-style policy coexist on the same HTML element.
