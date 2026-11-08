@@ -71,10 +71,11 @@ def qualify(binary, production=False):
             goal=dict(threadId=j.web_thread,objective='Preserve synthetic ongoing goal',status='active',tokenBudget=None,tokensUsed=17,timeUsedSeconds=3,createdAt=1,updatedAt=1)
             j.goals[j.web_thread]=goal.copy()
             j.broadcast(j.web_thread,'thread/goal/updated',{'goal':goal})
+        native_reads=sum(m.get('method')=='thread/read' and m.get('params',{}).get('threadId')==j.web_thread for m in j.rpc)
         if production:j.native_fixture_busy=True
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         if production:
-            j.wait(lambda:j.read('heartbeat','status')['result']['producer']['last_check']['sequence']>waiting['producer']['last_check']['sequence'],seconds=45)
+            j.wait(lambda:sum(m.get('method')=='thread/read' and m.get('params',{}).get('threadId')==j.web_thread for m in j.rpc)>native_reads,seconds=45)
             assert len(j.bounded)==0, 'Known native contention spent an execution envelope'
             assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==12
             j.native_fixture_busy=False

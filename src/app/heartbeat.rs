@@ -309,11 +309,7 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     };
     let current = app.shared.store.get_session(cfg.entry())?;
     let allow_attention = if let Some(session) = current.filter(|s| !s.busy) {
-        app.shared
-            .codex
-            .bounded_idle_readiness(&session)
-            .await
-            .is_ok_and(|reason| reason == "ready")
+        native_preflight_allows_dispatch(app.shared.codex.bounded_idle_readiness(&session).await)
     } else {
         false
     };
@@ -354,13 +350,7 @@ pub(super) async fn recover_unsent(app: &App) -> Result<()> {
     // A local slot can be free while the native goal has a physical writer.
     // Observe that contention before spending a retry or execution envelope;
     // the atomic native admission remains mandatory for races after this read.
-    if !app
-        .shared
-        .codex
-        .bounded_idle_readiness(&session)
-        .await
-        .is_ok_and(|reason| reason == "ready")
-    {
+    if !native_preflight_allows_dispatch(app.shared.codex.bounded_idle_readiness(&session).await) {
         return Ok(());
     }
     for selected in app
