@@ -557,6 +557,27 @@ def render(binding, request, *, cancel=None, allow_regenerate=True):
 
 
 
+def preview_start_rejection(state):
+    """Only a model denial before this single-start transport ever started.
+
+    The Live preview sends exactly one session.start and no other command until
+    session.started. Its retained model_not_found + released/no-session receipt
+    therefore belongs to that start. This is a request rejection, never a
+    session.closed, zero-charge claim, refunded attempt or permission to replay.
+    Diagnostics without this exact proof remain uncertain.
+    """
+    if not isinstance(state,dict):return False
+    p=state.get('provider_receipt',{});d=p.get('diagnostic',{}) if isinstance(p,dict) else {}
+    if not isinstance(p,dict) or not isinstance(d,dict):return False
+    return (state.get('schema')=='telecodex.speech-render/v1'
+        and state.get('provider')=='openai-live' and state.get('phase')=='unconfirmed'
+        and not state.get('audio_sha256') and not state.get('format')
+        and p.get('stage')=='transport_released' and p.get('finalized') is False
+        and 'session_id' in p and p['session_id'] is None
+        and d.get('failure_code')=='audition-provider-error'
+        and d.get('provider_error_code')=='model_not_found')
+
+
 def retire_preview_job(binding,ident,outcome):
     """Delete only this explicitly claimed disposable Live preview job.
 
@@ -567,7 +588,7 @@ def retire_preview_job(binding,ident,outcome):
     config=route(binding)
     if (config['provider']!='openai-live' or not isinstance(ident,str)
             or not re.fullmatch('[a-f0-9]{64}',ident) or not isinstance(outcome,dict)
-            or outcome.get('state') not in ('prepared','rendered','not_started','cancelled_verified')):
+            or outcome.get('state') not in ('prepared','rendered','not_started','cancelled_verified','rejected_before_start')):
         raise RenderError('preview-retirement-proof-required')
     root=directory(config['cache_root']);job=root/ident
     if not job.exists() and not job.is_symlink():return {'retired':True,'already_absent':True}
@@ -577,10 +598,14 @@ def retire_preview_job(binding,ident,outcome):
         if set(entries)-{'.lock','state.json','audio.wav'}:raise RenderError('preview-job-needs-review')
         state_path=job/'state.json';state=None
         if state_path.exists() or state_path.is_symlink():
-            state=json.loads(private_bytes(state_path,32768))
+            raw=private_bytes(state_path,32768);state=json.loads(raw)
+            rejected=(outcome['state']=='rejected_before_start' and preview_start_rejection(state)
+                and outcome.get('receipt',{}).get('render_id')==ident
+                and outcome.get('receipt',{}).get('render_state_sha256')==sha(raw)
+                and not (job/'audio.wav').exists() and not (job/'audio.wav').is_symlink())
             if (state.get('identity_sha256')!=ident or state.get('provider')!='openai-live'
                     or state.get('phase') not in ('rendered','audio_expired','unconfirmed')
-                    or state.get('provider_receipt',{}).get('finalized') is not True
+                    or (not rejected and state.get('provider_receipt',{}).get('finalized') is not True)
                     or outcome['state'] in ('prepared','not_started')):
                 raise RenderError('uncertain-preview-is-kept')
         audio=job/'audio.wav'
