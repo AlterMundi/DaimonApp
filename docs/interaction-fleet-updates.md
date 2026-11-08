@@ -221,3 +221,10 @@ reconcile a current collector from exact terminal lifecycle metadata and current
 goal state. This does not import or retire missing output, replay input, change
 a goal or start a second scheduler. Full output recovery keeps its original
 bounds and checkpoint.
+
+Before recording a remote launch intent, materialize and read its complete public
+payload and entry script. A local missing-file error while evaluating subprocess
+arguments proves no transport invocation; retain that failed intent and continue
+only the known-unattempted remote action with a separate recovery receipt. A
+transport timeout is different: inspect the original remote process/receipt and
+never use this local-preflight recovery rule to replay an uncertain launch.
