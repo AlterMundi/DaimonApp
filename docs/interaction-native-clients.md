@@ -15,7 +15,7 @@ The candidate registers `ACTION_SEND` and `ACTION_SEND_MULTIPLE` as **Daimon**.
 It accepts literal text/links and up to eight distinct `content:` URI references,
 retaining source order. Stream and ClipData descriptions must agree when both
 are present; file/http URIs, duplicate files and excessive selections refuse.
-One pending offer (12KiB text plus8URI references) survives Activity recreation
+One pending offer (12KiB text plus8URI references of at most8192 characters each) survives Activity recreation
 until Add/Discard or task removal. Android owns transient read grants; there is
 no persistable permission, new native byte cache or background file reader.
 A second offer refuses instead of overwriting the first.

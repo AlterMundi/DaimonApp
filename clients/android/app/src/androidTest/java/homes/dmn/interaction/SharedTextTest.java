@@ -29,6 +29,7 @@ public class SharedTextTest {
         refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_TEXT, "caption"));
         refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, Uri.parse("file:///private/example.png")));
         refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, Uri.parse("https://example.test/photo")));
+        refuse(new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, Uri.parse("content://example.test/"+"x".repeat(8192))));
         Intent hidden = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "caption");
         ClipData clips = ClipData.newRawUri("photo", Uri.parse("content://example.test/photo"));
         hidden.setClipData(clips); SharedText clip=SharedText.from(hidden);

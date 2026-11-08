@@ -26,7 +26,7 @@ final class SharedText {
         if (files.size() > 8) throw new IllegalArgumentException("Share at most eight files.");
         this.files = new ArrayList<>();
         for (Uri uri : files) {
-            if (uri == null || !"content".equals(uri.getScheme()) || this.files.contains(uri))
+            if (uri == null || uri.toString().length() > 8192 || !"content".equals(uri.getScheme()) || this.files.contains(uri))
                 throw new IllegalArgumentException("Share distinct content files using Android's read grant.");
             this.files.add(uri);
         }
