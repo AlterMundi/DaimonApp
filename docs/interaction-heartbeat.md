@@ -425,3 +425,12 @@ through the usual native idle check. No goal pause/edit, native interrupt, input
 replay or parallel scheduler occurs. Without pending eligible work the collector
 stays across the configured idle checkpoint. This prevents a permanently attached
 active-goal collector from starving the messaging/review parent.
+
+Production selection also records one bounded recovery permission for an already
+exhausted original whose native non-submission is proved. Its exact return ID and
+next attempt are retained in one replaceable-size account record; no counter or
+expiry resets. Repeating the selection cannot grant another attempt. Admitted,
+uncertain and completed executions are excluded. This lets production finish an
+old test-era non-submitted original without inventing a new message or renewing
+a fictitious trial lifetime. Existing generation reconciliation still requires
+explicit resume.

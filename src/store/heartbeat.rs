@@ -111,6 +111,7 @@ impl Store {
             "Pause and inspect the exact generation before production policy selection"
         );
         resources::production_defaults_on(&tx, session, human, source)?;
+        producer::production_recovery_on(&tx, session, human, source)?;
         tx.commit()?;
         Ok(())
     }

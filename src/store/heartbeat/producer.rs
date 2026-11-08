@@ -729,6 +729,50 @@ pub(super) fn renew_observation_on(
 
 /// One extra admission of a proven-unsent original, explicitly selected by the
 /// owner renewal. The lifetime attempt counter advances; no automatic reset.
+// One retained permission per explicit production selection. It never resets a
+// return counter and cannot grant retries of an admitted or uncertain execution.
+pub(super) fn production_recovery_on(
+    conn: &Connection,
+    session: i64,
+    human: i64,
+    source: &str,
+) -> Result<()> {
+    let key = format!("heartbeat_production_recovery:{human}:{session}");
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bot_state WHERE key=?1)",
+        [&key],
+        |r| r.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+    let mut retry = None;
+    if let Some(p) = load(conn, human, session)? {
+        for r in p
+            .native_returns
+            .iter()
+            .filter(|r| r.reported_revision.is_none() && r.automatic_retry_exhausted())
+        {
+            if unsubmitted_on(conn, r)? {
+                anyhow::ensure!(
+                    retry.is_none(),
+                    "Select exact recovery when multiple exhausted originals exist"
+                );
+                retry = Some(
+                    json!({"source":r.id,"attempt":r.attempts.checked_add(1).context("Native attempt counter exhausted")?}),
+                );
+            }
+        }
+    }
+    let receipt =
+        json!({"source":source,"retry":retry,"counters_reset":false,"expires_changed":false});
+    conn.execute(
+        "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+        params![key, receipt.to_string()],
+    )?;
+    Ok(())
+}
+
 pub(in crate::store) fn owner_window_retry_on(
     conn: &Connection,
     r: &WorkflowReturn,
@@ -739,22 +783,27 @@ pub(in crate::store) fn owner_window_retry_on(
     if !unsubmitted_on(conn, r)? {
         return Ok(false);
     }
-    let raw: Option<String> = conn
-        .query_row(
-            "SELECT value FROM bot_state WHERE key=?1",
-            [format!(
-                "heartbeat_window_renewal:{}:{}",
-                p.human, p.session
-            )],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(raw) = raw else { return Ok(false) };
-    let receipt: Value = serde_json::from_str(&raw)?;
-    Ok(receipt["retry"]["source"] == r.id
-        && r.attempts
-            .checked_add(1)
-            .is_some_and(|attempt| receipt["retry"]["attempt"] == attempt))
+    for key in [
+        format!("heartbeat_window_renewal:{}:{}", p.human, p.session),
+        format!("heartbeat_production_recovery:{}:{}", p.human, p.session),
+    ] {
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM bot_state WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(raw) = raw {
+            let receipt: Value = serde_json::from_str(&raw)?;
+            if receipt["retry"]["source"] == r.id
+                && r.attempts
+                    .checked_add(1)
+                    .is_some_and(|a| receipt["retry"]["attempt"] == a)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Retire only resolved cache detail during continuous operation. Signed
@@ -1975,6 +2024,55 @@ mod inbox_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn production_recovery_is_single_use_for_proved_unsent_original() {
+        let (_f, s, e, source) = setup();
+        let check = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let original = s
+            .heartbeat_finish_check(
+                &check,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+            )
+            .unwrap()
+            .unwrap();
+        let status = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = status["generation"].as_u64().unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.native_returns[0].phase = "retained_unsent".into();
+            p.native_returns[0].attempts = 3;
+            p.native_returns[0].retry_after = None;
+            save(&conn, &p).unwrap();
+            production_recovery_on(&conn, session, 100, "Explicit normal production direction")
+                .unwrap();
+            production_recovery_on(&conn, session, 100, "Explicit normal production direction")
+                .unwrap();
+        }
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        let selected = s.heartbeat_returns_recover_unsent(100, e).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, original.id);
+        assert_eq!(selected[0].attempts, 4);
+        s.workflow_native_outcome_attempt(&original.id, 4, "retained_unsent", None)
+            .unwrap();
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, e)
+                .unwrap()
+                .is_empty()
+        );
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+        production_recovery_on(&conn, session, 100, "Explicit normal production direction")
+            .unwrap();
+        let p = load(&conn, 100, session).unwrap().unwrap();
+        assert_eq!(p.native_returns[0].attempts, 4);
+        assert!(!owner_window_retry_on(&conn, &p.native_returns[0]).unwrap());
     }
 
     #[test]
