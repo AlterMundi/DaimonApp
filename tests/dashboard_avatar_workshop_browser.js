@@ -39,7 +39,16 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    }
    throw Error('Unexpected preview write '+body.action);
   });
-  const origin=process.argv[2];await page.goto(origin);await page.locator('#avatar-workshop-open').click();
+  const origin=process.argv[2];
+  await page.goto(origin+'?workshop=voice&defer_bind=1');
+  assert.equal(await page.locator('.avatar-workshop-dialog').count(),0,'Voice entry waits for authorized actor binding');
+  await page.evaluate(()=>testAvatar.bind('actor100'));
+  await page.locator('.avatar-workshop-dialog').waitFor({state:'visible'});
+  await page.getByRole('region',{name:'Voice studio'}).waitFor({state:'visible'});
+  assert.equal(previewPosts.length,0,'Opening Voice never auditions a provider');
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.goto(origin+'?workshop=unknown');assert.equal(await page.locator('.avatar-workshop-dialog').count(),0,'Unknown entry never opens a workshop');
+  await page.goto(origin);await page.locator('#avatar-workshop-open').click();
   const editor=page.frameLocator('iframe');await editor.locator('#save').waitFor({state:'visible'});
   await editor.locator('#save').click();await editor.locator('#use-avatar').waitFor({state:'visible'});
   await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);

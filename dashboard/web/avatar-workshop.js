@@ -6,6 +6,7 @@ window.AvatarWorkshopUI=(()=>{
   button.hidden=false;
   let actor,epoch=0,loaded=false,busy=false,editorReady=false,dialog,iframe,studio,voiceTab,canvas,paint,frame=0,timer,paused=false;
   const motion=matchMedia('(prefers-reduced-motion: reduce)'),asset=path=>new URL('assets/avatar-workshop/'+path,document.baseURI).href;
+  const voiceEntry=new URLSearchParams(window.location?.search||'').get('workshop')==='voice';let voiceEntryOpened=false;
   const resize=new ResizeObserver(()=>{try{paint?.(frame);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
   const credential=()=>JSON.stringify(headers());
@@ -68,7 +69,11 @@ window.AvatarWorkshopUI=(()=>{
   const pause=document.querySelector('#avatar-workshop-pause');
   pause?.addEventListener('click',()=>{paused=!paused;pause.setAttribute('aria-pressed',String(paused));pause.textContent=paused?'Animate avatar':'Pause avatar';run();});
   document.addEventListener('visibilitychange',run);motion.addEventListener('change',run);
-  return {bind(value){if(value!==actor){reset();actor=value;}void refresh();},reset};
+  function openVoiceEntry(){
+   if(!actor||!voiceEntry||voiceEntryOpened||!window.VoiceStudioUI)return;
+   voiceEntryOpened=true;button.click();if(studio?.panel.hidden)voiceTab.click();
+  }
+  return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset};
  }
  return {mount};
 })();
