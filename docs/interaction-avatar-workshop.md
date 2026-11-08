@@ -1,5 +1,26 @@
 # Shared avatar workshop receiving adapter
 
+## Exact saved-design export for an authorized host
+
+`GET /api/interaction/avatars/{revision UUID}?format=canonical` returns the
+unchanged UTF-8 canonical design saved by the selected workshop validator.
+Its SHA256 equals the normal immutable record's `sha256`; the quoted ETag is
+`sha256-<digest>`. The default `format=record` response remains unchanged.
+The same actor/grant checks apply before and after reading. Responses use
+`private, no-store`, never a shared cache or an unauthenticated download link.
+This read changes no revision, editing/active pointer, generation or ledger.
+An invalid digest, missing/foreign revision or changed access returns no design.
+
+The School host must first resolve its existing retained mission request,
+selected space/daimon and authenticated actor. It can read the immutable record
+and its canonical export, compare the digest, and retain those exact bytes in
+the already authorized private learner workspace. Browser/imported references
+are not authority; this API accepts no learner, workspace path or destination.
+Reopened workshop/compact-preview evidence and genuinely attributed child
+participation remain separate requirements for the owning School ledger.
+Export or Save alone does not activate an avatar or earn an achievement.
+Actual mission entry/return and child receiving acceptance remain pending.
+
 Nicolas selected integration into the existing DaimonApp goal on6November2026.
 Oliva authored the original handoff for Ani. The pinned MIT implementation is
 ASCII-Interfaces 4acdb30, handoff990dce9; module hashes and the original license
