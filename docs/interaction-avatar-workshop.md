@@ -253,3 +253,14 @@ Live renderer retains its fixed provider/mismatch/no-audio classification in the
 closed receipt too. Preview readback keeps that sanitized cause even when usage
 and session.closed are confirmed. No raw provider message/credential is exposed;
 closing does not authorize replay, regenerate audio or claim human hearing.
+
+### Primary Live preview media
+
+The primary WebSocket's `session.output_audio.delta` is ordered media without
+`event_id`; see the official [LiveOutputAudioDelta schema](https://developers.openai.com/api/reference/resources/live/primary-websocket#session.output_audio.delta).
+Process every chunk in order, preserving identical consecutive bytes. Keep
+metadata event identity/digest deduplication separate. Existing startup model,
+voice, format, frame count, PCM alignment/size, duration, close/finalization and
+no-reconnect bounds remain. The post777 real attempt retained event_validation
+and0PCM; this contract correction is source-qualified, not a claim that its
+unretained specific event was recovered or that a new real sample succeeded.
