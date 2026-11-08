@@ -95,6 +95,17 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                 if not isinstance(raw,str) or len(raw.encode())>1024*1024:raise ValueError()
                 event=json.loads(raw)
                 if not isinstance(event,dict):raise ValueError()
+                kind=event.get('type')
+                if kind=='session.output_audio.delta':
+                    # Primary WebSocket audio has no event_id. Every chunk is
+                    # ordered media, including identical consecutive bytes;
+                    # metadata identity deduplication would lose sound here.
+                    if session is None:raise ValueError()
+                    data=base64.b64decode(event['delta'],validate=True)
+                    if not data or len(data)%2 or len(pcm)+len(data)>max_pcm:raise ValueError()
+                    if first_audio is None:first_audio=int((clock()-started)*1000)
+                    pcm.extend(data);last_audio=clock()
+                    continue
                 ident=event.get('event_id')
                 if not isinstance(ident,str) or not 1<=len(ident)<=1024:raise ValueError()
                 digest=hashlib.sha256(raw.encode()).hexdigest()
@@ -119,12 +130,6 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     if failure or clock()>=generation_end:close()
                     else:send({'type':'session.commentary.append','event_id':str(uuid.uuid4()),
                                'delegation_id':None,'content':fields['greeting']})
-                elif kind=='session.output_audio.delta':
-                    if session is None:raise ValueError()
-                    data=base64.b64decode(event['delta'],validate=True)
-                    if not data or len(data)%2 or len(pcm)+len(data)>max_pcm:raise ValueError()
-                    if first_audio is None:first_audio=int((clock()-started)*1000)
-                    pcm.extend(data);last_audio=clock()
                 elif kind=='session.output_transcript.delta':
                     text=event.get('delta')
                     if session is None or not isinstance(text,str) or len((transcript+text).encode())>16384:raise ValueError()
