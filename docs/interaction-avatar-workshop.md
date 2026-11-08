@@ -87,6 +87,39 @@ owns one temporary server/browser/state root with a120second cap. Optional
 `WORKSHOP_SCREENSHOT` writes one selected PNG; it creates no HTML artifact or
 private data publication. Source API/storage suites remain ordinary CI.
 
+## Explicit reply artwork cues
+
+The selected custom portrait can follow the same optional artistic rest cue as
+new canonical replies. ConversationCompanion remains the single admission point:
+source kind, revision/time ordering, duplicate rejection and selected expression
+pack/catalog checks run before the custom renderer sees a cue. Microphone,
+playback, task, connection and question states never select this artistic cue.
+Operational captions and the header glow continue to describe their actual state.
+
+The wardrobe uses only an existing `local/v1` gesture in the active saved design.
+Native `focused` maps to `focus`, and `delighted` to `joy`; supported gallery keys
+can match an admitted per-being pack cue directly. `listening` and `speaking`
+have no invented wardrobe mapping. Missing/unmatched hints or gestures restore
+the design's saved default. This does not expand the native hint vocabulary or
+claim lip sync, emotion detection, all-nine automatic expression selection or
+new artwork for a flat image.
+
+Cue selection changes only the renderer's validated in-memory copy. No Save,
+Use, account generation, stored revision, API call, provider attempt or atlas
+allocation is triggered. The existing one-frame timer, pause, reduced motion,
+editor/background suspension and compact/large rendering remain in force. An
+arriving hint can update a still expression while animation remains paused.
+Actor reset clears transient selection; source/catalog reset restores the saved
+default. A hint received before active-art loading is applied to that same loaded
+candidate, without another fetch or selection write.
+
+The focused Chromium case (`ARTISTIC_CUES_ONLY=1` with the existing browser
+runner) uses the actual companion, raster renderer and mounted synthetic-actor
+storage. It checks visible focus/default differences, old-source rejection,
+operational separation, reduced motion, unchanged stored revision/pointers and
+actor reset. Full editor/voice/save/reopen/cancel and isolation qualification
+remains separate. Real phone and artistic acceptance are still required.
+
 ## Receiving selection —6November2026
 
 All three registered living services now select the qualified31e70a0 common web

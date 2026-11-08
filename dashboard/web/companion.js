@@ -36,7 +36,7 @@ window.ConversationCompanion = (() => {
     for(const glyph of art){color=colors[glyph]||'#778ca5';if(color!==last){run=document.createElement('span');run.style.color=color;fragment.append(run);last=color;}run.append(document.createTextNode(glyph));}
     face.replaceChildren(fragment);
   }
-  function mount({now=()=>Date.now()}={}) {
+  function mount({now=()=>Date.now(),onArtisticRest=()=>{}}={}) {
     const box=document.querySelector("#conversation-companion");
     if(!box)return;
     const face=box.querySelector("pre"), title=box.querySelector(".companion-caption");
@@ -95,13 +95,15 @@ window.ConversationCompanion = (() => {
           && Number.isInteger(d.rows) && d.rows>0 && d.rows<=100 && !!value.expressions[d.expression]?.variants[d.variant];
       });
     }
+    // A presentation observer cannot break ordinary source ingestion.
+    function artistic(value){try{onArtisticRest(value);}catch{}}
     function configure(value,digest){
       let selected;
       try {if(typeof digest==="string" && /^[a-f0-9]{64}$/.test(digest) && validPack(value))selected=value;}catch{}
       const signature=JSON.stringify([selected,digest]);
       if(signature===packSignature)return;
       stopAmbient();stopFrames();animation?.cancel();pack=selected;catalog=digest;packSignature=signature;lastReply=undefined;
-      rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;draw(false);
+      rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;artistic(undefined);draw(false);
     }
     function selection(expression){
       const entry=pack.expressions[expression] || pack.expressions[pack.defaults.app.expression];
@@ -204,8 +206,9 @@ window.ConversationCompanion = (() => {
       // No operation, label, text, timer or HTML comes from the model.
       const hint=source.companion_hint;
       stopFrames();
-      rest=pack?(hint?.catalog===catalog && hint?.pack===pack.id && hint?.revision===pack.revision && Object.hasOwn(pack.expressions,hint?.rest)
-        ?hint.rest:pack.defaults.app.expression):(fallbackExpressions.has(hint?.rest)?hint.rest:"calm");
+      const chosen=pack?hint?.catalog===catalog && hint?.pack===pack.id && hint?.revision===pack.revision && Object.hasOwn(pack.expressions,hint?.rest):fallbackExpressions.has(hint?.rest);
+      rest=chosen?hint.rest:pack?pack.defaults.app.expression:"calm";
+      artistic(chosen?rest:undefined);
       draw(false);
       animation?.cancel();
       if(hint?.gesture!=="none" && !document.hidden && !motion?.matches)playFrames(rest);
@@ -217,7 +220,7 @@ window.ConversationCompanion = (() => {
         animation=face.animate?.(frames,{duration:850,iterations:1});
       }
     }
-    function reset(){clearTimeout(expiry);stopAmbient();sonicFrame=undefined;sonicAt=0;stopFrames();animation?.cancel();state={};observed=0;lastReply=undefined;rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;draw(false);}
+    function reset(){clearTimeout(expiry);stopAmbient();sonicFrame=undefined;sonicAt=0;stopFrames();animation?.cancel();state={};observed=0;lastReply=undefined;rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;artistic(undefined);draw(false);}
     document.addEventListener("visibilitychange",()=>{
       if(document.hidden){clearTimeout(expiry);stopAmbient();stopFrames();animation?.cancel();draw();}
       else {draw();arm();}
