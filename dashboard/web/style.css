@@ -1167,3 +1167,43 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .voice-studio button {font:inherit;min-height:44px;max-width:100%;white-space:normal}
 .voice-studio blockquote {margin:1rem 0;padding:1rem;border-left:3px solid var(--dm-accent,#84d5ec)}
 .avatar-workshop-dialog iframe[hidden] {display:none}
+
+/* The voice workshop shares the selected Home appearance and account editor. */
+.voice-studio {flex:1;scrollbar-gutter:stable;padding:clamp(1rem,3vw,2.25rem)}
+.voice-studio-intro {display:flex;align-items:center;justify-content:flex-start;gap:1.1rem;max-width:56rem;margin:0 auto 1.5rem;padding:0;border:0;border-radius:0;background:transparent}
+.voice-studio-intro h2 {font-family:var(--dm-heading-font,inherit);font-size:clamp(1.6rem,4vw,2.3rem);line-height:1.15;margin:.2rem 0 .65rem}
+.voice-studio-intro p {margin:.25rem 0;max-width:45ch}
+.voice-studio-intro div>p:first-child {font-size:14px;letter-spacing:.12em;font-weight:700}
+.voice-studio-mark {display:grid;place-items:center;flex-shrink:0;width:4.4rem;height:4.4rem;border:2px solid var(--dm-accent,#84d5ec);border-radius:40% 60% 55% 45%;font-size:2.8rem;color:var(--dm-accent,#84d5ec)}
+.voice-studio-grid {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1rem;max-width:56rem;margin:auto}
+.voice-studio-card {min-width:0;padding:clamp(1rem,2.5vw,1.6rem);border:1px solid color-mix(in srgb,currentColor 23%,transparent);border-radius:var(--dm-radius,18px);background:var(--dm-surface,#101925)}
+.voice-studio-card h3 {font-family:var(--dm-heading-font,inherit);font-size:1.35rem;line-height:1.3;margin:0 0 .5rem}
+.voice-studio-card p {margin:.45rem 0 1rem;overflow-wrap:anywhere}
+.voice-studio-presets {display:grid;gap:.7rem;margin:1.2rem 0}
+.voice-studio-presets button {display:grid;grid-template-columns:2.6rem 1fr;text-align:start;gap:.05rem .65rem;padding:1rem;border:1px solid color-mix(in srgb,currentColor 32%,transparent);border-radius:var(--dm-radius,14px);background:var(--dm-background,#0b1018);color:inherit;line-height:1.35}
+.voice-studio-presets button>span {grid-row:span 2;align-self:center;font-size:1.9rem;text-align:center}
+.voice-studio-presets small {font-size:14px;line-height:1.4}
+.voice-studio-presets button[aria-pressed=true] {border:2px solid var(--dm-accent,#84d5ec);box-shadow:inset .25rem 0 var(--dm-accent,#84d5ec)}
+.voice-studio summary {cursor:pointer;min-height:44px;display:list-item;align-content:center;font-size:16px}
+.voice-studio-custom label {padding:.6rem 0}
+.voice-studio textarea,.voice-studio select {font-size:16px;border-color:color-mix(in srgb,currentColor 40%,transparent)}
+.voice-studio button {padding:.65rem 1rem;border:1px solid color-mix(in srgb,currentColor 45%,transparent);border-radius:var(--dm-radius,12px);color:inherit;background:var(--dm-background,#0b1018);cursor:pointer}
+.voice-studio .voice-studio-primary {font-weight:700;border:2px solid var(--dm-accent,#84d5ec)}
+.voice-studio button:disabled {cursor:default;opacity:.55}
+.voice-studio :is(button,select,textarea,summary):focus-visible {outline:3px solid var(--dm-accent,#84d5ec);outline-offset:3px}
+.voice-studio-sample {position:relative;border-top:1px solid color-mix(in srgb,currentColor 23%,transparent);padding:1rem 0 .4rem}
+.voice-studio-sample h4 {font-size:1.05rem;margin:0 0 .3rem}
+.voice-studio-sample-mark {float:right;font-size:2rem;color:var(--dm-accent,#84d5ec)}
+.voice-studio-sample p,.voice-studio-sample details {font-size:14px}
+.voice-studio blockquote {margin:1rem 0;padding:.75rem 1rem;border-radius:0 var(--dm-radius,12px) var(--dm-radius,12px) 0;font-size:16px}
+.voice-studio-keep {box-sizing:border-box;max-width:56rem;margin:1rem auto}
+.voice-studio-keep label {max-width:30rem}
+.voice-studio-notice:empty {display:none}
+.voice-studio-more {max-width:56rem;margin:.7rem auto}
+.voice-studio-more button {margin:.3rem .5rem .3rem 0}
+.voice-studio-more p {font-size:14px}
+@media(max-width:700px){.voice-studio-grid{grid-template-columns:minmax(0,1fr)}.voice-studio-intro{align-items:flex-start;gap:.8rem}.voice-studio-mark{width:3rem;height:3rem;font-size:2rem}.voice-studio-actions button{flex:1 1 9rem}.voice-studio-intro h2{font-size:1.6rem}}
+
+.avatar-workshop-toolbar {display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-shrink:0}
+.avatar-workshop-toolbar button {font:inherit;min-height:44px;max-width:65%;white-space:normal;padding:.5rem .8rem}
+.voice-studio summary {color:var(--dm-text,#eee);opacity:1}

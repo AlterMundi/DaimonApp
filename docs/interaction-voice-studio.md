@@ -12,6 +12,15 @@ transport-failure receipts in this candidate preserve fixed local classification
 provider codes. Provider messages, credentials and request payloads are excluded.
 These optional diagnostics never make an unknown attempt eligible for regeneration
 or retirement. Earlier attempts without diagnostics remain unknown.
+
+The child-facing workshop presents speaking styles, listening samples and saved
+choices as three ordinary decisions. Spanish browsers receive Spanish labels;
+other browsers keep English. Current/candidate samples have descriptive names,
+not A/B labels. Account revisions, earlier test management and provider details
+remain under explicit disclosures. The existing selected Home appearance,
+shared login, immutable Save/Use actions, explicit generation/playback and
+unknown-outcome fences remain unchanged. Style presets change delivery only;
+the UI does not invent additional account voices or select a provider.
 The first adapter targets public GPT-Live Avatar. Ordinary Conversation speech
 keeps its current Realtime route; API-specific voice identities are not pooled.
 
