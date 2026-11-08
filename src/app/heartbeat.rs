@@ -244,7 +244,7 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     let Some(session) = app.shared.store.get_session(cfg.entry())? else {
         return Ok(());
     };
-    if session.busy || session.codex_thread_id.is_none() {
+    if session.codex_thread_id.is_none() {
         return Ok(());
     }
     let Some(check): Option<crate::store::HeartbeatCheck> = app
@@ -266,7 +266,16 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     } else {
         None
     };
-    if let Some(selected) = app.shared.store.heartbeat_finish_check(&check, read)? {
+    let allow_attention = app
+        .shared
+        .store
+        .get_session(cfg.entry())?
+        .is_some_and(|s| !s.busy);
+    if let Some(selected) =
+        app.shared
+            .store
+            .heartbeat_finish_observation(&check, read, allow_attention)?
+    {
         let id = selected.id.clone();
         let attempt = selected.attempts;
         if app.shared.shutdown.is_cancelled()

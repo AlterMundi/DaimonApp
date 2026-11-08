@@ -933,6 +933,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(check_on(&conn, c)?.is_some())
     }
+    #[cfg(test)]
     pub(crate) fn heartbeat_finish_check(
         &self,
         c: &Check,
@@ -942,6 +943,21 @@ impl Store {
                 crate::store::MatrixInboxPage,
             )>,
         >,
+    ) -> Result<Option<ReturnDispatch>> {
+        self.heartbeat_finish_observation(c, read, true)
+    }
+    /// Retain model-free source observations while ordinary native work is busy.
+    /// A busy entry cannot reserve attention, advance offer selection or spend attempts.
+    pub(crate) fn heartbeat_finish_observation(
+        &self,
+        c: &Check,
+        read: Option<
+            Result<(
+                crate::store::MatrixInboxSelection,
+                crate::store::MatrixInboxPage,
+            )>,
+        >,
+        allow_attention: bool,
     ) -> Result<Option<ReturnDispatch>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let mut tx = conn.transaction()?;
@@ -983,8 +999,9 @@ impl Store {
         if error.is_none() {
             p.last_success_at_unix_ms = Some(now);
         }
-        if !resources::status_on(&tx, session, human)
-            .is_ok_and(|status| status["state"] == "available")
+        if !allow_attention
+            || !resources::status_on(&tx, session, human)
+                .is_ok_and(|status| status["state"] == "available")
         {
             // Keep the authenticated page/cursor and check outcome, but do not
             // advance offer cursors, reserve a native return or spend attempts.
@@ -2138,6 +2155,48 @@ mod inbox_tests {
         assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
         assert_eq!(selection(&s, e, &source).after, 1);
+    }
+    #[test]
+    fn busy_observation_keeps_original_visible_without_attention_reservation_or_source_loss() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let original = item(1);
+        let id = original["message_id"].as_str().unwrap().to_owned();
+        assert!(
+            s.heartbeat_finish_observation(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![original])))),
+                false
+            )
+            .unwrap()
+            .is_none()
+        );
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 1);
+        assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(status["producer"]["retained_returns"], 0);
+        let visible = s
+            .interaction_presentation_page_messages(100, e, 0, 0, None, Some(0), None, false)
+            .unwrap();
+        assert_eq!(visible["items"][0]["id"], format!("matrix-inbox:{id}"));
+        let selected = selection(&s, e, &source);
+        assert_eq!(selected.after, 1);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let attention = s
+            .heartbeat_finish_observation(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![])))),
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            attention.output.contains(&id),
+            "Observation must leave the original eligible for actual later attention"
+        );
     }
     #[test]
     fn inbox_failure_and_recovery_are_model_free_until_a_genuine_original_arrives() {

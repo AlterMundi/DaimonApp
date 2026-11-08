@@ -54,7 +54,12 @@ fn load(conn: &Connection, human: i64, session: i64, id: &str) -> Result<Option<
         .transpose()
 }
 fn save(conn: &Connection, human: i64, session: i64, id: &str, v: &Value) -> Result<()> {
-    let raw = serde_json::to_string(v)?;
+    // Refreshable projection cursor lives in the existing bounded handling record.
+    // Canonical incoming source/revision and the signed SDK journal are unchanged.
+    let mut v = v.clone();
+    let last:i64=conn.query_row("SELECT COALESCE(MAX(CAST(json_extract(handling,'$._presentation_sequence') AS INTEGER)),0) FROM interaction_matrix_inbox",[],|r|r.get(0))?;
+    v["_presentation_sequence"] = json!(Utc::now().timestamp_millis().max(last.saturating_add(1)));
+    let raw = serde_json::to_string(&v)?;
     anyhow::ensure!(
         raw.len() <= 131072,
         "Bounded native response record required"
@@ -85,6 +90,33 @@ fn status(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Result<
         json!({"source":source["id"],"revision":source["revision"],"current":source["current"],"handling":handling,"meaning":"Review/defer and authored response are separate; native receipts do not prove comprehension, completion or human hearing"}),
     )
 }
+/// A separate mutable outgoing projection; never changes an incoming offer revision.
+pub(in crate::store) fn presentation_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+) -> Result<Option<Value>> {
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let Some(handling) = load(conn, human, session, id)? else {
+        return Ok(None);
+    };
+    let Some(text) = handling["intent"]["text"].as_str() else {
+        return Ok(None);
+    };
+    let source =
+        super::super::presentation::source_on(conn, human, entry, &format!("matrix-inbox:{id}"))?
+            .context("Native original unavailable")?;
+    let observed = status(conn, human, entry, id)?;
+    Ok(Some(
+        json!({"id":format!("matrix-response:{id}"),"kind":"matrix_response","direction":"outgoing","text":text,
+        "source_author":handling["intent"]["source"],"parent_message_id":id,"thread_id":handling["intent"]["parent"]["thread_id"],
+        "send_id":handling["intent"]["send_id"],"handling":observed["handling"],"observed_at":handling["at"],
+        "current":source["current"],"native_binding_current":source["native_binding_current"],"completed":Value::Null,
+        "verification":"Retained own response intent and observed native delivery. Authored/submitted/uncertain is not recipient delivery or task completion."}),
+    ))
+}
+
 impl Store {
     /// `source` comes only from owner config. The actual physical turn is supplied
     /// by the authenticated tool handler, never model JSON. Claims precede I/O.
@@ -381,6 +413,177 @@ mod tests {
             text: "An attributed reply.".into(),
         }
     }
+    #[test]
+    fn conversation_pages_exact_original_and_uncertain_response_without_reoffering_original() {
+        let (_f, s, e, owner, id, revision) = setup();
+        let original = super::super::presentation::source_on(
+            &s.conn.lock().unwrap(),
+            100,
+            e,
+            &format!("matrix-inbox:{id}"),
+        )
+        .unwrap()
+        .unwrap();
+        let page = s
+            .interaction_presentation_page_messages(100, e, 0, 0, Some(0), Some(0), Some(0), false)
+            .unwrap();
+        assert_eq!(page["items"][0]["id"], format!("matrix-inbox:{id}"));
+        let prepared = call(&s, e, &owner, reply(&id, &revision)).unwrap();
+        let page = s
+            .interaction_presentation_page_messages(100, e, 0, 0, Some(0), Some(0), Some(0), false)
+            .unwrap();
+        let outgoing = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["kind"] == "matrix_response")
+            .unwrap();
+        assert_eq!(outgoing["preview"], "An attributed reply.");
+        assert_eq!(outgoing["source_author"], json!(owner.source));
+        assert_eq!(outgoing["handling"]["phase"], "submitting");
+        let response_cursor = page["cursor"]["responses"].as_i64().unwrap();
+        let old_revision = outgoing["revision"].clone();
+        s.matrix_response_outcome(
+            100,
+            e,
+            &id,
+            prepared["intent"]["send_id"].as_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        let update = s
+            .interaction_presentation_page_messages(
+                100,
+                e,
+                0,
+                0,
+                Some(0),
+                Some(1),
+                Some(response_cursor),
+                false,
+            )
+            .unwrap();
+        assert_eq!(update["items"].as_array().unwrap().len(), 1);
+        assert_eq!(update["items"][0]["handling"]["phase"], "uncertain");
+        assert_ne!(update["items"][0]["revision"], old_revision);
+        assert_eq!(update["items"][0]["send_id"], prepared["intent"]["send_id"]);
+        let after = super::super::presentation::source_on(
+            &s.conn.lock().unwrap(),
+            100,
+            e,
+            &format!("matrix-inbox:{id}"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            after, original,
+            "Outgoing state must not alter the incoming heartbeat source/revision"
+        );
+        let other = SessionKey::new(100, Some(2));
+        s.ensure_session(other, 100, &crate::store::tests::defaults())
+            .unwrap();
+        s.set_session_codex_thread(other, "other-native").unwrap();
+        assert!(
+            s.interaction_presentation_page_messages(
+                100,
+                other,
+                0,
+                0,
+                Some(0),
+                Some(0),
+                Some(0),
+                false
+            )
+            .unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            s.interaction_presentation_page_messages(
+                101,
+                e,
+                0,
+                0,
+                Some(0),
+                Some(0),
+                Some(0),
+                false
+            )
+            .is_err()
+        );
+        let valid = crate::store::ConversationReply {
+            source: format!("matrix-inbox:{id}"),
+            revision: revision.clone(),
+            context_only: true,
+        };
+        assert!(valid.validate_context().is_ok());
+        assert!(
+            crate::store::ConversationReply {
+                context_only: false,
+                ..valid
+            }
+            .validate_context()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conversation_matrix_history_pages_without_duplicate_or_cross_entry_sources() {
+        let (_f, s, e, _owner, id, _revision) = setup();
+        {
+            let conn = s.conn.lock().unwrap();
+            let columns: String = conn
+                .prepare("PRAGMA table_info(interaction_matrix_inbox)")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join(",");
+            for _ in 0..10 {
+                let next = Uuid::now_v7().to_string();
+                let select = columns
+                    .split(',')
+                    .map(|c| match c {
+                        "message_id" => "?1".to_owned(),
+                        "doc" => "json_set(doc,'$.message_id',?1)".to_owned(),
+                        _ => c.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                conn.execute(&format!("INSERT INTO interaction_matrix_inbox({columns}) SELECT {select} FROM interaction_matrix_inbox WHERE message_id=?2"),params![next,id]).unwrap();
+            }
+        }
+        let first = s
+            .interaction_presentation_page_messages(100, e, 0, 0, None, Some(0), Some(0), true)
+            .unwrap();
+        assert_eq!(first["items"].as_array().unwrap().len(), 8);
+        assert_eq!(first["more"], true);
+        let second = s
+            .interaction_presentation_page_messages(
+                100,
+                e,
+                0,
+                0,
+                None,
+                first["cursor"]["inbox"].as_i64(),
+                Some(0),
+                true,
+            )
+            .unwrap();
+        assert_eq!(second["items"].as_array().unwrap().len(), 3);
+        assert_eq!(second["more"], false);
+        let ids = first["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(second["items"].as_array().unwrap())
+            .map(|v| v["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), 11);
+    }
+
     #[test]
     fn no_reply_is_explicit_local_disposition_and_cannot_discard_an_uncertain_send() {
         let (_f, s, e, owner, id, revision) = setup();

@@ -615,11 +615,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return value
 
     @app.get('/api/interaction')
-    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None):
+    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None, inbox: int | None = None, responses: int | None = None):
         session = await authorize_async(request)
         try:
             from starlette.concurrency import run_in_threadpool
-            result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)
+            if inbox is not None or responses is not None:
+                result=await run_in_threadpool(provider.presentation_list,delivery,native,direction,matrix,inbox,responses)
+            else:
+                result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)
         except (ProviderUnavailable, OSError, ValueError):
             raise HTTPException(503, 'Integrating conversation unavailable; refresh before continuing') from None
         can_files=bool(getattr(provider,'receiver',{}).get('interaction',{}).get('artifact_store')) and (dict(session).get('scope') is None or dict(session).get('scope')=='interaction_only' and dict(session).get('artifact_access') is True)

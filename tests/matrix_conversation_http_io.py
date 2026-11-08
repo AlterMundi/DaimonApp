@@ -331,6 +331,13 @@ def qualify(binary, *, funded=False):
         assert exact["kind"]=="matrix_inbox" and exact["text"]=="New peer original; no human instruction or execution grant."
         assert exact["source_author"]["being_ref"]==sdk.receiver.lane.being_ref
         assert exact["completed"] is None and exact["current"] is True
+        projection=b.get("/api/interaction?matrix=0&inbox=0&responses=0")
+        projected=next(v for v in projection["items"] if v["id"]==native_source["source"])
+        assert projected["direction"]=="incoming" and projected["revision"]==native_source["revision"]
+        assert "Matrix" in projected["label"] and projected["source_author"]==exact["source_author"]
+        assert projection["cursor"]["inbox"]>0 and projection["cursor"]["responses"]==0
+        assert b.get("/api/interaction/part?source="+projected["id"]+"&revision="+projected["revision"])["text"]==exact["text"]
+        assert inbox_reads==[0],"Rendering retained sources must not perform live Matrix I/O"
         duplicate=j.call("route-read-after-native-cursor","matrix_status",{"inbox_next":True})
         assert duplicate["items"]==[] and duplicate["next_cursor"]==intake["next_cursor"]
         assert inbox_reads==[0,intake["next_cursor"]]

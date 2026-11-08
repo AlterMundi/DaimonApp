@@ -2091,3 +2091,22 @@ function boot(readOnly=false,standalone=false,options={}) {
   await form.requestSubmit();assert.equal(fixture.originals.size,count);assert.match(fixture.nodes.get('#conversation-send-state').textContent,/Select your session again/);
   fixture.ui.stop();console.log('Workspace Conversation input: frozen text/voice targets across attachment preparation and stale-pin refusal passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Matrix originals and own response intents remain attributed, refreshable and contextual.
+(async()=>{
+  const f=boot(false,true);const id='matrix-inbox:11111111-1111-4111-8111-111111111111';
+  f.overrideSource(8,{id,kind:'matrix_inbox',label:'Matrix · incoming · Eko',direction:'incoming',source_author:{being_ref:'signed-eko',embodiment_id:'signed-body'},preview:'A retained peer question.',revision:'a'.repeat(64),text_characters:25});
+  f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'b'.repeat(64),handling:{phase:'uncertain'},parent_message_id:'11111111-1111-4111-8111-111111111111'});
+  const echo='matrix-inbox:22222222-2222-4222-8222-222222222222';f.overrideSource(6,{id:echo,kind:'matrix_inbox',direction:'outgoing',preview:'An own response.',revision:'d'.repeat(64)});
+  await f.ui.refresh();const cards=f.nodes.get('#conversation-timeline').children;
+  const incoming=cards.find(c=>c.dataset.sourceId===id),outgoing=cards.find(c=>c.dataset.sourceId?.startsWith('matrix-response:'));
+  assert(incoming);assert(outgoing);assert.match(incoming.children[1].textContent,/incoming message/);assert.match(outgoing.children[1].textContent,/Delivery uncertain/);
+  assert.match(incoming.children.find(c=>c.children?.[0]?.textContent==='Matrix details').children[1].textContent,/signed-eko/);
+  const reply=incoming.children[3].children[2];assert.equal(reply.hidden,false);await reply.handlers.click();
+  f.nodes.get('#conversation-message').value='Let us discuss this Matrix message';await f.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});
+  const original=[...f.originals.values()].at(-1);assert.equal(original.reply.source,id);assert.equal(original.reply.context_only,true);
+  f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'c'.repeat(64),handling:{phase:'recipient_copy_proved',outcome:{message_id:'22222222-2222-4222-8222-222222222222'}}});
+  await f.ui.refresh();assert.match(outgoing.children[1].textContent,/receiving copy proved/);assert.equal(cards.filter(c=>c.dataset.sourceId?.startsWith('matrix-response:')).length,1);
+  assert(!f.nodes.get('#conversation-timeline').children.some(c=>c.dataset.sourceId===echo),'A native own-copy and observed response receipt must not duplicate speech');
+  f.ui.stop();console.log('Matrix Conversation: attribution, delivery uncertainty refresh and context-only human discussion passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

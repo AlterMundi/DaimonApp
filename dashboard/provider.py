@@ -222,7 +222,7 @@ class Provider:
                     if titles[(chat, tid)]: node['label'] = prefix+titles[(chat, tid)]
         return value
 
-    def presentation_list(self, delivery, native, direction='after', matrix=None):
+    def presentation_list(self, delivery, native, direction='after', matrix=None, inbox=None, responses=None):
         if type(delivery) is not int or type(native) is not int or min(delivery, native) < 0:
             raise ValueError('Invalid presentation cursor')
         if direction not in ('after', 'before'):
@@ -231,6 +231,10 @@ class Provider:
         if matrix is not None and (type(matrix) is not int or matrix < 0):
             raise ValueError('Invalid Matrix presentation cursor')
         suffix='' if matrix is None else f' {matrix}'
+        if inbox is not None or responses is not None:
+            if matrix is None or any(type(v) is not int or v<0 for v in (inbox,responses)):
+                raise ValueError('Invalid Matrix source cursors')
+            suffix+=f' {inbox} {responses}'
         return self.presentation(f'presentation {operation} {delivery} {native}'+suffix)
 
     def session_workspace(self):

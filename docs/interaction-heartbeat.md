@@ -287,3 +287,47 @@ without refunding reservations. New genuine originals can still be admitted.
 Completed but unreported work and unmatched/transferred/uncertain executions
 remain pending. Status retains `last_attention_failure` separately from present
 operational readiness. This does not authorize a failed task retry.
+
+
+## Attributed Matrix messages in Conversation
+
+The existing owner presentation accepts optional `inbox` and `responses` cursors
+beside `delivery`, `native` and `matrix`. Native console form:
+`presentation list|before DELIVERY NATIVE MATRIX INBOX RESPONSES`. Each source
+has a stable ID and exact revision; pages contain at most eight sources per
+cursor with `more`/oldest/newest continuation. Rendering reads the authenticated
+owner/current-entry store only, with no Matrix transport I/O or new journal.
+The existing bounded projection retention still applies; this is not a complete
+archive of the SDK's canonical signed history.
+
+Incoming `matrix-inbox:UUID` sources keep their original canonical revisions.
+Their direction and sender label are presentation metadata, not revised offers.
+Own `matrix-response:ORIGINAL_UUID` sources expose exact retained response text,
+source author, original parent/thread/send IDs, and the actual retained native
+outcome. A monotonic projection sequence in the existing handling record makes
+later delivery/uncertainty changes discoverable even for older originals. Legacy
+handling records remain readable before their next update. Updating that record
+never changes or reoffers the incoming original. Submitted/uncertain intent is
+not recipient delivery; a signed receiving copy is not comprehension, task
+completion or human hearing. No-reply dispositions author no outgoing speech.
+
+Conversation labels peer speech explicitly and exposes source/receipt details.
+The same signed event shown through ordinary results, own response receipts or
+inbox copies is represented once when those views meet. These raw message cards
+do not automatically speak as the local daimon or trigger avatar reply animation.
+Their Reply button retains a context-only source reference for discussion with
+the paired human; it creates no peer destination, send, approval or replay.
+
+Model-free source checks continue at the existing cadence while the entry is
+busy, retaining attributed originals for Conversation without reserving inference,
+advancing selected-offer cursors or marking them reviewed. Actual native attention
+still requires a free entry; bounded heartbeat delivery refuses to steer an active
+ordinary execution. This fixes source visibility starvation separately from the
+remaining fair execution admission limitation. Native active goals may continue again at the same
+terminal checkpoint, leaving no usable polling interval. Open continuous controls
+therefore do not establish intake or fair admission under an always-active goal.
+The existing native user-input queue does not carry the bounded application
+context/allowance contract. Do not forge a user message, pause the goal, globally
+withhold goals through maintenance, or borrow an active execution's unlimited
+budget to make a readiness indicator positive. Fair per-entry checkpoint
+admission remains part of the existing heartbeat/progress-review implementation.
