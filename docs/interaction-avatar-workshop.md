@@ -271,7 +271,10 @@ are siblings, so editing or pausing does not start voice. The canvas and built-i
 portrait share the top origin. While authenticated selection is unresolved, the
 built-in drawing stays hidden instead of flashing before the custom revision.
 An unavailable selection keeps the workshop retry/status path, without guessing
-that the built-in avatar was selected. Account reset removes the previous art.
+that the built-in avatar was selected. A failed read ends the busy indicator;
+opening the workshop explicitly retries the selected revision. Ordinary binding
+polls do not retry, and recovery never saves, activates or auditions a voice.
+Successful readback clears the error; account reset removes the previous art.
 Listening/speaking evidence lights the full header for either portrait; authored
 expressions do not manufacture operational microphone state.
 
