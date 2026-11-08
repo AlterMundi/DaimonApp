@@ -160,6 +160,15 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   assert.equal(previewPosts.length,uncertainCalls);
   await studio.getByText('My earlier samples',{exact:true}).click();
   assert(await studio.getByRole('button',{name:'Delete sample',exact:true}).evaluateAll(buttons=>buttons.some(b=>b.disabled)),'Unknown sample cannot be retired');
+  const denied=Array.from(previewStates.values()).flatMap(s=>s.batches).find(r=>r.passage==='This is a distinct uncertain phrase.');
+  assert(denied);denied.renders.sample.outcome={receipt:{diagnostic:{provider_error_code:'model_not_found'}}};
+  await studio.getByRole('button',{name:'Check saved voices and samples',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  const deniedCalls=previewPosts.length;
+  await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  await studio.getByText('The configured OpenAI voice model is not available for this account. This sample has no confirmed audio. Repeating Play will not fix access.',{exact:true}).first().waitFor();
+  assert.equal(previewPosts.length,deniedCalls,'Retained model denial only reads status; no generation replay');
+
   for(const width of [1200,375,320]){await page.setViewportSize({width,height:900});assert(await studio.evaluate(e=>e.scrollWidth<=e.clientWidth+1));}
   // Stop alone and hidden-tab results cannot restart playback, even if the
   // provider completed before it observed cancellation. The receipt is kept.

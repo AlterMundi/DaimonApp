@@ -118,3 +118,11 @@ unknown generation/prepare, Stop then Close, late replies, actor isolation and
 capacity cleanup/refusal. Reuse valid unchanged lifecycle/store evidence.
 Report source tests, receiving delivery, finite provider audio, human listening
 and child/device acceptance separately. The full original App goal remains open.
+
+
+Retained `model_not_found` diagnostics appear beside the current sample and in
+its history in Spanish/English. This is account/model unavailability, not a
+playback-device diagnosis or a confirmed audio result. Reading that same sample
+never creates a replacement generation. Generic uncertain samples keep their
+existing status and retirement protections. Choosing an available workshop engine
+and actual provider audio/hearing remain separate from this presentation fix.
