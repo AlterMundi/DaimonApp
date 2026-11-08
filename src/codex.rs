@@ -1858,6 +1858,14 @@ where
     let mut seen_tool_requests = HashSet::new();
     let mut seen_tool_calls = HashSet::new();
     loop {
+        // A heartbeat allowance owns one physical execution. An unrelated active
+        // ordinary goal must not keep its completed collector open for the next
+        // automatic continuation. This releases collection only, never the goal.
+        if idle_only && turn_completed {
+            goal_active = false;
+            goal_snapshot_request_id = None;
+            goal_gap = None;
+        }
         if turn_completed && goal_snapshot_request_id.is_some() {
             goal_snapshot_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
         }
@@ -4351,6 +4359,7 @@ mod tests {
                         assert_eq!(request["params"]["allowance"]["maxProviderAttempts"],2);
                         assert_eq!(request["params"]["allowance"]["maxRequestBytes"],1024);
                         if accepted {
+                            socket.send(WsMessage::Text(json!({"method":"thread/goal/updated","params":{"threadId":"idle-only-thread","goal":{"threadId":"idle-only-thread","objective":"Existing ordinary work","status":"active","tokenBudget":null,"tokensUsed":17,"timeUsedSeconds":9,"createdAt":1,"updatedAt":2}}}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"turn":{"id":"exact-owned-turn"}}}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"method":"item/completed","params":{"threadId":"idle-only-thread","turnId":"exact-owned-turn","item":{"type":"agentMessage","id":"exact-final","phase":"final_answer","text":"Owned result"}}}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"method":"thread/status/changed","params":{"threadId":"idle-only-thread","status":{"type":"idle"}}}).to_string().into())).await.unwrap();
@@ -4388,6 +4397,7 @@ mod tests {
         let deferred_observation = deferred.clone();
         let terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_observation = terminal.clone();
+        let started = Instant::now();
         let result = runner
             .run_turn(
                 &session_with_sandbox("read-only"),
@@ -4417,7 +4427,14 @@ mod tests {
                 },
             )
             .await;
-        assert_eq!(result.is_ok(), accepted);
+        if accepted {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "Completed heartbeat must not await the ordinary goal checkpoint"
+            );
+            assert_eq!(result.as_ref().unwrap().assistant_text, "Owned result");
+        }
+        assert_eq!(result.is_ok(), accepted, "{:?}", result.as_ref().err());
         assert_eq!(terminal.load(std::sync::atomic::Ordering::SeqCst), accepted);
         assert_eq!(
             rejected.load(std::sync::atomic::Ordering::SeqCst),

@@ -422,3 +422,10 @@ keeps the legacy30s grace and emits a warning. This changes no goal, deadline of
 bounded work, native continuation, input or accounting. A collector timeout
 remains observation failure; inspect the actual writer and use exact supported
 attachment, never replay its original.
+
+Owned heartbeat collection instead ends at its exact physical terminal, after any
+already-written internal-return acknowledgment. An active ordinary goal remains
+active and may continue independently; its idle checkpoint cannot keep the finished
+heartbeat collector waiting or turn a completed result into a collection timeout.
+This releases local collection only: no goal mutation, continuation kickoff,
+allowance extension or input replay.
