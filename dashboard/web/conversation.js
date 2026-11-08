@@ -2297,11 +2297,11 @@ window.Conversation = (() => {
       onRecovery:values=>{
         const panel=$('#conversation-codex-recovery');if(!panel)return;
         panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
-        panel.append(node('summary',`${selected.length} voice recording${selected.length===1?'':'s'} kept locally`));
+        panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
         for(const original of selected){
           const partial=original.captureStop==='interrupted_prefix';
           const row=node('div',undefined,'conversation-tools'),label=node('span',`${partial?'Recovered audio prefix':'Voice recording'} · ${Math.ceil((original.blob.size-44)/32000)}s · local copy${partial?' · ending may be missing':''}`);
-          const retry=node('button','Retry saving'),save=node('button','Save audio'),discard=node('button','Discard local copy');
+          const retry=node('button','Try saving audio'),save=node('button','Download copy'),discard=node('button','Remove device copy');
           for(const button of [retry,save,discard])button.type='button';
           retry.title='Save this same original; never send the conversation again';
           discard.title='Discard this local copy; accepted work continues';
@@ -2316,7 +2316,7 @@ window.Conversation = (() => {
     });
     if(standalone&&!readOnly&&microphone&&window.PublicLiveConversation?.supported()){
       const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
-      panel.setAttribute('aria-label','Voice original recovery');$('#conversation-compose').prepend(panel);
+      panel.setAttribute('aria-label','Voice audio recovery');$('#conversation-compose-notices .composer-notice-panel').prepend(panel);
       let speech;const retained=[];
       publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,getBackend:()=>voiceChoice==='gpt-live-native'?'native':undefined,
         onUsage:value=>{if(value.binding===binding)liveUsage?.observe(value);},
@@ -2344,10 +2344,10 @@ window.Conversation = (() => {
         },
         onRecovery:values=>{
           panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
-          panel.append(node('summary',`${selected.length} voice recording${selected.length===1?'':'s'} kept locally`));
+          panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
           for(const original of selected){
             const row=node('div',undefined,'conversation-tools'),label=node('span',original.captureStop?'Recovered audio prefix · ending may be missing':'Voice recording · local copy');
-            const retry=node('button','Retry saving'),save=node('button','Save audio'),discard=node('button','Discard local copy');
+            const retry=node('button','Try saving audio'),save=node('button','Download copy'),discard=node('button','Remove device copy');
             for(const button of [retry,save,discard])button.type='button';
             retry.title='Retain this same original; never resend speech or work';
             retry.addEventListener('click',async()=>{retry.disabled=true;try{await publicLiveSession.retry(original);}catch{label.textContent='Original not confirmed; your local copy is kept.';}finally{retry.disabled=false;}});
