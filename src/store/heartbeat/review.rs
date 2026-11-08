@@ -124,7 +124,10 @@ impl Store {
                     .all(|r| r.reported_revision.is_some()
                         || matches!(
                             r.phase.as_str(),
-                            "retired_unsent" | "attention_failed" | "attention_interrupted"
+                            "retired_unsent"
+                                | "attention_failed"
+                                | "attention_interrupted"
+                                | "accepted_terminal_unreviewed"
                         )),
             "Preserve existing sources, pending originals and prior review selection"
         );

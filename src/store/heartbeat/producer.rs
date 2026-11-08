@@ -481,8 +481,18 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             "review_reported":false,"response_or_task_completion":false,
             "originals":"retained; admitted attempt is not automatically replayed"})
         });
+    let completed_without_review = p
+        .native_returns
+        .iter()
+        .rev()
+        .find(|r| r.phase == "accepted_terminal_unreviewed" && r.reported_revision.is_none())
+        .map(|r| {
+            json!({"return_id":r.id,"native_turn":r.native_turn,"state":r.phase,
+            "review_reported":false,"response_or_task_completion":false,
+            "originals":"retained; exact attempted revisions are not automatically replayed"})
+        });
     Ok(
-        json!({"state":state,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -520,16 +530,19 @@ fn pending(p: &Parent) -> bool {
         r.reported_revision.is_none()
             && !matches!(
                 r.phase.as_str(),
-                "retired_unsent" | "attention_failed" | "attention_interrupted"
+                "retired_unsent"
+                    | "attention_failed"
+                    | "attention_interrupted"
+                    | "accepted_terminal_unreviewed"
             )
     })
 }
 
-/// A proved failed physical execution cannot report its review afterward.
-/// Keep that failure and every original, but do not deadlock new work or replay
-/// the already admitted batch. `seen` fences attempted source revisions; it is
+/// A proved terminal physical execution is not proof of semantic review.
+/// Keep its actual outcome and every original, but do not deadlock new work or
+/// replay the already admitted batch. `seen` fences attempted source revisions; it is
 /// not review, response delivery or task completion.
-fn settle_terminal_failures_on(conn: &Connection, p: &mut Parent) -> Result<()> {
+fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()> {
     for r in &mut p.native_returns {
         if r.reported_revision.is_some() || r.phase != "accepted" {
             continue;
@@ -551,6 +564,7 @@ fn settle_terminal_failures_on(conn: &Connection, p: &mut Parent) -> Result<()> 
         let phase = match execution["terminal_status"].as_str() {
             Some("failed") => "attention_failed",
             Some("interrupted") => "attention_interrupted",
+            Some("completed") => "accepted_terminal_unreviewed",
             _ => continue,
         };
         let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
@@ -859,7 +873,7 @@ impl Store {
         if control.paused || !bound(&tx, &p)? || purpose_on(&tx, &p).is_err() {
             return Ok(None);
         }
-        settle_terminal_failures_on(&tx, &mut p)?;
+        settle_terminal_attention_on(&tx, &mut p)?;
         compact_resolved_on(&tx, &mut p)?;
         let available = [
             (
@@ -1301,8 +1315,8 @@ mod inbox_tests {
         (f, s, e, source)
     }
     #[test]
-    fn terminal_failure_unblocks_new_original_without_replaying_or_reporting_old_work() {
-        for terminal in ["failed", "interrupted"] {
+    fn terminal_outcomes_unblock_only_new_originals_without_inventing_review() {
+        for terminal in ["failed", "interrupted", "completed"] {
             let (_file, store, entry, source) = setup();
             let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
             let selected = selection(&store, entry, &source);
@@ -1330,10 +1344,10 @@ mod inbox_tests {
             let resources_before =
                 store.heartbeat_control(100, entry, H::Status).unwrap()["resources"].clone();
             let second_original = item(2);
-            // A completed unreported batch and a mismatched physical receipt
-            // cannot be relabeled as failed/reviewed to open admission.
+            // A nonterminal or mismatched physical receipt cannot open
+            // admission or fabricate semantic review.
             for (status, physical) in [
-                ("completed", "proved-physical"),
+                ("running", "proved-physical"),
                 (terminal, "different-physical"),
             ] {
                 {
@@ -1387,13 +1401,15 @@ mod inbox_tests {
                 failed.phase,
                 if terminal == "failed" {
                     "attention_failed"
-                } else {
+                } else if terminal == "interrupted" {
                     "attention_interrupted"
+                } else {
+                    "accepted_terminal_unreviewed"
                 }
             );
             assert!(
                 failed.reported_revision.is_none(),
-                "A failed attempt is not review"
+                "A terminal turn alone is not semantic review"
             );
             let offered: Vec<Offer> =
                 serde_json::from_value(parent.native_returns[1].envelope["offers"].clone())
@@ -1422,7 +1438,11 @@ mod inbox_tests {
                 "No refund or inference reservation from observation"
             );
             assert_eq!(
-                after["producer"]["last_attention_failure"]["review_reported"],
+                after["producer"][if terminal == "completed" {
+                    "last_completed_without_review"
+                } else {
+                    "last_attention_failure"
+                }]["review_reported"],
                 false
             );
         }

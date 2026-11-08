@@ -382,3 +382,11 @@ checks current source/purpose/expiry and capacity, then makes the first actual
 admission attempt. No second scheduler, fake human queue or busy-turn steering
 is introduced. An unavailable report is a failed source observation with explicit
 `selected_report_unavailable`, rather than a successful empty check.
+
+A proved completed physical attention turn without `heartbeat_reported` retains
+`accepted_terminal_unreviewed`, not a semantic review/task/delivery claim. Its
+exact attempted source revisions are fenced from automatic replay, while new
+originals may proceed. Status exposes `last_completed_without_review`. Existing
+reported-review semantics and bounded retention are unchanged. Unknown, running
+or mismatched physical outcomes never authorize this settlement. This corrects
+an observed Oliva deadlock at completed local581; do not forge its review mark.
