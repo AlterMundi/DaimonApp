@@ -129,6 +129,38 @@ to the standalone conversation and shared sign-in returns to that same path.
 `artifact_access = true` additionally permits the receiving conversation's
 existing generated-file downloads; administration and approvals stay separate.
 
+### Native request decisions for the paired Home human
+
+`shared_auth.native_decision_access = true` explicitly permits that verified
+receiving human to decide native requests in Conversation, including approval
+choices and an offered per-request cancellation. It defaults to false. The
+existing Home actor kind/reference and current native human must still match;
+the operator selects this action permission separately from appearance, session
+workspace access or merely being signed in. No new login, device enrollment or
+native owner identity is created.
+
+The permission covers only existing request decision routes. Every action keeps
+the original request ID, binding, full reviewed revision, offered action,
+Origin/CSRF and canonical receipt/retry checks. Global Stop/Resume, Sessions
+administration and unrelated controls remain denied. Conversation metadata
+reports `can_decide_requests`; it is a capability hint, never write authority.
+The existing request controls show decisions only with that capability, preserve
+the draft and require full review before one explicit click. A capability update
+also fences an already-rendered cancellation action.
+
+Companion device credentials and monitor grants keep their current restrictions,
+including when sent alongside an ambient Home cookie. This option neither adds
+the permission to those grants nor changes another pair's configuration. Limited
+Conversation clients retain their existing question-answer route and inspectable
+approval text. Missing or malformed policy cannot grant a native decision.
+
+Mounted Home/device fixtures exercise allowed decisions through the unchanged
+Provider framing, default denial, wrong CSRF/actor and forbidden administration.
+The shipped Chromium controller fixture accepts
+`QUALIFICATION_HOME_DECISIONS=allowed` or `limited` for320px review/decision/draft
+checks and capability changes. These use synthetic identity/native responses;
+actual paired-human sign-in and a real offered approval remain separate evidence.
+
 `alerts_access = true` optionally adds a read-only operational-alert list at
 `GET /api/interaction/alerts`. It defaults to false. The Conversation badge and
 list reuse the same receiving Alerts projection and attention rules as Sessions

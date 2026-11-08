@@ -16,6 +16,7 @@ window.RequestControls = (() => {
         expired:"This request is closed.", source_changed:"This request is no longer current."})[value.state]
       || "This request has no live response channel.";
   function mount({api, getBinding, setCsrf, unauthorized, onReply, onListen, getCanListen=()=>false, getCanDecide=()=>true,onSource=()=>{},makeCopy,prefix="conversation",allowCancel=true,maxCards=200}) {
+    const canCancel=()=>typeof allowCancel==="function"?allowCancel()===true:allowCancel===true;
     const cards = new Map(), section = $(`#${prefix}-requests`), container = $(`#${prefix}-request-cards`);
     const state = $(`#${prefix}-request-state`), more = $(`#${prefix}-requests-more`);
     let generation = 0, observation = 0, cursor = 0, reading = false, probeCursor = 0, refreshTask;
@@ -34,7 +35,7 @@ window.RequestControls = (() => {
       card.listen.disabled = !card.view?.actionable || card.closed || card.busy || card.loading || !!card.pending || card.unavailable || card.view?.binding!==getBinding();
       card.text.disabled = !mayDecide;
       card.submit.disabled = !mayDecide;
-      card.cancel.disabled = !mayDecide;
+      card.cancel.disabled = !mayDecide || !canCancel();
       card.read.disabled = card.busy || card.loading;
       card.retry.hidden = !card.pending;
       card.retry.disabled = card.busy;
@@ -177,7 +178,7 @@ window.RequestControls = (() => {
       }
       card.form.hidden = !value.allows_text || !getCanDecide(card.view||card.meta);
       card.reply.hidden = value.kind!=="question" || !value.allows_text || typeof onReply!=="function";
-      card.cancel.hidden = !value.can_cancel || !allowCancel || !getCanDecide(card.view||card.meta);
+      card.cancel.hidden = !value.can_cancel || !canCancel() || !getCanDecide(card.view||card.meta);
       card.choices.hidden = !getCanDecide(card.view||card.meta);
     }
     async function readRequest(card, force = false, userGesture = false) {
@@ -207,7 +208,7 @@ window.RequestControls = (() => {
       }
     }
     function choose(card, action, expectedRevision) {
-      if (action.kind==="cancel" && !allowCancel)return;
+      if (action.kind==="cancel" && !canCancel())return;
       if (!getCanDecide(card.view||card.meta) || !expectedRevision || card.view?.revision !== expectedRevision || card.reviewRequired || !card.complete || !card.view?.actionable || card.view.binding !== getBinding() || card.pending || card.busy || card.loading || card.unavailable || card.closed) return;
       if (action.kind === "answer" && (!action.text.trim() || action.text.includes("\0") || new TextEncoder().encode(action.text).length > 32768)) {
         card.note.textContent = "Write an answer of at most 32 KiB."; return;
