@@ -41,8 +41,10 @@ URI must fail visibly rather than fabricate bytes or request broad storage acces
 Qualification includes actual Chromium offer→FileList→existing attachment
 admission→explicit capture, exact ordered bytes/hash, no upload on Add, draft
 preservation and access/ACK fences. Native parser/Activity recreation tests cover
-ordered8URI references and no URI leak in the page offer; final Android build,
-lint/emulator and real phone Sharesheet/byte-read acceptance remain required.
+ordered8URI references and no URI leak in the page offer; an additional actual App WebView/chooser/ContentResolver test now checks two
+ordered synthetic originals through the real injected adapter and existing
+chooser, with network blocked and no Send. Final Android build/lint/emulator
+and real phone Sharesheet/byte-read acceptance remain required.
 This source is not installed/released. No new native stream-copy/cache is needed
 for the supported picker route. Preserve all other voice/background/Beacon/iOS
 requirements and their acceptance gaps.
