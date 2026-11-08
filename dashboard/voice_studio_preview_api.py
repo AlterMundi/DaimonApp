@@ -79,6 +79,9 @@ class PreviewService:
         receipt={'render_id':ident,'provider_receipt':{key:copy.deepcopy(provider[key]) for key in (
             'model','session_id','usage','reason','finalized','first_pcm_millis','generation_millis',
             'audio_millis','passage_match','hearing','live_conversation_latency') if key in provider}}
+        from scripts.openai_live_speech import diagnostic
+        if diagnostic(provider.get('diagnostic')):
+            receipt.update(automatic_retry=False,diagnostic=diagnostic(provider['diagnostic']))
         if state.get('phase')=='rendered' and finalized:
             audio=job/'audio.wav';data=speech.private_bytes(audio,speech.MAX_AUDIO);info=speech.audio_info(data)
             if speech.sha(data)!=state.get('audio_sha256') or info!=state.get('format') or info['audio_millis']>30000:

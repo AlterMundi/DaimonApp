@@ -134,6 +134,11 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                         'audio_millis':len(pcm)*1000//48000,'transcript':transcript,
                         'passage_match':normalized(transcript)==normalized(fields['passage']),
                         'synthetic_silence_bytes':sent_silence,'hearing':'not_observed','live_conversation_latency':'not_measured'}
+                    # Preserve the fixed failure that caused our close. Closing
+                    # confirms lifecycle/accounting, not a successful audition.
+                    if failure in FAILURES:details['failure_code']=failure
+                    elif not pcm:details['failure_code']='audition-no-audio'
+                    if diagnostic(details):receipt['diagnostic']=diagnostic(details)
                     report({'stage':'session_closed',**receipt})
                     if failure:raise SpeechError(failure)
                     if not pcm:raise SpeechError('audition-no-audio')

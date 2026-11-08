@@ -86,6 +86,19 @@ class Preview(unittest.TestCase):
         self.assertTrue(self.socket.closed);self.assertEqual(self.connects,1)
         self.assertEqual(sum(x['type']=='session.close' for x in self.socket.sent),1)
 
+    def test_confirmed_close_keeps_the_failure_that_requested_it(self):
+        for kind in ('wrong_voice','provider_error','no_audio'):
+            with self.subTest(kind=kind):
+                self.clock=Clock();self.socket=Socket(self.clock,voice='other' if kind=='wrong_voice' else 'cedar');receipts=[]
+                if kind=='provider_error':self.socket.events.insert(1,{'type':'error','event_id':'bad','error':{'code':'invalid_value','message':'sk-private not for diagnostics'}})
+                if kind=='no_audio':self.socket.events=[self.socket.events[0]]
+                with self.assertRaises(live.SpeechError):self.run_preview(progress=receipts.append)
+                result=receipts[-1];self.assertEqual(result['stage'],'session_closed');self.assertTrue(result['finalized'])
+                expected={'wrong_voice':'audition-event-mismatch','provider_error':'audition-provider-error','no_audio':'audition-no-audio'}[kind]
+                self.assertEqual(result['diagnostic']['failure_code'],expected)
+                self.assertNotIn('sk-private',json.dumps(result))
+                if kind=='provider_error':self.assertEqual(result['diagnostic']['provider_error_code'],'invalid_value')
+
     def test_unknown_close_keeps_existing_cache_intent_and_never_reconnects(self):
         def disconnected():raise ConnectionError()
         self.socket.recv=disconnected
