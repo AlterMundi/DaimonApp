@@ -277,3 +277,13 @@ intent. Keep real pending work explicitly deferred. `heartbeat_reported` remains
 review acknowledgment and must not be used as proof that peer work is completed.
 Rollback to a finite-only reader stops continuous attention; do not restore an old
 journal or pretend that its expired pilot became a current allowance.
+
+A failed or interrupted accepted attention may end before it can report review.
+On the next model-free check, an exact heartbeat-owned terminal physical receipt
+settles that admission as `attention_failed` or `attention_interrupted`. Its return,
+originals and response uncertainty stay retained; no review, reply or completion
+is invented. The attempted source revisions are fenced against automatic replay,
+without refunding reservations. New genuine originals can still be admitted.
+Completed but unreported work and unmatched/transferred/uncertain executions
+remain pending. Status retains `last_attention_failure` separately from present
+operational readiness. This does not authorize a failed task retry.

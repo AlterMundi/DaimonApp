@@ -460,8 +460,23 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
     } else {
         "configured"
     };
+    let last_attention_failure = p
+        .native_returns
+        .iter()
+        .rev()
+        .find(|r| {
+            matches!(
+                r.phase.as_str(),
+                "attention_failed" | "attention_interrupted"
+            )
+        })
+        .map(|r| {
+            json!({"return_id":r.id,"native_turn":r.native_turn,"state":r.phase,
+            "review_reported":false,"response_or_task_completion":false,
+            "originals":"retained; admitted attempt is not automatically replayed"})
+        });
     Ok(
-        json!({"state":state,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -489,9 +504,52 @@ fn unsubmitted_on(conn: &Connection, r: &WorkflowReturn) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM bot_state WHERE key='heartbeat_execution:'||?1 AND json_extract(value,'$.source')=?2 AND json_extract(value,'$.physical') IS NULL AND json_extract(value,'$.terminal_status')='not_submitted')",params![local,r.id],|row|row.get::<_,bool>(0))?)
 }
 fn pending(p: &Parent) -> bool {
-    p.native_returns
-        .iter()
-        .any(|r| r.reported_revision.is_none() && r.phase != "retired_unsent")
+    p.native_returns.iter().any(|r| {
+        r.reported_revision.is_none()
+            && !matches!(
+                r.phase.as_str(),
+                "retired_unsent" | "attention_failed" | "attention_interrupted"
+            )
+    })
+}
+
+/// A proved failed physical execution cannot report its review afterward.
+/// Keep that failure and every original, but do not deadlock new work or replay
+/// the already admitted batch. `seen` fences attempted source revisions; it is
+/// not review, response delivery or task completion.
+fn settle_terminal_failures_on(conn: &Connection, p: &mut Parent) -> Result<()> {
+    for r in &mut p.native_returns {
+        if r.reported_revision.is_some() || r.phase != "accepted" {
+            continue;
+        }
+        let (Some(local), Some(physical)) = (r.local, r.native_turn.as_deref()) else {
+            continue;
+        };
+        let Some(execution) = executions::load(conn, local)? else {
+            continue;
+        };
+        if execution["phase"] != "terminal"
+            || execution["physical"] != physical
+            || execution["native"] != p.native
+            || execution["source"] != r.id
+            || execution["generation"].as_u64() != r.attention_generation
+        {
+            continue;
+        }
+        let phase = match execution["terminal_status"].as_str() {
+            Some("failed") => "attention_failed",
+            Some("interrupted") => "attention_interrupted",
+            _ => continue,
+        };
+        let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
+        for offer in offers {
+            p.seen.insert(offer.key, offer.revision);
+        }
+        r.phase = phase.into();
+        // No reported_revision, retry, refund, response or completion is invented.
+    }
+    anyhow::ensure!(p.seen.len() <= 256, "Heartbeat attempted-source capacity");
+    Ok(())
 }
 pub(super) fn resume_on(
     conn: &Connection,
@@ -789,6 +847,7 @@ impl Store {
         if control.paused || !bound(&tx, &p)? || purpose_on(&tx, &p).is_err() {
             return Ok(None);
         }
+        settle_terminal_failures_on(&tx, &mut p)?;
         compact_resolved_on(&tx, &mut p)?;
         let available = [
             (
@@ -1174,6 +1233,130 @@ mod inbox_tests {
             .unwrap();
         (f, s, e, source)
     }
+    #[test]
+    fn terminal_failure_unblocks_new_original_without_replaying_or_reporting_old_work() {
+        for terminal in ["failed", "interrupted"] {
+            let (_file, store, entry, source) = setup();
+            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+            let selected = selection(&store, entry, &source);
+            let dispatch = store
+                .heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+                )
+                .unwrap()
+                .unwrap();
+            let session = store.get_session(entry).unwrap().unwrap().id;
+            let proof;
+            {
+                let conn = store.conn.lock().unwrap();
+                let mut parent = load(&conn, 100, session).unwrap().unwrap();
+                let returned = &mut parent.native_returns[0];
+                returned.phase = "accepted".into();
+                returned.local = Some(700);
+                returned.native_turn = Some("proved-physical".into());
+                proof = json!({"phase":"terminal","physical":"proved-physical",
+                    "native":parent.native,"source":dispatch.id,
+                    "generation":returned.attention_generation,"terminal_status":terminal});
+                save(&conn, &parent).unwrap();
+            }
+            let resources_before =
+                store.heartbeat_control(100, entry, H::Status).unwrap()["resources"].clone();
+            // A completed unreported batch and a mismatched physical receipt
+            // cannot be relabeled as failed/reviewed to open admission.
+            for (status, physical) in [
+                ("completed", "proved-physical"),
+                (terminal, "different-physical"),
+            ] {
+                {
+                    let conn = store.conn.lock().unwrap();
+                    let mut wrong = proof.clone();
+                    wrong["terminal_status"] = json!(status);
+                    wrong["physical"] = json!(physical);
+                    super::super::executions::save(&conn, 700, &wrong).unwrap();
+                }
+                due(&store, entry);
+                let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+                let selected = selection(&store, entry, &source);
+                let page_items = if selected.after == 1 {
+                    vec![item(2)]
+                } else {
+                    vec![]
+                };
+                assert!(
+                    store
+                        .heartbeat_finish_check(
+                            &check,
+                            Some(Ok((selected.clone(), page(&selected, page_items))))
+                        )
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(
+                    store.heartbeat_control(100, entry, H::Status).unwrap()["producer"]["pending"],
+                    true
+                );
+            }
+            {
+                let conn = store.conn.lock().unwrap();
+                super::super::executions::save(&conn, 700, &proof).unwrap();
+            }
+            due(&store, entry);
+            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+            let selected = selection(&store, entry, &source);
+            let next = store
+                .heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![])))),
+                )
+                .unwrap()
+                .unwrap();
+            assert_ne!(next.id, dispatch.id);
+            let conn = store.conn.lock().unwrap();
+            let parent = load(&conn, 100, session).unwrap().unwrap();
+            let failed = &parent.native_returns[0];
+            assert_eq!(
+                failed.phase,
+                if terminal == "failed" {
+                    "attention_failed"
+                } else {
+                    "attention_interrupted"
+                }
+            );
+            assert!(
+                failed.reported_revision.is_none(),
+                "A failed attempt is not review"
+            );
+            let offered: Vec<Offer> =
+                serde_json::from_value(parent.native_returns[1].envelope["offers"].clone())
+                    .unwrap();
+            assert_eq!(offered.len(), 1);
+            assert_eq!(
+                offered[0].key,
+                format!("matrix-inbox:{}", item(2)["message_id"].as_str().unwrap())
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM interaction_matrix_inbox WHERE handling IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                2
+            );
+            drop(conn);
+            let after = store.heartbeat_control(100, entry, H::Status).unwrap();
+            assert_eq!(
+                after["resources"], resources_before,
+                "No refund or inference reservation from observation"
+            );
+            assert_eq!(
+                after["producer"]["last_attention_failure"]["review_reported"],
+                false
+            );
+        }
+    }
+
     #[test]
     fn continuous_retirement_keeps_unresolved_originals_and_rejects_old_page_replay() {
         let (_f, s, e, source) = setup();
