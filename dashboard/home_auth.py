@@ -62,6 +62,14 @@ class HomeAuth:
             raise ValueError('Explicit shared session workspace permission required')
         self.coordination = self.coordination or self.coordination_control
         self.binding = config['origin'] + config.get('prefix', '/sessions')
+        if 'application_id' in config:
+            self.binding += ':' + config['application_id']
+        self.human_ref = self.selected.get('human_ref', 'human:telegram:' + str(provider.human))
+        if (not isinstance(self.human_ref, str) or not re.fullmatch(r'human:[A-Za-z0-9:._/-]{1,240}', self.human_ref)
+                or 'application_id' in config and 'human_ref' not in self.selected):
+            raise ValueError('Select the exact registered shared human reference')
+        if 'application_id' in config:
+            self.binding += ':' + self.human_ref
 
     def authenticate(self, request):
         if not self.enabled or request.headers.get('host') != self.host:
@@ -80,7 +88,7 @@ class HomeAuth:
             raise ValueError('Shared sign-in expired')
         human = self.provider.human
         if (value.get('contract') != 'dm.home-session/v1' or value.get('origin') != self.origin
-                or actor.get('kind') != 'human' or actor.get('ref') != 'human:telegram:' + str(human)
+                or actor.get('kind') != 'human' or actor.get('ref') != self.human_ref
                 or not self.provider.authorized(human)):
             raise PermissionError('This account has no receiving conversation grant')
         if request.url.path != '/api/interaction/access' and not permitted(

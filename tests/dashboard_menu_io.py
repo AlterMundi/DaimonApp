@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dashboard.menu_attention import MenuAttention, MenuUnavailable, attention
@@ -16,6 +16,15 @@ def view(severity=None):
 
 
 class MenuTests(unittest.TestCase):
+    def test_web_only_operator_refuses_before_reading_any_receiver_or_token(self):
+        from dashboard.operator import main
+        with tempfile.TemporaryDirectory() as tmp:
+            config=Path(tmp)/'web.toml'
+            config.write_text('application_id="c82669c5-30fd-4bd1-9dc9-3be7f8a3ede1"\n')
+            with patch.object(sys,'argv',['operator','--config',str(config),'publish-menu']),patch('dashboard.operator.Telegram') as telegram:
+                with self.assertRaisesRegex(SystemExit,'no Telegram menu'):main()
+                telegram.assert_not_called()
+
     def test_severity_ack_history_and_unknown(self):
         self.assertEqual(attention(view()), 'clear')
         self.assertEqual(attention(view('critical')), 'error')

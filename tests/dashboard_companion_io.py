@@ -9,9 +9,11 @@ import tempfile
 import uuid
 import concurrent.futures
 import json
+import sqlite3
 from pathlib import Path
 import sys
 import time
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -20,7 +22,7 @@ from fastapi.testclient import TestClient
 from dashboard.speech import speech_part, speech_request
 from dashboard.app import create_app
 from dashboard.companion import Grants, authority
-from dashboard.provider import Provider, ProviderUnavailable
+from dashboard.provider import Provider, ProviderUnavailable, receiving_authority
 from dashboard.private_state import read_json, write_json
 from presentation_io import Receiver
 import speech_render as speech_fixture
@@ -60,6 +62,121 @@ class Companion(unittest.TestCase):
 
     def audio(self):
         return self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
+
+    def web_only(self):
+        self.config.pop('bot_id')
+        self.config['application_id']='fa34f9ac-3ee0-435f-87be-d91dded19b52'
+        self.provider.receiver={'telegram':{'enabled':False}}
+        self.config['shared_auth']={'enabled':True,'home_origin':self.config['origin'],
+                                    'human_ref':'human:telegram:100'}
+        self.client.close();self.client=self.client_for()
+
+    def test_web_only_shared_identity_has_no_telegram_exchange_or_fake_bot(self):
+        self.web_only()
+        self.provider.conversation_inputs=lambda before,direction:{'items':[],'more':False}
+        calls=[]
+        self.provider.conversation_input_submit=lambda body:calls.append(body) or {'phase':'queued'}
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':'human:telegram:100'}}
+        headers={'Host':'example.test','Origin':self.config['origin'],'Cookie':'__Host-home='+'h'*43}
+        # A prior device grant from a bot-scoped app never gains the web scope.
+        self.assertEqual(self.client.get('/api/interaction/access',headers=self.headers).status_code,401)
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=self.client.get('/api/interaction/access',headers=headers)
+            self.assertEqual(access.status_code,200,access.text)
+            self.assertEqual(self.client.get('/api/interaction/inputs',headers=headers).status_code,200)
+            payload={'id':str(uuid.uuid4()),'text':'Synthetic web-only original'}
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=headers).status_code,403)
+            write={**headers,'X-Dashboard-CSRF':access.json()['csrf']}
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers={**write,'Origin':'https://other.test'}).status_code,403)
+            self.assertEqual(calls,[])
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=write).status_code,200)
+            self.assertEqual(calls,[payload])
+            identity['actor']['ref']='human:telegram:101'
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
+        for route in ['/api/session','/api/alerts/attention']:
+            self.assertEqual(self.client.post(route,json={'init_data':'100'},headers=headers).status_code,403)
+
+    def test_web_only_configuration_requires_explicit_scope_and_native_transport_off(self):
+        self.web_only()
+        candidates=[]
+        for key,value in [('bot_id',123),('bot_username','not_a_real_bot'),('miniapp_short_name','App')]:
+            item=copy.deepcopy(self.config);item[key]=value;candidates.append(item)
+        for name in ['alerts','traffic']:
+            item=copy.deepcopy(self.config);item[name]={'enabled':True};candidates.append(item)
+        for config in candidates:
+            with self.assertRaises(ValueError):create_app(config,self.provider)
+        self.provider.receiver={'telegram':{'enabled':True}}
+        with self.assertRaises(ValueError):self.client_for()
+        self.provider.receiver={'telegram':{'enabled':False}}
+        del self.config['shared_auth']['human_ref']
+        with self.assertRaises(ValueError):self.client_for()
+
+    def test_web_only_scope_change_invalidates_device_and_csrf_without_changing_legacy_scope(self):
+        legacy=authority(self.config,self.provider)
+        expected=hashlib.sha256(json.dumps([123,self.config['origin'],'/sessions',
+                self.provider.binding_bytes.hex()],separators=(',',':')).encode()).hexdigest()
+        self.assertEqual(legacy,expected)
+        self.web_only()
+        from dashboard.home_auth import HomeAuth
+        before=HomeAuth(self.config,self.provider).binding
+        prior=authority(self.config,self.provider)
+        self.config['application_id']=str(uuid.uuid4())
+        self.assertNotEqual(prior,authority(self.config,self.provider))
+        self.assertNotEqual(before,HomeAuth(self.config,self.provider).binding)
+        prior=authority(self.config,self.provider)
+        before=HomeAuth(self.config,self.provider).binding
+        self.config['shared_auth']['human_ref']='human:telegram:101'
+        self.assertNotEqual(prior,authority(self.config,self.provider))
+        self.assertNotEqual(before,HomeAuth(self.config,self.provider).binding)
+
+    def test_web_only_post_start_telegram_enable_refuses_existing_access(self):
+        self.web_only()
+        receiver_path=self.root/'web-only-receiver.toml'
+        database_path=self.root/'web-only-users.sqlite'
+        with sqlite3.connect(database_path) as db:
+            db.execute('CREATE TABLE users(tg_user_id INTEGER,allowed INTEGER)')
+            db.execute('INSERT INTO users VALUES(100,1)')
+        db.close()
+        receiver_path.write_text('db_path='+json.dumps(str(database_path))+
+            '\n[session_control]\nhuman_id=100\n[telegram]\nenabled=false\n')
+        receiving=Provider({'receiver_config':str(receiver_path)})
+        self.provider.receiver=receiving.receiver
+        self.provider.binding_bytes=receiving.binding_bytes
+        self.provider.assert_binding=receiving.assert_binding
+        self.provider.authorized=receiving.authorized
+        self.client.close();self.client=self.client_for()
+        grants=Grants(self.config,self.provider)
+        output=self.root/'web-only-device.json'
+        grants.enroll('Web-only fixture',output,3600)
+        device=read_json(output)
+        headers={'Host':'example.test','Origin':self.config['origin'],
+                 'Cookie':'__Host-home='+'h'*43}
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,200)
+            self.assertIsNotNone(grants.authenticate(device['authorization'].split(' ',1)[1]))
+            receiver_path.write_text(receiver_path.read_text().replace('enabled=false','enabled=true'))
+            with self.assertRaises(ProviderUnavailable):receiving.assert_binding()
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,503)
+            self.assertIsNone(grants.authenticate(device['authorization'].split(' ',1)[1]))
+            receiving.receiver=tomllib.loads(receiver_path.read_text())
+            with self.assertRaises(ValueError):create_app(self.config,receiving)
+
+    def test_enabled_legacy_receiving_authority_keeps_its_original_bytes(self):
+        receiver={'session_control':{'human_id':100},'telegram':{'api_base':'https://example.test'}}
+        expected=json.dumps({'db_path':None,'session_control':receiver['session_control'],
+            'interaction':None,'voice':None,'telegram':{'api_base':'https://example.test',
+            'bot_token':None,'bot_token_file':None},'native_binary':'codex'},
+            sort_keys=True,separators=(',',':')).encode()
+        self.assertEqual(receiving_authority(receiver),expected)
+        receiver['telegram']['enabled']=True
+        self.assertEqual(receiving_authority(receiver),expected)
+        receiver['telegram']['enabled']=False
+        self.assertNotEqual(receiving_authority(receiver),expected)
 
     def test_malformed_identity_response_is_unavailable_not_expired(self):
         from dashboard.home_auth import identity_response
