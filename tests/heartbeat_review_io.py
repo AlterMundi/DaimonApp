@@ -11,6 +11,7 @@ from heartbeat_io import HeartbeatJourney
 def qualify(binary, production=False):
     j = HeartbeatJourney(str(Path(binary).resolve()))
     try:
+        if production:j.expected_attempts=64
         j.start()
         for topic in (7, 8, 1):
             j.admit('Seed this synthetic owned context', topic=topic)
@@ -41,7 +42,9 @@ def qualify(binary, production=False):
             assert selected['reserved_provider_attempts']==prior['reserved_provider_attempts']==12
             assert selected['continuous']['window_started_at_unix_ms']==prior['continuous']['window_started_at_unix_ms']
             assert selected['production']['max_executions_per_hour']==48
-            assert selected['remaining_execution_envelopes']==44
+            assert selected['remaining_execution_envelopes']==47
+            assert selected['effective_execution']['provider_attempts_per_execution']==64
+            assert selected['effective_execution']['execution_seconds']==600
         report = j.root / 'selected-progress.json'
         report.write_text(json.dumps({'milestone':'synthetic checkpoint A','clock':1}))
         review = dict(purpose={'input_ref':original['id'],'channel':'conversation'},

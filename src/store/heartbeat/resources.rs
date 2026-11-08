@@ -31,6 +31,24 @@ struct Production {
     source: String,
     selected_at_unix_ms: i64,
     max_executions_per_hour: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_attempts_per_execution: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_seconds: Option<u32>,
+}
+fn execution_limits(a: &Account, production: bool) -> (u32, u32) {
+    if production && let Some(p) = &a.production {
+        (
+            p.provider_attempts_per_execution
+                .unwrap_or(a.contract.provider_attempts_per_execution),
+            p.execution_seconds.unwrap_or(a.contract.execution_seconds),
+        )
+    } else {
+        (
+            a.contract.provider_attempts_per_execution,
+            a.contract.execution_seconds,
+        )
+    }
 }
 pub(super) fn production_on(conn: &Connection, session: i64, human: i64) -> Result<bool> {
     Ok(load(conn, session, human)?.is_some_and(|a| a.production.is_some()))
@@ -51,11 +69,13 @@ pub(super) fn production_defaults_on(
             p.source == source,
             "Production policy already selected; no reset applied"
         );
-        return Ok(());
+        if p.provider_attempts_per_execution.is_some() && p.execution_seconds.is_some() {
+            return Ok(());
+        }
     }
-    let rate = a
-        .contract
-        .provider_attempts_per_execution
+    let attempts = a.contract.provider_attempts_per_execution.max(64);
+    let seconds = a.contract.execution_seconds.max(600);
+    let rate = attempts
         .checked_mul(48)
         .filter(|v| *v <= 4096)
         .context("Production hourly execution bound exceeds supported capacity")?;
@@ -66,9 +86,13 @@ pub(super) fn production_defaults_on(
     c.max_provider_attempts_per_hour = c.max_provider_attempts_per_hour.max(rate);
     a.production = Some(Production {
         source: source.into(),
-        selected_at_unix_ms: Utc::now().timestamp_millis(),
-        max_executions_per_hour: c.max_provider_attempts_per_hour
-            / a.contract.provider_attempts_per_execution,
+        selected_at_unix_ms: a
+            .production
+            .as_ref()
+            .map_or_else(|| Utc::now().timestamp_millis(), |p| p.selected_at_unix_ms),
+        max_executions_per_hour: c.max_provider_attempts_per_hour / attempts,
+        provider_attempts_per_execution: Some(attempts),
+        execution_seconds: Some(seconds),
     });
     // Preserve the existing hour, all reservations, pilot and execution limits.
     save(conn, session, human, &a)
@@ -249,17 +273,19 @@ pub(super) fn status_on(conn: &Connection, session: i64, human: i64) -> Result<V
         .checked_sub(account.reserved_provider_attempts)
         .context("Heartbeat resource account is inconsistent")?;
     if let Some(c) = &account.continuous {
+        let (attempts, seconds) = execution_limits(&account, true);
         let now = chrono::Utc::now().timestamp_millis();
         let remaining = c
             .max_provider_attempts_per_hour
             .saturating_sub(c.usage(now));
         return Ok(json!({"mode":"continuous",
-            "state":if remaining >= account.contract.provider_attempts_per_execution {"available"} else {"rate_limited"},
+            "state":if remaining >= attempts {"available"} else {"rate_limited"},
             "contract":account.contract,"reserved_provider_attempts":account.reserved_provider_attempts,
             "remaining_provider_attempts":remaining,"continuous":c,
             "pilot_remaining_provider_attempts":account.contract.max_provider_attempts-account.reserved_provider_attempts,
             "production":account.production,
-            "remaining_execution_envelopes":remaining/account.contract.provider_attempts_per_execution,
+            "remaining_execution_envelopes":remaining/attempts,
+            "effective_execution":{"provider_attempts_per_execution":attempts,"execution_seconds":seconds,"max_request_bytes":account.contract.max_request_bytes},
             "lifetime_reserved_provider_attempts":u64::from(c.pilot_reserved_at_adoption)+c.reserved_provider_attempts,
             "measurement":"reserved_request_attempts_not_tokens_or_money"}));
     }
@@ -295,7 +321,7 @@ pub(super) fn finite_available_on(conn: &Connection, session: i64, human: i64) -
             && a.continuous.as_ref().is_some_and(|c| {
                 c.max_provider_attempts_per_hour
                     .saturating_sub(c.usage(Utc::now().timestamp_millis()))
-                    >= a.contract.provider_attempts_per_execution
+                    >= execution_limits(&a, true).0
             }));
     }
     Ok(a.finite_review_executions.unwrap_or(0) < 4
@@ -320,7 +346,8 @@ pub(super) fn reserve_finite_on(
             .is_some(),
         "Select finite review before reservation"
     );
-    let allowance = reserve_on(conn, session, human)?;
+    let production = load(conn, session, human)?.is_some_and(|a| a.production_review == Some(true));
+    let allowance = reserve_with_policy_on(conn, session, human, production)?;
     let mut account = load(conn, session, human)?.unwrap();
     let count = account
         .finite_review_executions
@@ -337,13 +364,22 @@ pub(super) fn reserve_on(
     session: i64,
     human: i64,
 ) -> Result<Value> {
+    reserve_with_policy_on(conn, session, human, true)
+}
+fn reserve_with_policy_on(
+    conn: &rusqlite::Transaction<'_>,
+    session: i64,
+    human: i64,
+    production: bool,
+) -> Result<Value> {
     let mut account =
         load(conn, session, human)?.context("Heartbeat resources are not configured")?;
+    let (attempts, seconds) = execution_limits(&account, production);
     let now = chrono::Utc::now().timestamp_millis();
     if let Some(c) = &mut account.continuous {
         let usage = c.usage(now);
         let next = usage
-            .checked_add(account.contract.provider_attempts_per_execution)
+            .checked_add(attempts)
             .context("Heartbeat hourly allocation overflow")?;
         anyhow::ensure!(
             next <= c.max_provider_attempts_per_hour,
@@ -355,7 +391,7 @@ pub(super) fn reserve_on(
         c.reserved_in_window = next;
         c.reserved_provider_attempts = c
             .reserved_provider_attempts
-            .checked_add(u64::from(account.contract.provider_attempts_per_execution))
+            .checked_add(u64::from(attempts))
             .context("Heartbeat lifetime allocation overflow")?;
         // Consume the existing finite allocation first. Its remaining capacity
         // can still constrain a separately authorized finite review purpose;
@@ -364,11 +400,11 @@ pub(super) fn reserve_on(
             .contract
             .max_provider_attempts
             .saturating_sub(account.reserved_provider_attempts)
-            .min(account.contract.provider_attempts_per_execution);
+            .min(attempts);
         let reservation = json!({"contract_id":account.contract.contract_id,
-            "max_provider_attempts":account.contract.provider_attempts_per_execution,
+            "max_provider_attempts":attempts,
             "max_request_bytes":account.contract.max_request_bytes,
-            "deadline_unix_ms":now.checked_add(i64::from(account.contract.execution_seconds)*1000)
+            "deadline_unix_ms":now.checked_add(i64::from(seconds)*1000)
                 .context("Heartbeat execution deadline overflow")?});
         save(conn, session, human, &account)?;
         return Ok(reservation);
@@ -433,6 +469,12 @@ mod tests {
             after.reserved_provider_attempts,
             before.reserved_provider_attempts
         );
+        assert_eq!(after.contract.provider_attempts_per_execution, 12);
+        assert_eq!(
+            after.contract.execution_seconds,
+            before.contract.execution_seconds
+        );
+        assert_eq!(execution_limits(&after, true), (64, 600));
         let old = before.continuous.unwrap();
         let new = after.continuous.unwrap();
         assert_eq!(new.window_started_at_unix_ms, old.window_started_at_unix_ms);
@@ -441,10 +483,10 @@ mod tests {
             new.reserved_provider_attempts,
             old.reserved_provider_attempts
         );
-        assert_eq!(new.max_provider_attempts_per_hour, 576);
+        assert_eq!(new.max_provider_attempts_per_hour, 3072);
         assert_eq!(
             status_on(&tx, entry.id, 100).unwrap()["remaining_execution_envelopes"],
-            44
+            47
         );
         let selected = serde_json::to_value(load(&tx, entry.id, 100).unwrap().unwrap()).unwrap();
         production_defaults_on(&tx, entry.id, 100, "actual owner production direction").unwrap();
@@ -471,7 +513,7 @@ mod tests {
                 .finite_review_executions,
             Some(5)
         );
-        for _ in 0..39 {
+        for _ in 0..42 {
             reserve_on(&tx, entry.id, 100).unwrap();
         }
         assert!(reserve_on(&tx, entry.id, 100).is_err());

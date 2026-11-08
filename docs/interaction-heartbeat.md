@@ -434,3 +434,14 @@ uncertain and completed executions are excluded. This lets production finish an
 old test-era non-submitted original without inventing a new message or renewing
 a fictitious trial lifetime. Existing generation reconciliation still requires
 explicit resume.
+
+Actual production failures exhausted12 attempts and the300s execution deadline.
+Normal production selection therefore uses a separate effective envelope of64
+provider attempts and600seconds, within existing native support; request bytes
+keep the configured bound. The immutable pilot contract and all previous native
+allowances remain unchanged.48 full new envelopes/hour reserve at most3072
+possible provider attempts, shared with selected production review. Historic
+smaller reservations stay charged in their original attempt units. The selected
+account exposes `effective_execution`; strict rollback requires this reader.
+No in-flight execution is extended, and failed/admitted originals are not replayed.
+Legacy finite reviews retain their original per-execution/pilot limits.

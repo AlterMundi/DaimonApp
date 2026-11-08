@@ -26,7 +26,7 @@ class HeartbeatJourney(WorkflowJourney):
             p = message['params']
             turn = p['turn']
             assert turn['input'] == [] and 'clientUserMessageId' not in turn
-            assert p['allowance']['maxProviderAttempts'] == 3
+            assert p['allowance']['maxProviderAttempts'] == getattr(self,'expected_attempts',3)
             assert 0 < p['allowance']['maxRequestBytes'] <= 1024 * 1024
             assert p['allowance']['deadlineUnixMs'] > datetime.now(timezone.utc).timestamp() * 1000
             kind = turn['toolOutput']['name']

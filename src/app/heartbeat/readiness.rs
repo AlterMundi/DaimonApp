@@ -27,8 +27,10 @@ fn eligible(value: &Value, now: i64, loop_started: i64) -> Result<(), &'static s
     let remaining = value["resources"]["remaining_provider_attempts"]
         .as_u64()
         .unwrap_or(0);
-    let per_execution = value["resources"]["contract"]["provider_attempts_per_execution"]
+    let effective = &value["resources"]["effective_execution"]["provider_attempts_per_execution"];
+    let per_execution = effective
         .as_u64()
+        .or_else(|| value["resources"]["contract"]["provider_attempts_per_execution"].as_u64())
         .unwrap_or(0);
     if per_execution == 0 || remaining < per_execution {
         return Err("resources_unavailable");
