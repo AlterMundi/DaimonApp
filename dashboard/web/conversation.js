@@ -2314,7 +2314,7 @@ window.Conversation = (() => {
         }
       },
       onState:value=>{if(voiceChoice!=='codex')return;if(voiceEngine)voiceEngine.disabled=!!codexVoiceSession?.active||!!voiceMode?.active;
-        if(!voiceModePrevious?.continuous)return;captureBusy=false;presentState({capture:value.starting?'permission':'idle',playback:value.playback});voiceMode?.update({continuousState:value});}
+        if(!voiceModePrevious?.continuous)return;captureBusy=false;voiceMode?.update({continuousState:value});presentState({capture:value.starting?'permission':'idle',playback:value.playback},false);}
     });
     if(standalone&&!readOnly&&microphone&&window.PublicLiveConversation?.supported()){
       const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
@@ -2361,7 +2361,7 @@ window.Conversation = (() => {
         onState:value=>{
           for(let i=retained.length-1;i>=0;i--)if(retained[i].binding!==binding){retained[i].box.remove();retained.splice(i,1);speech=undefined;}
           if(!isPublicLive())return;if(voiceEngine)voiceEngine.disabled=!!publicLiveSession?.active||!!voiceMode?.active;
-          if(!voiceModePrevious?.continuous)return;captureBusy=false;presentState({capture:value.starting?'permission':'idle',playback:value.playback});voiceMode?.update({continuousState:value});
+          if(!voiceModePrevious?.continuous)return;captureBusy=false;voiceMode?.update({continuousState:value});presentState({capture:value.starting?'permission':'idle',playback:value.playback},false);
         }
       });
     }

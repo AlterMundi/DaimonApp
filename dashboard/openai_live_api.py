@@ -265,6 +265,7 @@ def install(app, config, provider, authorize, origins):
                     history.check_capture(current)
                     admission['remaining_seconds']=max(1,int(current['admission']['expires']-time.monotonic()))
                 admission['continuous_renewal']=continuous_renewal and native_backend
+                admission['source_close_reasons']=sorted(history.source_close_reasons)
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
                     'source_coverage':'sideband_before_media_answer'})

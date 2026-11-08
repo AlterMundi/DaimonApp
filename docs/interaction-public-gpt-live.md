@@ -1134,3 +1134,24 @@ One peer's daemon-reload client timed out after its manager loaded the new unit.
 Recovery observed that completed reload and performed only the unattempted start;
 a later missing verifier variable was repaired by observation alone. No stop,
 reload, selector, native input or provider action was replayed.
+
+
+### Source confirmation and closing presentation
+
+A failed Avatar or recovery-notice renderer must not interrupt capture/transport
+cleanup after `closing` becomes true. State and recovery callbacks are isolated
+from that lifecycle. Conversation updates the critical fullscreen state before
+optional companion/sound presentation, avoiding a stranded disabled Reconnect.
+This is covered with a callback which throws specifically during close; the same
+original still saves once and only an explicit next start obtains a new capture.
+It does not establish that a rendering exception caused a particular phone fault.
+
+The prepared admission advertises a bounded set of fixed `source_close_reasons`.
+Source confirmation can distinguish an owner change, boundary limit/overlap,
+missing boundary response, capture exception, unconfirmed upload or changed byte
+boundary. Only advertised codes replace the legacy `source_unconfirmed` reason.
+They are client observations, not physical/network diagnoses, work authority or
+proof of closure. Existing first-write-only diagnostic storage, exact byte ACKs,
+authorization, explicit Stop and no-replay rules remain. No transcript, raw error,
+URL or credential enters these codes. Older admissions keep the legacy reason.
+A prior generic failure cannot retrospectively acquire a more specific cause.

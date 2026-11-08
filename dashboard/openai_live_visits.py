@@ -543,7 +543,11 @@ class LiveCreations:
             self._write(value)
             return command
 
-    close_reasons=frozenset(('explicit_stop','source_unconfirmed','local_storage','event_processing',
+    # Fixed browser observations, not a claim about hardware/network cause.
+    source_close_reasons=frozenset(('source_owner_changed','source_boundary_limit',
+        'source_boundary_overlap','source_boundary_timeout','source_capture_unavailable',
+        'source_upload_unconfirmed','source_boundary_changed'))
+    close_reasons=source_close_reasons|frozenset(('explicit_stop','source_unconfirmed','local_storage','event_processing',
         'native_output','transport_failed','capture_unavailable','capture_bound','binding_changed',
         'visit_deadline','activation_failed','server_finishing','transport_renewal'))
 

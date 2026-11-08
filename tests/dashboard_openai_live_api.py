@@ -123,6 +123,7 @@ class Mounted(unittest.TestCase):
         value=socket.receive_json()
         while value['type']=='context_preparing':value=socket.receive_json()
         self.assertEqual(value['type'],'prepared')
+        self.assertEqual(value['admission']['source_close_reasons'],sorted(LiveCreations.source_close_reasons))
         return value
     def socket(self):return self.client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
     def read(self):return json.loads((self.state/'public-live-visits'/(self.ident+'.json')).read_text())
@@ -235,6 +236,20 @@ class Mounted(unittest.TestCase):
         for invalid in ('raw private error',{},None,42):
             with self.assertRaises(ValueError):history.record_close_reason(self.ident,100,self.owner.public_live_binding('a'*64),invalid)
         self.assertEqual(self.read(),value)
+
+    def test_fixed_source_close_observation_preserves_finalization_and_first_receipt(self):
+        with self.socket() as socket:
+            native=self.start(socket)
+            socket.send_json({'type':'close','reason':'source_boundary_timeout'})
+            self.assertEqual(socket.receive_json()['type'],'finishing')
+            self.assertEqual(socket.receive_json()['type'],'closed')
+        value=self.read()
+        self.assertEqual(value['client_close_reason'],'source_boundary_timeout')
+        self.assertTrue(value['finalization']['voice_usage_confirmed'])
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        history=LiveCreations(self.state/'public-live-visits')
+        history.record_close_reason(self.ident,100,self.owner.public_live_binding('a'*64),'source_owner_changed')
+        self.assertEqual(self.read(),value,'A later diagnostic cannot replace the original observation')
 
     def test_studio_choice_reaches_provider_and_reconnect_keeps_frozen_delivery(self):
         from dashboard.avatar_workshop import AvatarWorkshop
