@@ -9,6 +9,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   // Browser interaction proof is synthetic; mounted provider/cache ownership is
   // covered by dashboard_voice_studio_preview_api.py, without paid auditions.
   await page.addInitScript(()=>{
+   window.testVoicePlays=0;const nativePlay=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(...args){testVoicePlays++;return nativePlay.apply(this,args);};
    const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);window.testVoiceURLs=new Set();
    URL.createObjectURL=blob=>{const url=create(blob);if(blob.type==='audio/wav')testVoiceURLs.add(url);return url;};
    URL.revokeObjectURL=url=>{testVoiceURLs.delete(url);return revoke(url);};
@@ -160,6 +161,37 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await studio.getByText('My earlier samples',{exact:true}).click();
   assert(await studio.getByRole('button',{name:'Delete sample',exact:true}).evaluateAll(buttons=>buttons.some(b=>b.disabled)),'Unknown sample cannot be retired');
   for(const width of [1200,375,320]){await page.setViewportSize({width,height:900});assert(await studio.evaluate(e=>e.scrollWidth<=e.clientWidth+1));}
+  // Stop alone and hidden-tab results cannot restart playback, even if the
+  // provider completed before it observed cancellation. The receipt is kept.
+  unknownPreview=false;deferPreview=true;
+  await studio.getByLabel('Text to listen to').fill('This sample is stopped without closing.');
+  blockedPreview=undefined;await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  await studio.getByRole('button',{name:'Stop',exact:true}).click();
+  const stoppedPlays=await page.evaluate(()=>testVoicePlays);
+  blockedPreview.row.renders.sample={state:'rendered'};
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await page.evaluate(()=>testVoicePlays),stoppedPlays,'Stop alone fences late automatic playback');
+  const cachedStopped=previewPosts.length;
+  await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  assert.equal(await page.evaluate(()=>testVoicePlays),stoppedPlays+1,'Only a new explicit Play starts the retained sample');
+  assert.equal(previewPosts.length,cachedStopped);
+  await studio.getByLabel('Text to listen to').fill('This sample arrives while the page is hidden.');
+  blockedPreview=undefined;await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
+  for(let n=0;!blockedPreview&&n<100;n++)await page.waitForTimeout(10);assert(blockedPreview);
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));});
+  const hiddenPlays=await page.evaluate(()=>testVoicePlays);
+  blockedPreview.row.renders.sample={state:'rendered'};
+  await blockedPreview.route.fulfill({json:{batch:blockedPreview.row,audio:lastPreviewAudio}});
+  await page.waitForFunction(()=>!document.querySelector('.voice-studio-play').disabled);
+  assert.equal(await page.evaluate(()=>testVoicePlays),hiddenPlays,'Hidden-page late response cannot play');
+  await page.evaluate(()=>{delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));});
+  await studio.getByLabel('Text to listen to').fill('word '.repeat(41));
+  await studio.getByText('This phrase has 41 words. Use up to 40.',{exact:true}).waitFor();
+  assert.equal(await studio.getByRole('button',{name:'▶ Listen',exact:true}).isDisabled(),true);
+  await studio.getByLabel('Text to listen to').fill('🌿'.repeat(300));
+  await studio.getByText('This phrase is too long (over 1024 bytes). Try a shorter one.',{exact:true}).waitFor();
   // A pending explicit Play closes immediately and is cancelled only once.
   unknownPreview=false;deferPreview=true;await studio.getByLabel('Text to listen to').fill('A different pending phrase.');
   blockedPreview=undefined;await studio.getByRole('button',{name:'▶ Listen',exact:true}).click();
