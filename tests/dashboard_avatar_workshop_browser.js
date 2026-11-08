@@ -61,6 +61,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
     assert.equal(await editor.locator('html').evaluate(e=>e.scrollWidth>innerWidth),false,'Workshop fits '+width);
     const background=await editor.locator('#panel').evaluate(e=>getComputedStyle(e).backgroundColor);
     assert.equal(background,'rgb(18, 36, 48)','Actual wardrobe panel uses authored dark surface');
+    if(width<=375)assert.equal(await editor.locator('#tabs').evaluate(e=>getComputedStyle(e).gridTemplateColumns.split(' ').length),2,'Phone tabs keep readable labels in two columns');
     await page.screenshot({path:path.join(output,'workshop-'+width+'.png')});
    }
    await page.getByRole('button',{name:/^(Voice|Voces)$/,exact:true}).click();

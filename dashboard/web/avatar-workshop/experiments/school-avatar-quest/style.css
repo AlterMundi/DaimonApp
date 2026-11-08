@@ -43,3 +43,4 @@ html[data-presentation="navigator-hud"] .prop-swatch:focus-within {outline-color
 html[data-presentation="navigator-hud"] .stage :is(#appearance>summary,.art-wrap #play) {background:#132b38;color:var(--accent);border:1px solid #78d7e077;box-shadow:none;}
 html[data-presentation="navigator-hud"] .keep-actions button {min-width:0;overflow-wrap:anywhere;}
 @media(max-width:420px){html[data-presentation="navigator-hud"] .keep-actions #save {grid-column:1/-1;flex-basis:100%;}}
+@media(max-width:600px){html[data-presentation="navigator-hud"] #tabs {grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}html[data-presentation="navigator-hud"] #tabs button {font-size:16px;min-height:44px;padding:8px;white-space:normal;}}
