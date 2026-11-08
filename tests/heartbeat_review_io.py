@@ -99,4 +99,11 @@ def qualify(binary, production=False):
     finally:
         j.close()
 
-if __name__=='__main__':qualify(sys.argv[1], '--production' in sys.argv[2:])
+if __name__ == '__main__':
+    if '--production' in sys.argv[2:]:
+        qualify(sys.argv[1], True)
+    elif '--finite' in sys.argv[2:]:
+        qualify(sys.argv[1], False)
+    else:
+        qualify(sys.argv[1], False)
+        qualify(sys.argv[1], True)
