@@ -936,15 +936,9 @@ impl Store {
                 lanes[3] =
                     super::super::matrix::inbox::offers_on(&tx, human, entry, source, &p.seen)?;
             }
-            if let Some(state) = &p.inbox_state {
-                let revision = format!("inbox-{state}");
-                let health = "matrix-inbox-status";
-                if (state == "unavailable" || p.seen.contains_key(health))
-                    && p.seen.get(health) != Some(&revision)
-                {
-                    lanes[3].insert(0,Offer {key:health.into(),revision:revision.clone(),evidence:json!({"source":health,"revision":revision,"reason":"matrix_inbox_observation","state":state,"source_complete":true,"meaning":"Retained source-read health, not a peer message or execution authority"})});
-                }
-            }
+            // Source health belongs to the bounded observation/status plane.
+            // Failure/recovery alone is not new work and must not reserve a
+            // model turn. Keep historical health returns/cursors unchanged.
         }
         let selected = select_batch(&mut p, &lanes, progress_next);
         if selected.is_empty() {
@@ -1637,19 +1631,6 @@ mod inbox_tests {
         p.next_check_ms = 0;
         save(&conn, &p).unwrap();
     }
-    fn reviewed(s: &Store, e: SessionKey) {
-        let conn = s.conn.lock().unwrap();
-        let (session, _) = crate::store::presentation::entry_on(&conn, 100, e).unwrap();
-        let mut p = load(&conn, 100, session).unwrap().unwrap();
-        let r = p.native_returns.last_mut().unwrap();
-        r.phase = "accepted".into();
-        let id = r.id.clone();
-        let revision = r.envelope["revision"].as_str().unwrap().to_owned();
-        save(&conn, &p).unwrap();
-        drop(conn);
-        s.heartbeat_reported(100, e, "entry-native", &id, &revision)
-            .unwrap();
-    }
     #[test]
     fn inbox_check_pause_and_resume_fence_a_late_page_without_refilling() {
         let (_f, s, e, source) = setup();
@@ -1729,7 +1710,7 @@ mod inbox_tests {
         assert_eq!(selection(&s, e, &source).after, 1);
     }
     #[test]
-    fn inbox_no_news_is_quiet_and_failed_reads_consume_checks_without_repeated_attention() {
+    fn inbox_failure_and_recovery_are_model_free_until_a_genuine_original_arrives() {
         let (_f, s, e, source) = setup();
         let initial = s.heartbeat_control(100, e, H::Status).unwrap();
         assert!(initial["producer"]["last_check"].is_null());
@@ -1750,14 +1731,14 @@ mod inbox_tests {
         );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
-        let r = s
-            .heartbeat_finish_check(
+        assert!(
+            s.heartbeat_finish_check(
                 &c,
                 Some(Err(anyhow::anyhow!("synthetic source unavailable"))),
             )
             .unwrap()
-            .unwrap();
-        assert!(r.output.contains("matrix-inbox-status"));
+            .is_none()
+        );
         let failed = s.heartbeat_control(100, e, H::Status).unwrap();
         assert_eq!(failed["producer"]["last_check"]["outcome"], "failed");
         assert_eq!(
@@ -1766,7 +1747,6 @@ mod inbox_tests {
         );
         assert_eq!(&failed["producer"]["last_success_at_unix_ms"], last_success);
         assert!(!failed.to_string().contains("synthetic source unavailable"));
-        reviewed(&s, e);
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         assert!(
@@ -1776,12 +1756,11 @@ mod inbox_tests {
         );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
-        let recovered = s
-            .heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
-            .unwrap()
-            .unwrap();
-        assert!(recovered.output.contains("inbox-available"));
-        reviewed(&s, e);
+        assert!(
+            s.heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
+                .unwrap()
+                .is_none()
+        );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         assert!(
@@ -1800,6 +1779,20 @@ mod inbox_tests {
                 >= last_success.as_i64().unwrap()
         );
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(status["producer"]["retained_returns"], 0);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let original = item(1);
+        let key = format!("matrix-inbox:{}", original["message_id"].as_str().unwrap());
+        let real = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![original])))),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(real.output.contains(&key));
+        assert!(!real.output.contains("matrix-inbox-status"));
     }
     #[test]
     fn inbox_failed_page_rolls_back_its_savepoint_but_retains_finite_observation() {

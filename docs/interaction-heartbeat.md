@@ -212,3 +212,19 @@ Owner console equivalents are `heartbeat pause GLOBAL_GENERATION`, and
 Existing explicit owner commands remain compatible. The source change does not
 add a web write endpoint, operational evidence, Core adoption or activation;
 those remain actual receiving integration work.
+
+## Source health does not request inference
+
+An inbox read failure or recovery updates the bounded source observation and
+last-check/last-success status only. It does not create a heartbeat offer,
+reserve an execution or wake a model. A genuine unreviewed source can still
+create an offer after recovery. Existing health-only returns and seen cursors
+remain historical evidence; changing this policy never refunds reservations,
+rewrites an original or resets the resource account.
+
+Receiving evidence found one useful Eko message execution and three separately
+accepted, reviewed health-only batches. Each reserved its12-attempt allowance,
+exhausting the original48-attempt peer contract. Those are reserved maxima,
+not measured tokens or money. The implementation removes those automatic
+health-only batches rather than replenishing their account or moving the same
+work into another inference loop.
