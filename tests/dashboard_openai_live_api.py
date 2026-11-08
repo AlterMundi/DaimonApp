@@ -137,6 +137,53 @@ class Mounted(unittest.TestCase):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
 
+    def renewal_app(self):
+        app=self.app_with_history()
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'backend_mode':'native','continuous_renewal':True}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        return app
+
+    def test_renewal_ready_follows_native_close_and_releases_owner_before_successor(self):
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                socket.send_json({'type':'close','reason':'transport_renewal'})
+                self.assertEqual(socket.receive_json()['type'],'finishing')
+                final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                self.assertTrue(final['renewal_pending'])
+                ready=socket.receive_json();self.assertEqual(ready['type'],'successor_ready')
+                self.assertTrue(native.detached)
+                self.assertEqual(app.state.voice_active,set())
+                prior=self.ident
+                self.ident=str(uuid.uuid4())
+                self.meta={**self.meta,'id':self.ident,'voice_continuation':prior,'renewal':ready['renewal']}
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as successor:
+                self.start(successor);self.close(successor)
+        old=json.loads((self.state/'public-live-visits'/(prior+'.json')).read_text())
+        new=self.read()
+        self.assertEqual(old['renewal_target'],self.ident)
+        self.assertEqual(new['renewal_from'],prior)
+        self.assertEqual(new['native_continuation_from'],prior)
+        self.assertEqual(len(Client.instances),2)
+
+    def test_unsettled_native_context_never_publishes_successor_ready(self):
+        app=self.renewal_app()
+        async def failed_close(*args,**kwargs):raise ProviderUnavailable('Synthetic context remains uncertain')
+        with patch('dashboard.openai_live_api.PublicLiveSessionContext.close',failed_close):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    self.start(socket)
+                    socket.send_json({'type':'close','reason':'transport_renewal'})
+                    self.assertEqual(socket.receive_json()['type'],'finishing')
+                    self.assertEqual(socket.receive_json()['type'],'closed')
+                    with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        self.assertNotIn('renewal_ready',self.read())
+        self.assertEqual(len(Client.instances),1)
+
     def test_failed_optional_result_reader_keeps_live_speech_until_explicit_stop(self):
         app=self.app_with_history()
         self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
@@ -927,6 +974,39 @@ class Mounted(unittest.TestCase):
 
 
 class Journal(unittest.TestCase):
+    def renewal_ready(self):
+        value=self.history.read(self.ident,100,self.frozen)
+        value['backend_mode']='native';self.history._write(value)
+        self.history.record_close_reason(self.ident,100,self.frozen,'transport_renewal')
+        self.history.end_capture(self.ident,100,self.frozen['binding'])
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'close_requested','session':{'id':'live_opaque:provider/42'}})
+        return self.history.ready_for_renewal(self.ident,100,self.frozen)
+
+    def test_renewal_claim_survives_partial_write_and_refuses_second_successor(self):
+        ready=self.renewal_ready();child=str(uuid.uuid4());write=self.history._write
+        def fail_destination(value):
+            if value['id']==child:raise OSError('Synthetic destination write failure')
+            write(value)
+        with patch.object(self.history,'_write',side_effect=fail_destination):
+            with self.assertRaises(OSError):self.history.prepare(child,100,self.frozen,backend_mode='native',
+                voice_continuation=self.ident,renewal=ready)
+        self.assertEqual(self.history.read(self.ident,100,self.frozen)['renewal_target'],child)
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,backend_mode='native')
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,
+            backend_mode='native',voice_continuation=self.ident,renewal=ready)
+
+    def test_renewal_requires_same_service_epoch_owner_token_and_confirmed_reason(self):
+        ready=self.renewal_ready()
+        for renewal,history in (({**ready,'token':str(uuid.uuid4())},self.history),
+                                (ready,LiveCreations(self.root))):
+            with self.assertRaises(ValueError):history.prepare(str(uuid.uuid4()),100,self.frozen,
+                backend_mode='native',voice_continuation=self.ident,renewal=renewal)
+        value=self.history.read(self.ident,100,self.frozen)
+        value['finalization']['reason']='content';self.history._write(value)
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,
+            backend_mode='native',voice_continuation=self.ident,renewal=ready)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.root.chmod(0o700)

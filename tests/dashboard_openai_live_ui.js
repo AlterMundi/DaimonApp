@@ -3,8 +3,15 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),crypto=require(
 const source=fs.readFileSync('dashboard/web/openai-live.js','utf8');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(test){for(let i=0;i<1000;i++){if(test())return;await sleep(1);}throw Error('Fixture did not reach its expected boundary');}
+async function rejectsLocked(action){
+ let timeout;
+ try{return await Promise.race([assert.rejects(action,/still finishing/),new Promise((_,reject)=>{
+  timeout=setTimeout(()=>reject(Error('Recovery operation did not refuse the in-flight upload')),200);
+ })]);}finally{clearTimeout(timeout);}
+}
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false}={}){
+ const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
@@ -16,9 +23,13 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
    if(value.binding){this.id=value.id;order.push('admission');
     if(reviewFirst&&sockets.length===1){emit({type:'unconfirmed',id:this.id,message:'Tap Reconnect voice. Final usage unconfirmed.',
       replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
-    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000}});}
+    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
-   if(value.type==='close'&&!deferClose)emit({type:this.offered?'closed':'unconfirmed',id:this.id});
+   if(value.type==='close'&&!deferClose){
+    const renewal=value.reason==='transport_renewal';
+    emit({type:this.offered?'closed':'unconfirmed',id:this.id,renewal_pending:renewal});
+    if(renewal&&!deferRenewalReady)emit({type:'successor_ready',id:this.id,renewal:{id:this.id,token:'12345678-1234-4234-8234-123456789abc'}});
+   }
   }
   close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
  }
@@ -67,22 +78,67 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   return {ok:true,json:async()=>({visit:original.voice_visit,binding,recording:{ordinal:original.ordinal,
    audio_sha256:original.audio_sha256,audio_bytes:original.blob.size,work_replay:'never',...(options.headers['x-voice-capture-stop']?{capture_stop:'interrupted_prefix'}:{})}})};
  }
- const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch','AbortSignal',source+';return window.PublicLiveConversation;')(
+ const api=new Function('window','navigator','document','crypto','WebSocket','RTCPeerConnection','Audio','fetch','AbortSignal','setTimeout',source+';return window.PublicLiveConversation;')(
   window,navigator,{hidden:false},crypto,Socket,Peer,class{constructor(){this.paused=true;audios.push(this);}play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}},fetch,
-  {timeout(ms){const controller=new AbortController();networkClocks.push({ms,controller});return controller.signal;}});
+  {timeout(ms){const controller=new AbortController();networkClocks.push({ms,controller});return controller.signal;}},
+  (run,ms)=>{if(continuous&&ms>470000&&ms<490000)timers.push(run);return setTimeout(run,ms);});
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
   onState:value=>states.push(value),onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
  async function start(){
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
+ return {engine,start,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   expireNetworkClocks:()=>{for(const clock of networkClocks)clock.controller.abort();},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ // A transport handover retains one microphone/lock and never replays
+ // retained closing speech into the successor. Source IDs stay per visit.
+ const renewal=fixture({nativeChoice:true,continuous:true});await renewal.start();
+ try{
+  renewal.pcm();renewal.renew();
+  await until(()=>renewal.peers[1]?.listeners.has('icegatheringstatechange'));
+  assert.equal(renewal.permission(),1);assert.equal(renewal.stops(),0);
+  assert.equal(renewal.recorderCloses(),1);
+  const first=renewal.sockets[0],second=renewal.sockets[1];
+  assert.equal(first.sent.filter(v=>v.type==='close').length,1);
+  assert.equal(first.sent.at(-1).reason,'transport_renewal');
+  assert.equal(second.sent[0].renewal.id,first.id);
+  assert.equal(second.sent[0].voice_continuation,first.id);
+  assert.notEqual(second.id,first.id);
+  assert.equal(second.sent.filter(v=>v.type==='offer').length,0,'No replayed media or work before its own SDP');
+  renewal.peers[1].ice();await until(()=>renewal.states.at(-1).active);
+  await until(()=>renewal.requests.length===1);
+  assert(renewal.requests[0].url.includes(first.id));
+  await renewal.engine.hold();assert.equal(renewal.stops(),1);assert.equal(renewal.sockets.length,2);
+ }finally{await renewal.engine.hold();}
+ const recoveryRenewal=fixture({nativeChoice:true,continuous:true});await recoveryRenewal.start();
+ recoveryRenewal.renew();await until(()=>recoveryRenewal.peers[1]?.listeners.has('icegatheringstatechange'));
+ recoveryRenewal.peers[1].ice();await until(()=>recoveryRenewal.states.at(-1).active);
+ let releaseRenewedUpload;recoveryRenewal.uploads(()=>new Promise(resolve=>{releaseRenewedUpload=resolve;}));
+ for(let n=0;n<30;n++)recoveryRenewal.pcm();
+ await until(()=>recoveryRenewal.requests.length===1&&recoveryRenewal.recovered().length===1);
+ const retained=recoveryRenewal.recovered()[0];
+ assert.equal(retained.voice_visit,recoveryRenewal.sockets[1].id);
+ await rejectsLocked(()=>recoveryRenewal.engine.retry(retained));
+ await rejectsLocked(()=>recoveryRenewal.engine.discard(retained));
+ assert.equal(recoveryRenewal.requests.length,1);
+ await recoveryRenewal.engine.hold();
+ await rejectsLocked(()=>recoveryRenewal.engine.retry(retained));
+ await rejectsLocked(()=>recoveryRenewal.engine.discard(retained));
+ assert.equal(recoveryRenewal.requests.length,1);assert.equal(recoveryRenewal.permission(),1);
+ releaseRenewedUpload();await until(()=>!recoveryRenewal.recovered().length);await sleep(5);
+ await recoveryRenewal.navigator.locks.request('daimon-native-voice:'+retained.voice_visit,{ifAvailable:true},lock=>assert(lock,'Settled queue releases its retired recovery lock'));
+ const stopRenewal=fixture({nativeChoice:true,continuous:true,deferRenewalReady:true});await stopRenewal.start();
+ stopRenewal.renew();await until(()=>stopRenewal.sockets[0].sent.some(v=>v.reason==='transport_renewal'));
+ const stopped=stopRenewal.engine.hold();
+ stopRenewal.sockets[0].onmessage({data:JSON.stringify({type:'successor_ready',id:stopRenewal.sockets[0].id,
+  renewal:{id:stopRenewal.sockets[0].id,token:'12345678-1234-4234-8234-123456789abc'}})});
+ await stopped;await sleep(5);assert.equal(stopRenewal.sockets.length,1,'Stop wins over late successor readiness');
+ assert.equal(stopRenewal.stops(),1);
  // A real WebRTC creation has already started the provider. The optional
  // frontend data channel need not repeat a WebSocket startup event.
  const httpStarted=fixture(),httpStarting=httpStarted.engine.start();
