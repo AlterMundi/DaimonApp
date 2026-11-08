@@ -167,7 +167,12 @@ def qualify(binary):
         assert adopted['resources']['continuous']['reserved_provider_attempts'] == 0
         assert adopted['producer']['state'] == 'configured' and adopted['resources']['state'] == 'available'
         j.read('heartbeat', 'resume', str(adopted['generation']))
-        j.wait(lambda: j.read('heartbeat', 'status')['result']['producer']['checks'] > pilot['producer']['checks'])
+        try:
+            j.wait(lambda: j.read('heartbeat', 'status')['result']['producer']['checks'] > pilot['producer']['checks'], seconds=45)
+        except AssertionError:
+            status = j.read('heartbeat', 'status')['result']
+            raise AssertionError(json.dumps({'producer': status['producer'], 'lanes': status['lanes'],
+                'executions': status.get('executions'), 'running_turns': j.row("SELECT id,status,native_thread_id FROM turns WHERE status='running'")})) from None
         observed = j.read('heartbeat', 'pause')['result']
         j.stop(); j.start(); j.wait_control_socket(j.socket)
         permanent = j.read('heartbeat', 'status')['result']
