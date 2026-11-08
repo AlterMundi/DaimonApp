@@ -1,6 +1,6 @@
 import {performanceFor,performanceState,playbackSpec} from './performances.mjs';
 import {preparePerformance,illustratePerformance,stagePerformance} from './performance-illustration.mjs';
-import {renderAvatarModel} from '../../skills/ascii-avatar-author/scripts/model-runtime.mjs';
+import {renderAvatarModel,resolveAvatarModelAnchors} from '../../skills/ascii-avatar-author/scripts/model-runtime.mjs';
 import {drawProps,propSlot} from './props.mjs';
 import {coloredImageFrame} from './image-avatar.mjs';
 import {legacyMaster} from './surface-classic-masters.mjs';
@@ -12,7 +12,7 @@ function master(body,frame,cue,design){if(design.avatarModel)return renderAvatar
 export function surfaceSource(design,frame,cue,compact=false,blend=1,performer=null){
  const bodyFrame=((frame%12)+12)%12,state=performer?preparePerformance(design,performer,performanceState(performer.id,cue,frame),bodyFrame):null,passiveProps=(design.activeProps||[]).filter(p=>p.id!==performer?.id);
  const illustration=master(design.body,bodyFrame,cue,{...design,strength:blend,actionPose:state?.face}),base=document.createElement('canvas');base.width=576;base.height=720;
- const options={body:design.body,anchors:design.avatarModel?.anchors,style:design.characterStyle};
+ const options={body:design.body,anchors:design.avatarModel?resolveAvatarModelAnchors(design.avatarModel,bodyFrame,cue):null,style:design.characterStyle};
  drawProps(base,passiveProps,bodyFrame,{...options,layer:'behind'});base.getContext('2d').drawImage(illustration,0,0);
  drawProps(base,passiveProps,bodyFrame,{...options,layer:'front'});
  if(state)illustratePerformance(base,design,performer,state,bodyFrame);const composed=state?stagePerformance(base,state):base;const canvas=document.createElement('canvas');canvas.width=576;canvas.height=720;const c=canvas.getContext('2d');

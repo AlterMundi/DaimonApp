@@ -321,3 +321,23 @@ voice, format, frame count, PCM alignment/size, duration, close/finalization and
 no-reconnect bounds remain. The post777 real attempt retained event_validation
 and0PCM; this contract correction is source-qualified, not a claim that its
 unretained specific event was recovered or that a new real sample succeeded.
+
+## Held objects on an articulated custom model
+
+Existing hand anchors remain rest-space points. To attach a hand-held object to
+a moving hierarchy, author an inert `path` node named `anchor-leftHand` or
+`anchor-rightHand`, parent it to the corresponding palm, and keep the matching
+`anchors.leftHand`/`rightHand` point. A one-command path with null fill/stroke
+provides an invisible attachment. The renderer applies that node's full existing
+parent/pivot/track chain to the point for the selected cue/frame. This changes no
+schema, saved normalization or storage; models without these explicit nodes keep
+static anchors. All existing node/depth/track bounds still apply. Floating details
+stay independent, so a held object and a floating symbol can coexist. Object
+orientation retains the existing accessory drawing; this is position attachment,
+not a grip, collision or finger-contact solver.
+
+`tests/dashboard_avatar_hand_props_browser.cjs` checks actual composed Canvas
+movement with a simultaneous stationary detail, nested parent rotation/scale and
+legacy static anchors. Use the existing `PLAYWRIGHT_MODULE`/`CHROMIUM_EXECUTABLE`
+settings. It owns a temporary local HTTP server/browser and makes no provider or
+production storage calls. Physical touch and artistic contact remain separate.

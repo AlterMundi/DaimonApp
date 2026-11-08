@@ -575,3 +575,10 @@ companion.permitted; add only the exact intended action and retain monitor,
 foreign actor, CSRF and unknown-path refusals. A provider socket smoke test does
 not establish browser grant admission. No grant reenrollment follows from an
 ordinary route correction.
+
+The two exact inert avatar-model fixtures (`tests/avatar_layer_model.mjs` and
+`tests/avatar_layer_model_browser.cjs`) use the existing always-run dashboard
+validator/store gate. They do not select unchanged native qualification. Unknown
+test paths and actual Rust/dependency changes retain normal native checks.
+The scope regression evaluates the actual workflow program and confirms the
+fixture's invocation through dashboard_avatar_workshop.py.
