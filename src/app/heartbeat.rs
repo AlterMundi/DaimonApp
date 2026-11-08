@@ -366,3 +366,48 @@ pub(super) async fn recover_unsent(app: &App) -> Result<()> {
     }
     Ok(())
 }
+
+// Yield only the finished ordinary collector. The existing parent then performs
+// its usual exact idle admission; this neither starts work nor touches a goal.
+fn pending_attention_can_take_idle(value: &Value) -> bool {
+    value["admission_paused"] == false
+        && value["producer"]["pending"] == true
+        && value["producer"]["state"] == "configured"
+        && value["resources"]["state"] == "available"
+        && value["lanes"].as_object().is_some_and(|lanes| {
+            lanes
+                .values()
+                .any(|lane| lane["paused"] == false && lane["supported"] == true)
+        })
+}
+pub(super) fn yield_collector_for_attention(app: &App, human: i64, entry: SessionKey) -> bool {
+    app.shared
+        .config
+        .interaction
+        .as_ref()
+        .is_some_and(|cfg| cfg.human_id == human && cfg.entry() == entry)
+        && app
+            .shared
+            .store
+            .heartbeat_control(human, entry, HeartbeatCommand::Status)
+            .is_ok_and(|value| pending_attention_can_take_idle(&value))
+}
+#[cfg(test)]
+mod idle_handoff_tests {
+    use super::*;
+    #[test]
+    fn pending_attention_yields_only_with_current_controls_and_capacity() {
+        let value = serde_json::json!({"admission_paused":false,"producer":{"pending":true,"state":"configured"},"resources":{"state":"available"},"lanes":{"messaging":{"paused":false,"supported":true}}});
+        assert!(pending_attention_can_take_idle(&value));
+        for (pointer, v) in [
+            ("/admission_paused", serde_json::json!(true)),
+            ("/producer/pending", serde_json::json!(false)),
+            ("/resources/state", serde_json::json!("rate_limited")),
+            ("/lanes/messaging/paused", serde_json::json!(true)),
+        ] {
+            let mut blocked = value.clone();
+            *blocked.pointer_mut(pointer).unwrap() = v;
+            assert!(!pending_attention_can_take_idle(&blocked));
+        }
+    }
+}

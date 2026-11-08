@@ -222,6 +222,8 @@ pub enum CodexEvent {
         effort: Option<String>,
     },
     NativeTurnStarted(String),
+    /// Completed physical turn; the native goal itself remains untouched.
+    NativeGoalIdle,
     NativeInputAccepted(String),
     /// Native accepted an internal return into a different physical turn; the
     /// current collector must not pretend to own that execution or replay it.
@@ -333,6 +335,8 @@ impl NativeInferenceAllowance {
 #[derive(Debug)]
 pub enum CodexEventOutcome {
     None,
+    /// Release only this completed collector for retained canonical attention.
+    YieldGoalCollector,
     InferenceAllowance(NativeInferenceAllowance),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
@@ -1904,7 +1908,12 @@ where
                         goal_active=observed.goal_active;
                         if let Some(text)=observed.assistant_text {summary.assistant_text=text;}
                         if observed.status!="completed" {turn_error=Some(format!("Native turn {} (history observation)",observed.status));}
-                        if goal_active {goal_gap=Some(Instant::now()+goal_collection_wait);}
+                        if goal_active {
+                            goal_gap=Some(Instant::now()+goal_collection_wait);
+                            if matches!(on_event(CodexEvent::NativeGoalIdle).await?,CodexEventOutcome::YieldGoalCollector) {
+                                goal_active=false;goal_gap=None;goal_snapshot_request_id=None;
+                            }
+                        }
                         let _=steer.response.send(Ok(None));
                         continue;
                     }
@@ -2151,6 +2160,11 @@ where
             else if turn_completed && goal_active && goal_gap.is_none() {
                 goal_gap=Some(Instant::now()+goal_collection_wait);
                 let _=on_event(CodexEvent::Progress("Waiting for native goal continuation".to_string())).await?;
+                if matches!(on_event(CodexEvent::NativeGoalIdle).await?,CodexEventOutcome::YieldGoalCollector) {
+                    // Local collection ends at an acknowledged physical terminal;
+                    // no native goal state, input or continuation is changed.
+                    goal_active=false;goal_gap=None;goal_snapshot_request_id=None;
+                }
             }
             if let Some(turn_id)=active_turn_id.as_deref() {
                 while let Some(steer)=queued_steers.pop_front() {
@@ -2743,7 +2757,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;

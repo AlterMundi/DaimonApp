@@ -417,3 +417,11 @@ model-free. It has no trial lifetime/check cutoff; retiring its purpose or pausi
 Reports/global stops admission. No other lane is selected. Legacy finite review
 contracts retain their original pilot-only funding, expiry and four-execution
 ceiling; production selection cannot relabel or reset a previously selected review.
+
+When a physical goal turn completes with admitted canonical attention pending,
+current unpaused controls and available resources, the ordinary collector yields
+its completed local ownership. The existing parent admits the retained attention
+through the usual native idle check. No goal pause/edit, native interrupt, input
+replay or parallel scheduler occurs. Without pending eligible work the collector
+stays across the configured idle checkpoint. This prevents a permanently attached
+active-goal collector from starving the messaging/review parent.

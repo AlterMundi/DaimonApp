@@ -105,7 +105,7 @@ class Goals(Journey):
                         if k in p:g[k]=p[k]
                     send({'id':ident,'result':{'goal':copy.deepcopy(g)}})
                     self.broadcast(t,'thread/goal/updated',{'goal':copy.deepcopy(g)})
-                    if g['status']=='active' and t in self.holding and self.mode=='complete':
+                    if g['status']=='active' and t in self.holding and self.mode in ('complete','checkpoint45'):
                         active=self.holding.pop(t)
                         threading.Thread(target=lambda:(time.sleep(.15),self.finish(t,active)),daemon=True).start()
                 elif method=='turn/start':
@@ -120,7 +120,7 @@ class Goals(Journey):
                             time.sleep(.1);self.finish(selected,selected_turn)
                         threading.Thread(target=late_start,daemon=True).start();continue
                     send({'id':ident,'result':{'turn':{'id':turn}}});self.broadcast(thread,'turn/started',{'turn':{'id':turn,'status':'inProgress'}})
-                    if self.mode=='complete' and self.goals.get(thread):self.holding[thread]=turn
+                    if self.mode in ('complete','checkpoint45') and self.goals.get(thread):self.holding[thread]=turn
                     elif self.mode=='hold':self.holding[thread]=turn
                     else:self.finish(thread,turn)
                 elif method=='turn/steer':send({'id':ident,'result':{'turnId':turn}})
