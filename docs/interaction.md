@@ -1157,6 +1157,16 @@ offset to read 4,000 characters at a time. Only the integrating entry and the
 admitted successor owner can read it. Workers cannot declare/progress a workflow
 or turn its internal step into another helper's human parent.
 
+New successor packets include `predecessor_reader`, with the exact
+`workflow_result` arguments, beside the unchanged canonical predecessor source.
+Use its plan-step key rather than confusing `source.id` (the canonical result
+UUID) with that key. Older admitted packets that expose only `source.id` may use
+that exact canonical ID and source revision in `step`: the existing reader
+resolves it only within this workflow's already-authorized dependencies and still
+checks current owner/native binding, canonical revision, completion and adjacency.
+This compatibility read changes no retained source hash/admission, creates no
+workflow, sends nothing, and never replays an uncertain step.
+
 Exact admission retries never dispatch an existing instruction. Queued,
 known-unsent, accepted and uncertain native operations retain the owning journal's
 phases and recovery path. Changed predecessor coverage/revisions expose
