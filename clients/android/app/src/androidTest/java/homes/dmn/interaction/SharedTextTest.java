@@ -37,11 +37,18 @@ public class SharedTextTest {
         // Only this isolated CI app's setup selection, not any production login.
         context.getSharedPreferences("MainActivity", Context.MODE_PRIVATE).edit().remove("home").commit();
         context.getSharedPreferences("homes.dmn.interaction.MainActivity", Context.MODE_PRIVATE).edit().remove("home").commit();
-        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(new Intent(context, MainActivity.class))) {
+        Intent launch = new Intent(context, MainActivity.class).setAction(Intent.ACTION_SEND)
+            .setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Synthetic cold-start share");
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(launch)) {
             String[] ident = new String[1];
             scenario.onActivity(activity -> {
                 assertNull(field(activity, "web")); // setup only; no network or login fixture.
-                activity.onNewIntent(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Synthetic incoming URL https://example.test"));
+                assertNotNull(field(activity, "incomingShare"));
+                // Complete only the synthetic offer in this fixture. Keep the
+                // actual ActivityScenario action/type/component when delivering
+                // the next Intent; its lifecycle monitor uses filterEquals.
+                setField(activity, "incomingShare", null);
+                activity.onNewIntent(new Intent(activity.getIntent()).putExtra(Intent.EXTRA_TEXT, "Synthetic incoming URL https://example.test"));
                 SharedText pending = (SharedText)field(activity, "incomingShare"); assertNotNull(pending); ident[0] = pending.id;
                 setField(activity, "shareHome", "https://example.test");
                 setField(activity, "shareBinding", "synthetic-owner");
@@ -60,7 +67,7 @@ public class SharedTextTest {
         try { Field f = MainActivity.class.getDeclaredField(name); f.setAccessible(true); return f.get(activity); }
         catch (ReflectiveOperationException error) { throw new AssertionError(error); }
     }
-    private void setField(MainActivity activity, String name, String value) {
+    private void setField(MainActivity activity, String name, Object value) {
         try { Field f = MainActivity.class.getDeclaredField(name); f.setAccessible(true); f.set(activity, value); }
         catch (ReflectiveOperationException error) { throw new AssertionError(error); }
     }
