@@ -1060,3 +1060,45 @@ Unsupported browsers/native media proxies keep sound without the optional jaw
 signal; observer failure cannot stop or retry speech. Actual encoded Chromium
 sound/silence/pause/resume/mute/source replacement and delayed-setup fixtures
 qualify that boundary, not physical hearing, Android proxy support or phonemes.
+
+
+### Continuous public-native transport renewal (prepared)
+
+`openai_live.continuous_renewal = true` explicitly enables the native backend's
+planned physical-transport replacement. It does not select that backend, change
+voice/account/model, enable background capture or renew any existing call after
+deployment. The default is false; Responses and old clients retain their finite
+visit behavior. Each physical visit still admits 300–600 seconds and its own
+PCM/source/storage bounds. A logical foreground capture keeps one microphone
+permission and WebLock until Stop or a concrete failure/capacity refusal.
+
+The browser requests graceful close 120 seconds before the physical deadline.
+It keeps the WebRTC/data channel and trusted receiver alive while the predecessor
+closes. Existing source seals/preparation settle before planned close; explicit
+Stop takes precedence. `session.closed` confirms provider finalization only.
+`successor_ready` is emitted separately, after owned native context closes,
+in-flight context work settles and the old application lease is released.
+Both current authorization and the exact frozen owner are rechecked. Native work
+keeps its original ownership and is never replayed to prepare the successor.
+
+The server records one same-process readiness token and claims the exact sole
+successor before writing its admission. Lost receipts, partial admission writes,
+service restart, changed binding, unconfirmed context/provider close, non-planned
+hangup or a provider `content` closure do not authorize automatic replacement.
+Original uncertain receipts and existing history/capacity bounds remain; there
+is no retry, counter refill or fallback. A partial claim blocks fresh admissions
+until its actual outcome is reconciled through supported owning recovery.
+
+The microphone remains owned through the handover. Raw speech during graceful
+close is retained as an interrupted prefix of the old visit, never replayed as
+newly heard speech. Recorder/output transports are then replaced; preparing the
+successor can leave an audible listening gap. This is not gapless duplex audio.
+The browser waits at most 85 seconds for readiness, then pauses for review.
+Stop, hidden-page teardown and binding changes prevent a late successor.
+
+Source/fixture qualification is separate from receiving adoption and real audio.
+A finite provider journey should use an explicitly synthetic microphone, at most
+two physical calls and 660 seconds total, a corrected fact before the handover
+and semantic readback afterward, followed by Stop. Retain both finalization and
+original-audio receipts; never replay a completed call to repair its verifier.
+Human hearing and phone/OS acceptance remain distinct.

@@ -8,7 +8,7 @@ window.PublicLiveConversation=(()=>{
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
     let binding,visit,socket,peer,channel,media,capture,audio,nativeAudio,nativeAudioAbort,unsubscribe,unlock,timer,finishAck,closedAck,abortOpen,activityObserver,activityAbort;
-    let active=false,starting=false,closing=false,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
+    let active=false,starting=false,closing=false,renewing=false,renewalReadyAck,logicalGeneration=0,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
@@ -129,7 +129,7 @@ window.PublicLiveConversation=(()=>{
       socket.send(JSON.stringify(receipt));
     }
     async function hold(message='Voice paused. Your original audio is kept.',reason='explicit_stop'){
-      if(closing)return;closing=true;active=starting=false;clearTimeout(timer);
+      if(closing)return;logicalGeneration++;renewalReadyAck?.();renewalReadyAck=undefined;renewing=false;closing=true;active=starting=false;clearTimeout(timer);
       // Local playback stops immediately; the provider receiver remains alive
       // for the final usage event and independent native work keeps its owner.
       if(audio){audio.pause();audio.srcObject=null;}
@@ -156,12 +156,49 @@ window.PublicLiveConversation=(()=>{
       // lock or freeze navigation for a whole queue of network timeouts.
       await durable;unlock?.();unlock=undefined;closing=false;state(completionMessage||message);notify();
     }
-    async function start({continuation=false}={}){
+    async function renew(){
+      if(!active||starting||closing||renewing||document.hidden||binding!==getBinding())return;
+      const logical=logicalGeneration,previous=visit,transport=socket;
+      renewing=true;clearTimeout(timer);state('Reconnecting voice · keeping your microphone and conversation.');
+      let timeout;
+      const ready=new Promise(resolve=>{renewalReadyAck=resolve;});
+      try{
+        if(transport?.readyState!==WebSocket.OPEN)throw Error('Renewal transport is unavailable');
+        transport.send(JSON.stringify({type:'close',reason:'transport_renewal'}));
+        const next=await Promise.race([ready,new Promise(resolve=>{timeout=setTimeout(()=>resolve(),85000);})]);
+        clearTimeout(timeout);renewalReadyAck=undefined;
+        if(logical!==logicalGeneration||closing||!renewing)return;
+        if(!next||next.id!==previous||!/^([a-f0-9]{8}-)([a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(next.token||'')
+            ||document.hidden||binding!==getBinding())throw Error('Renewal context is not confirmed');
+        // Raw speech during graceful close stays an interrupted prefix of the
+        // OLD visit. It is never replayed into the successor as newly heard audio.
+        if(capture){
+          const finished=new Promise(resolve=>{finishAck=resolve;});capture.finish();
+          let finishTimer;await Promise.race([finished,new Promise(resolve=>{finishTimer=setTimeout(resolve,1000);})]);clearTimeout(finishTimer);
+          flush(true);unsubscribe?.();unsubscribe=undefined;capture.close();capture=undefined;
+        }
+        await durable;
+        if(logical!==logicalGeneration||closing||document.hidden||binding!==getBinding())return;
+        // The server has finalized usage, closed native context and released
+        // its owner. Retire only transport/output; retain media and WebLock.
+        ++epoch;socket=undefined;transport.close();channel?.close();channel=undefined;peer?.close();peer=undefined;
+        if(audio){audio.pause();audio.srcObject=null;audio=undefined;}
+        nativeAudioAbort?.abort();nativeAudioAbort=undefined;nativeAudio?.close();nativeAudio=undefined;
+        activityAbort?.abort();activityAbort=undefined;activityObserver?.close();activityObserver=undefined;outputLevel=0;
+        active=starting=renewing=false;
+        await start({renewal:next,logical});
+      }catch{
+        if(logical===logicalGeneration&&!closing)await hold('Voice renewal needs review. Your original audio is kept.','transport_failed');
+      }finally{clearTimeout(timeout);}
+    }
+    async function start({continuation=false,renewal,logical}={}){
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
+      if(renewal&&(logical!==logicalGeneration||!media||!unlock))return false;
+      if(!renewal)logicalGeneration++;
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
-      const backend=getBackend(),voiceParent=continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined;
+      const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
       usage({});
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
       const activity=rms=>{if(!current())return;const level=audible&&!paused?Math.round(Math.min(1,Math.max(0,Number.isFinite(rms)?rms:0)*6)*4)/4:0;if(level!==outputLevel){outputLevel=level;state();}};
@@ -172,18 +209,20 @@ window.PublicLiveConversation=(()=>{
       async function wait(promise,ms){let timeout;try{return await Promise.race([promise,aborted,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('Voice connection was not confirmed.')),ms);})]);}finally{clearTimeout(timeout);}}
       state('Preparing voice');
       try{
-        await review();if(!current())throw Error('Voice activation ended');
+        if(!renewal)await review();if(!current())throw Error('Voice activation ended');
+        if(!renewal){
         let granted;
         const locked=new Promise(resolve=>{granted=resolve;});
         void navigator.locks.request('daimon-native-voice:'+visit,{ifAvailable:true},async lock=>{
           if(!lock||!current()){granted(false);return;}await new Promise(resolve=>{unlock=resolve;granted(true);});
         }).catch(()=>granted(false));
         if(!await wait(locked,3000))throw Error('Microphone capture is owned by another page');
+        }
         const url=new URL('api/interaction/voice/gpt-live',window.location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
         const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
-          ...(backend===undefined?{}:{backend}),
+          ...(backend===undefined?{}:{backend}),...(renewal?{renewal}:{}),
           ...(replacementReview?.binding===binding&&replacementReview?.backend===backend?{replacement:replacementReview.value}:voiceParent?{voice_continuation:voiceParent}:{voice_start:'new'}),
           ...(headers().Authorization?{authorization:headers().Authorization}:{})}));};
         transport.onmessage=event=>{
@@ -202,19 +241,23 @@ window.PublicLiveConversation=(()=>{
             else if(value.type==='source_seal_requested')void sealSource(value).catch(()=>{
               if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.','source_unconfirmed');
             });
-            else if(value.type==='finishing'){if(!closing)void hold(value.message||'Finishing voice; checking pending work.','server_finishing');}
+            else if(value.type==='finishing'){if(!closing&&!renewing)void hold(value.message||'Finishing voice; checking pending work.','server_finishing');}
+            else if(value.type==='successor_ready'){if(renewing&&value.id===visit)renewalReadyAck?.(value.renewal);}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
               if(value.finalization)usage({finalization:value.finalization,closed:true});
               if(backend==='native'&&value.replacement&&/^[a-f0-9-]{36}$/.test(value.replacement.id||'')
                   &&/^[a-f0-9]{64}$/.test(value.replacement.revision||''))
                 replacementReview={binding,backend,value:value.replacement};
               completionMessage=value.message||(value.type==='closed'?'Voice ended.':undefined);
-              closedAck?.(value.type==='closed');abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
+              closedAck?.(value.type==='closed');
+              if(renewing&&value.type==='closed'&&value.renewal_pending===true)return;
+              if(renewing)renewalReadyAck?.();
+              abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
               if(!closing){socket=undefined;transport.close();void hold(value.message||'Voice paused. Your original audio is kept.');}
             }
           }catch{if(!closing)void hold('Voice paused. Review the retained original.','event_processing');}
         };
-        transport.onclose=()=>{if(owned!==epoch)return;closedAck?.(false);abortOpen?.(Error('Voice connection ended.'));
+        transport.onclose=()=>{if(owned!==epoch)return;if(renewing){renewalReadyAck?.();return;}closedAck?.(false);abortOpen?.(Error('Voice connection ended.'));
           if(owned===epoch&&!closing){socket=undefined;void hold('Voice connection ended. Your original audio is kept.');}};
         transport.onerror=()=>transport.close();
         const preparedValue=await wait(prepared,45000),admission=preparedValue.admission;
@@ -238,11 +281,13 @@ window.PublicLiveConversation=(()=>{
           if(!current()){nativeAudio.close();nativeAudio=undefined;throw Error('Voice activation ended');}
           nativeAudio.setEnabled(audible);if(paused)nativeAudio.pause();
         }
+        if(!renewal){
         pendingPermission=true;
         const permission=navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
           .then(stream=>{if(!current()){for(const track of stream.getTracks())track.stop();throw Error('Microphone permission retired');}return stream;})
           .finally(()=>{pendingPermission=false;});
         permission.catch(()=>{});media=await wait(permission,Math.min(300000,admission.remaining_seconds*1000));
+        }
         if(!current())throw Error('Voice activation ended');
         peer=new RTCPeerConnection();channel=peer.createDataChannel('oai-events');
         let sessionId,started=false,connected=false;
@@ -295,7 +340,8 @@ window.PublicLiveConversation=(()=>{
           if(bytes>=30*32000)flush();
           if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.','binding_changed');
         });
-        timer=setTimeout(()=>void hold('Voice visit reached its time limit.','visit_deadline'),Math.max(0,deadline-Date.now()-2000));
+        timer=setTimeout(()=>{if(admission.continuous_renewal===true&&backend==='native')void renew();else void hold('Voice visit reached its time limit.','visit_deadline');},
+          Math.max(0,deadline-Date.now()-(admission.continuous_renewal===true&&backend==='native'?120000:2000)));
         capture.start();for(const track of media.getAudioTracks())peer.addTrack(track,media);
         const offer=await wait(peer.createOffer(),10000);
         if(!current())throw Error('Voice offer retired');

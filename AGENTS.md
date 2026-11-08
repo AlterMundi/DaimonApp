@@ -223,6 +223,15 @@ activate peer avatars, voice/provider/default/heartbeat flags or publish school
 media as a side effect. Fixed workshop cues are artistic choices, not emotion or
 agent/microphone measurements. Full original voice/client/UX scope remains open.
 
+Opt-in `openai_live.continuous_renewal` separates a native logical foreground
+capture from its finite physical calls. Keep the exact server-side confirmed
+close AND settled native-context/readiness barriers, same-process single-successor
+claim and frozen voice/owner. Stop/hidden teardown/binding change wins over late
+readiness. Retain closing-gap audio as the old interrupted prefix, never replay
+it as new speech. Unknown outcomes, content closures, restart and exhausted
+existing storage pause; no fallback/refill. Default-off/Responses/legacy finite
+behavior stays. Source tests do not prove sustained provider/device audio.
+
 Native public-voice renewal keeps work on its original native thread. Historical
 returns need current original/result proofs and flat origin-to-destination claims;
 never reuse an old provider delegation ID as a new visit's delegation, copy nested

@@ -82,7 +82,13 @@ class LiveCreations:
                     or value.get('admission',{}).get('ended') is not True):
                 raise ValueError('Public Live replacement review is unavailable')
             self._ident(review['target'])
-        if 'replaces' in value:self._ident(value['replaces'])
+        for key in ('replaces','renewal_from','renewal_target'):
+            if key in value:self._ident(value[key])
+        if 'renewal_ready' in value:
+            ready=value['renewal_ready']
+            if not isinstance(ready,dict) or set(ready)!={'token','epoch'}:
+                raise ValueError('Native renewal readiness is unavailable')
+            self._ident(ready['token']);self._ident(ready['epoch'])
         return value
 
     @staticmethod
@@ -157,6 +163,11 @@ class LiveCreations:
         by_id = {v['id']:v for v, _ in records}
         active = []
         for value, _ in records:
+            if value.get('renewal_target'):
+                target=by_id.get(value['renewal_target'])
+                if (target is None or target.get('renewal_from')!=value['id']
+                        or target['owner']!=value['owner']):
+                    raise ValueError('Renewal admission is unconfirmed; preserve its exact intent')
             if value['state'] not in self.unsettled:continue
             replacement = value.get('replacement_review')
             if replacement:
@@ -189,7 +200,7 @@ class LiveCreations:
                     or value.get('admission',{}).get('ended') is not True):return None
             return {'id':value['id'],'revision':self._revision(value)}
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
@@ -205,6 +216,20 @@ class LiveCreations:
             records, other = self._records()
             active = self._active(records)
             reviewed=None
+            predecessor=None
+            if renewal is not None:
+                if (backend_mode!='native' or replacement is not None or resume_spec is not None
+                        or not isinstance(renewal,dict) or set(renewal)!={'id','token'}):
+                    raise ValueError('Select one confirmed native transport renewal')
+                predecessor=self._read(self._ident(renewal['id']))
+                self._matches(predecessor,owner)
+                ready=predecessor.get('renewal_ready',{})
+                if (predecessor['state']!='closed' or predecessor.get('backend_mode')!='native'
+                        or predecessor.get('finalization',{}).get('reason')!='close_requested'
+                        or ready.get('epoch')!=self.epoch or ready.get('token')!=renewal['token']
+                        or not ready.get('token') or predecessor.get('renewal_target')
+                        or voice_continuation!=predecessor['id']):
+                    raise ValueError('Prior transport/context renewal is not confirmed or already claimed')
             if replacement is not None:
                 if (backend_mode!='native' or resume_spec is not None
                         or not isinstance(replacement,dict) or set(replacement)!={'id','revision'}):
@@ -232,7 +257,7 @@ class LiveCreations:
                           and v.get('backend_mode')=='native']
                 if reviewed is not None:previous.append(reviewed)
                 if previous:
-                    parent=max(previous,key=lambda v:(v['created_at'],v['id']))
+                    parent=predecessor or max(previous,key=lambda v:(v['created_at'],v['id']))
                     value['native_continuation_from']=parent['id']
                     if parent.get('native_return_scan'):
                         value['native_return_scan']=parent['native_return_scan']
@@ -249,7 +274,7 @@ class LiveCreations:
                 if inherited is not None and inherited.get('voice_choice') is not None:
                     value['voice_choice']=validate_choice(inherited['voice_choice'])
                     value['voice_continuation_from']=inherited['id']
-                else:
+                elif voice_choice is not None or renewal is None:
                     value['voice_choice']=validate_choice(voice_choice)
             if resume_spec is not None:
                 value['continuity']='stored_fork'
@@ -269,11 +294,31 @@ class LiveCreations:
                 reviewed['replacement_review']={'target':ident,'revision':replacement['revision'],
                     'reviewed_at':time.time(),'final_usage':'unconfirmed'}
                 self._write(reviewed)
+            if predecessor is not None:
+                # Freeze the sole successor before destination admission. Lost
+                # receipts/partial writes never authorize another provider POST.
+                value['renewal_from']=predecessor['id']
+                predecessor['renewal_target']=ident
+                self._write(predecessor)
             self._write(value)
             return {'id':ident, 'remaining_seconds':seconds, 'max_input_pcm_bytes':seconds*32000,
                 'continuity':value.get('continuity','fresh'),'continued':value.get('continuation_from') is not None,
                 **({'voice_choice':value['voice_choice']} if 'voice_choice' in value else {})}
 
+
+    def ready_for_renewal(self,ident,human,frozen):
+        """Server-only barrier, after confirmed close AND settled native context."""
+        with history_lock(self.root / '.lock'):
+            value=self.read(ident,human,frozen)
+            if (value['state']!='closed' or value.get('backend_mode')!='native'
+                    or value.get('client_close_reason')!='transport_renewal'
+                    or value.get('finalization',{}).get('reason')!='close_requested'
+                    or value.get('admission',{}).get('ended') is not True
+                    or value.get('renewal_ready') or value.get('renewal_target')):
+                raise ValueError('Native transport is not ready for automatic renewal')
+            ready={'token':str(uuid.uuid4()),'epoch':self.epoch}
+            value['renewal_ready']=ready;self._write(value)
+            return {'id':ident,'token':ready['token']}
 
     def end_capture(self, ident, human, binding):
         with history_lock(self.root / '.lock'):
@@ -500,7 +545,7 @@ class LiveCreations:
 
     close_reasons=frozenset(('explicit_stop','source_unconfirmed','local_storage','event_processing',
         'native_output','transport_failed','capture_unavailable','capture_bound','binding_changed',
-        'visit_deadline','activation_failed','server_finishing'))
+        'visit_deadline','activation_failed','server_finishing','transport_renewal'))
 
     def record_close_reason(self,ident,human,frozen,reason):
         # A bounded browser diagnostic is not evidence of physical/network cause.
