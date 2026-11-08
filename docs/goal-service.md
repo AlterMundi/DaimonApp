@@ -319,7 +319,12 @@ retained human instruction reference, never invented speech), `entry`
 (`chat_id`, `thread_id`), absolute Unix-seconds `deadline`, and `targets`.
 Each of at most four targets contains `target`, exact public `binding` from
 `goal inspect CHAT TOPIC`'s `target_binding`, and its exact native `snapshot`.
-Preparation verifies the current native snapshot including observed accounting,
+Preparation verifies the unchanged native definition revision and goal identity,
+accepting only monotone usage since the caller's observation. Token/time usage may
+advance while a live turn runs; this is not a changed goal or another approval
+boundary. Accounting regression and changed definition/status/budget still refuse.
+The captured observation and actual acknowledged pause/restoration receipts retain
+their accounting; no counter is rewritten or reset. Preparation then
 then retains the owner, approval reference, entry/target incarnation, admission
 epoch, goal-command generation, complete goal definition, opaque native revision
 and accounting **before** any pause. A request ID cannot select a different plan.
