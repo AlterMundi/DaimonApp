@@ -2329,7 +2329,7 @@ window.Conversation = (() => {
     }
     nativeVoiceSession=providerVoiceSession;
     if(standalone && !readOnly)voiceMode=window.ConversationVoiceMode?.mount({
-      portrait:$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
+      portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
       canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
         if(voiceEngine)voiceEngine.disabled=true;

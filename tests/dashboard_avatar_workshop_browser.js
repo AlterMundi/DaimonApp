@@ -279,6 +279,27 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await page.evaluate(()=>document.body.classList.add('conversation-header-compact'));
   assert.equal(await frameBox.isVisible(),false,'Compact header hides portrait and its cosmetic controls together');
   await page.evaluate(()=>document.body.classList.remove('conversation-header-compact'));
+  // The selected surface, including its custom canvas, is the existing voice entry.
+  await page.evaluate(()=>{window.testVoiceEntry=ConversationVoiceMode.mount({portrait:document.querySelector('.avatar-surface'),canStart:()=>true,onEnter:()=>{window.testEnters=(window.testEnters||0)+1;},onLeave:()=>{},onSpeak:()=>{}});testVoiceEntry.configure(true);});
+  const alignment=await page.evaluate(()=>{const a=document.querySelector('.avatar-surface').getBoundingClientRect(),b=document.querySelector('.workshop-portrait').getBoundingClientRect(),f=document.querySelector('.avatar-frame').getBoundingClientRect();return [a.top-f.top,b.top-f.top];});
+  assert.deepEqual(alignment,[0,0],'Selected canvas and interaction surface share the top origin');
+  await page.locator('.workshop-portrait').click({position:{x:30,y:20}});
+  assert.equal(await page.locator('.voice-mode[open] .workshop-portrait').count(),1,'Voice mode presents the actual selected avatar');
+  await page.evaluate(()=>testVoiceEntry.close());
+  assert.equal(await page.locator('.avatar-frame .workshop-portrait').count(),1,'Closing restores the same custom portrait');
+  await page.locator('.avatar-surface').focus();await page.keyboard.press('Enter');
+  assert.equal(await page.locator('.voice-mode[open]').count(),1,'Keyboard entry remains available');
+  await page.evaluate(()=>testVoiceEntry.close());
+  const glow=await page.evaluate(()=>{const box=document.querySelector('#conversation-companion'),header=document.querySelector('header');box.dataset.pose='listening';const active=getComputedStyle(header).backgroundImage;box.dataset.pose='calm';return {active,rest:getComputedStyle(header).backgroundImage};});
+  assert.match(glow.active,/radial-gradient/);assert.notEqual(glow.active,glow.rest,'Operational listening state lights the whole header');
+  let releaseSelection;const selectionGate=new Promise(resolve=>releaseSelection=resolve);
+  await page.route('**/api/interaction/avatars',async route=>{if(route.request().method()==='GET')await selectionGate;await route.continue();});
+  await page.reload({waitUntil:'domcontentloaded'});
+  assert.equal(await page.locator('.avatar-surface').getAttribute('data-avatar-state'),'loading');
+  assert.equal(await page.locator('#conversation-companion pre').isVisible(),false,'No default portrait flashes while the selected avatar is loading');
+  releaseSelection();await page.locator('.avatar-surface[data-avatar-state="custom"]').waitFor();
+  assert.equal(await page.locator('#conversation-companion pre').isVisible(),false,'Only the selected avatar becomes visible');
+
   console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; named voice save lost-ACK/use, actor isolation, direct Play/change/custom and expression text, exact cached playback, unknown generation no retry and narrow layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

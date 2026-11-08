@@ -209,3 +209,14 @@ Earlier voice-page retrieval controls live under the existing diagnostic panel,
 so the ordinary reading surface is free of engine-specific history buttons.
 The original bounded retrieval and attributed transcript rows remain unchanged;
 opening diagnostics and loading a page does not open voice or admit new work.
+
+The selected portrait uses one stable interaction surface for both the built-in
+and custom drawing. Click or Enter/Space opens the existing Avatar voice view;
+that same surface moves into the view and returns on close. Gear/pause controls
+are siblings, so editing or pausing does not start voice. The canvas and built-in
+portrait share the top origin. While authenticated selection is unresolved, the
+built-in drawing stays hidden instead of flashing before the custom revision.
+An unavailable selection keeps the workshop retry/status path, without guessing
+that the built-in avatar was selected. Account reset removes the previous art.
+Listening/speaking evidence lights the full header for either portrait; authored
+expressions do not manufacture operational microphone state.
