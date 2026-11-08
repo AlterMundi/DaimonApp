@@ -338,6 +338,11 @@ def qualify(binary, *, funded=False):
         assert projection["cursor"]["inbox"]>0 and projection["cursor"]["responses"]==0
         assert b.get("/api/interaction/part?source="+projected["id"]+"&revision="+projected["revision"])["text"]==exact["text"]
         assert inbox_reads==[0],"Rendering retained sources must not perform live Matrix I/O"
+        context={"source":projected["id"],"revision":projected["revision"],"context_only":True}
+        b.provider.check_reply(context)
+        try:b.provider.check_reply({k:v for k,v in context.items() if k!="context_only"})
+        except ValueError:pass
+        else:raise AssertionError("A Matrix original cannot select peer routing without contextual scope")
         duplicate=j.call("route-read-after-native-cursor","matrix_status",{"inbox_next":True})
         assert duplicate["items"]==[] and duplicate["next_cursor"]==intake["next_cursor"]
         assert inbox_reads==[0,intake["next_cursor"]]

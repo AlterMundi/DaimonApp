@@ -384,7 +384,7 @@ class Provider:
 
     def presentation_part(self, source, revision, offset):
         import re
-        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
+        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix|matrix-inbox|matrix-response):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
                 or not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{64}', revision)
                 or type(offset) is not int or not 0 <= offset <= 10**9):
             raise ValueError('Invalid presentation selection')
@@ -942,12 +942,12 @@ class Provider:
         if value is None: return
         if (not isinstance(value, dict) or set(value) not in ({'source', 'revision'}, {'source', 'revision', 'context_only'})
                 or 'context_only' in value and value['context_only'] is not True
-                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'task:', 'native:', 'session:'))
+                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'matrix-inbox:', 'matrix-response:', 'task:', 'native:', 'session:'))
                 or not isinstance(value['revision'], str) or not re.fullmatch('[a-f0-9]{64}', value['revision'])):
             raise ValueError('Select one retained original or worker result')
-        if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:', 'task:', 'native:')):
+        if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:', 'matrix-inbox:', 'matrix-response:', 'task:', 'native:')):
             raise ValueError('Context must refer to a reported conversation source')
-        if value['source'].startswith(('matrix:','task:')) and not value.get('context_only'):
+        if value['source'].startswith(('matrix:','matrix-inbox:','matrix-response:','task:')) and not value.get('context_only'):
             raise ValueError('Matrix/task references are selected contextual evidence')
         ident=value['source'].split(':', 1)[1]
         if value['source'].startswith(('native:','session:')):
