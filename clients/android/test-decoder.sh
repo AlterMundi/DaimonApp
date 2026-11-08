@@ -51,7 +51,7 @@ test "$("$decoder_adb" shell getprop sys.boot_completed | tr -d '\r')" = 1
 "$decoder_adb" install -t "$1/androidTest/debug/app-debug-androidTest.apk"
 timeout 150s "$decoder_adb" logcat -v brief DaimonFocusProbe:I DaimonFocusTest:I '*:S' >decoder-evidence/focus.log 2>&1 &
 decoder_focus_log_pid=$!
-timeout 140s "$decoder_adb" shell am instrument -w -r -e class homes.dmn.interaction.NativePcmSpeechTest,homes.dmn.interaction.ProgressiveSpeechTest,homes.dmn.interaction.BackgroundSpeechTest,homes.dmn.interaction.FileExportTest,homes.dmn.interaction.MicrophoneCaptureTest,homes.dmn.interaction.WebRtcNativeOutputTest,homes.dmn.interaction.BeaconNativeOutputTest homes.dmn.interaction.pilot.test/androidx.test.runner.AndroidJUnitRunner | tee decoder-evidence/test.log
+timeout 140s "$decoder_adb" shell am instrument -w -r -e class homes.dmn.interaction.NativePcmSpeechTest,homes.dmn.interaction.ProgressiveSpeechTest,homes.dmn.interaction.BackgroundSpeechTest,homes.dmn.interaction.FileExportTest,homes.dmn.interaction.MicrophoneCaptureTest,homes.dmn.interaction.WebRtcNativeOutputTest,homes.dmn.interaction.BeaconNativeOutputTest,homes.dmn.interaction.SharedTextTest,homes.dmn.interaction.SharedFilePickerTest homes.dmn.interaction.pilot.test/androidx.test.runner.AndroidJUnitRunner | tee decoder-evidence/test.log
 "$decoder_adb" logcat -d -t 2000 >decoder-evidence/logcat.log
-grep -q 'OK (8 tests)' decoder-evidence/test.log
+grep -q 'OK (13 tests)' decoder-evidence/test.log
 test "$(du -sk decoder-evidence | cut -f1)" -lt 2048

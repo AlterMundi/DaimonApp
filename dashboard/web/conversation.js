@@ -731,6 +731,7 @@ window.Conversation = (() => {
 
     const inputs = new Map();
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
+    const sharedText=readOnly?undefined:window.NativeSharedText?.mount({parent:compose,draft,onFiles:files=>attachedFiles.addFiles(files),getBinding:()=>binding,isBusy:()=>captureBusy||!!voiceMode?.active||!!microphone?.ownsSend()});
     const sendState = $("#conversation-send-state");
     const composerNotice=(text,attention=true)=>{sendState.textContent=text;sendState.setAttribute('data-attention',String(attention));};
     const inputNotice=value=>composerNotice(phaseText(value),['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
@@ -834,7 +835,7 @@ window.Conversation = (() => {
       $("#conversation-inputs").replaceChildren();
       $("#conversation-inputs-older").hidden = true;
       $("#conversation-telegram-older").hidden=true;$("#conversation-telegram-state").textContent="";
-      draft.disabled = true; send.disabled = true;
+      sharedText?.reset();draft.disabled = true; send.disabled = true;
     }
     async function readTrace(card) {
       if (card.traceBusy) return;
@@ -1081,7 +1082,7 @@ window.Conversation = (() => {
         $("#conversation-inputs-older").hidden = !result.more;
       }
       if (direction === "after" || (remember && !inputNewest)) inputNewest = Math.max(inputNewest, result.newest || 0);
-      draft.disabled = readOnly; send.disabled = readOnly || posting;microphone?.syncControls?.();
+      draft.disabled = readOnly; send.disabled = readOnly || posting;sharedText?.refresh();microphone?.syncControls?.();
       return result;
     }
     async function telegramPage(before=0,direction="before",remember=true) {
