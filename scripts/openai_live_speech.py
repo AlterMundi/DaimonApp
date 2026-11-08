@@ -36,6 +36,8 @@ def diagnostic(value):
         result['failure_code']=value['failure_code']
     if isinstance(value.get('provider_error_code'),str) and value['provider_error_code'] in PROVIDER_CODES:
         result['provider_error_code']=value['provider_error_code']
+    if value.get('mismatch_stage') in ('startup_model','startup_audio_format','startup_voice','event_validation'):
+        result['mismatch_stage']=value['mismatch_stage']
     return result
 
 
@@ -106,8 +108,12 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     session=actual.get('id')
                     if not isinstance(session,str) or not 1<=len(session)<=1024:raise ValueError()
                     next_silence=clock()
-                    if (actual.get('model')!=config['model'] or audio.get('format')!={'type':'audio/pcm','rate':24000}
-                            or audio.get('output',{}).get('voice')!=config['voice']):raise ValueError()
+                    if actual.get('model')!=config['model']:
+                        details['mismatch_stage']='startup_model';raise ValueError()
+                    if audio.get('format')!={'type':'audio/pcm','rate':24000}:
+                        details['mismatch_stage']='startup_audio_format';raise ValueError()
+                    if audio.get('output',{}).get('voice')!=config['voice']:
+                        details['mismatch_stage']='startup_voice';raise ValueError()
                     report({'stage':'session_started','model':config['model'],'session_id':session})
                     if cancel is not None and cancel.is_set():failure=failure or 'audition-cancelled'
                     if failure or clock()>=generation_end:close()
@@ -153,7 +159,9 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                             details['provider_error_code']=error['code']
                     failure=failure or 'audition-provider-error'
             except SpeechError:raise
-            except (ValueError,KeyError,TypeError):failure=failure or 'audition-event-mismatch'
+            except (ValueError,KeyError,TypeError):
+                details.setdefault('mismatch_stage','event_validation')
+                failure=failure or 'audition-event-mismatch'
         raise SpeechError('audition-event-count-bound')
     except SpeechError as error:
         # Prefer the observed provider/mismatch/cancellation failure to the

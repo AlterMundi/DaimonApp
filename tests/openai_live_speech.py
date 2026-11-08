@@ -97,6 +97,7 @@ class Preview(unittest.TestCase):
                 expected={'wrong_voice':'audition-event-mismatch','provider_error':'audition-provider-error','no_audio':'audition-no-audio'}[kind]
                 self.assertEqual(result['diagnostic']['failure_code'],expected)
                 self.assertNotIn('sk-private',json.dumps(result))
+                if kind=='wrong_voice':self.assertEqual(result['diagnostic']['mismatch_stage'],'startup_voice')
                 if kind=='provider_error':self.assertEqual(result['diagnostic']['provider_error_code'],'invalid_value')
 
     def test_unknown_close_keeps_existing_cache_intent_and_never_reconnects(self):
