@@ -169,12 +169,14 @@ to another, infer it from a name, or substitute a hostname for identity. Missing
 signed pairing or Home registration is an onboarding dependency, not permission
 to create another login. These settings grant no access by themselves.
 
-The current Homes authority resolves paired human references as
-`human:telegram:<registered-provider-human-id>` even when authentication uses a
-passkey. This patch does not add a passkey-identity namespace or mint an identity
-for a child. Actual child pairing still requires the owning authority's supported
-registration. If that reference is unavailable without inventing a provider
-identity, return that exact dependency to Clúster; never fill it with a fake ID.
+The Homes `dm.home-identities/v1` adapter also supports explicitly registered
+`human:local:<canonical UUID>` actors without Telegram. Reuse its existing Home
+registration, owner credential, approved-browser/passkey and pairing routes;
+select the exact registered reference here. The provider inference account is
+independent of the human actor. No bot ID, adult identity reuse or fabricated
+Telegram reference is needed. The owning contract is
+[Humans without Telegram](https://github.com/nicoechaniz/daimon-cluster/blob/2b7467c5188c1a4b2211be1a0418c57cc8239a68/docs/design/home-shared-login.md#humans-without-telegram).
+
 Owning hooks: Cluster `homes.authority.NativeAuthority.actors()` and `paired_human()`.
 
 `application_id` cannot coexist with bot fields, an enabled native Telegram
@@ -200,6 +202,70 @@ configuration contract, the existing avatar/Voice workshops and provider routes.
 Keep each being's own identity/history/storage and authorized account custody;
 no bot-shaped placeholder values are needed. Configuration and synthetic HTTP
 qualification do not establish child login, voice hearing or physical acceptance.
+
+### Minimal general Conversation bootstrap
+
+Basic private Conversation does not depend on running Matrix social/group
+services, a canonical Matrix running lease, Tribe reader selection, School/Oca,
+Drive, workshops, dashboard fleet controls or voice. `App::bootstrap` initializes
+the authorized owner's missing local entry metadata; `Provider` reads that
+SQLite database and the authenticated local owner socket. Signed own identity
+and authoritative Home pairing still belong to their existing owners; an offline
+identity file by itself does not create a browser grant. Preserve all existing
+identity, credential, session and native home files.
+
+Use the receiving instance's own retained Codex configuration/account. The
+minimal native fields below are a TEMPLATE: `OWNER`, `CHAT` and `TOPIC` mean
+existing operator-selected authorized local IDs, not Telegram identities. Reuse
+those stable values; do not replace them to repair an uncertain operation.
+
+```toml
+db_path = "/private/own/telecodex.sqlite3"
+startup_admin_ids = [OWNER]
+
+[telegram]
+enabled = false
+
+[codex]
+binary = "/path/to/selected/codex"
+default_cwd = "/path/to/own/workspace"
+# Preserve selected model/profile/shared-App-Server options if already configured.
+
+[session_control]
+socket_path = "/private/own/control.sock"
+human_id = OWNER
+
+[interaction]
+human_id = OWNER
+chat_id = CHAT
+topic_id = TOPIC
+# No targets, Matrix adapter or Telegram projections are required.
+```
+
+Start the existing selected listener as its own user, with its own `CODEX_HOME`:
+`CODEX_HOME=/path/to/own/.codex /path/to/selected/telecodex /private/receiver.toml`.
+Observe readiness without a model/priming input:
+`/path/to/selected/telecodex --control /private/receiver.toml presentation list`.
+The first real human input uses the ordinary native creation/admission path;
+never seed raw session rows or manufacture a human message.
+
+For the web process use `dashboard/config.example.toml` with its actual receiver,
+native home, state root and registered origin. Omit all bot identifiers; select
+one stable `application_id` UUID. Set exact `[shared_auth]` `enabled=true`,
+`home_origin`, `entry_path="/interaction/"` and registered `human_ref`; add that
+origin to `additional_origins`. Keep unneeded bot Alerts/Traffic adapters off.
+Start with the existing environment:
+`TELECODEX_DASHBOARD_CONFIG=/private/dashboard.toml python -m uvicorn dashboard.app:create_app --factory --host 127.0.0.1 --port PORT`.
+Reuse the registered Home proxy: strip only the mount prefix, preserve Host and
+cookies, and supply `X-Forwarded-Prefix: /interaction`. The clean HTTPS entry
+returns to the same conversation after normal shared login. Operator startup,
+actual authorized read/write and a child's device acceptance remain distinct.
+
+Source evidence: `src/app.rs::App::bootstrap`, `src/app/tests.rs` cold-entry and
+disabled-Telegram bootstrap cases, `src/main.rs` owner-control CLI,
+`dashboard/provider.py::{authorized,presentation}`, and
+`dashboard/companion.py::application_identity`. The web-only actor/binding tests
+retain changed-config, foreign-actor, Origin/CSRF and Telegram-launch refusals.
 
 ## Standalone read-only routing monitor
 
