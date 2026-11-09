@@ -629,6 +629,12 @@ pub(super) fn resume_on(
                 }
             }
             if unsubmitted_on(conn, r)? {
+                if r.phase == "retained_unsent"
+                    && r.retry_after.is_none()
+                    && !r.automatic_retry_exhausted()
+                {
+                    r.retry_after = Some(Utc::now().timestamp());
+                }
                 r.attention_generation = Some(generation);
                 if let Some(activation) = &mut r.attention_activation {
                     let raw: String = conn.query_row(
@@ -1458,6 +1464,13 @@ mod inbox_tests {
             assert_eq!(returned.id, dispatch.id);
             assert_eq!(returned.attempts, 1);
             assert!(returned.reported_revision.is_none());
+            drop(conn);
+            let recovered = store.heartbeat_returns_recover_unsent(100, entry).unwrap();
+            assert_eq!(recovered.len(), usize::from(invalid.is_none()));
+            if let Some(recovered) = recovered.first() {
+                assert_eq!(recovered.id, dispatch.id);
+                assert_eq!(recovered.attempts, 2);
+            }
         }
     }
     #[test]
