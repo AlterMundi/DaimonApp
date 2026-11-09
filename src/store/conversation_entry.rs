@@ -3,6 +3,9 @@ use super::*;
 use anyhow::bail;
 use serde_json::{Value, json};
 
+const MAX_VOICE_INITIALIZATION_RECEIPTS: usize = 64;
+const MAX_VOICE_INITIALIZATION_BYTES: usize = 64 * 1024;
+
 impl Store {
     pub(super) fn init_conversation_entry(&self) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
@@ -74,11 +77,55 @@ impl Store {
             [session],
             |r| r.get(0),
         )?;
-        if old.is_some() {
-            bail!("Native initialization is retained; do not create another thread");
+        let mut previous = Vec::new();
+        if let Some(raw) = old {
+            anyhow::ensure!(
+                raw.len() <= MAX_VOICE_INITIALIZATION_BYTES,
+                "Native initialization metadata is unavailable"
+            );
+            let mut prior: Value = serde_json::from_str(&raw)?;
+            // Only a different logical generation may make a fresh creation.
+            // An unknown in-flight outcome remains retained even after Reset.
+            anyhow::ensure!(
+                prior["binding"]
+                    .as_str()
+                    .is_some_and(|value| value != expected)
+                    && matches!(prior["phase"].as_str(), Some("bound" | "observed_unbound"))
+                    && prior["native_thread"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                "Native initialization is retained; do not create another thread"
+            );
+            if let Some(history) = prior.as_object_mut().and_then(|doc| doc.remove("previous")) {
+                previous = history
+                    .as_array()
+                    .context("Native initialization history is unavailable")?
+                    .clone();
+                anyhow::ensure!(
+                    previous
+                        .iter()
+                        .all(|doc| doc.is_object() && doc.get("previous").is_none()),
+                    "Native initialization history is not flat"
+                );
+            }
+            previous.push(prior);
         }
-        let doc = json!({"schema":"telecodex.native-voice-initialization/v1","token":token,"human":human,"binding":expected,"phase":"creating","epoch":super::stopping::admission_epoch_on(&tx,entry)?});
-        tx.execute("UPDATE conversation_entry_generations SET native_initialization=?1 WHERE session_id=?2",params![doc.to_string(),session])?;
+        anyhow::ensure!(
+            previous.len() < MAX_VOICE_INITIALIZATION_RECEIPTS,
+            "Native initialization retention is full; existing receipts are preserved"
+        );
+        let mut doc = json!({"schema":"telecodex.native-voice-initialization/v1","token":token,"human":human,"binding":expected,"phase":"creating","epoch":super::stopping::admission_epoch_on(&tx,entry)?});
+        if !previous.is_empty() {
+            doc["previous"] = json!(previous);
+        }
+        let raw = doc.to_string();
+        // Reserve the bounded native ID/phase fields before thread/start so an
+        // observed result always fits the same receipt, even if binding loses.
+        anyhow::ensure!(
+            raw.len() + 256 <= MAX_VOICE_INITIALIZATION_BYTES,
+            "Native initialization retention is full; existing receipts are preserved"
+        );
+        tx.execute("UPDATE conversation_entry_generations SET native_initialization=?1 WHERE session_id=?2",params![raw,session])?;
         tx.commit()?;
         Ok(())
     }
@@ -279,6 +326,172 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn voice_initialization_after_explicit_reset_preserves_prior_receipt() {
+        let (_file, store, key, binding) = fresh_voice_entry();
+        let id = store.get_session(key).unwrap().unwrap().id;
+        store
+            .conversation_voice_initialize_claim(100, key, &binding, "first")
+            .unwrap();
+        assert!(
+            store
+                .conversation_voice_initialize_observe(100, key, id, "first", "native-first")
+                .unwrap()
+        );
+        store.clear_session_conversation(key).unwrap();
+        let next = store.conversation_request_binding(100, key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(next, binding);
+        store
+            .conversation_voice_initialize_claim(100, key, &next, "after-reset")
+            .unwrap();
+        assert!(
+            store
+                .conversation_voice_initialize_observe(
+                    100,
+                    key,
+                    id,
+                    "after-reset",
+                    "native-after-reset"
+                )
+                .unwrap()
+        );
+        let raw: String = store.conn.lock().unwrap().query_row(
+            "SELECT native_initialization FROM conversation_entry_generations WHERE session_id=?1",
+            [id], |r| r.get(0)).unwrap();
+        let doc: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(doc["native_thread"], "native-after-reset");
+        assert_eq!(doc["previous"][0]["token"], "first");
+        assert_eq!(doc["previous"][0]["binding"], binding);
+        assert_eq!(doc["previous"][0]["native_thread"], "native-first");
+        assert_eq!(doc["previous"][0]["phase"], "bound");
+        assert!(doc["previous"][0].get("previous").is_none());
+        for table in ["turns", "conversation_inputs"] {
+            assert_eq!(
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_reset_can_start_after_retaining_a_known_unbound_creation() {
+        let (_file, store, key, binding) = fresh_voice_entry();
+        let id = store.get_session(key).unwrap().unwrap().id;
+        store
+            .conversation_voice_initialize_claim(100, key, &binding, "old")
+            .unwrap();
+        store.clear_session_conversation(key).unwrap();
+        assert!(
+            !store
+                .conversation_voice_initialize_observe(100, key, id, "old", "known-unbound")
+                .unwrap()
+        );
+        let next = store.conversation_request_binding(100, key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        store
+            .conversation_voice_initialize_claim(100, key, &next, "new")
+            .unwrap();
+        assert!(
+            store
+                .conversation_voice_initialize_observe(100, key, id, "new", "known-new")
+                .unwrap()
+        );
+        let raw: String = store.conn.lock().unwrap().query_row(
+            "SELECT native_initialization FROM conversation_entry_generations WHERE session_id=?1",
+            [id], |r| r.get(0)).unwrap();
+        let doc: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(doc["previous"][0]["native_thread"], "known-unbound");
+        assert_eq!(doc["previous"][0]["phase"], "observed_unbound");
+        assert_eq!(doc["previous"][0]["binding"], binding);
+    }
+
+    #[test]
+    fn reset_does_not_replay_an_unknown_voice_initialization() {
+        let (_file, store, key, binding) = fresh_voice_entry();
+        let id = store.get_session(key).unwrap().unwrap().id;
+        store
+            .conversation_voice_initialize_claim(100, key, &binding, "unknown")
+            .unwrap();
+        let read = || -> String {
+            store.conn.lock().unwrap().query_row(
+            "SELECT native_initialization FROM conversation_entry_generations WHERE session_id=?1",
+            [id], |r| r.get(0)).unwrap()
+        };
+        let original = read();
+        store.clear_session_conversation(key).unwrap();
+        let next = store.conversation_request_binding(100, key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(next, binding);
+        assert!(
+            store
+                .conversation_voice_initialize_claim(100, key, &next, "not-a-retry")
+                .is_err()
+        );
+        assert_eq!(read(), original);
+    }
+
+    #[test]
+    fn voice_initialization_history_is_flat_bounded_and_refuses_without_discarding() {
+        let (_file, store, key, _) = fresh_voice_entry();
+        let id = store.get_session(key).unwrap().unwrap().id;
+        for n in 0..MAX_VOICE_INITIALIZATION_RECEIPTS {
+            let binding = store.conversation_request_binding(100, key).unwrap()["binding"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let token = format!("attempt-{n}");
+            store
+                .conversation_voice_initialize_claim(100, key, &binding, &token)
+                .unwrap();
+            assert!(
+                store
+                    .conversation_voice_initialize_observe(
+                        100,
+                        key,
+                        id,
+                        &token,
+                        &format!("native-{n}")
+                    )
+                    .unwrap()
+            );
+            store.clear_session_conversation(key).unwrap();
+        }
+        let read = || -> String {
+            store.conn.lock().unwrap().query_row(
+            "SELECT native_initialization FROM conversation_entry_generations WHERE session_id=?1",
+            [id], |r| r.get(0)).unwrap()
+        };
+        let original = read();
+        let doc: Value = serde_json::from_str(&original).unwrap();
+        let previous = doc["previous"].as_array().unwrap();
+        assert_eq!(previous.len(), MAX_VOICE_INITIALIZATION_RECEIPTS - 1);
+        assert_eq!(previous[0]["native_thread"], "native-0");
+        assert!(previous.iter().all(|doc| doc.get("previous").is_none()));
+        let binding = store.conversation_request_binding(100, key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            store
+                .conversation_voice_initialize_claim(100, key, &binding, "capacity")
+                .is_err()
+        );
+        assert_eq!(read(), original);
     }
 
     #[test]

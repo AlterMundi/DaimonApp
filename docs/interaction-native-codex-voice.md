@@ -1444,6 +1444,16 @@ uncertain: do not create a replacement, reset the receipt or invent a seed messa
 The warm operation returns the current binding without another native request.
 First binding uses the existing context-carry transaction, preserving originals.
 
+After an explicit logical reset, a fully observed prior creation may precede a
+fresh initialization for the new binding. Preserve its original receipt in a
+flat history inside the same document; do not overwrite it or nest another
+history envelope. An unchanged binding or an unknown in-flight creation still
+refuses another creation, including after Reset. Known observed-unbound outcomes
+keep their original phase and native ID instead of pretending they were bound.
+The document holds at most64receipts and64KiB, reserving room for the returned
+native ID before creation. Capacity refusal preserves every receipt and starts
+nothing; it never discards history or refunds provider/accounting state.
+
 `openai_live.default_native = true` optionally selects this configured native
 Avatar route at page initialization. It defaults to false and requires an enabled
 native public Live route. It neither enables another speech provider nor changes
