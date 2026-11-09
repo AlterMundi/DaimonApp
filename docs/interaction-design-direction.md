@@ -1,8 +1,10 @@
 # Selected visual direction — 8 November 2026
 
-Status: the first authored Conversation shell is selected on Root. The complete
-secondary-surface and composer-notice treatment below is now source-prepared;
-receiving adoption and physical phone acceptance remain separate.
+Status: the authored shell and secondary surfaces are selected, but full reference
+fidelity remains incomplete. Nicolas renewed this correction on 9 November
+(`2b8a2545-fa42-56a0-8e95-3847bc5f6656`): retained old icons, rounded navigation
+inside cut frames and mixed panel geometry are unfinished design work. Do not
+mark the redesign complete from palette, layout tests or partial receiving alone.
 Nicolas selected the attached desktop/mobile proposal and reported that Annie
 also liked it. Source instruction: `9bfd894e-ae65-5934-8a39-711c70ad419a`.
 The exact reference image SHA-256 is
@@ -162,3 +164,21 @@ actors/transports qualify layout and interaction only, never actual provider
 continuity, phone/hearing, avatar activation or artistic acceptance.
 
 Local audio recovery belongs inside the same upward notice popover, including public GPT-Live and native Codex recordings. It never becomes a flex/grid child beside the textarea. Its explanation distinguishes pending/unconfirmed audio storage from another message or work request. Existing actions are labelled Try saving audio, Download copy and Remove device copy; changing presentation does not permit automatic retry or retirement. Qualify the compact input with several retained recordings, not only plain error text.
+
+
+## Reference fidelity correction — 9 November
+
+Use the reference four-square Apps glyph and one thin geometric icon vocabulary,
+not font glyphs whose shape changes by device. The pending ribbon owns its cut
+silhouette: its navigation controls have no nested pill frames. Floating panels
+share actual cut silhouettes; separate pseudo-element frames preserve unclipped
+children and focus rings. Rounded composer, raster preview and action pills remain
+intentional features of the reference. Writing focus uses the cyan inset guide
+and composer lighting rather than a second rectangular box over the input.
+The client build fingerprint remains available under the existing inspector.
+Quiet curved background planes replace the large diagonal bands.
+
+This is a source correction until delivered and compared with the reference on
+actual screens. Workshop content and other application's owning appearance
+contracts remain part of the complete design acceptance, not presumed finished
+by a shell screenshot. Keep the same full design goal and functional contracts.

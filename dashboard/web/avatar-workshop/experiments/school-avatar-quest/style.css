@@ -44,3 +44,13 @@ html[data-presentation="navigator-hud"] .stage :is(#appearance>summary,.art-wrap
 html[data-presentation="navigator-hud"] .keep-actions button {min-width:0;overflow-wrap:anywhere;}
 @media(max-width:420px){html[data-presentation="navigator-hud"] .keep-actions #save {grid-column:1/-1;flex-basis:100%;}}
 @media(max-width:600px){html[data-presentation="navigator-hud"] #tabs {grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}html[data-presentation="navigator-hud"] #tabs button {font-size:16px;min-height:44px;padding:8px;white-space:normal;}}
+
+/* The same cut panel silhouette as the receiving authored Conversation shell.
+   Artwork and interactive children are never clipped by the decorative frame. */
+html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover) {--hud-panel-cut:12px;isolation:isolate;background:none;border:0;border-radius:0;box-shadow:none;}
+html[data-presentation="navigator-hud"] :is(.closet,.theatre,.kept-card,.wardrobe-shell) {position:relative;}
+html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover)::before,
+html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover)::after {content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;clip-path:polygon(var(--hud-panel-cut) 0,calc(100% - var(--hud-panel-cut)) 0,100% var(--hud-panel-cut),100% calc(100% - var(--hud-panel-cut)),calc(100% - var(--hud-panel-cut)) 100%,var(--hud-panel-cut) 100%,0 calc(100% - var(--hud-panel-cut)),0 var(--hud-panel-cut));}
+html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover)::before {background:#bf906799;}
+html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover)::after {inset:1px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 4px #0b151f66,inset 0 0 0 5px #78d7e019;}
+html[data-presentation="navigator-hud"] :is(.choice,.wardrobe-tile,.prop-editor) {border-radius:2px;}

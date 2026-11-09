@@ -6,6 +6,10 @@ review-permission question is withdrawn. Reuse the existing authorized review
 route; do not create another approval question. Source checks and receiving
 adoption are separate from a completed independent review.
 
+After the final edit beneath `dashboard/web/avatar-workshop`, run
+`python3 -B -m dashboard.avatar_workshop_provenance --update` and the workshop
+provenance tests. Refresh only adapted hashes; preserve Ani/Oliva source attribution.
+
 Recover selected historical output bytes through `input artifacts recover` and
 its existing canonical copy job; never regenerate an image, replay the user or
 invent an old delivery receipt. Keep explicit recovery attribution, exact source
