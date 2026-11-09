@@ -493,7 +493,7 @@ print(json.dumps({'text':'Keep this exact protected requirement.','final':True})
         refused=str(uuid.uuid4())
         full=client.post('/api/interaction/voice',content=data,
             headers={**voice_headers,'x-input-id':refused})
-        assert full.status_code==503,full.text
+        assert full.status_code==507,full.text
         assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(refused,))==[(0,)]
         assert not (path.parent/refused).exists() and path.read_bytes()==data
         for filler in fillers:filler.unlink()  # Only these test-owned placeholders.

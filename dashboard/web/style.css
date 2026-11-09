@@ -1440,3 +1440,6 @@ html[data-style-policy="authored"] .session-rail-header {grid-template-columns:m
 /* A selected reply occupies its own row, above the full-width writing field. */
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(>#conversation-focus:not([hidden])) #conversation-message {grid-row:3;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(>#conversation-focus:not([hidden])) :is(#conversation-visual,#conversation-voice,#conversation-send) {grid-row:4;}
+
+/* Verified raster attachments stay inside their original conversation reply. */
+.artifact-image-preview {display:block;max-width:100%;width:auto;max-height:65vh;object-fit:contain;border:1px solid var(--hud-copper,var(--border));border-radius:14px;margin:10px 0;background:var(--panel);}

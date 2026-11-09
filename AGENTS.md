@@ -6,6 +6,13 @@ review-permission question is withdrawn. Reuse the existing authorized review
 route; do not create another approval question. Source checks and receiving
 adoption are separate from a completed independent review.
 
+Recover selected historical output bytes through `input artifacts recover` and
+its existing canonical copy job; never regenerate an image, replay the user or
+invent an old delivery receipt. Keep explicit recovery attribution, exact source
+SHA256 and same-conversation ownership. Verified raster previews belong beside
+their original reply and release bytes/URLs on expiry or revoked access. See
+`docs/retained-artifacts.md` for the supported operator and bounds.
+
 Ordinary voice messages already recording survive browser tab visibility changes,
 as do their in-flight original uploads. Keep late microphone permission blocked
 while hidden, direct Avatar suspension, nativecapturebackground, pagehide and

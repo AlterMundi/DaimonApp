@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 function boot(readOnly=false,standalone=false,options={}) {
+  const artifactPayload=options.artifactBytes||"Actual fixture file",artifactMime=options.artifactMime||"application/octet-stream";
   const optionsForFixture=options;const streamedTransports=[];const budgetControlReceipts=new Map();
   const nodes = new Map(), requests = [], audioCalls=[], sourceOverrides=new Map();
   const copied=[],recoveryPosts=[],statusReads=[],mediaActions=new Map();const mediaSession={setActionHandler:(name,fn)=>mediaActions.set(name,fn)};
@@ -172,7 +173,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     location:{href:"https://fixture.invalid/?view=conversation"}, history:{replaceState() {}},
     URL, URLSearchParams, AbortController, setTimeout:timeout, clearTimeout:cancelTimeout, TextEncoder, Blob, crypto:options.immediateHash?{...require("node:crypto"),subtle:{digest:(_algorithm,bytes)=>Promise.resolve(require("node:crypto").createHash('sha256').update(new Uint8Array(bytes)).digest())}}:options.hashHold?{...require("node:crypto"),subtle:{digest:(algorithm,bytes)=>options.hashHold.active?new Promise(resolve=>options.hashHold.releases.push(()=>resolve(require("node:crypto").createHash('sha256').update(bytes).digest()))):require("node:crypto").subtle.digest(algorithm,bytes)}}:require("node:crypto"),
     fetch:(_route, options) => {
-      if(_route.startsWith('api/interaction/artifacts/'))return Promise.resolve(new Response('Actual fixture file',{headers:{'X-Artifact-Sha256':require('node:crypto').createHash('sha256').update('Actual fixture file').digest('hex')}}));
+      if(_route.startsWith('api/interaction/artifacts/'))return Promise.resolve(new Response(artifactPayload,{headers:{'Content-Type':artifactMime,'X-Artifact-Sha256':require('node:crypto').createHash('sha256').update(artifactPayload).digest('hex')}}));
       audioCalls.push(JSON.parse(options.body));
       if(audioFailures){audioFailures--;return Promise.resolve(new Response(JSON.stringify({detail:'Synthetic TTS outage'}),{status:503}));}
       if(renderAudio && JSON.parse(options.body).source.startsWith('live:')){
@@ -2024,6 +2025,24 @@ function boot(readOnly=false,standalone=false,options={}) {
   mixed.telegramOriginals.set('telegram:11',{id:'telegram:11',text:'New Telegram ingress',phase:'completed',sequence:11,capture_order:12,origin_kind:'telegram',read_only:true});
   await mixed.ui.refresh();assert.equal(mixed.nodes.get('#conversation-inputs').children[0].children[0].textContent,'New Telegram ingress');
   assert(mixed.requests.filter(r=>r.telegram||r.trace).every(r=>r.body===undefined),'All observation requests remain GET only');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
+  const imageOptions={fileAccess:true,artifactBytes:png,artifactMime:'application/octet-stream'},imageClient=boot(false,false,imageOptions);
+  const imageFile={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(png).digest('hex'),bytes:png.length,available:true};
+  imageClient.overrideSource(8,{artifacts:[imageFile]});await imageClient.ui.refresh();
+  const imageCard=imageClient.nodes.get('#conversation-answers').children.find(card=>card.dataset.sequence==='8');
+  await imageCard.children[5].children[1].children[2].handlers.click();
+  assert.match(imageCard.children[5].children[2].src,/^blob:/);assert.equal(imageCard.children[5].children[2].alt,'drawing.png');
+  assert.equal(imageCard.children[5].children[1].children[1].textContent,'Image verified');
+  await imageCard.children[5].children[1].children[2].handlers.click();
+  assert.equal(imageCard.children[5].children.length,2,'Closing an image removes its inline preview');
+  imageOptions.fileAccess=false;await imageClient.ui.refresh();assert.equal(imageCard.children[5].hidden,true,'Revocation removes inline access');
+  const unsafeBytes=Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>bad()</script></svg>');
+  const unsafe=boot(false,false,{fileAccess:true,artifactBytes:unsafeBytes,artifactMime:'image/png'});
+  unsafe.overrideSource(8,{artifacts:[{...imageFile,bytes:unsafeBytes.length,sha256:require('node:crypto').createHash('sha256').update(unsafeBytes).digest('hex')}]});await unsafe.ui.refresh();
+  const unsafeCard=unsafe.nodes.get('#conversation-answers').children.find(card=>card.dataset.sequence==='8');
+  await unsafeCard.children[5].children[1].children[2].handlers.click();
+  assert.equal(unsafeCard.children[5].children.length,2,'A misleading image MIME/name cannot inline active content');
+  assert.match(unsafeCard.children[5].children[1].children[1].textContent,/cannot be shown/);
   const fileOptions={fileAccess:true},fileClient=boot(false,false,fileOptions);
   fileClient.overrideSource(8,{artifact_status:'running',artifacts:[]});
   await fileClient.ui.refresh();
