@@ -22,7 +22,7 @@ window.RequestControls = (() => {
     let generation = 0, observation = 0, cursor = 0, reading = false, probeCursor = 0, refreshTask;
     const owns = (card, owned) => generation === owned && cards.get(card.id) === card;
     function reset() {
-      generation++; cards.clear(); container.replaceChildren(); section.hidden = true;
+      generation++; for(const card of cards.values())card.box.remove(); cards.clear(); container.replaceChildren(); section.hidden = true;
       cursor = 0; probeCursor = 0; reading = false; refreshTask=undefined; more.hidden = true; state.textContent = "";
     }
     function updateControls(card) {
@@ -316,7 +316,7 @@ window.RequestControls = (() => {
       } finally {if (owned === generation) {reading = false; more.disabled = false;}}
     }
     more.addEventListener("click", () => refresh(cursor));
-    return {attentionItems:()=>[...cards.values()].filter(c=>c.meta&&!terminal(c.meta)&&!c.closed).map(c=>({id:`request:${c.id}`,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
+    return {attentionItems:()=>[...cards.values()].filter(c=>c.meta&&!terminal(c.meta)&&!c.closed).map(c=>({id:`request:${c.id}`,created_at:c.meta.created_at,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
   }
   return {mount};
 })();
@@ -335,7 +335,7 @@ window.GoalControls = (() => {
     const message=document.querySelector("#conversation-goal-state");
     const cards=new Map();let generation=0,cursor=0,reading=false,probe=0;
     const owns=(card,owned)=>generation===owned && cards.get(card.id)===card;
-    function reset(){generation++;cards.clear();list.replaceChildren();section.hidden=true;cursor=0;reading=false;more.hidden=true;message.textContent="";}
+    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();list.replaceChildren();section.hidden=true;cursor=0;reading=false;more.hidden=true;message.textContent="";}
     function render(card,view){
       card.view=view;card.title.textContent=`${({start:"Start",resume:"Resume",pause:"Pause",clear:"Clear",edit:"Edit",replace:"Replace"})[view.action]||"Review"} · ${view.label}`;
       card.state.textContent=status(view);card.dismiss.hidden=!closed(view.phase);
@@ -398,7 +398,7 @@ window.GoalControls = (() => {
       try{const page=await api(`interaction/goals?before=${cursor}`);if(owned===generation)await observe(page);}
       catch(_){if(owned===generation)message.textContent="Older controls unavailable. Nothing changed; refresh to reconnect.";}
       finally{if(owned===generation){reading=false;more.disabled=false;}}});
-    return {observe,reset,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!closed(c.view.phase)).map(c=>({id:`goal:${c.id}`,label:c.view.label,title:status(c.view),box:c.box,open:()=>detail(c,true)}))};
+    return {observe,reset,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!closed(c.view.phase)).map(c=>({id:`goal:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:status(c.view),box:c.box,open:()=>detail(c,true)}))};
   }
   return {mount};
 })();
@@ -414,7 +414,7 @@ window.HumanTaskControls = (() => {
     const terminal=v=>['answered','completed','cancelled','withdrawn','expired'].includes(v?.state);
     const el=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
     const owns=(card,token)=>token===generation&&cards.get(card.id)===card;
-    function reset(){generation++;cards.clear();feedback.clear();container.replaceChildren();section.hidden=true;cursor=probe=0;reading=false;more.hidden=true;state.textContent='';}
+    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();feedback.clear();container.replaceChildren();section.hidden=true;cursor=probe=0;reading=false;more.hidden=true;state.textContent='';}
     function controls(card){card.dismiss.hidden=!terminal(card.view)&&!(canReply()&&card.view?.can_dismiss===true);card.dismiss.disabled=card.loading||card.unavailable;card.read.disabled=card.loading;card.reply.hidden=!canReply()||typeof onReply!=="function";card.reply.disabled=card.unavailable||card.loading||!card.complete||card.view?.state!=='pending'||card.view.binding!==getBinding();}
     const feedbackText=card=>{
       if(card.view?.state!=='pending')return;
@@ -528,7 +528,7 @@ window.HumanTaskControls = (() => {
       }catch(e){if(token===generation){for(const card of cards.values()){card.unavailable=true;controls(card);}section.hidden=false;state.textContent='Human actions unavailable. Refresh to reconnect.';if([401,403].includes(e.status))unauthorized(e);}}
       finally{if(token===generation){reading=false;more.disabled=false;}}
     }
-    more.addEventListener('click',()=>refresh(cursor));return {refresh,reset,observeInput,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!terminal(c.view)).map(c=>({id:`task:${c.id}`,label:c.view.label,title:c.view.title,box:c.box,open:()=>detail(c)}))};
+    more.addEventListener('click',()=>refresh(cursor));return {refresh,reset,observeInput,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!terminal(c.view)).map(c=>({id:`task:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:c.view.title,box:c.box,open:()=>detail(c)}))};
   }
   return {mount};
 })();

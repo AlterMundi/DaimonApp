@@ -26,7 +26,7 @@ for(const row of sessions)row.last_activity_at=Date.now()/1000;
 sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
 let nativeDecisionResolved=false;
-const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1,...(nativeDecisionCase?{state:nativeDecisionResolved?'answered':'pending',actionable:!nativeDecisionResolved,kind:'approval',title:'Synthetic native operation',preview:'Review the selected operation.',body:'Allow this synthetic tool operation once?',choices:[{label:'Allow once',action:{kind:'approval',choice:'a'}}],allows_text:false,can_cancel:true}:{})});
+const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),created_at:'2026-11-08T10:00:00Z',state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1,...(nativeDecisionCase?{state:nativeDecisionResolved?'answered':'pending',actionable:!nativeDecisionResolved,kind:'approval',title:'Synthetic native operation',preview:'Review the selected operation.',body:'Allow this synthetic tool operation once?',choices:[{label:'Allow once',action:{kind:'approval',choice:'a'}}],allows_text:false,can_cancel:true}:{})});
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 if(hudCase){sources.splice(0,29);sources[0]={...sources[0],kind:'integrator_answer',preview:'Let us explore this idea together.\n\nWe can open the result and keep creating.',text_characters:85};}
@@ -64,7 +64,7 @@ const server=http.createServer(async(req,res)=>{
    if(!uploadFailed){uploadFailed=true;return json({detail:'Synthetic first receipt unavailable'},503);}
    return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,...(publicCase?{work_replay:'never'}:{native_replay:'never'}),...(req.headers['x-voice-capture-stop']?{capture_stop:req.headers['x-voice-capture-stop']}:{})}});
   }
-  if(route==='interaction/internal')return json({...base(),items:unifiedAttentionCase?[{...question(),id:'8'.repeat(32),label:'Workshop',title:'A routed decision',preview:'Choose the next workshop step.'}]:[],cursor:unifiedAttentionCase?1:0,newest:unifiedAttentionCase?1:0});
+  if(route==='interaction/internal')return json({...base(),items:unifiedAttentionCase?[{...question(),id:'8'.repeat(32),created_at:'2026-11-09T10:00:00Z',label:'Workshop',title:'A routed decision',preview:'Choose the next workshop step.'}]:[],cursor:unifiedAttentionCase?1:0,newest:unifiedAttentionCase?1:0});
   if(route.startsWith('interaction/internal/requests/'))return json({...question(),id:'8'.repeat(32),label:'Workshop',title:'A routed decision',body:'Choose the next workshop step.'});
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
   if(route.startsWith('interaction/requests/')){
@@ -197,10 +197,10 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-message').fill('Keep my unsent conversation draft.');
   await page.getByRole('button',{name:'For you · 2 pending requests',exact:true}).click();
   const panel=page.getByRole('dialog',{name:'For you',exact:true});
-  assert(await panel.locator('#conversation-request-cards').isVisible());
-  assert(await panel.locator('#internal-request-cards').isVisible(),'Routed session cards live in the same panel');
+  assert.match(await panel.locator('.for-you-items').textContent(),/Choose a place/);
+  assert.match(await panel.locator('.for-you-items>*').first().textContent(),/A routed decision/,'Newer routed pending work precedes older conversation work');
   assert.match(await panel.textContent(),/A routed decision/);
-  const internal=panel.locator('#internal-request-cards button').filter({hasText:'Read request'}).first();
+  const internal=panel.locator('.for-you-items button').filter({hasText:'Read request'}).first();
   if(await internal.count())await internal.click();
   await panel.getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my unsent conversation draft.');
