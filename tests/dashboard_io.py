@@ -65,6 +65,24 @@ class DashboardHTTP(unittest.TestCase):
         return self.client.get('/api/state').json()['csrf']
     def stop(self,nonce,csrf):
         return self.client.post('/api/stop',json={'nonce':nonce},headers={**self.headers,'x-dashboard-csrf':csrf})
+    def test_explicit_native_avatar_default_requires_its_configured_route_without_other_tts(self):
+        self.provider.conversation_inputs=lambda *args:{'binding':'a'*64,'items':[]}
+        self.provider.presentation_list=lambda *args:{'binding':'a'*64,'items':[]}
+        for value,available in ((True,True),(False,False)):
+            config={**self.config,'openai_live':{'default_native':value,'backend_mode':'native'}}
+            with patch('dashboard.openai_live_api.install',return_value=available):
+                app=create_app(config,self.provider,lambda raw,bot:int(raw))
+            with TestClient(app,base_url='https://example.test') as client:
+                response=client.post('/api/session',json={'init_data':'100'},headers=self.headers)
+                token=response.json()['session_token']
+                result=client.get('/api/interaction',headers={'authorization':'Bearer '+token}).json()
+                self.assertEqual(result['avatar_voice_default'],'gpt-live-native' if value else None)
+                self.assertNotEqual(result.get('voice_services_default'),'openai')
+                self.assertEqual(result['can_converse_public_live_native'],available)
+        for selection in ({'default_native':True},{'default_native':'true','backend_mode':'native'}):
+            with patch('dashboard.openai_live_api.install',return_value=True):
+                with self.assertRaises(ValueError):create_app({**self.config,'openai_live':selection},self.provider,lambda raw,bot:int(raw))
+
     def test_verified_image_preview_allows_local_blob_without_remote_image_sources(self):
         policy=self.client.get('/').headers['content-security-policy']
         directives=dict(part.strip().split(' ',1) for part in policy.split(';') if part.strip())
