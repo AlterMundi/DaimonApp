@@ -1165,3 +1165,19 @@ proof of closure. Existing first-write-only diagnostic storage, exact byte ACKs,
 authorization, explicit Stop and no-replay rules remain. No transcript, raw error,
 URL or credential enters these codes. Older admissions keep the legacy reason.
 A prior generic failure cannot retrospectively acquire a more specific cause.
+
+### Required sideband transport in receiving packages
+
+Public Live requires the `websocket-client` version already pinned by
+`scripts/requirements-speech.lock`, also included from the dashboard lock.
+HTTP creation and a healthy basic-text constructor do not qualify that optional
+feature. Check the consuming service user's complete Python path; a basic-only
+package may lack the client even when project/model metadata is accessible.
+`OpenAILive.prepare_transport()` checks the project key and local connector before
+microphone admission, native context preparation or paid session creation.
+Missing transport yields a fixed pre-admission message and starts nothing.
+
+A retained `created` session from an earlier attachment failure remains created
+with unconfirmed final usage. Installing the dependency does not close, recreate,
+refund or rewrite it. Use the existing exact-owner disconnection review/manual
+Reconnect path for a later explicit replacement, preserving the original receipt.

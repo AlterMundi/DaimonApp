@@ -134,6 +134,19 @@ class OpenAILive:
         self._attempted = False
         self._guard = threading.Lock()
 
+    @staticmethod
+    def _sideband_connector():
+        try:
+            from websocket import create_connection
+        except ImportError:
+            raise LiveUnavailable('sideband_dependency_unavailable') from None
+        return create_connection
+
+    def prepare_transport(self):
+        """Check configured access and the required local control transport before admission."""
+        self._project_key()
+        self._sideband_connector()
+
     def _project_key(self):
         try:
             key = private_bytes(self._api_key_file, 16384).decode().strip()
@@ -192,8 +205,7 @@ class OpenAILive:
             raise ValueError('Select one retained owner Live call')
         key = self._project_key()
         if connect is None:
-            from websocket import create_connection
-            connect = create_connection
+            connect = self._sideband_connector()
         url = 'wss://api.openai.com/v1/live/sessions/' + quote(call.session_id, safe='') + '/attach'
         connection = None
         try:
