@@ -66,6 +66,7 @@ class Client:
         self.events=queue.Queue();self.sent=[];self.creations=0;self.detached=False;self.forks=[]
         self.instances.append(self)
     def _project_key(self):return 'test-only-project-key'
+    def prepare_transport(self):self._project_key()
     def create(self,sdp,spec):
         self.creations+=1;self.spec=spec
         if self.failure:raise LiveUnavailable(self.failure)
@@ -146,6 +147,20 @@ class Mounted(unittest.TestCase):
             'backend_mode':'native','continuous_renewal':True}}
         install(app,config,self.owner,authorize,['https://example.test'])
         return app
+
+    def test_missing_sideband_dependency_refuses_before_admission_mic_or_creation(self):
+        class MissingTransport(Client):
+            def prepare_transport(self):raise LiveUnavailable('sideband_dependency_unavailable')
+        with patch('dashboard.openai_live_api.OpenAILive',MissingTransport):
+            with self.socket() as socket:
+                socket.send_json(self.meta)
+                event=socket.receive_json()
+                self.assertEqual(event['type'],'unconfirmed')
+                self.assertIn('No call was opened',event['message'])
+        self.assertEqual(sum(c.creations for c in Client.instances),0)
+        self.assertFalse(list((self.state/'public-live-visits').glob('*.json')))
+        self.assertEqual(self.owner.journal.producers,{})
+        self.assertEqual(self.owner.journal.calls,[])
 
     def test_native_avatar_default_is_admitted_by_actual_config_without_a_provider_session(self):
         app=self.app_with_history()
