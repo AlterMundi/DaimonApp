@@ -6,7 +6,8 @@ const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(out
 const imageCase=process.env.QUALIFICATION_IMAGE_PREVIEW==='1';let imageAccess=true;
 const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
 const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
-const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||process.env.QUALIFICATION_AUTHORED==='1';
+const reconnectCase=process.env.QUALIFICATION_SESSION_RECONNECT==='1';let workspaceOutage=false;
+const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
@@ -70,6 +71,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(route==='interaction/access'){accessReads++;return authDenied?json({detail:'Expired'},401):json({csrf:'fixture-csrf',label:'Synthetic operator'});}
   if(route==='interaction' && readRejections>0 && (!authCase||url.searchParams.get('qualification')==='auth')){readRejections--;return json({detail:'Synthetic access rejection'},401);}
+  if(route==='interaction/sessions'&&workspaceOutage)return json({detail:'Synthetic transient status outage'},503);
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
@@ -168,6 +170,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  if(hudCase)await context.addInitScript(()=>{
   let module;Object.defineProperty(window,'PublicLiveConversation',{configurable:true,get:()=>module,set(value){module={...value,create(options){window.hudRecovery=options.onRecovery;return value.create(options);}};}});
  });
+ if(reconnectCase)await context.addInitScript(()=>{
+  let source;Object.defineProperty(window,'SessionWorkspace',{configurable:true,get:()=>source,set(value){source={...value,mount(options){const control=value.mount(options);window.workspaceFixture.workspace=control;return control;}};}});
+ });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  async function appearanceTransition(stage){
@@ -180,6 +185,36 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--dm-ui-text').trim()),authoredCase?'':palette.text,'Selected authored policy or inherited roles are respected');
   }
   (report.appearanceTransitions??=[]).push(stage);
+ }
+ if(reconnectCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected&&workspaceFixture.workspace?.active);
+  await page.evaluate(()=>{clearInterval(timer);liveConversation?.stop();});
+  for(const size of [{width:390,height:844},{width:375,height:430}]){
+   await page.setViewportSize(size);await page.locator('#conversation-message').fill('Keep this draft across a normal reconnection.');
+   const baseline=await page.locator('#conversation-message').boundingBox();
+   workspaceOutage=true;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   assert.equal(await page.locator('.session-workspace-status').textContent(),'');
+   assert.equal(await page.getByRole('button',{name:'Retry session status',exact:true}).isVisible(),false);
+   workspaceOutage=false;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   workspaceOutage=true;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   await page.waitForTimeout(8150);
+   const notice=page.locator('#conversation-compose-notices');
+   assert.equal(await notice.isVisible(),true,'Persistent failure uses the existing notice icon');
+   assert.equal(await page.getByRole('button',{name:'Retry session status',exact:true}).isVisible(),false,'Failure text stays folded in the notice panel');
+   await notice.locator(':scope>summary').click();
+   await page.getByRole('button',{name:'Retry session status',exact:true}).waitFor({state:'visible'});
+   const status=page.locator('.session-workspace-status');
+   assert.equal(await status.evaluate(e=>!!e.closest('.composer-notice-panel')),true);
+   assert.deepEqual(await page.locator('#conversation-message').boundingBox(),baseline,'Notice never moves or resizes the writing field');
+   await page.screenshot({path:path.join(output,'persistent-status-'+size.height+'.png')});
+   workspaceOutage=false;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   assert.equal(await status.textContent(),'');assert.equal(await notice.isVisible(),false);
+   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft across a normal reconnection.');
+   // An open empty notice is harmless, but reset it for the next viewport.
+   await notice.evaluate(e=>e.open=false);
+  }
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);assert.deepEqual(errors,[]);
+  report.state='qualified-quiet-reconnect-persistent-status-popover';report.notice_grace_ms=8000;report.viewports=['390x844','375x430'];return;
  }
  if(appearanceCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);

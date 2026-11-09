@@ -13,12 +13,13 @@ class Element{
   focus(){this.focused=true;}
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function boot({storage=new Map(),defaultFilter,daimonName='Daimon'}={}){
+function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=false}={}){
   const document={createElement:tag=>new Element(tag)},window={localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
   let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,now=Date.now();
+  const timers=new Map();let timerId=0;const noticePanel=noticeHost?new Element('aside'):undefined;if(noticePanel)root.append(noticePanel);
   const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
@@ -31,19 +32,40 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon'}={}){
     if(failHistory)throw Object.assign(Error('Synthetic history connection lost'),{status:typeof failHistory==='number'?failHistory:undefined});
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
   }
-  vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:{now:()=>now}});
-  const control=window.SessionWorkspace.mount({timeline,api,daimonName,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
+  vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:{now:()=>now},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
+  const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
     onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
   const all=()=>{const result=[];const visit=n=>{result.push(n);n.children.forEach(visit);};visit(root);return result;};
   const byText=text=>all().find(n=>n.tag==='button'&&n.textContent===text);
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
-  return {storage,root,timeline,control,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
-    failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
+  return {storage,root,timeline,control,noticePanel,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
+    failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;for(const [id,timer] of [...timers])if(timer.at<=now){timers.delete(id);timer.fn();}},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
+  // Returning to a suspended view may fail one metadata read. Keep that normal
+  // recovery quiet; a persistent failure uses the existing compact notice panel.
+  const quiet=boot({noticeHost:true});await quiet.control.refresh('binding');
+  quiet.byLabel('Show sessions').click();await tick();
+  quiet.rows()[0].children[2].children[1].click();
+  const frozenTarget=quiet.control.capture();
+  quiet.failWorkspace(true);await quiet.control.refresh('binding');quiet.advance(1000);
+  assert.equal(quiet.byLabel('Retry session status').hidden,true);
+  assert(!quiet.noticePanel.textContent.includes('Session status is unavailable'));
+  quiet.failWorkspace(false);await quiet.control.refresh('binding');quiet.advance(9000);
+  assert.equal(quiet.byLabel('Retry session status').hidden,true,'Successful recovery cancels the delayed notice');
+  quiet.failWorkspace(true);await quiet.control.refresh('binding');quiet.advance(8000);
+  assert.equal(quiet.byLabel('Retry session status').hidden,false);
+  assert.equal(quiet.byLabel('Retry session status').parentNode,quiet.noticePanel);
+  assert(quiet.noticePanel.textContent.includes('Session status is unavailable'));
+  assert.deepEqual(quiet.control.capture(),frozenTarget,'A metadata outage never redirects the draft');
+  quiet.failWorkspace(false);await quiet.control.refresh('binding');
+  assert(!quiet.noticePanel.textContent.includes('Session status is unavailable'));
+  quiet.failWorkspace(true);await quiet.control.refresh('binding');quiet.control.reset();quiet.advance(9000);
+  assert.equal(quiet.byLabel('Retry session status').hidden,true,'Old binding notices cannot reappear after reset');
+
   const general=boot({daimonName:'CompAII'}),entry=general.getSessions().find(row=>row.is_entry);
   entry.title='Daimon Interaction';entry.last_activity_at=1;
   general.getSessions()[0].execution='working';await general.control.refresh('binding');
@@ -81,7 +103,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon'}={}){
   f.byLabel('Show sessions').click();
   assert.equal(f.control.capture().reference.source,'session:7');
   const selectedBeforeOutage=JSON.stringify(f.control.capture());
-  f.failWorkspace(true);await tick();await f.control.refresh('binding');
+  f.failWorkspace(true);await tick();await f.control.refresh('binding');f.advance(8000);
   assert.equal(f.byLabel('Retry session status').hidden,false);
   assert.equal(JSON.stringify(f.control.capture()),selectedBeforeOutage,'Metadata failure keeps the exact selected destination');
   f.failWorkspace(false);await f.byLabel('Retry session status').click();

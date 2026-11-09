@@ -200,8 +200,12 @@ unchanged record could not fix that parser failure.
 
 A failed workspace metadata refresh preserves the exact input destination and
 draft. `Retry status` reads metadata again, and opening the session menu uses the
-same refresh path. A successful refresh removes its warning/retry control; grant
-loss retains the existing access-recovery behavior. These actions never submit
+same refresh path. A transient failure gets one eight-second presentation grace:
+a successful existing read cancels it, while a persistent failure appears inside
+the composer's existing alert popover. Returning to a window does not flash a
+full-width error or resize the writing field. The grace adds no request/retry;
+binding reset and access loss cancel it. A successful refresh removes its
+warning/retry control; grant loss retains the existing access-recovery behavior. These actions never submit
 input, unpin a conversation or open a native model. The5November device warning
 was not reproduced by the owner read (44sessions, destinations available); its
 original network/server cause remains unknown. Do not equate this warning with
