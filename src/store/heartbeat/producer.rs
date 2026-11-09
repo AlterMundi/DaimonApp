@@ -608,6 +608,26 @@ pub(super) fn resume_on(
     };
     if bound(conn, &p)? {
         for r in &mut p.native_returns {
+            // Explicit owner resume may recover a refusal before native input.
+            // Keep the same source, attempts and reservation; a physical or
+            // uncertain execution is never eligible for this transition.
+            if r.phase == "rejected"
+                && r.reported_revision.is_none()
+                && r.native_turn.is_none()
+                && r.collection_local.is_none()
+            {
+                if let Some(local) = r.local {
+                    if super::executions::load(conn, local)?.is_some_and(|e| {
+                        e["source"] == r.id
+                            && e["native"] == p.native
+                            && e["phase"] == "terminal"
+                            && e["physical"].is_null()
+                            && e["terminal_status"] == "not_submitted"
+                    }) {
+                        r.phase = "retained_unsent".into();
+                    }
+                }
+            }
             if unsubmitted_on(conn, r)? {
                 r.attention_generation = Some(generation);
                 if let Some(activation) = &mut r.attention_activation {
@@ -1381,6 +1401,64 @@ mod inbox_tests {
         s.heartbeat_control(100, e, H::Resume { generation: 1 })
             .unwrap();
         (f, s, e, source)
+    }
+    #[test]
+    fn owner_resume_recovers_only_exact_proved_unsubmitted_refusals() {
+        for invalid in [
+            None,
+            Some("physical"),
+            Some("source"),
+            Some("native"),
+            Some("uncertain"),
+        ] {
+            let (_file, store, entry, source) = setup();
+            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+            let selected = selection(&store, entry, &source);
+            let dispatch = store
+                .heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+                )
+                .unwrap()
+                .unwrap();
+            let session = store.get_session(entry).unwrap().unwrap().id;
+            {
+                let conn = store.conn.lock().unwrap();
+                let mut parent = load(&conn, 100, session).unwrap().unwrap();
+                parent.native_returns[0].phase = "rejected".into();
+                parent.native_returns[0].local = Some(700);
+                let mut proof = json!({"phase":"terminal","physical":null,
+                    "source":dispatch.id,"native":parent.native,"terminal_status":"not_submitted"});
+                match invalid {
+                    Some("physical") => proof["physical"] = json!("accepted-turn"),
+                    Some("source") => proof["source"] = json!("another-source"),
+                    Some("native") => proof["native"] = json!("another-thread"),
+                    Some("uncertain") => proof["terminal_status"] = json!("unknown"),
+                    _ => {}
+                }
+                save(&conn, &parent).unwrap();
+                super::super::executions::save(&conn, 700, &proof).unwrap();
+            }
+            let paused = store.heartbeat_control(100, entry, H::Pause).unwrap();
+            let generation = paused["generation"].as_u64().unwrap();
+            store
+                .heartbeat_control(100, entry, H::Resume { generation })
+                .unwrap();
+            let conn = store.conn.lock().unwrap();
+            let parent = load(&conn, 100, session).unwrap().unwrap();
+            let returned = &parent.native_returns[0];
+            assert_eq!(
+                returned.phase,
+                if invalid.is_none() {
+                    "retained_unsent"
+                } else {
+                    "rejected"
+                }
+            );
+            assert_eq!(returned.id, dispatch.id);
+            assert_eq!(returned.attempts, 1);
+            assert!(returned.reported_revision.is_none());
+        }
     }
     #[test]
     fn terminal_outcomes_unblock_only_new_originals_without_inventing_review() {
