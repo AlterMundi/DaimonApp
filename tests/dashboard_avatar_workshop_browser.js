@@ -549,6 +549,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   const geometry=await page.evaluate(()=>{const box=document.querySelector('.avatar-frame').getBoundingClientRect(),gear=document.querySelector('#avatar-workshop-open').getBoundingClientRect();return {gearInside:gear.left>=box.left&&gear.right<=box.right,gearWidth:gear.width};});
   assert.equal(geometry.gearInside,true);assert.equal(geometry.gearWidth,32);
   assert.equal(await page.locator('#conversation-presence').count(),0,'Removed presence strip is not reintroduced by the workshop');
+  await page.getByRole('button',{name:'Pause avatar',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Animate avatar',exact:true}).getAttribute('aria-pressed'),'true');
   await page.getByRole('button',{name:'Animate avatar',exact:true}).click();
   await page.evaluate(()=>document.body.classList.add('conversation-header-compact'));
