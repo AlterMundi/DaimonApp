@@ -401,6 +401,12 @@ impl Store {
                 producer::resume_on(&tx, human, entry, control.generation)?;
             }
         }
+        let initial_configuration = raw.is_none()
+            && matches!(
+                &command,
+                HeartbeatCommand::ConfigureResources { .. }
+                    | HeartbeatCommand::ConfigureProducer { .. }
+            );
         let selected = match command {
             HeartbeatCommand::SetPaused { .. } | HeartbeatCommand::SetLanePaused { .. } => {
                 unreachable!("normalized above")
@@ -473,6 +479,12 @@ impl Store {
                 }
             }
         }
+        if initial_configuration {
+            tx.execute(
+                "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+                params![key, serde_json::to_string(&control)?],
+            )?;
+        }
         tx.commit()?;
         // A damaged resource record must never roll back the pause fence.
         let resources = resources::status_on(&conn, session, human)
@@ -528,6 +540,59 @@ pub(in crate::store) fn enable_test_lanes(store: &Store, human: i64, entry: Sess
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fresh_configuration_can_select_continuous_without_redundant_pause() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let entry = SessionKey::new(100, Some(1));
+        store
+            .ensure_session(entry, 100, &super::super::tests::defaults())
+            .unwrap();
+        store
+            .set_session_codex_thread(entry, "same-native")
+            .unwrap();
+        let resources = test_contract();
+        let expiry = resources.expires_at_unix_ms;
+        store
+            .heartbeat_control(
+                100,
+                entry,
+                HeartbeatCommand::ConfigureResources {
+                    generation: 0,
+                    contract: resources,
+                },
+            )
+            .unwrap();
+        store
+            .heartbeat_control(
+                100,
+                entry,
+                HeartbeatCommand::ConfigureProducer {
+                    generation: 0,
+                    contract: HeartbeatProducerContract {
+                        purpose: None,
+                        interval_seconds: 30,
+                        max_checks: 6,
+                        expires_at_unix_ms: expiry,
+                        matrix_replies: true,
+                        matrix_inbox: None,
+                        workflows: false,
+                        session_progress: false,
+                        reports: vec![],
+                    },
+                },
+            )
+            .unwrap();
+        store
+            .heartbeat_enable_continuous(100, entry, 0, 48)
+            .unwrap();
+        let status = store
+            .heartbeat_control(100, entry, HeartbeatCommand::Status)
+            .unwrap();
+        assert_eq!(status["admission_paused"], true);
+        assert_eq!(status["generation"], 0);
+        assert_eq!(status["resources"]["mode"], "continuous");
+    }
     #[test]
     fn versioned_app_controls_reject_stale_global_and_lane_changes_atomically() {
         let file = tempfile::NamedTempFile::new().unwrap();
