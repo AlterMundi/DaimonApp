@@ -215,6 +215,40 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my draft while I review this decision.');assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));
   report.state='qualified-shared-home-decision-'+nativeDecisionCase;report.decisions=nativeDecisionPosts;report.existingDraft='preserved';return;
  }
+ if(process.env.QUALIFICATION_REPLY==='1'){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  await page.evaluate(()=>clearInterval(timer));
+  const draft=page.locator('#conversation-message'),focus=page.locator('#conversation-focus');
+  await draft.fill('Preserve this draft while replying.');
+  await page.getByRole('button',{name:'Reply to this message',exact:true}).first().click();
+  await focus.waitFor({state:'visible'});
+  const reference=await page.evaluate(()=>workspaceFixture.microphone.getReply());
+  assert(reference?.reference?.source,'Reply retains its actual source');
+  report.replyGeometry=[];
+  await page.addStyleTag({content:"*,*::before,*::after{transition:none!important;animation:none!important}"});
+  for(const [width,height] of [[390,430],[320,450],[390,844],[1280,800]]){
+   await page.setViewportSize({width,height});await draft.focus();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+   const context=await focus.boundingBox(),input=await draft.boundingBox(),send=await page.locator('#conversation-send').boundingBox();
+   assert(context.y+context.height<=input.y+1,'Reply context must end above the writing field');
+   assert(input.y+input.height<=send.y+1,'Writing field must end above composer actions: '+JSON.stringify({context,input,send}));
+   assert(input.x>=0&&input.x+input.width<=width&&send.y+send.height<=height,'Composer stays inside the keyboard-sized viewport: '+JSON.stringify({width,height,input,send}));
+   assert.equal(await draft.inputValue(),'Preserve this draft while replying.');
+   assert.deepEqual(await page.evaluate(()=>workspaceFixture.microphone.getReply()),reference);
+   report.replyGeometry.push({width,height,context,input,send});
+   await page.screenshot({path:path.join(output,`reply-${width}x${height}.png`)});
+  }
+  await page.locator('#conversation-focus-clear').click();
+  assert.equal(await draft.inputValue(),'Preserve this draft while replying.');
+  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply()),undefined);
+  await draft.evaluate(input=>input.setSelectionRange(4,9));
+  await page.evaluate(binding=>workspaceFixture.microphone.onTranscript({id:'synthetic-preview',binding,active:true,text:'Palabras de la captura en curso'}),binding);
+  assert.equal(await draft.inputValue(),'Palabras de la captura en curso');assert(await draft.evaluate(input=>input.readOnly));
+  await page.evaluate(binding=>workspaceFixture.microphone.onTranscript({id:'synthetic-preview',binding,active:false}),binding);
+  assert.equal(await draft.inputValue(),'Preserve this draft while replying.');
+  assert.deepEqual(await draft.evaluate(input=>[input.selectionStart,input.selectionEnd,input.readOnly]),[4,9,false]);
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-reply-composer-layout';return;
+ }
  if(hudCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   await page.evaluate(()=>clearInterval(timer));

@@ -1437,3 +1437,6 @@ html[data-style-policy="authored"] .standalone-conversation #conversation-compos
 html[data-style-policy="authored"] .session-rail {--session-actions-width:182px;}
 html[data-style-policy="authored"] .session-rail-header {grid-template-columns:minmax(0,1fr) var(--session-actions-width);}
 @media(max-width:600px) {html[data-style-policy="authored"] .session-rail {--session-actions-width:194px;}}
+/* A selected reply occupies its own row, above the full-width writing field. */
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(>#conversation-focus:not([hidden])) #conversation-message {grid-row:3;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(>#conversation-focus:not([hidden])) :is(#conversation-visual,#conversation-voice,#conversation-send) {grid-row:4;}

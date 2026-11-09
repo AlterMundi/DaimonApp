@@ -137,3 +137,22 @@ of final text availability; cleanup failure returns false while preserving the
 completed text receipt for exact recovery without a new provider call. The
 caller's original input and upstream provider retention are outside that scope.
 Without the flag the established response shape is unchanged.
+
+### Composer transcription preview
+
+The ordinary microphone can show provisional words from its existing streaming
+recognizer directly in the composer. This remains one audio message: the preview
+is read-only while recording and is never posted as an additional text input or
+used to invoke a second recognizer. The prior typed draft and selection return
+when recording ends or is discarded. Late captions cannot overwrite another
+capture, binding or a newer draft. Status and recovery details remain in the
+existing compact notice popover. A source without streaming captions leaves the
+typed draft in place. Continuous Avatar keeps its own caption presentation.
+
+A selected message reference occupies a separate composer row above the writing
+field; attachment, microphone and Send controls stay below it. The existing
+synthetic Chromium fixture supports `QUALIFICATION_HUD=1 QUALIFICATION_REPLY=1`
+with a fresh bounded `QUALIFICATION_OUTPUT` directory to verify narrow,
+keyboard-sized and desktop layouts, preserved drafts and exact reply references.
+These checks open no provider or native session and do not establish physical
+phone stability or hearing acceptance.

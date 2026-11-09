@@ -272,7 +272,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   ui.authenticated();
   return {ui, copied,statusReads, nodes, requests, originals,replyTexts,partReads,humanTasks,streamedTransports,
-    continuous:()=>({hooks:continuousHooks,mode:continuousMode,session:continuousSession,calls:continuousCalls}),native:()=>({hooks:nativeHooks,session:nativeSession}),microphoneState:(value,detail)=>capture.onActivity(value,detail),
+    continuous:()=>({hooks:continuousHooks,mode:continuousMode,session:continuousSession,calls:continuousCalls}),native:()=>({hooks:nativeHooks,session:nativeSession}),microphoneTranscript:value=>capture.onTranscript(value),microphoneState:(value,detail)=>capture.onActivity(value,detail),
     rangeGeometry(fn){context.document.createRange=fn;},
     reducedMotion(value){context.window.matchMedia=()=>({matches:value});},
     holdReplyText(id){let release,started;const entered=new Promise(yes=>{started=yes;}),promise=new Promise(yes=>{release=yes;});replyHolds.set(id,{promise,started});return {entered,release};},
@@ -613,6 +613,20 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>openaiOnly.audioCalls.length===1);
   assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
   services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
+  const transcript=boot(false,true,{capture:true});await transcript.ui.refresh();
+  const transcriptInput=transcript.nodes.get('#conversation-message');
+  transcriptInput.value='Earlier typed draft';transcriptInput.selectionStart=2;transcriptInput.selectionEnd=7;
+  const restoredSelections=[];transcriptInput.setSelectionRange=(start,end)=>restoredSelections.push([start,end]);
+  const speech={id:'one-capture',binding:'fixture',active:true,text:''};
+  transcript.microphoneTranscript(speech);assert.equal(transcriptInput.value,'');assert.equal(transcriptInput.readOnly,true);
+  transcript.microphoneTranscript({...speech,text:'Live recognized words'});assert.equal(transcriptInput.value,'Live recognized words');
+  transcript.microphoneTranscript({...speech,id:'late-other-capture',active:false});assert.equal(transcriptInput.value,'Live recognized words');
+  transcript.microphoneTranscript({...speech,binding:'another-binding',text:'Wrong owner'});assert.equal(transcriptInput.value,'Live recognized words');
+  transcript.microphoneTranscript({...speech,active:false});assert.equal(transcriptInput.value,'Earlier typed draft');
+  assert.deepEqual(restoredSelections,[[2,7]]);assert(!transcriptInput.readOnly);assert.equal(transcript.nativePosts.length,0);
+  transcript.microphoneTranscript(speech);transcriptInput.value='A newer external draft';
+  transcript.microphoneTranscript({...speech,text:'Late speech'});assert.equal(transcriptInput.value,'A newer external draft');
+  transcript.microphoneTranscript({...speech,active:false});assert.equal(transcriptInput.value,'A newer external draft');
   const openaiDefault=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true,openaiCaptions:true});await openaiDefault.ui.refresh();
   assert.equal(openaiDefault.transcriptionProfile(),'openai','Selected server default applies before first capture');
   assert.equal(openaiDefault.nodes.get('#conversation-services-engine').value,'openai');
@@ -1881,6 +1895,30 @@ function boot(readOnly=false,standalone=false,options={}) {
   const uncertainPost=composerLoss.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
   assert(composerLoss.posting());await composerLoss.ui.refresh();releaseLoss();await uncertainPost;
   assert.match(composerLoss.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"A lost POST response cannot erase acceptance already observed through history");
+  // The compact composer keeps a read-only way to resolve its own lost ACK.
+  const composerRecovery=boot();await composerRecovery.ui.refresh();composerRecovery.lose();
+  const originalSet=composerRecovery.originals.set.bind(composerRecovery.originals);let inputWrites=0;
+  composerRecovery.originals.set=(...args)=>{inputWrites++;return originalSet(...args);};
+  composerRecovery.nodes.get("#conversation-message").value="Retain this original after a lost acknowledgment";
+  await composerRecovery.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
+  const composerCheck=composerRecovery.nodes.get("#conversation-send-check");
+  assert(composerCheck,"The shipped composer must expose the lost-ACK status control");
+  assert.equal(composerCheck.hidden,false,'A lost POST exposes Check status without another Send');
+  const statusHold=composerRecovery.holdStatus(),statusChecking=composerCheck.handlers.click();await statusHold.entered;
+  assert.equal(composerCheck.disabled,true);await composerCheck.handlers.click();
+  assert.equal(composerRecovery.statusReads.length,1,'Repeated clicks share the one status read');
+  statusHold.release();await statusChecking;
+  assert.equal(composerCheck.hidden,true,'Confirmed admission hides the recovery action');
+  assert.equal(inputWrites,1,'Status reads must never resubmit the frozen original');
+  assert.equal(composerRecovery.originals.size,1);assert.equal(composerRecovery.recoveryPosts.length,0);
+  assert.equal(composerRecovery.nativePosts.length,0);composerRecovery.ui.stop();
+  const revokedComposer=boot();await revokedComposer.ui.refresh();revokedComposer.lose();
+  revokedComposer.nodes.get("#conversation-message").value="A separately retained lost ACK before access revocation";
+  await revokedComposer.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
+  const revokedCheck=revokedComposer.nodes.get("#conversation-send-check");assert.equal(revokedCheck.hidden,false);
+  revokedComposer.failPage('Error',403);await revokedComposer.ui.refresh();
+  assert.equal(revokedCheck.hidden,true,'Revoking access removes the stale composer recovery target');
+  revokedComposer.ui.stop();
   const voiceHistory=boot();
   voiceHistory.originals.set("voice-original",{id:"voice-original",sequence:1,text:"",phase:"preparing",voice:{audio_sha256:"a"}});
   await voiceHistory.ui.refresh();
