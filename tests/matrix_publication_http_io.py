@@ -70,6 +70,7 @@ def qualify(binary):
             acknowledge(values)
         with patch.object(publisher,'confirm_publications',side_effect=after_native_commit):
             assert worker.advance('portable-operation',digest)['state']=='confirmed'
+            assert worker.advance('portable-operation',digest)['state']=='confirmed'
         record=worker.require_confirmed('portable-operation',digest)
         first=json.loads(record['parts'][0]['attempts'][0]['response']);assert first['durable'] is True
         assert j.row('SELECT confirmed_at_ms IS NOT NULL FROM conversation_matrix_publications')==[(1,)]
@@ -111,21 +112,32 @@ def qualify(binary):
                     'revision':selected['revision'],'offset':0},headers={**headers,'Cookie':'__Host-home='+'f'*43})
                 assert denied.status_code in (401,403),denied.text
         client.close();client=None
-        # Simulate losing the committed App result before native retention.
-        # The real backend has the copy; native must keep uncertainty and send once.
-        native.execute('BEGIN IMMEDIATE')
-        lost=journal.admit('lost-publication',projection,fixture['policy'],publication_not_after_ms=request['not_after_ms'])
-        native.commit()
-        uncertain=echo.ConversationJournalTransport(j.socket)
-        exchange=uncertain._exchange
-        def drop_result(command,deadline):
-            exchange(command,deadline)
-            raise TimeoutError('fixture lost result after actual backend commit')
-        lost_worker=echo.MandatoryEcho(journal,transport=uncertain,resolve=lambda _:projection,authorize=lambda _:True)
-        with patch.object(uncertain,'_exchange',side_effect=drop_result) as attempts:
-            assert lost_worker.advance('lost-publication',lost)['state']=='ambiguous'
-            assert lost_worker.advance('lost-publication',lost)['state']=='ambiguous'
-            assert attempts.call_count==1
+        # A lost result can be recovered by an exact read, never another write.
+        # If that read is unavailable too, uncertainty stays pinned across calls.
+        for operation,read_unavailable in (('lost-publication',False),('lost-and-unreadable',True)):
+            native.execute('BEGIN IMMEDIATE')
+            lost=journal.admit(operation,projection,fixture['policy'],publication_not_after_ms=request['not_after_ms'])
+            native.commit()
+            uncertain=echo.ConversationJournalTransport(j.socket)
+            exchange=uncertain._exchange
+            def drop_result(command,deadline):
+                if read_unavailable and command.startswith('matrix publication inspect '):
+                    raise TimeoutError('fixture retained proof read unavailable')
+                value=exchange(command,deadline)
+                if command.startswith('matrix publication commit '):
+                    raise TimeoutError('fixture lost result after actual backend commit')
+                return value
+            lost_worker=echo.MandatoryEcho(journal,transport=uncertain,resolve=lambda _:projection,authorize=lambda _:True)
+            with patch.object(uncertain,'_exchange',side_effect=drop_result) as attempts:
+                expected='ambiguous' if read_unavailable else 'confirmed'
+                assert lost_worker.advance(operation,lost)['state']==expected
+                assert lost_worker.advance(operation,lost)['state']==expected
+                commands=[call.args[0] for call in attempts.call_args_list]
+                assert sum(c.startswith('matrix publication commit ') for c in commands)==1
+                assert sum(c.startswith('matrix publication inspect ') for c in commands)==1
+            if not read_unavailable:
+                retained=journal._load(operation,lost)
+                assert retained['parts'][0]['attempts'][0]['response_source']=='retained-publication'
         assert j.row('SELECT count(*) FROM conversation_matrix_publications WHERE confirmed_at_ms IS NULL')==[(1,)]
         j.stop();j.start();j.wait_control_socket(j.socket)
         assert j.read('matrix','publication','inspect',request['publication_id'])['result']==first
@@ -133,7 +145,7 @@ def qualify(binary):
         assert j.row('SELECT count(*) FROM incoming_updates')==[(0,)]
         assert not j.telegram_methods and not j.messages and not j.packets
         assert not (j.root/'bot.token').exists()
-        print('PASS actual native journal -> App owner publication -> committed native proof acknowledgment; no-browser authenticated HTTP/foreign denial, restart/exact recovery and lost-result no-retry; zero inference, Telegram or peer transmissions')
+        print('PASS actual native journal -> App owner publication -> committed native proof acknowledgment; no-browser authenticated HTTP/foreign denial, restart/exact recovery, bounded lost-result proof inspection and no duplicate publication; zero inference, Telegram or peer transmissions')
     finally:
         if client:client.close()
         if native:native.close()

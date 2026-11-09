@@ -70,10 +70,12 @@ establish that live connection.
 and `ConversationJournalTransport` through the real owner socket and SQLite,
 verifies native commit before metadata acknowledgment using another connection,
 and exercises the authenticated HTTP feed/part reader and restart recovery.
-Home identity and the native harness are synthetic. Its lost-result case leaves
-a committed App record unacknowledged and proves no automatic second send.
+Home identity and the native harness are synthetic. Its lost-result case recovers through one durably reserved exact proof read,
+without another publication. A failed proof read keeps uncertainty pinned across
+restart/calls and does not reset the read budget. Both fresh and warm metadata
+acknowledgments run outside the native SQLite transaction.
 Set `PYTHONPATH` to the selected Matrix candidate SDK; CI pins
-`9e1fbfb847e3b8986e8266bad34052d4f68e776b` for this composition. It verifies no Telegram token,
+`ae2bd0b5c014dda5d4cf4ac63b730468e271a453` for this composition. It verifies no Telegram token,
 transmission, inference, fabricated input or native turn. The portable fixture
 is public synthetic test material, not operational custody. The seven-body
 native installation and useful messaging journey remain separate qualification.
