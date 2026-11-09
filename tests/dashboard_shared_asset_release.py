@@ -107,6 +107,18 @@ class Distribution(unittest.TestCase):
         with patch('scripts.update_shared_workshop.target_call',side_effect=call):
             result=deploy({'targets':[{'id':'first'},{'id':'new'}]},b'frozen transfer',state)
         self.assertEqual(result['state'],'partial_update_retained');self.assertEqual(current['first'],'later');self.assertNotIn(('first','activate'),calls);self.assertEqual(result['targets']['new']['phase'],'adopted_verified')
+    def test_confirmed_consumer_rollback_is_not_reinstalled_on_unchanged_publication(self):
+        from unittest.mock import patch
+        from scripts.update_shared_workshop import deploy
+        writes=[]
+        def call(target,action,**args):
+            if action=='status':return {'current':{'release':'b'*64}}
+            writes.append(action);raise AssertionError('Later rollback must not be overwritten')
+        state={'receipt_path':str(self.root/'receipt.json'),'source_revision':'same-publication','targets':{'first':{'phase':'adopted_verified','release':'a'*64,'expected':'b'*64}}}
+        with patch('scripts.update_shared_workshop.target_call',side_effect=call):
+            result=deploy({'targets':[{'id':'first'}]},b'frozen transfer',state)
+            self.assertEqual(result['state'],'completed_with_consumer_direction');self.assertEqual(result['targets']['first']['phase'],'later_consumer_direction');self.assertEqual(writes,[])
+            again=deploy({'targets':[{'id':'first'}]},b'frozen transfer',result);self.assertEqual(again['state'],'completed_with_consumer_direction');self.assertEqual(writes,[])
     def test_changed_consumer_binding_cannot_keep_an_old_success_label(self):
         from unittest.mock import patch
         from scripts.update_shared_workshop import deploy

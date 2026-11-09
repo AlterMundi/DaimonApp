@@ -82,7 +82,7 @@ def deploy(config,package,state):
         if config.get('_config_path') and assets.digest(Path(config['_config_path']).read_bytes())!=config['_config_sha256']:
             state['state']='partial_update_retained';atomic(state['receipt_path'],state);return state
         row=state['targets'].setdefault(target['id'],{'phase':'known_unattempted'})
-        binding=assets.digest(assets.canonical(target))
+        binding=assets.digest(assets.canonical({k:v for k,v in target.items() if k!='enabled'}))
         if row.get('binding_sha256',binding)!=binding:
             row.update(phase='binding_changed',error='consumer_binding_changed');atomic(state['receipt_path'],state);continue
         row['binding_sha256']=binding
@@ -93,6 +93,10 @@ def deploy(config,package,state):
             observed=target_call(target,'status')['current'];current=observed['release'] if observed else None
             if row.get('release')==current and row.get('release'):
                 row.update(phase='adopted_verified',observation_only=True);continue
+            if row['phase'] in ('adopted_verified','later_consumer_direction'):
+                row.update(phase='later_consumer_direction',observed_release=current,observation_only=True)
+                continue
+            if row['phase']=='opted_out':row['phase']='known_unattempted'
             if row['phase']=='activation_uncertain':
                 # The remote helper's30s lifetime has elapsed. Current file is
                 # authoritative; a later selection is never overwritten.
@@ -111,7 +115,8 @@ def deploy(config,package,state):
             if row['phase']!='activation_uncertain':row['phase']='failed'
             row['error']='shared_frontend_update_incomplete'
         finally:atomic(state['receipt_path'],state)
-    state['state']='all_consumers_adopted_verified' if all(state['targets'].get(t['id'],{}).get('phase') in ('adopted_verified','opted_out') for t in targets) else 'partial_update_retained'
+    phases={state['targets'].get(t['id'],{}).get('phase') for t in targets}
+    state['state']=('all_consumers_adopted_verified' if phases<= {'adopted_verified','opted_out'} else 'completed_with_consumer_direction' if phases<= {'adopted_verified','opted_out','later_consumer_direction'} else 'partial_update_retained')
     atomic(state['receipt_path'],state);return state
 
 def directory_bytes(path):return sum(p.stat().st_size for p in Path(path).rglob('*') if p.is_file() and not p.is_symlink())
@@ -126,7 +131,7 @@ def run(config_path):
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'state':'existing_update_running'}
         receipt=state_root/'current.json';old=json.loads(receipt.read_text()) if receipt.exists() else None
-        if old and old['state']!='all_consumers_adopted_verified':
+        if old and old['state'] not in ('all_consumers_adopted_verified','completed_with_consumer_direction'):
             package=Path(old['package_path']).read_bytes()
             if assets.digest(package)!=old['package_sha256']:raise ValueError('Retained transfer changed')
             return deploy(c,package,old)
@@ -174,7 +179,7 @@ def run(config_path):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',type=Path,required=True);a=p.parse_args();signal.alarm(600)
-    try:value=run(a.config);print(json.dumps({'state':value['state'],'source_revision':value.get('source_revision'),'consumers':{k:v['phase'] for k,v in value.get('targets',{}).items()},'provider_calls':0}));return 0 if value['state'] in ('all_consumers_adopted_verified','existing_update_running') else 1
+    try:value=run(a.config);print(json.dumps({'state':value['state'],'source_revision':value.get('source_revision'),'consumers':{k:v['phase'] for k,v in value.get('targets',{}).items()},'provider_calls':0}));return 0 if value['state'] in ('all_consumers_adopted_verified','completed_with_consumer_direction','existing_update_running') else 1
     except (OSError,ValueError,KeyError,subprocess.SubprocessError):
         print('Shared application update failed; previous frontend and account state retained.',file=sys.stderr);return 1
 

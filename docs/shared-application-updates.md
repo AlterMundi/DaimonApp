@@ -59,7 +59,9 @@ Each actual consumer is observed, prepared and selected through its current
 service UID, under a file CAS; native/web services are not restarted for future
 frontend releases. Lost selection replies are resolved from the exact current
 file after the bounded helper expires, never by replaying native input. A later
-selection is preserved. Partial consumers remain explicit. A configured
+selection is preserved. Divergence after confirmed adoption is a held consumer
+direction for that publication, never permission to reinstall it. Unchanged-source
+checks observe the hold; a genuinely later maintainer publication is a new release. Partial consumers remain explicit. A configured
 `enabled:false` is a deliberate consumer opt-out, not adoption.
 
 The existing Alerts `scheduled_job` observer watches this timer/service's actual
