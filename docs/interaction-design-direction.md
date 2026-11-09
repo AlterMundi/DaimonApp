@@ -190,3 +190,11 @@ use inline geometric SVG instead of platform-dependent font symbols. Circular
 playback/portrait utilities and the reference composer remain intentionally round.
 Inherited appearances keep their existing geometry. This closes a specific
 secondary-surface mismatch; full phone/reference acceptance remains open.
+
+Voice workshop fidelity now uses geometric waveform/style icons and cut-framed
+voice choices, presets, samples and Save/Use/navigation actions. Conversation's
+fixed identity-header rules exclude the workshop content header: its title and
+mark remain separate at desktop, narrow phone and keyboard heights. Focus rings
+stay outside decorative backgrounds; inherited Homemaker geometry remains intact.
+This addresses the observed overlapping title and residual generic controls;
+full rendered reference/device acceptance remains open.
