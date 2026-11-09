@@ -70,7 +70,24 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    await page.getByRole('button',{name:/^(Voice|Voces)$/,exact:true}).click();
    await page.locator('.voice-studio-card').first().waitFor();
    assert.equal(await page.locator('.voice-studio-card').first().evaluate(e=>getComputedStyle(e).borderRadius),'3px');
-   await page.screenshot({path:path.join(output,'voice-studio-320.png')});
+   for(const [width,height] of [[1200,860],[375,860],[320,860],[375,430]]){
+    await page.setViewportSize({width,height});
+    const geometry=await page.locator('.voice-studio-intro').evaluate(e=>{
+     const box=e.getBoundingClientRect(),mark=e.querySelector('.voice-studio-mark').getBoundingClientRect(),heading=e.querySelector('div').getBoundingClientRect();
+     return {width:box.width,height:box.height,markRight:mark.right,headingLeft:heading.left,headingBottom:heading.bottom,bottom:box.bottom,display:getComputedStyle(e).display,decoration:getComputedStyle(e,'::before').content};
+    });
+    assert.equal(geometry.display,'flex','Workshop title never inherits shell header grid');
+    assert(geometry.markRight<=geometry.headingLeft,'Voice mark does not overlap title at '+width);
+    assert(geometry.headingBottom<=geometry.bottom+1,'Title stays inside its content header');
+    assert(['none','normal'].includes(geometry.decoration),'No identity shell decoration over workshop heading');
+    assert.equal(await page.locator('.voice-studio').evaluate(e=>e.scrollWidth>e.clientWidth),false,'Voice studio fits '+width);
+    const choice=page.locator('.voice-studio-voices button').first();
+    await page.keyboard.press('Tab');await choice.focus();
+    assert.equal(await choice.evaluate(e=>getComputedStyle(e).outlineStyle),'solid','Keyboard focus remains outside cut control');
+    assert.equal(await choice.evaluate(e=>getComputedStyle(e,'::before').clipPath.startsWith('polygon(')),true,'Choice uses cut frame');
+    assert.equal(await page.locator('.voice-studio-presets .control-icon').count(),3,'Style icons use device-independent geometry');
+    await page.screenshot({path:path.join(output,'voice-studio-'+width+'x'+height+'.png')});
+   }
    assert.equal(previewPosts.length,0,'Appearance never auditions or applies a voice');
    assert.equal(errors.length,0,errors.join('\n'));
    console.log('PASS authored workshop/voice sheets at desktop375/320; no overflow, auditions or activation');return;
