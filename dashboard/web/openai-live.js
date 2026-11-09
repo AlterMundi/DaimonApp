@@ -96,15 +96,21 @@ window.PublicLiveConversation=(()=>{
       uploads=uploads.then(async()=>{const value=await sealed;try{await upload(value);}catch{if(owned===epoch)state('Original audio is kept for recovery.');}}).catch(()=>{if(owned===epoch)state('Original audio is kept for review.');});
     }
     const sourceFailure=reason=>Object.assign(Error('Voice source confirmation needs review'),{sourceReason:reason});
-    async function sealSource(value){
+    async function sealSource(value,sourceReady){
       const owned=epoch;
-      if(!active||closing||value.visit!==visit||value.binding!==binding||binding!==getBinding()
+      if((!active&&!starting)||closing||value.visit!==visit||value.binding!==binding||binding!==getBinding()
           ||typeof value.request!=='string'||!/^([a-f0-9]{8}-)([a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value.request))
         throw sourceFailure('source_owner_changed');
       let pending=seals.get(value.request);
       if(!pending){
         if(seals.size>=32)throw sourceFailure('source_boundary_limit');
         pending=(async()=>{
+          // Sideband and WebRTC readiness arrive independently. Reserve this
+          // bounded request now, but never confirm its source before the same
+          // owned activation is ready. Stop/activation failure rejects the wait.
+          await sourceReady;
+          if(owned!==epoch||!active||closing||!capture||binding!==getBinding())
+            throw sourceFailure('source_owner_changed');
           let timeout;
           try{
             // Reuse the recorder's existing processing boundary: it flushes
@@ -235,6 +241,7 @@ window.PublicLiveConversation=(()=>{
         const url=new URL('api/interaction/voice/gpt-live',window.location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
         const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;const sourceReasons=new Set();
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
+        const sourceReady=Promise.race([ready,aborted]);sourceReady.catch(()=>{});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
           ...(backend===undefined?{}:{backend}),...(renewal?{renewal}:{}),
           ...(replacementReview?.binding===binding&&replacementReview?.backend===backend?{replacement:replacementReview.value}:voiceParent?{voice_continuation:voiceParent}:{voice_start:'new'}),
@@ -255,7 +262,7 @@ window.PublicLiveConversation=(()=>{
               onItem({visit,item:value.event,public_live:true});
             }
             else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · work results need review.');
-            else if(value.type==='source_seal_requested')void sealSource(value).catch(error=>{
+            else if(value.type==='source_seal_requested')void sealSource(value,sourceReady).catch(error=>{
               if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.',sourceReasons.has(error?.sourceReason)?error.sourceReason:'source_unconfirmed');
             });
             else if(value.type==='finishing'){if(!closing&&!renewing)void hold(value.message||'Finishing voice; checking pending work.','server_finishing');}
