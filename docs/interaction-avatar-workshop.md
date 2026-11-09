@@ -535,3 +535,46 @@ hashes. The complete `receiving_hashes` inventory is authoritative for current
 bytes. PR771 is reused for the original Archive drawings and local fonts; the
 receiving appearance CSS is separated from upstream archive.css so normal
 maintainer stylesheet additions do not require another manual theme merge.
+
+
+## Compose the existing School mission host
+
+The PR776 bridge uses the existing actor API and `AsciiMissionHost` from the
+School's PR2. `dashboard.school_mission_host.compose` now supplies the missing
+product selection resolver to the existing App installer. It does not replace
+the workshop/store/ledger or add a login, credential or grant store.
+
+An optional private `school_mission` configuration selects `selection`, its exact
+`selection_sha256`, and `source` with `root`, `state`, `manifest_sha256`. The source
+is the maintained School agent-plan package: verify every manifest source byte,
+closed Python inventory and required host/mapper/engine/curriculum files, within
+64files/2MiB and a256KiB manifest. The existing ledger must already exist. No
+second ledger is created. An App without this optional composition keeps its
+ordinary wardrobe and reports the original unavailable host for mission calls.
+
+The own host/configuration writer retains one private descriptor with schema
+`school-creativity.app-selection/v1`, `active`, the existing numeric App `actor`,
+shared `human_ref`, registered `application_id`, own `tool_bindings` file and the
+original `request` from `school-creativity.ascii-workshop-request/v1`. This is an
+operator selection under the recorded human task, not another admission or a
+claim that a child chose or completed the mission. The source kit and selection
+contain no credentials. Keep installation-specific values out of shared source.
+
+On every entry/return the resolver checks the descriptor's selected digest,
+active state, current authorized provider actor, exact shared human/application,
+request ID and ASCII mission. `request.space_ref` is that existing application ID;
+its learner/companion must match the own tool binding. The existing School host
+resolves the existing ledger profile and paths. Changed/retired selections,
+foreign actors/requests and mismatched learner/companion refuse while preserving
+previous artifacts. A URL request ID only selects that retained entry. Retiring
+the configured selection revokes this route; it does not erase its work.
+
+The existing entry URL uses `avatar_mission=ORIGINAL_REQUEST_UUID`; the wardrobe
+bridge restores its returned immutable revision and compact preview. Browser
+input cannot supply the learner, private destination, observations or review.
+Technical entry/return leaves pending participation agreements unchanged and
+records no learning event, fabricated display review, achievement or activation.
+The School's existing `record_review` retains its agreement/attribution checks.
+The bounded source/browser qualification uses fictional descriptors and the
+actual resolver/host/ledger, not an injected accepting resolver. Receiving and
+family/device acceptance remain distinct and are not claimed by source tests.

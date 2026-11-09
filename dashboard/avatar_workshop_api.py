@@ -13,7 +13,7 @@ from .provider import ProviderUnavailable
 from scripts.speech_render import RenderError
 
 
-def install(app,config,provider,authorize,origins):
+def install(app,config,provider,authorize,origins,mission_host=None):
     store=AvatarWorkshop(config['state_dir'])
     app.state.avatar_workshop=store
     # Only the shipped MIT editor/modules are public. Account revisions never
@@ -126,6 +126,30 @@ def install(app,config,provider,authorize,origins):
             'Cache-Control':'private, no-store','ETag':'"sha256-'+hashlib.sha256(raw).hexdigest()+'"',
             'Content-Disposition':'attachment; filename="'+ident+'.avatar.json"',
             'X-Content-Type-Options':'nosniff'})
+
+    def mission():
+        if mission_host is None:
+            raise HTTPException(503,'The school mission host is not connected')
+        from .avatar_mission import AvatarMission
+        return AvatarMission(store,mission_host)
+
+    @app.get('/api/interaction/avatars/missions/{request_id}')
+    async def mission_entry(request:Request,request_id:str):
+        await owner(request)
+        return await call(request,mission().entry,request_id)
+
+    @app.post('/api/interaction/avatars/missions/{request_id}')
+    async def mission_return(request:Request,request_id:str):
+        await owner(request,True)
+        raw=bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw)>256:raise HTTPException(413,'Select one saved revision')
+        try:body=json.loads(raw)
+        except ValueError:raise HTTPException(400,'Select one saved revision') from None
+        if not isinstance(body,dict) or set(body)!={'revision_id'}:
+            raise HTTPException(400,'Select one saved revision')
+        return await call(request,mission().return_saved,request_id,body['revision_id'],write=True)
 
     @app.post('/api/interaction/avatars')
     async def change_avatar(request:Request):

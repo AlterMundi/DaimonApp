@@ -62,6 +62,17 @@ class Mounted(unittest.TestCase):
         self.assertEqual(self.client.get(path,headers={**self.headers,'authorization':'monitor'}).status_code,403)
         self.assertEqual(self.store.snapshot(100)['versions'],[])
 
+    def test_mission_routes_keep_auth_and_refuse_an_unconnected_host(self):
+        path='/api/interaction/avatars/missions/'+self.ident
+        self.assertTrue(permitted('GET',path));self.assertTrue(permitted('POST',path))
+        self.assertFalse(permitted('GET',path,'monitor_readonly'))
+        self.assertFalse(permitted('GET',path+'/extra'))
+        self.assertEqual(self.client.get(path).status_code,401)
+        self.assertEqual(self.client.get(path,headers=self.headers).status_code,503)
+        self.assertEqual(self.client.post(path,headers={**self.headers,'x-dashboard-csrf':'bad'},json={'revision_id':self.ident}).status_code,403)
+        self.assertEqual(self.client.post(path,headers=self.headers,json={'revision_id':self.ident,'learner_id':'spoof'}).status_code,400)
+        self.assertEqual(self.client.post(path,headers=self.headers,json={'revision_id':self.ident}).status_code,503)
+
     def test_authenticated_save_reload_and_explicit_use(self):
         path='/api/interaction/avatars'
         response=self.client.post(path,json=self.body,headers=self.headers)
@@ -170,4 +181,6 @@ class Mounted(unittest.TestCase):
             self.assertEqual(self.client.get(base+'archive-assets/'+name).status_code,404)
 
 
-if __name__=='__main__':unittest.main()
+if __name__=='__main__':
+    from dashboard_school_mission_host import Selection
+    unittest.main()

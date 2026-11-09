@@ -1,6 +1,6 @@
 // App adaptation of the MIT workshop storage contract. Authority stays with
 // the parent's existing authenticated API; no credentials or private cache here.
-let snapshot,pending;
+let snapshot,pending,missionContext;
 function request(action,args={}){
  if(parent===window)return Promise.reject(Error('Abrí el taller desde tu conversación en DaimonApp.'));
  if(pending)return Promise.reject(Error('Esperá que termine la acción anterior.'));
@@ -19,7 +19,7 @@ window.addEventListener('message',event=>{
  const selected=pending;pending=null;clearTimeout(selected.timer);
  if(event.data.error)selected.reject(Error(event.data.error));else selected.resolve(event.data.value);
 });
-export async function openStore(){snapshot=await request('snapshot');}
+export async function openStore(){snapshot=await request('snapshot');missionContext=snapshot.mission||null;}
 export async function list(){return snapshot.versions;}
 export async function selected(){return snapshot.editing;}
 export async function get(id){return request('get',{id});}
@@ -31,4 +31,6 @@ export async function save(design,parentId){
 export async function activate(id){snapshot=await request('activate',{id,generation:snapshot.generation});}
 export function close(){parent.postMessage({kind:'daimon.workshop.closed'},location.origin);}
 
+export function mission(){return missionContext||null;}
+export async function returnMission(id){return request('mission-return',{id});}
 export function preview(id){return request('preview',{id});}
