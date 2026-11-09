@@ -182,3 +182,11 @@ This is a source correction until delivered and compared with the reference on
 actual screens. Workshop content and other application's owning appearance
 contracts remain part of the complete design acceptance, not presumed finished
 by a shell screenshot. Keep the same full design goal and functional contracts.
+
+The authored wardrobe tabs, version/name controls, editing tools and Keep/Use
+actions now use the same cut frame, with separate background layers so keyboard
+focus stays outside the silhouette. Undo, Redo, Surprise and appearance controls
+use inline geometric SVG instead of platform-dependent font symbols. Circular
+playback/portrait utilities and the reference composer remain intentionally round.
+Inherited appearances keep their existing geometry. This closes a specific
+secondary-surface mismatch; full phone/reference acceptance remains open.

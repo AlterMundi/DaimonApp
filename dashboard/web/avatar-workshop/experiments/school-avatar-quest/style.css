@@ -54,3 +54,20 @@ html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.
 html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover)::before {background:#bf906799;}
 html[data-presentation="navigator-hud"] :is(.world,.closet,.theatre,.kept-card,.wardrobe-shell,dialog,.appearance-popover)::after {inset:1px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 4px #0b151f66,inset 0 0 0 5px #78d7e019;}
 html[data-presentation="navigator-hud"] :is(.choice,.wardrobe-tile,.prop-editor) {border-radius:2px;}
+
+/* Authored controls share the cut frame without clipping keyboard focus.
+ * Circular playback/portrait utilities and artwork tiles keep their own shape. */
+html[data-presentation="navigator-hud"] :is(#tabs button,.keep-actions button,#versions,.trial-tools button,#companion-name) {
+ --hud-control-fill:#122430;--hud-control-line:#78d7e077;--hud-control-cut:7px;
+ position:relative;isolation:isolate;border:0;border-radius:0;background:none;box-shadow:none;color:var(--ink);
+}
+html[data-presentation="navigator-hud"] :is(#tabs button,.keep-actions button,#versions,.trial-tools button,#companion-name)::before,
+html[data-presentation="navigator-hud"] :is(#tabs button,.keep-actions button,#versions,.trial-tools button,#companion-name)::after {
+ content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+ clip-path:polygon(var(--hud-control-cut) 0,100% 0,100% calc(100% - var(--hud-control-cut)),calc(100% - var(--hud-control-cut)) 100%,0 100%,0 var(--hud-control-cut));
+}
+html[data-presentation="navigator-hud"] :is(#tabs button,.keep-actions button,#versions,.trial-tools button,#companion-name)::before {background:var(--hud-control-line);}
+html[data-presentation="navigator-hud"] :is(#tabs button,.keep-actions button,#versions,.trial-tools button,#companion-name)::after {inset:1px;background:var(--hud-control-fill);}
+html[data-presentation="navigator-hud"] :is(#tabs button[aria-selected=true],.keep-actions #save) {--hud-control-fill:#234956;--hud-control-line:var(--accent);font-weight:650;}
+html[data-presentation="navigator-hud"] :is(#tabs button,.keep-actions button,#versions,.trial-tools button,#companion-name):is(:hover,:focus-visible):not(:disabled) {--hud-control-line:var(--accent);}
+.trial-tools button svg,#appearance>summary svg {display:inline-block;width:22px;height:22px;vertical-align:middle;flex:none;}
