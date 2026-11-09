@@ -66,9 +66,14 @@ must supply the real deadline and confirm only after its committed proof, and
 the seven-body journey must be qualified. App retirement tests alone do not
 establish that live connection.
 
-`tests/matrix_publication_http_io.py` exercises the real owner socket, SQLite,
-signature, authenticated HTTP feed/part reader and restart recovery, with a
-synthetic Home identity and native harness. It verifies no Telegram token,
+`tests/matrix_publication_http_io.py` drives the actual Matrix native journal
+and `ConversationJournalTransport` through the real owner socket and SQLite,
+verifies native commit before metadata acknowledgment using another connection,
+and exercises the authenticated HTTP feed/part reader and restart recovery.
+Home identity and the native harness are synthetic. Its lost-result case leaves
+a committed App record unacknowledged and proves no automatic second send.
+Set `PYTHONPATH` to the selected Matrix candidate SDK; CI pins
+`9e1fbfb847e3b8986e8266bad34052d4f68e776b` for this composition. It verifies no Telegram token,
 transmission, inference, fabricated input or native turn. The portable fixture
 is public synthetic test material, not operational custody. The seven-body
 native installation and useful messaging journey remain separate qualification.

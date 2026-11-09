@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from dashboard.app import create_app
 from dashboard.provider import Provider
 from conversation_input_control_io import Inputs
+from daimon_matrix import mandatory_echo as echo
 
 
 def canonical(v):
@@ -27,7 +28,7 @@ def canonical(v):
 
 
 def qualify(binary):
-    j=Inputs(str(Path(binary).resolve()));client=None
+    j=Inputs(str(Path(binary).resolve()));client=None;native=None
     fixture=json.loads((Path(__file__).parent/'fixtures/matrix-publication-v1.json').read_text())
     request=fixture['request'];publication=fixture['policy']['publication']
     try:
@@ -45,7 +46,33 @@ def qualify(binary):
             assert (result.returncode==0)==ok,result.stderr.decode()
             return json.loads(result.stdout)
         assert j.read('matrix','publication','status')['result']==publication
-        first=commit(request)['result'];assert first['durable'] is True
+        # Real native journal -> actual existing App owner socket -> durable
+        # signed receipt -> native commit -> exact acknowledgment for retirement.
+        publisher=echo.ConversationJournalTransport(j.socket)
+        projection=json.loads(request['text'].split('\n',1)[1])
+        native=sqlite3.connect(j.root/'native-publication.sqlite',isolation_level=None)
+        native.execute('BEGIN IMMEDIATE')
+        echo.EchoJournal.initialize(native,catalog_id='portable-fixture',authentication_key=b'k'*32)
+        native.commit()
+        journal=echo.EchoJournal(native,catalog_id='portable-fixture',authentication_key=b'k'*32)
+        native.execute('BEGIN IMMEDIATE')
+        digest=journal.admit('portable-operation',projection,fixture['policy'],publication_not_after_ms=request['not_after_ms'])
+        native.commit()
+        worker=echo.MandatoryEcho(journal,transport=publisher,resolve=lambda _:projection,authorize=lambda _:True)
+        acknowledge=publisher.confirm_publications
+        def after_native_commit(values):
+            assert not native.in_transaction
+            observer=sqlite3.connect(j.root/'native-publication.sqlite',isolation_level=None)
+            try:
+                observed=echo.EchoJournal(observer,catalog_id='portable-fixture',authentication_key=b'k'*32)
+                assert echo._status(observed._load('portable-operation',digest))['state']=='confirmed'
+            finally:observer.close()
+            acknowledge(values)
+        with patch.object(publisher,'confirm_publications',side_effect=after_native_commit):
+            assert worker.advance('portable-operation',digest)['state']=='confirmed'
+        record=worker.require_confirmed('portable-operation',digest)
+        first=json.loads(record['parts'][0]['attempts'][0]['response']);assert first['durable'] is True
+        assert j.row('SELECT confirmed_at_ms IS NOT NULL FROM conversation_matrix_publications')==[(1,)]
         body={k:v for k,v in first.items() if k!='signature'}
         Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(publication['receipt_key']+'=')).verify(
             base64.urlsafe_b64decode(first['signature']+'=='),canonical(body))
@@ -78,21 +105,38 @@ def qualify(binary):
                 'revision':selected['revision'],'offset':0},headers=headers)
             assert result.status_code==200,result.text
             assert result.json()['text']==request['text']
-            foreign={**identity,'actor':{'kind':'human','ref':'fixture:foreign-human'}}
+            foreign={**identity,'actor':{'kind':'human','ref':'human:local:00000000-0000-4000-8000-000000000200'}}
             with patch('dashboard.home_auth.identity_response',return_value=foreign):
                 denied=client.get('/api/interaction/part',params={'source':selected['id'],
                     'revision':selected['revision'],'offset':0},headers={**headers,'Cookie':'__Host-home='+'f'*43})
                 assert denied.status_code in (401,403),denied.text
         client.close();client=None
+        # Simulate losing the committed App result before native retention.
+        # The real backend has the copy; native must keep uncertainty and send once.
+        native.execute('BEGIN IMMEDIATE')
+        lost=journal.admit('lost-publication',projection,fixture['policy'],publication_not_after_ms=request['not_after_ms'])
+        native.commit()
+        uncertain=echo.ConversationJournalTransport(j.socket)
+        exchange=uncertain._exchange
+        def drop_result(command,deadline):
+            exchange(command,deadline)
+            raise TimeoutError('fixture lost result after actual backend commit')
+        lost_worker=echo.MandatoryEcho(journal,transport=uncertain,resolve=lambda _:projection,authorize=lambda _:True)
+        with patch.object(uncertain,'_exchange',side_effect=drop_result) as attempts:
+            assert lost_worker.advance('lost-publication',lost)['state']=='ambiguous'
+            assert lost_worker.advance('lost-publication',lost)['state']=='ambiguous'
+            assert attempts.call_count==1
+        assert j.row('SELECT count(*) FROM conversation_matrix_publications WHERE confirmed_at_ms IS NULL')==[(1,)]
         j.stop();j.start();j.wait_control_socket(j.socket)
         assert j.read('matrix','publication','inspect',request['publication_id'])['result']==first
         assert j.row('SELECT count(*) FROM turns')==turns
         assert j.row('SELECT count(*) FROM incoming_updates')==[(0,)]
         assert not j.telegram_methods and not j.messages and not j.packets
         assert not (j.root/'bot.token').exists()
-        print('PASS token-free actual owner publication/commit/signature, no-browser retention, authenticated canonical HTTP/foreign denial, restart/exact recovery; zero inference, Telegram or Matrix transmissions')
+        print('PASS actual native journal -> App owner publication -> committed native proof acknowledgment; no-browser authenticated HTTP/foreign denial, restart/exact recovery and lost-result no-retry; zero inference, Telegram or peer transmissions')
     finally:
         if client:client.close()
+        if native:native.close()
         j.close()
 
 if __name__=='__main__':qualify(sys.argv[1])
