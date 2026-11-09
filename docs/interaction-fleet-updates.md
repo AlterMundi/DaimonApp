@@ -74,6 +74,16 @@ consuming-process acceptance. Keep a required body-local PATH entry in the
 existing service configuration and its retained preimage; do not introduce a new
 login, change providers or activate an avatar during software delivery. See
 [workshop receiving](interaction-avatar-workshop.md#receiving-selection-6november2026).
+Before selecting a composed workshop, verify its complete adapted bytes with
+`python3 -B -m dashboard.avatar_workshop_provenance --root STAGED_WORKSHOP`.
+A stripped receiving package can omit the development checker; run the maintained
+checkout's checker against that root instead of installing it into the service.
+Checking only the newly changed files or copying `PROVENANCE.json` is insufficient:
+a prior incomplete copy can omit the pre-paint presentation script or its cosmetic
+appearance bridge while constructors and changed-asset hashes still pass. Inspect
+any retained difference, preserve actor data and restore only the selected source;
+do not replay an earlier selection to correct a preparation/verifier error.
+
 
 ## Voice admission during web maintenance
 
