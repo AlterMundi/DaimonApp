@@ -56,7 +56,7 @@
     function syncScope(){const label=showAll?'Show recent sessions':'Show all sessions';scopeToggle.textContent=label;scopeToggle.setAttribute('aria-label',label);scopeToggle.setAttribute('aria-pressed',String(showAll));railHeading.textContent=showAll?'Sessions · All':'Sessions · 24h';}
     const scopeToggle=button('Show all sessions','Show all sessions',()=>{showAll=!showAll;syncScope();remember();render();});scopeToggle.className='session-scope-toggle';
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(railHeading,reset);
-    rail.append(railHeader,scopeToggle,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,toolbar);(noticeHost||shell).append(status,retryStatus);
+    const railScroll=el('div',undefined,'session-rail-scroll');railScroll.append(railHeader,scopeToggle,list);rail.append(railScroll);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,toolbar);(noticeHost||shell).append(status,retryStatus);
     if(toolbarHost)toolbarHost.insertBefore(toolbar,toolbarHost.firstChild);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
