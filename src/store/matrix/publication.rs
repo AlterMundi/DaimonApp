@@ -446,8 +446,8 @@ mod tests {
             .unwrap();
         assert_eq!(feed["items"][0]["kind"], "matrix_visibility");
         assert!(feed["items"][0]["observed_at"].as_str().is_some());
-        assert!(
-            !reopened
+        assert_eq!(
+            reopened
                 .interaction_presentation_page_publications(
                     100,
                     entry,
@@ -459,9 +459,8 @@ mod tests {
                     Some(feed["cursor"]["publications"].as_i64().unwrap()),
                     false
                 )
-                .unwrap()["items"]
-                .as_array()
-                .is_some_and(|v| !v.is_empty())
+                .unwrap()["items"],
+            json!([])
         );
 
         let conn = reopened.conn.lock().unwrap();
