@@ -6,6 +6,7 @@ const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(out
 const imageCase=process.env.QUALIFICATION_IMAGE_PREVIEW==='1';let imageAccess=true;
 const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
 const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
+const unifiedAttentionCase=process.env.QUALIFICATION_UNIFIED_ATTENTION==='1';
 const reconnectCase=process.env.QUALIFICATION_SESSION_RECONNECT==='1';let workspaceOutage=false;
 const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
@@ -15,7 +16,7 @@ const publicDefaultCase=process.env.QUALIFICATION_PUBLIC_DEFAULT==='1';
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=publicDefaultCase||process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
 const nativeDecisionCase=process.env.QUALIFICATION_HOME_DECISIONS;let nativeDecisionGranted=nativeDecisionCase==='allowed';const nativeDecisionPosts=[];
 const codexActivityCase=process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
-const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase||!!nativeDecisionCase,questionPosts=0;const voiceUploads=[];
+const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=unifiedAttentionCase||hudCase||!!nativeDecisionCase,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
@@ -25,7 +26,7 @@ for(const row of sessions)row.last_activity_at=Date.now()/1000;
 sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
 let nativeDecisionResolved=false;
-const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1,...(nativeDecisionCase?{state:nativeDecisionResolved?'answered':'pending',actionable:!nativeDecisionResolved,kind:'approval',title:'Synthetic native operation',preview:'Review the selected operation.',body:'Allow this synthetic tool operation once?',choices:[{label:'Allow once',action:{kind:'approval',choice:'a'}}],allows_text:false,can_cancel:true}:{})});
+const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64),capture_version:'e'.repeat(64),created_at:'2026-11-08T10:00:00Z',state:'pending',kind:'question',actionable:true,title:'Choose a place',label:'Conversation',preview:'Where should we meet?',body:'Where should we meet: in the garden or in the workshop?',offset:0,next_offset:null,choices:[],allows_text:true,can_cancel:false,question_index:0,question_total:1,...(nativeDecisionCase?{state:nativeDecisionResolved?'answered':'pending',actionable:!nativeDecisionResolved,kind:'approval',title:'Synthetic native operation',preview:'Review the selected operation.',body:'Allow this synthetic tool operation once?',choices:[{label:'Allow once',action:{kind:'approval',choice:'a'}}],allows_text:false,can_cancel:true}:{})});
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 if(hudCase){sources.splice(0,29);sources[0]={...sources[0],kind:'integrator_answer',preview:'Let us explore this idea together.\n\nWe can open the result and keep creating.',text_characters:85};}
@@ -63,6 +64,8 @@ const server=http.createServer(async(req,res)=>{
    if(!uploadFailed){uploadFailed=true;return json({detail:'Synthetic first receipt unavailable'},503);}
    return json({visit,binding,recording:{ordinal,audio_sha256:voiceUploads.at(-1).sha,audio_bytes:raw.length,...(publicCase?{work_replay:'never'}:{native_replay:'never'}),...(req.headers['x-voice-capture-stop']?{capture_stop:req.headers['x-voice-capture-stop']}:{})}});
   }
+  if(route==='interaction/internal')return json({...base(),items:unifiedAttentionCase?[{...question(),id:'8'.repeat(32),created_at:'2026-11-09T10:00:00Z',label:'Workshop',title:'A routed decision',preview:'Choose the next workshop step.'}]:[],cursor:unifiedAttentionCase?1:0,newest:unifiedAttentionCase?1:0});
+  if(route.startsWith('interaction/internal/requests/'))return json({...question(),id:'8'.repeat(32),label:'Workshop',title:'A routed decision',body:'Choose the next workshop step.'});
   if(route==='interaction/requests')return json({...base(),items:pendingQuestion?[question()]:[],cursor:pendingQuestion?1:0,newest:pendingQuestion?1:0});
   if(route.startsWith('interaction/requests/')){
    if(req.method==='POST'){
@@ -112,6 +115,10 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  const context=await browser.newContext({viewport:{width:1280,height:800}});await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
+ });
+ if(unifiedAttentionCase)await context.addInitScript(()=>{
+  const controls=[];window.pendingFixture=controls;let original;
+  Object.defineProperty(window,'RequestControls',{configurable:true,get:()=>original,set(value){original={...value,mount(options){const result=value.mount(options);controls.push(result);return result;}};}});
  });
  if(countdownCase)await context.addInitScript(()=>{
   const ActualContext=window.AudioContext,now=performance.now.bind(performance);
@@ -186,6 +193,27 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--dm-ui-text').trim()),authoredCase?'':palette.text,'Selected authored policy or inherited roles are respected');
   }
   (report.appearanceTransitions??=[]).push(stage);
+ }
+ if(unifiedAttentionCase){
+  await page.getByRole('button',{name:'For you · 2 pending requests',exact:true}).waitFor();
+  assert.equal(await page.locator('.pending-carousel').count(),0,'No rotating pending line remains');
+  assert.equal(await page.locator('dialog.pending-panel').count(),1,'All pending sources use one For you panel');
+  await page.locator('#conversation-message').fill('Keep my unsent conversation draft.');
+  await page.getByRole('button',{name:'For you · 2 pending requests',exact:true}).click();
+  const panel=page.getByRole('dialog',{name:'For you',exact:true});
+  assert.match(await panel.locator('.for-you-items').textContent(),/Choose a place/);
+  assert.match(await panel.locator('.for-you-items>*').first().textContent(),/A routed decision/,'Newer routed pending work precedes older conversation work');
+  assert.match(await panel.textContent(),/A routed decision/);
+  const internal=panel.locator('.for-you-items button').filter({hasText:'Read request'}).first();
+  if(await internal.count())await internal.click();
+  await panel.getByRole('button',{name:'Close',exact:true}).click();
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my unsent conversation draft.');
+  assert.equal(await page.getByRole('button',{name:'For you · 2 pending requests',exact:true}).evaluate(e=>document.activeElement===e),true);
+  assert.equal(posts.length,0);assert.equal(questionPosts,0,'Opening pending work never answers it');
+  await page.evaluate(()=>{for(const control of pendingFixture)control.reset();});
+  await page.getByRole('button',{name:'For you · 0 pending requests',exact:true}).waitFor();
+  assert.equal(await page.locator('.for-you-items>*').count(),0,'Account reset removes cards moved from both scoped readers');
+  report.state='qualified-unified-for-you';await page.screenshot({path:path.join(output,'for-you-closed.png')});return;
  }
  if(reconnectCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected&&workspaceFixture.workspace?.active);

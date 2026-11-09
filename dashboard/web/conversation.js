@@ -300,7 +300,7 @@ window.Conversation = (() => {
     const liveSpeech=window.LiveSpeech?.mount(standalone?{
       read:key=>window.localStorage?.getItem(key),write:(key,value)=>window.localStorage?.setItem(key,value)
     }:undefined);let canSpeakLive=false;
-    let pendingNavigation,internalNavigation,internalControls;
+    let pendingNavigation,internalControls,internalAttentionItems=()=>[];
     async function listenFromAttention(source){
       try{await voiceMode?.close();}
       catch{audioState('Voice could not finish closing. Return to the conversation before listening.');return;}
@@ -316,10 +316,6 @@ window.Conversation = (() => {
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();clearFocus();voiceContext=undefined;draft.value=message;draft.focus?.();compose.scrollIntoView?.({block:"nearest"});return true;
     }});
-    if(standalone && !readOnly)pendingNavigation=window.AttentionCarousel?.mount({
-      line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
-      getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[])]
-    });
     if(standalone && !readOnly){
       const inflight=new Map();
       const scopedApi=async(path,body)=>{
@@ -336,9 +332,14 @@ window.Conversation = (() => {
       const requests=window.RequestControls.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal",allowCancel:()=>canDecideRequests,getCanDecide:view=>canDecideRequests||view?.kind==="question"});
       const tasks=window.HumanTaskControls?.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal"});
       const panel=$("#internal-attention");panel.hidden=false;
-      internalNavigation=window.AttentionCarousel?.mount({line:$("#conversation-presence"),panel,getItems:()=>[...requests.attentionItems(),...(tasks?.attentionItems()||[])]});
-      internalControls={refresh:()=>Promise.all([requests.refresh(),tasks?.refresh()]),reset:()=>{internalNavigation?.close(false);requests.reset();tasks?.reset();}};
+      $("#conversation-attention").append(panel);
+      internalAttentionItems=()=>[...requests.attentionItems(),...(tasks?.attentionItems()||[])].map(item=>({...item,id:`internal:${item.id}`}));
+      internalControls={refresh:()=>Promise.all([requests.refresh(),tasks?.refresh()]),reset:()=>{pendingNavigation?.close(false);requests.reset();tasks?.reset();}};
     }
+    if(standalone && !readOnly)pendingNavigation=window.AttentionCarousel?.mount({
+      line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
+      getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[]),...internalAttentionItems()]
+    });
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     let transcriptPreview;
