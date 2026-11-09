@@ -8,6 +8,10 @@ use std::{io::Read, path::PathBuf};
 const MAX_PARTS: i64 = 4096;
 const MAX_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_REQUEST: usize = 65536;
+// Confirmed technical copies remain readable for a day after native expiry.
+// Unknown/pending acknowledgments are never retired by this clock.
+const RETAIN_MS: i64 = 24 * 60 * 60 * 1000;
+const RETIRE_BATCH: i64 = 64;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +77,7 @@ pub struct PublicationRequest {
     schema: String,
     publication_id: String,
     binding_sha256: String,
+    not_after_ms: i64,
     surface_ref: String,
     audience: Vec<String>,
     part_index: u32,
@@ -85,13 +90,18 @@ impl PublicationRequest {
         let id = Uuid::parse_str(&self.publication_id)?;
         let expected = Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
-            format!("dm:visibility:{}:{}", self.binding_sha256, self.part_index).as_bytes(),
+            format!(
+                "dm:visibility:{}:{}:{}",
+                self.binding_sha256, self.not_after_ms, self.part_index
+            )
+            .as_bytes(),
         );
         anyhow::ensure!(
             self.schema == "dm.visibility.publication/v1"
                 && canonical_uuid(&self.publication_id)
                 && id == expected
                 && hash(&self.binding_sha256)
+                && (1..(1i64 << 52)).contains(&self.not_after_ms)
                 && self.surface_ref == cfg.surface_ref
                 && self.audience == cfg.audience
                 && (1..=32).contains(&self.part_count)
@@ -142,11 +152,15 @@ impl Store {
     pub(in crate::store) fn init_matrix_publications(&self) -> Result<()> {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
             "CREATE TABLE IF NOT EXISTS conversation_matrix_publications(
-             publication_id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,entry_session INTEGER NOT NULL REFERENCES sessions(id),
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,publication_id TEXT NOT NULL UNIQUE,human_id INTEGER NOT NULL,entry_session INTEGER NOT NULL REFERENCES sessions(id),
              binding TEXT NOT NULL,resource TEXT NOT NULL,receipt_key TEXT NOT NULL,request TEXT NOT NULL,
-             request_sha256 TEXT NOT NULL,receipt TEXT,committed_at_ms INTEGER NOT NULL);
+             request_sha256 TEXT NOT NULL,receipt TEXT,committed_at_ms INTEGER NOT NULL,
+             not_after_ms INTEGER NOT NULL,confirmed_at_ms INTEGER);
              CREATE INDEX IF NOT EXISTS conversation_matrix_publication_owner
-             ON conversation_matrix_publications(human_id,entry_session);")?;
+             ON conversation_matrix_publications(human_id,entry_session);
+             CREATE TABLE IF NOT EXISTS conversation_matrix_publication_retention(
+             human_id INTEGER NOT NULL,entry_session INTEGER NOT NULL REFERENCES sessions(id),
+             retired_deadline_ms INTEGER NOT NULL,PRIMARY KEY(human_id,entry_session));")?;
         Ok(())
     }
     pub(crate) fn matrix_publication_commit(
@@ -156,9 +170,31 @@ impl Store {
         cfg: &PublicationConfig,
         request: &PublicationRequest,
     ) -> Result<Value> {
+        self.matrix_publication_commit_with_clock(human, entry, cfg, request, None)
+    }
+    #[cfg(test)]
+    fn matrix_publication_commit_at(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        cfg: &PublicationConfig,
+        request: &PublicationRequest,
+        at: i64,
+    ) -> Result<Value> {
+        self.matrix_publication_commit_with_clock(human, entry, cfg, request, Some(at))
+    }
+    fn matrix_publication_commit_with_clock(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        cfg: &PublicationConfig,
+        request: &PublicationRequest,
+        clock: Option<i64>,
+    ) -> Result<Value> {
         request.validate(cfg)?;
         let key = cfg.signer()?;
         let public = URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
+        let not_after = request.not_after_ms;
         let request = serde_json::to_value(request)?;
         let raw = canonical(&request);
         let sha = publication_digest(&request);
@@ -167,6 +203,7 @@ impl Store {
             .context("Publication identity missing")?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let at = clock.unwrap_or_else(|| Utc::now().timestamp_millis());
         let (session, _) = super::super::presentation::entry_on(&tx, human, entry)?;
         let binding = super::super::presentation::entry_binding(&tx, human, entry, session)?;
         let prior: Option<(i64,i64,String,String,String,Option<String>)> = tx.query_row(
@@ -192,6 +229,18 @@ impl Store {
                 && !super::super::maintenance_writer_held_on(&tx, entry)?,
             "Publication admission is paused for this conversation"
         );
+        anyhow::ensure!(
+            at < not_after,
+            "Fresh publication deadline expired; never republish a retired request"
+        );
+        let retired: i64=tx.query_row("SELECT COALESCE((SELECT retired_deadline_ms
+            FROM conversation_matrix_publication_retention WHERE human_id=?1 AND entry_session=?2),0)",
+            params![human,session],|r|r.get(0))?;
+        anyhow::ensure!(
+            not_after > retired,
+            "Publication belongs to a retired deadline; never re-create it after clock rollback"
+        );
+        retire_on(&tx, human, session, at)?;
         let (count,bytes):(i64,i64) = tx.query_row(
             "SELECT count(*),COALESCE(sum(length(CAST(request AS BLOB))+COALESCE(length(CAST(receipt AS BLOB)),0)),0)
              FROM conversation_matrix_publications WHERE human_id=?1 AND entry_session=?2",
@@ -200,13 +249,12 @@ impl Store {
             count < MAX_PARTS && bytes + raw.len() as i64 + 16384 <= MAX_BYTES,
             "Conversation publication storage capacity reached"
         );
-        let at = Utc::now().timestamp_millis();
         anyhow::ensure!(
             (0..(1i64 << 52)).contains(&at),
             "Publication commit time out of range"
         );
-        tx.execute("INSERT INTO conversation_matrix_publications(publication_id,human_id,entry_session,binding,resource,receipt_key,request,request_sha256,committed_at_ms)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![id,human,session,binding,cfg.surface_ref,public,raw,sha,at])?;
+        tx.execute("INSERT INTO conversation_matrix_publications(publication_id,human_id,entry_session,binding,resource,receipt_key,request,request_sha256,committed_at_ms,not_after_ms)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,human,session,binding,cfg.surface_ref,public,raw,sha,at,not_after])?;
         let sequence = tx.last_insert_rowid();
         anyhow::ensure!(
             (1..(1i64 << 52)).contains(&sequence),
@@ -226,7 +274,70 @@ impl Store {
     }
 }
 
+fn retire_on(conn: &Connection, human: i64, session: i64, at: i64) -> Result<usize> {
+    // Constant-size deadline fence replaces per-message tombstones. Keep it in
+    // the same caller transaction as deletion, including on clock regression.
+    conn.execute("INSERT INTO conversation_matrix_publication_retention(human_id,entry_session,retired_deadline_ms)
+        SELECT ?1,?2,COALESCE(max(not_after_ms),0) FROM (
+        SELECT not_after_ms FROM conversation_matrix_publications
+        WHERE human_id=?1 AND entry_session=?2 AND confirmed_at_ms IS NOT NULL
+        AND not_after_ms<=?3 AND confirmed_at_ms<=?3 ORDER BY sequence LIMIT ?4) WHERE true
+        ON CONFLICT(human_id,entry_session) DO UPDATE SET retired_deadline_ms=max(retired_deadline_ms,excluded.retired_deadline_ms)",
+        params![human,session,at.saturating_sub(RETAIN_MS),RETIRE_BATCH])?;
+    Ok(conn.execute(
+        "DELETE FROM conversation_matrix_publications WHERE sequence IN (
+        SELECT sequence FROM conversation_matrix_publications
+        WHERE human_id=?1 AND entry_session=?2 AND confirmed_at_ms IS NOT NULL
+        AND not_after_ms <= ?3 AND confirmed_at_ms <= ?3
+        ORDER BY sequence LIMIT ?4)",
+        params![human, session, at.saturating_sub(RETAIN_MS), RETIRE_BATCH],
+    )?)
+}
+
 impl Store {
+    /// Trusted host only, after native journal confirmation has itself committed.
+    /// This acknowledges visibility proof retention, never recipient delivery.
+    pub(crate) fn matrix_publication_confirm(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        cfg: &PublicationConfig,
+        id: &str,
+        sha: &str,
+    ) -> Result<Value> {
+        anyhow::ensure!(
+            canonical_uuid(id) && hash(sha),
+            "Exact publication identity/hash required"
+        );
+        // Revalidate the selected owner/resource/key against its retained proof.
+        let proof = self.matrix_publication_receipt(human, entry, cfg, id)?;
+        anyhow::ensure!(
+            proof["request_sha256"] == sha,
+            "Publication acknowledgment differs"
+        );
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, _) = super::super::presentation::entry_on(&conn, human, entry)?;
+        let n = conn.execute(
+            "UPDATE conversation_matrix_publications
+            SET confirmed_at_ms=COALESCE(confirmed_at_ms,?1)
+            WHERE publication_id=?2 AND human_id=?3 AND entry_session=?4 AND request_sha256=?5",
+            params![Utc::now().timestamp_millis(), id, human, session, sha],
+        )?;
+        anyhow::ensure!(n == 1, "Publication acknowledgment lost its exact record");
+        Ok(
+            json!({"publication_id":id,"publication_acknowledged":true,"receiving_delivery":"not-established"}),
+        )
+    }
+    pub(crate) fn matrix_publication_retire(&self, human: i64, entry: SessionKey) -> Result<Value> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (session, _) = super::super::presentation::entry_on(&tx, human, entry)?;
+        let n = retire_on(&tx, human, session, Utc::now().timestamp_millis())?;
+        tx.commit()?;
+        Ok(
+            json!({"retired":n,"batch_limit":RETIRE_BATCH,"retention_ms":RETAIN_MS,"pending":"preserved"}),
+        )
+    }
     pub(crate) fn matrix_publication_receipt(
         &self,
         human: i64,
@@ -375,10 +486,11 @@ mod tests {
             schema: "dm.visibility.publication/v1".into(),
             publication_id: Uuid::new_v5(
                 &Uuid::NAMESPACE_URL,
-                format!("dm:visibility:{binding}:0").as_bytes(),
+                format!("dm:visibility:{binding}:4102444800000:0").as_bytes(),
             )
             .to_string(),
             binding_sha256: binding,
+            not_after_ms: 4102444800000,
             surface_ref: cfg.surface_ref.clone(),
             audience: cfg.audience.clone(),
             part_index: 0,
@@ -546,8 +658,8 @@ mod tests {
             let session = super::super::super::presentation::entry_on(&conn, 100, entry)
                 .unwrap()
                 .0;
-            conn.execute("INSERT INTO conversation_matrix_publications(publication_id,human_id,entry_session,binding,resource,receipt_key,request,request_sha256,committed_at_ms)
-             VALUES('fixture-capacity',100,?1,'','','',zeroblob(?2),'',1)",params![session,MAX_BYTES]).unwrap();
+            conn.execute("INSERT INTO conversation_matrix_publications(publication_id,human_id,entry_session,binding,resource,receipt_key,request,request_sha256,committed_at_ms,not_after_ms)
+             VALUES('fixture-capacity',100,?1,'','','',zeroblob(?2),'',1,1)",params![session,MAX_BYTES]).unwrap();
         }
         assert!(
             store
@@ -555,6 +667,143 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn retirement_is_bounded_preserves_unknown_and_fences_expired_republication() {
+        let (_dir, store, entry, cfg, template) = setup();
+        let at = Utc::now().timestamp_millis();
+        let deadline = at + 60_000;
+        let mut originals = Vec::new();
+        for i in 0..66 {
+            let mut r = template.clone();
+            r.binding_sha256 = format!("{:x}", Sha256::digest(format!("fixture:{i}")));
+            r.not_after_ms = deadline;
+            r.publication_id = Uuid::new_v5(
+                &Uuid::NAMESPACE_URL,
+                format!("dm:visibility:{}:{deadline}:0", r.binding_sha256).as_bytes(),
+            )
+            .to_string();
+            let proof = store
+                .matrix_publication_commit_at(100, entry, &cfg, &r, at)
+                .unwrap();
+            if i < 65 {
+                assert!(
+                    store
+                        .matrix_publication_confirm(
+                            100,
+                            entry,
+                            &cfg,
+                            &r.publication_id,
+                            &"0".repeat(64)
+                        )
+                        .is_err()
+                );
+                assert!(
+                    store
+                        .matrix_publication_confirm(
+                            200,
+                            entry,
+                            &cfg,
+                            &r.publication_id,
+                            proof["request_sha256"].as_str().unwrap()
+                        )
+                        .is_err()
+                );
+                store
+                    .matrix_publication_confirm(
+                        100,
+                        entry,
+                        &cfg,
+                        &r.publication_id,
+                        proof["request_sha256"].as_str().unwrap(),
+                    )
+                    .unwrap();
+            }
+            originals.push(r);
+        }
+        let retire = |now| {
+            let mut conn = store.conn.lock().unwrap();
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            let (session, _) =
+                super::super::super::presentation::entry_on(&tx, 100, entry).unwrap();
+            let n = retire_on(&tx, 100, session, now).unwrap();
+            tx.commit().unwrap();
+            n
+        };
+        assert_eq!(retire(deadline + RETAIN_MS - 1), 0);
+        assert_eq!(retire(deadline + RETAIN_MS), 64);
+        assert_eq!(retire(deadline + RETAIN_MS), 1);
+        assert_eq!(retire(deadline + RETAIN_MS), 0);
+        assert!(
+            store
+                .matrix_publication_receipt(100, entry, &cfg, &originals[65].publication_id)
+                .is_ok()
+        );
+        // A lost acknowledgment stays recoverable even after deadline/retention.
+        assert!(
+            store
+                .matrix_publication_commit_at(
+                    100,
+                    entry,
+                    &cfg,
+                    &originals[65],
+                    deadline + RETAIN_MS
+                )
+                .is_ok()
+        );
+        assert!(
+            store
+                .matrix_publication_commit_at(100, entry, &cfg, &originals[0], deadline + RETAIN_MS)
+                .is_err()
+        );
+        // Even a wall-clock rollback cannot recreate a forgotten exact request.
+        assert!(
+            store
+                .matrix_publication_commit_at(100, entry, &cfg, &originals[0], at)
+                .is_err()
+        );
+        let mut changed = originals[0].clone();
+        changed.not_after_ms += 1;
+        assert!(
+            store
+                .matrix_publication_commit_at(100, entry, &cfg, &changed, at)
+                .is_err()
+        );
+        changed.publication_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!(
+                "dm:visibility:{}:{}:0",
+                changed.binding_sha256, changed.not_after_ms
+            )
+            .as_bytes(),
+        )
+        .to_string();
+        let fresh = store
+            .matrix_publication_commit_at(100, entry, &cfg, &changed, at)
+            .unwrap();
+        assert_eq!(fresh["sequence"], 67);
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM conversation_matrix_publication_retention",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM conversation_matrix_publications",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+    }
+
     #[test]
     fn unsafe_signing_custody_unknown_fields_and_malformed_part_refuse() {
         let (_dir, store, entry, cfg, r) = setup();

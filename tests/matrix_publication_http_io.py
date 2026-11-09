@@ -50,6 +50,8 @@ def qualify(binary):
         Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(publication['receipt_key']+'=')).verify(
             base64.urlsafe_b64decode(first['signature']+'=='),canonical(body))
         assert commit(request)['result']==first
+        assert j.read('matrix','publication','confirm',request['publication_id'],first['request_sha256'])['result']['publication_acknowledged'] is True
+        assert j.read('matrix','publication','retire')['result']['retired']==0
         assert j.row('SELECT count(*) FROM conversation_matrix_publications')==[(1,)]
         wrong={**request,'text':'Changed under the same publication ID'}
         assert commit(wrong,ok=False)['ok'] is False

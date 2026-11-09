@@ -22,6 +22,8 @@ Existing owner control commands are:
 telecodex --control CONFIG matrix publication status
 telecodex --control CONFIG matrix publication commit < REQUEST.json
 telecodex --control CONFIG matrix publication inspect PUBLICATION_UUID
+telecodex --control CONFIG matrix publication confirm PUBLICATION_UUID REQUEST_SHA256
+telecodex --control CONFIG matrix publication retire
 telecodex --control CONFIG matrix publication list CURSOR
 ```
 
@@ -32,6 +34,9 @@ body before the backend signs it. Exact duplicate requests recover the same
 proof; changed content, binding, owner, audience or signing key refuses. Missing
 acknowledgment requires inspecting that identity, never reauthoring speech.
 Existing Stop and maintenance admission fences apply to fresh publication.
+The request binds `not_after_ms` from the original native operation in both its
+native obligation digest and deterministic part UUID. Expired fresh requests
+refuse; existing exact proofs remain inspectable after expiry.
 
 The normal authenticated Conversation feed has an independent `publications`
 cursor. Its `matrix_visibility` sources use the existing revision-checked part
@@ -40,15 +45,26 @@ execution authority, receiving-copy evidence or task completion. They do not
 trigger automatic speech or companion reactions. Older native readers keep the
 old cursor form when this optional configuration is absent.
 
-The staged journal caps each owner's conversation at 4096 parts / 64 MiB. It
-currently refuses new publication at capacity and deletes nothing. **It is not
-ready for production until bounded retirement is implemented and qualified.**
-That retirement must preserve pending/ambiguous obligations and the durable
-human-readable record, prevent a retired exact request from publishing again,
-and bound proof/tombstone storage. Merely moving rows to another unbounded table
-or deleting them on carrier expiry does not meet this requirement. The native
-obligation lifetime and the canonical Conversation retention route must be
-connected before selecting this backend.
+The staged journal caps each owner's conversation at 4096 parts / 64 MiB. Its
+technical copies have a rolling 24-hour retention window after both the native
+deadline and the host acknowledgment of durably retained native confirmation.
+`confirm` is a trusted model-free host operation with the exact request digest,
+invoked only after that native journal commit. It establishes visibility proof
+acknowledgment, never receiving delivery, human reading or task completion. A
+lost acknowledgment leaves the copy pending and pinned.
+
+Each new commit and the owner `retire` operation removes at most 64 eligible
+copies. Deletion and a constant-size per-conversation retired-deadline fence
+share one transaction. No per-message tombstone archive is created; a regressed
+clock cannot recreate a retired exact request. Monotonic sequences preserve feed
+cursors. Native histories and ordinary inbox/response records are unchanged.
+Pending/ambiguous copies are never deleted for capacity. If they fill the journal,
+publication refuses rather than losing work. No new timer or model turn is used.
+
+**Production selection remains unfinished:** the native installation/transport
+must supply the real deadline and confirm only after its committed proof, and
+the seven-body journey must be qualified. App retirement tests alone do not
+establish that live connection.
 
 `tests/matrix_publication_http_io.py` exercises the real owner socket, SQLite,
 signature, authenticated HTTP feed/part reader and restart recovery, with a

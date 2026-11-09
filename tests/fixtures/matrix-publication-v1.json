@@ -18,8 +18,9 @@
   },
   "request": {
     "schema": "dm.visibility.publication/v1",
-    "publication_id": "05913368-9783-542f-8ea0-d26c816939d4",
-    "binding_sha256": "e39e18cac9ae11b753b40da55330ffea65d7f0e4930da8635dbaa9228c5b6732",
+    "publication_id": "aac1bd9c-559f-5daf-a6d0-b88cf83e4e2c",
+    "binding_sha256": "4f3ee43838706a7221a7cda9bd0a6c081635cc90229fb02bdc18d36ff9147daf",
+    "not_after_ms": 4102444800000,
     "surface_ref": "fixture:general-conversation",
     "audience": [
       "human:local:00000000-0000-4000-8000-000000000100"
@@ -30,8 +31,8 @@
   },
   "receipt": {
     "schema": "dm.visibility.publication-receipt/v1",
-    "request_sha256": "1acb59034af8649d9c72f942a8f27319e0b073aadd678e17b545331705d8bdc1",
-    "publication_id": "05913368-9783-542f-8ea0-d26c816939d4",
+    "request_sha256": "59e64ed1f22cb184cafd112b287ff235456e1dacf306a00ab20e6f4d875a9917",
+    "publication_id": "aac1bd9c-559f-5daf-a6d0-b88cf83e4e2c",
     "surface_ref": "fixture:general-conversation",
     "audience": [
       "human:local:00000000-0000-4000-8000-000000000100"
@@ -40,6 +41,6 @@
     "committed_at_ms": 1,
     "sequence": 1,
     "durable": true,
-    "signature": "YN3vswMIIMT1hnrE7R2GBMpC-ok57bDP_rVeRudS_BKa9tO9cpQCvRfJQXexdo-35ZtPgNqotow1YmGR9iYnDQ"
+    "signature": "TMf3gobMVCJ75YGMOjS1ehA7pmz7MjDdpozCFUBqb-3TZQp-9lCw_-U1ZwuQ1yhqsjsOxc0kPjJZcviH9Jj5Bg"
   }
 }
