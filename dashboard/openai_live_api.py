@@ -293,7 +293,16 @@ def install(app, config, provider, authorize, origins):
                         if event is not None:
                             if event['type']=='session.closed':
                                 result=await asyncio.to_thread(history.observe_closed,visit,human,owner,event)
-                                provider_closed=result['finalization'].get('reason')=='close_requested'
+                                final=result['finalization']
+                                # A trusted duration expiry can precede our planned
+                                # close. Keep the same two-barrier handover; never
+                                # renew content/network failures or an explicit Stop.
+                                expired=(final.get('reason')=='expired'
+                                    and final.get('voice_usage_confirmed') is True
+                                    and native_backend and continuous_renewal
+                                    and not native_failure and (not closing or renewal_requested))
+                                renewal_requested=renewal_requested or expired
+                                provider_closed=final.get('reason')=='close_requested' or expired
                                 await send({'type':'closed','id':visit,'finalization':result['finalization'],
                                     'renewal_pending':renewal_requested and provider_closed,
                                     **({'message':'Voice ended. This native request needs review; originals and work receipts are kept.'}
@@ -471,7 +480,8 @@ def install(app, config, provider, authorize, origins):
                         with suppress(Exception):
                             await recheck();await current_owner()
                             owner_cleanup_finished=True;release_owner_if_settled()
-                            renewal=await asyncio.to_thread(history.ready_for_renewal,visit,human,owner)
+                            renewal=await asyncio.to_thread(history.ready_for_renewal,visit,human,owner,
+                                allow_expired=True)
                             await send({'type':'successor_ready','id':visit,'renewal':renewal})
                     with suppress(Exception):await asyncio.wait_for(socket.close(),1)
                 finally:

@@ -308,7 +308,29 @@ window.Conversation = (() => {
     }
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    let transcriptPreview;
+    function previewTranscript(value){
+      const input=$('#conversation-message');if(!input)return;
+      const previous=transcriptPreview;
+      if(!value.active){
+        if(!previous||value.id!==previous.id)return;
+        transcriptPreview=undefined;
+        if(input.value===previous.text){
+          input.value=previous.binding===binding?previous.draft:'';
+          if(previous.binding===binding)input.setSelectionRange?.(previous.start,previous.end);
+        }
+        input.readOnly=previous.readOnly;input.removeAttribute('data-voice-preview');return;
+      }
+      if(value.binding!==binding)return;
+      if(!previous){
+        transcriptPreview={id:value.id,binding,draft:input.value,start:input.selectionStart,end:input.selectionEnd,readOnly:input.readOnly,text:input.value};
+        input.readOnly=true;input.setAttribute('data-voice-preview','true');
+      }else if(previous.id!==value.id||input.value!==previous.text)return;
+      // This is the existing audio recognizer's provisional preview, never a text submission.
+      transcriptPreview.text=value.text;input.value=value.text;
+      input.scrollTop=input.scrollHeight;
+    }
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTranscript:previewTranscript,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
       const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
       if(!card)return;
@@ -820,7 +842,21 @@ window.Conversation = (() => {
       card.retry.disabled=!!card.retryBusy || !!card.retryNeedsCheck;
       if(card.retryNeedsCheck)card.check.hidden=false;
     }
+    const composerCheck=$("#conversation-send-check");
+    function syncComposerRecovery(){
+      if(!composerCheck)return;
+      const card=inputs.get(latestComposerId),value=card?.value;
+      const unconfirmed=value&&(!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
+      composerCheck.hidden=readOnly||posting||!unconfirmed||value.binding!==binding;
+      composerCheck.disabled=!!card?.checking;
+    }
+    composerCheck?.addEventListener('click',async()=>{
+      const card=inputs.get(latestComposerId);
+      if(!card||posting||card.value.binding!==binding||card.checking)return;
+      await card.checkStatus();
+    });
     function inputActivity() {
+      syncComposerRecovery();
       presentState({transcribing:[...inputs.values()].some(c=>c.value.voice && c.value.phase==="preparing"),
         routing:[...inputs.values()].some(c=>["requested","queued","submitting","steering"].includes(c.value.routing?.phase))});
     }
@@ -834,7 +870,7 @@ window.Conversation = (() => {
       publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;voiceHistoryPanel.append(publicHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
       inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = undefined;
-      latestComposerId = undefined; composerNotice("",false);clearFocus();routingChoices=[];
+      latestComposerId = undefined;syncComposerRecovery(); composerNotice("",false);clearFocus();routingChoices=[];
       telegramCursor=0;telegramNewest=0;telegramLoaded=false;
       $("#conversation-inputs").replaceChildren();
       $("#conversation-inputs-older").hidden = true;
@@ -959,7 +995,7 @@ window.Conversation = (() => {
         routeButton.addEventListener("click",()=>routeInput(card,card.routePending||{binding,selector:select.value})); inputs.set(value.id, card);
         card.checkStatus = async () => {
           if(card.checking)return;
-          card.checking=true;
+          card.checking=true;syncComposerRecovery();
           const owned = inputGeneration, observation = ++inputObservation;
           check.disabled = true;
           try {
@@ -970,7 +1006,7 @@ window.Conversation = (() => {
             if (owned !== inputGeneration) return;
             if (observation >= card.observed) status.textContent = phaseText(card.value) + " Status check unavailable; no resend was made.";
             if (e.status === 401 || e.status === 403) failed(e);
-          } finally { card.checking=false;check.disabled = false; }
+          } finally { card.checking=false;check.disabled = false;syncComposerRecovery(); }
         };
         check.addEventListener("click",()=>inputNeedsText(card)?readInputText(card):card.checkStatus());
         retry.addEventListener("click", async () => {
@@ -1172,7 +1208,7 @@ window.Conversation = (() => {
         if (id === latestComposerId) composerNotice(retained?.phase ? phaseText(retained)
           : "Submission unconfirmed. Check this message status; it will not be resent automatically.");
         if (e.status === 401 || e.status === 403) failed(e);
-      } finally { posting = false; send.disabled = !inputBinding;microphone?.syncControls?.(); }
+      } finally { posting = false; send.disabled = !inputBinding;microphone?.syncControls?.();syncComposerRecovery(); }
     });
     $("#conversation-inputs-older").addEventListener("click", async () => {
       const button = $("#conversation-inputs-older"); button.disabled = true;

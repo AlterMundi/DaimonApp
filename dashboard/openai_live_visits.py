@@ -225,7 +225,9 @@ class LiveCreations:
                 self._matches(predecessor,owner)
                 ready=predecessor.get('renewal_ready',{})
                 if (predecessor['state']!='closed' or predecessor.get('backend_mode')!='native'
-                        or predecessor.get('finalization',{}).get('reason')!='close_requested'
+                        or predecessor.get('finalization',{}).get('reason') not in ('close_requested','expired')
+                        or (predecessor.get('finalization',{}).get('reason')=='expired'
+                            and predecessor['finalization'].get('voice_usage_confirmed') is not True)
                         or ready.get('epoch')!=self.epoch or ready.get('token')!=renewal['token']
                         or not ready.get('token') or predecessor.get('renewal_target')
                         or voice_continuation!=predecessor['id']):
@@ -306,14 +308,22 @@ class LiveCreations:
                 **({'voice_choice':value['voice_choice']} if 'voice_choice' in value else {})}
 
 
-    def ready_for_renewal(self,ident,human,frozen):
+    def ready_for_renewal(self,ident,human,frozen,*,allow_expired=False):
         """Server-only barrier, after confirmed close AND settled native context."""
         with history_lock(self.root / '.lock'):
             value=self.read(ident,human,frozen)
+            final=value.get('finalization',{})
+            planned=(value.get('client_close_reason')=='transport_renewal'
+                     and final.get('reason')=='close_requested')
+            expired=(allow_expired is True and final.get('reason')=='expired'
+                     and final.get('voice_usage_confirmed') is True
+                     and value.get('client_close_reason') in (None,'transport_renewal'))
             if (value['state']!='closed' or value.get('backend_mode')!='native'
-                    or value.get('client_close_reason')!='transport_renewal'
-                    or value.get('finalization',{}).get('reason')!='close_requested'
+                    or not (planned or expired)
                     or value.get('admission',{}).get('ended') is not True
+                    or any(work.get('target')=='client' and
+                        ('source_seal' not in work or 'native_pipeline' not in work)
+                        for work in value['delegations'].values())
                     or value.get('renewal_ready') or value.get('renewal_target')):
                 raise ValueError('Native transport is not ready for automatic renewal')
             ready={'token':str(uuid.uuid4()),'epoch':self.epoch}

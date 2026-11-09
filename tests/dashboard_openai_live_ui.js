@@ -133,6 +133,37 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   assert(renewal.requests[0].url.includes(first.id));
   await renewal.engine.hold();assert.equal(renewal.stops(),1);assert.equal(renewal.sockets.length,2);
  }finally{await renewal.engine.hold();}
+ // A provider can report its duration limit before our timer. It still needs
+ // native readiness, keeps one capture, and never sends close to a dead call.
+ const expired=fixture({nativeChoice:true,continuous:true});await expired.start();expired.pcm();
+ const expire=(f,index,seconds=15)=>{const socket=f.sockets[index];socket.onmessage({data:JSON.stringify({
+  type:'closed',id:socket.id,renewal_pending:true,finalization:{reason:'expired',voice_usage_confirmed:true,usage_seconds:seconds}})});};
+ const readyExpiry=(f,index)=>{const socket=f.sockets[index];socket.onmessage({data:JSON.stringify({
+  type:'successor_ready',id:socket.id,renewal:{id:socket.id,token:'12345678-1234-4234-8234-123456789abc'}})});};
+ expire(expired,0);await sleep(5);
+ assert.equal(expired.sockets.length,1,'Final usage alone never admits a successor');
+ assert.equal(expired.stops(),0);assert.equal(expired.sockets[0].sent.filter(v=>v.type==='close').length,0);
+ readyExpiry(expired,0);await until(()=>expired.peers[1]?.listeners.has('icegatheringstatechange'));
+ expired.peers[1].ice();await until(()=>expired.states.at(-1).active);
+ assert.equal(expired.permission(),1);assert.equal(expired.stops(),0);
+ expire(expired,1);readyExpiry(expired,1);await until(()=>!expired.engine.active&&!expired.states.at(-1).working);
+ assert.equal(expired.sockets.length,2,'Repeated short expiries cannot form a paid retry loop');
+ assert.equal(expired.stops(),1);assert.match(expired.states.at(-1).message,/repeated short session limits/);
+ const stoppedExpiry=fixture({nativeChoice:true,continuous:true});await stoppedExpiry.start();
+ expire(stoppedExpiry,0);const stopExpiry=stoppedExpiry.engine.hold();readyExpiry(stoppedExpiry,0);await stopExpiry;await sleep(5);
+ assert.equal(stoppedExpiry.sockets.length,1,'Stop wins while expired native context is draining');
+ assert.equal(stoppedExpiry.stops(),1);
+ const ordinaryExpiries=fixture({nativeChoice:true,continuous:true});await ordinaryExpiries.start();
+ for(let index=0;index<2;index++){
+  expire(ordinaryExpiries,index,300);readyExpiry(ordinaryExpiries,index);
+  await until(()=>ordinaryExpiries.peers[index+1]?.listeners.has('icegatheringstatechange'));
+  ordinaryExpiries.peers[index+1].ice();await until(()=>ordinaryExpiries.states.at(-1).active);
+ }
+ assert.equal(ordinaryExpiries.permission(),1,'Repeated normal duration limits preserve until-Stop capture');
+ await ordinaryExpiries.engine.hold();assert.equal(ordinaryExpiries.stops(),1);
+ const noExpiryRenewal=fixture();await noExpiryRenewal.start();expire(noExpiryRenewal,0);
+ await until(()=>!noExpiryRenewal.engine.active&&!noExpiryRenewal.states.at(-1).working);
+ assert.equal(noExpiryRenewal.sockets.length,1,'A noncontinuous mode never inherits renewal');
  const recoveryRenewal=fixture({nativeChoice:true,continuous:true});await recoveryRenewal.start();
  recoveryRenewal.renew();await until(()=>recoveryRenewal.peers[1]?.listeners.has('icegatheringstatechange'));
  recoveryRenewal.peers[1].ice();await until(()=>recoveryRenewal.states.at(-1).active);

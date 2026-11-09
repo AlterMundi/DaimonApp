@@ -127,7 +127,7 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
@@ -198,7 +198,9 @@ window.VoiceInput = (() => {
         if(owned)send.disabled=button.disabled || !(['recording','ready'].includes(phase)||pending);else if(ownedSend)send.disabled=!getBinding();}
       ownedSend=owned;
     }
+    let transcriptCapture;
     function controls() {
+      if(transcriptCapture&&phase!=='recording'){const ended=transcriptCapture;transcriptCapture=undefined;onTranscript({...ended,active:false});}
       box.hidden=!available;
       if(phase!=='recording'){clearTimeout(countdownTimer);if(remaining)remaining.hidden=true;}
       if(phase==='idle' && !pending && microphoneIcon)button.replaceChildren(microphoneIcon.cloneNode(true));
@@ -378,7 +380,7 @@ window.VoiceInput = (() => {
         const media=await window.navigator.mediaDevices.getUserMedia({audio:true,video:false});
         if(owned!==generation || binding!==getBinding() || document.hidden){for(const track of media.getTracks())track.stop();return;}
         stream=media;
-        let current,previewUnavailable=false;
+        let current,previewUnavailable=false,hasTranscriptPreview=false;
         const fallbackMime=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4','audio/webm'].find(value=>window.MediaRecorder.isTypeSupported(value));
         const liveOnly=['openai-live','previous-live'].includes(frozenSelection.transcriptionProfile),openaiPreview=['openai','openai-live'].includes(frozenSelection.transcriptionProfile),selectedLiveMode=liveOnly?'prepared':openaiPreview?'captions':liveMode;
         const canonical=selectedLiveMode==='captions'&&fallbackMime?new window.MediaRecorder(media,{mimeType:fallbackMime,audioBitsPerSecond:64000}):undefined;
@@ -388,7 +390,7 @@ window.VoiceInput = (() => {
             turnDetection:!openaiPreview&&conversational,onEndpoint:()=>{if(conversationCapture&&owned===generation&&phase==='recording'&&words)submit();},
             onDetectionUnavailable:()=>{if(conversational&&owned===generation){conversationCapture=false;hold();}},
             onUnavailable:()=>{previewUnavailable=true;if(owned===generation&&phase==='recording')caption('Recording… Live text unavailable.');},
-            onPartial:text=>{if(owned===generation&&phase==='recording'){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');caption(text||'Listening…');}}});}catch{previewUnavailable=true;}
+            onPartial:text=>{if(owned===generation&&phase==='recording'){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');caption(text||'Listening…');if(!conversational&&binding===getBinding())onTranscript({id:frozenSelection.captureId,binding,active:true,text});}}});hasTranscriptPreview=!!current;}catch{previewUnavailable=true;}
         }
         if(owned!==generation||binding!==getBinding()||document.hidden){current?.discard?.();for(const track of media.getTracks())track.stop();return;}
         current=current||canonical;
@@ -402,7 +404,7 @@ window.VoiceInput = (() => {
         });
         current.addEventListener('error',()=>{if(owned===generation)cancelRecording('Recording failed. Nothing was sent.');});
         current.addEventListener('stop',()=>finish(owned,binding,mime,frozenSelection));
-        current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';recordingStarted=clock();caption(previewUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();
+        current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';if(!conversational&&hasTranscriptPreview){transcriptCapture={id:frozenSelection.captureId,binding};onTranscript({...transcriptCapture,active:true,text:''});}recordingStarted=clock();caption(previewUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();
         timer=setTimeout(()=>{if(owned===generation && current.state==='recording'){phase='finalizing';onTiming(frozenSelection.captureId,'ended');current.captureStop='duration_limit';current.stop();stopTracks();controls();}},RECORDING_MILLIS);
       } catch(error) {
         const reason={NotAllowedError:'Microphone permission was denied. Check this browser’s site permissions.',
