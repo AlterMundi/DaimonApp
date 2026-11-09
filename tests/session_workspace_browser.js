@@ -116,6 +116,10 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
  });
+ if(unifiedAttentionCase)await context.addInitScript(()=>{
+  const controls=[];window.pendingFixture=controls;let original;
+  Object.defineProperty(window,'RequestControls',{configurable:true,get:()=>original,set(value){original={...value,mount(options){const result=value.mount(options);controls.push(result);return result;}};}});
+ });
  if(countdownCase)await context.addInitScript(()=>{
   const ActualContext=window.AudioContext,now=performance.now.bind(performance);
   const fixture=window.countdownFixture={offset:0,tones:[],contexts:[],peak:0};
@@ -206,6 +210,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my unsent conversation draft.');
   assert.equal(await page.getByRole('button',{name:'For you · 2 pending requests',exact:true}).evaluate(e=>document.activeElement===e),true);
   assert.equal(posts.length,0);assert.equal(questionPosts,0,'Opening pending work never answers it');
+  await page.evaluate(()=>{for(const control of pendingFixture)control.reset();});
+  await page.getByRole('button',{name:'For you · 0 pending requests',exact:true}).waitFor();
+  assert.equal(await page.locator('.for-you-items>*').count(),0,'Account reset removes cards moved from both scoped readers');
   report.state='qualified-unified-for-you';await page.screenshot({path:path.join(output,'for-you-closed.png')});return;
  }
  if(reconnectCase){
