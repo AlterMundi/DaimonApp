@@ -637,6 +637,24 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   }
  }
  await compactControls();
+ // A long menu scrolls its contents while the authored frame remains stationary.
+ await page.evaluate(()=>{const list=document.querySelector('.session-rail-scroll');const row=list.querySelector('.session-row');for(let i=0;i<30;i++){const copy=row.cloneNode(true);copy.dataset.backgroundFixture='1';list.append(copy);}});
+ const railBackground=await page.evaluate(()=>{const rail=document.querySelector('.session-rail'),scroll=rail.querySelector('.session-rail-scroll');const before=rail.getBoundingClientRect();scroll.scrollTop=scroll.scrollHeight;return {overflow:scroll.scrollHeight>scroll.clientHeight,scrolled:scroll.scrollTop>0,railScroll:rail.scrollTop,height:before.height,after:rail.getBoundingClientRect().height,scrollBottom:scroll.getBoundingClientRect().bottom,railBottom:before.bottom};});
+ assert(railBackground.overflow&&railBackground.scrolled,'Long session contents remain scrollable');
+ assert.equal(railBackground.railScroll,0,'Panel background never scrolls away from its viewport');
+ assert.equal(railBackground.height,railBackground.after,'Scrolling does not resize the frame');
+ assert(railBackground.scrollBottom<=railBackground.railBottom,'List stays inside the full background');
+ await page.screenshot({path:path.join(output,'sessions-long-background.png')});
+ if(process.env.QUALIFICATION_SESSION_BACKGROUND==='1'){
+  for(const [width,height] of [[390,844],[390,420],[320,400]]){
+   await page.setViewportSize({width,height});await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await bottomMenu();
+   const bounds=await page.locator('.session-rail-scroll').evaluate(n=>{n.scrollTop=n.scrollHeight;const frame=n.parentElement;return {scroll:n.scrollTop,overflow:n.scrollHeight>n.clientHeight,frameScroll:frame.scrollTop,bottom:n.getBoundingClientRect().bottom,frameBottom:frame.getBoundingClientRect().bottom};});
+   assert(bounds.overflow&&bounds.scroll>0);assert.equal(bounds.frameScroll,0);assert(bounds.bottom<=bounds.frameBottom);
+   await page.screenshot({path:path.join(output,`sessions-long-${width}x${height}.png`)});
+  }
+  assert.equal(posts.length,0);assert.equal(errors.length,0);report.state='qualified-long-session-background';return;
+ }
+ await page.evaluate(()=>{document.querySelectorAll('[data-background-fixture]').forEach(n=>n.remove());document.querySelector('.session-rail-scroll').scrollTop=0;});
  const workerCard=page.locator('#conversation-timeline article[data-source-id="native:30"]');
  const titlePin=workerCard.locator('.session-title-pin'),titleMute=workerCard.locator('.session-audio-mute'),titleSolo=workerCard.locator('.session-audio-solo');
  const menuMaterial=page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})});

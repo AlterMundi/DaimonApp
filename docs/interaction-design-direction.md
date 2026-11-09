@@ -210,3 +210,9 @@ newest first across conversation and routed sources. Missing dates keep stable
 source order. Card readers retain ownership, drafts, paging and decision state;
 terminal cards return to their retained section and account reset removes moved
 cards as well. Opening or sorting never acknowledges or answers a request.
+
+Session menu background correction (Nicolas, 9 November 2026): keep the authored
+cut frame on the stationary outer menu and scroll its inner contents. A long
+session list must remain covered at every scroll position, including with the
+mobile keyboard open. This changes presentation only; session ownership,
+selection, actions and drafts remain with their existing controls.
