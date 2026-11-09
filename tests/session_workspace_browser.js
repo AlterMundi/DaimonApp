@@ -647,7 +647,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.screenshot({path:path.join(output,'sessions-long-background.png')});
  if(process.env.QUALIFICATION_SESSION_BACKGROUND==='1'){
   for(const [width,height] of [[390,844],[390,420],[320,400]]){
-   await page.setViewportSize({width,height});await bottomMenu();
+   await page.setViewportSize({width,height});await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await bottomMenu();
    const bounds=await page.locator('.session-rail-scroll').evaluate(n=>{n.scrollTop=n.scrollHeight;const frame=n.parentElement;return {scroll:n.scrollTop,overflow:n.scrollHeight>n.clientHeight,frameScroll:frame.scrollTop,bottom:n.getBoundingClientRect().bottom,frameBottom:frame.getBoundingClientRect().bottom};});
    assert(bounds.overflow&&bounds.scroll>0);assert.equal(bounds.frameScroll,0);assert(bounds.bottom<=bounds.frameBottom);
    await page.screenshot({path:path.join(output,`sessions-long-${width}x${height}.png`)});
