@@ -159,5 +159,15 @@ class Mounted(unittest.TestCase):
         for name in ('PROVENANCE.json','validate-design.mjs','100.json','../../avatar-workshop/100.json'):
             self.assertEqual(self.client.get(path+name).status_code,404,name)
 
+    def test_selected_archive_fonts_only_are_public_assets(self):
+        base='/assets/avatar-workshop/experiments/school-avatar-quest/'
+        for name in ('pixelifysans.ttf','nunito.ttf'):
+            reply=self.client.get(base+'archive-assets/'+name)
+            self.assertEqual(reply.status_code,200)
+            self.assertTrue(reply.headers['content-type'].startswith('font/ttf'))
+            self.assertGreater(len(reply.content),1000)
+        for name in ('private.ttf','nunito-OFL.txt','../../PROVENANCE.json'):
+            self.assertEqual(self.client.get(base+'archive-assets/'+name).status_code,404)
+
 
 if __name__=='__main__':unittest.main()

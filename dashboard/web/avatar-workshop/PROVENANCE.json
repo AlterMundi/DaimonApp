@@ -48,14 +48,15 @@
     "Current game UI merged while retaining account storage, lazy loading, ready barrier and use/cancel. Renderer advertises finite animationSpec metadata; no authority changes.",
     "model-runtime.mjs: backwards-compatible bounded v2 raster atlas parts, per-cue textures and relative hierarchy; raster-model-author.mjs packs supplied transparent part canvases without network/image codecs. Original v1 normalization and existing renderer cadence retained.",
     "renderer.mjs/surface-renderer.mjs/model-runtime.mjs: local raster-part hierarchy, held-object hand anchors and optional transient mechanical mouth; original art and saved rest cues remain unchanged at level zero.",
-    "app.mjs/index.html/storage.mjs: explicit immutable saved-revision compact preview through existing actor-owned parent bridge; preview never saves, uses or awards a mission."
+    "app.mjs/index.html/storage.mjs: explicit immutable saved-revision compact preview through existing actor-owned parent bridge; preview never saves, uses or awards a mission.",
+    "Archive Enchanted presentation restored on current App: selected local licensed fonts/icons, ascii-avatar.exe header, grouped controls, face-focused expression thumbnails; preserve immutable API, preview/use, v2 mouth/hand rendering and pre-paint presentation bootstrap."
   ],
   "receiving_hashes": {
     "renderer.mjs": "4bac887e1750c521486ad31f2a536b60639f43cc576c85cf635b391d507f3dc8",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
-    "experiments/school-avatar-quest/index.html": "0d96acb64ead6cf25f3c0a03e386ec887030f6118066eb5edba9f5970994569b",
-    "experiments/school-avatar-quest/style.css": "4340aa608f151df000adce1dd0e4907cc58631894f13e3ea751ab0f6fcae6eac",
+    "experiments/school-avatar-quest/index.html": "ab208ac6479687a162ab71c62ed1d673e35f529d8da277483d844c31ca6834d4",
+    "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
     "experiments/school-avatar-quest/storage.mjs": "cf606a383a2fc05b701377347d098abd12908e16bea7205b9462f3cf4e88ae7b",
     "experiments/school-avatar-quest/wardrobe.mjs": "8508c3ae0f328461bd3eb1b96e4c2859046e1c70d3368414e3f658c1ceec5a92",
     "experiments/school-avatar-quest/precision-renderer.mjs": "8ea8f42c6eedf08bb08d1b8fb7782fd886f432a028d880a27d401384ee8cc9be",
@@ -67,13 +68,13 @@
     "experiments/school-avatar-quest/model.mjs": "636b6096c057fb1e0c55cba6845df4d221186ecf28db0dcdfe9779bb81dfd461",
     "experiments/school-avatar-quest/edit-history.mjs": "c028c6a4d189a1c9c1a2e87c141a598cb415a6c8cae43689ff0e010f1c72227f",
     "experiments/school-avatar-quest/performance-stories.mjs": "a3340f0ca934aee066269e54975bd3f78ccf593175f7b8945611fe6b536e9cc6",
-    "experiments/school-avatar-quest/surface-renderer.mjs": "c3517231b5cc295955af2c725cac42aeb2a67825b43adaed4a6e81cbc219b92e",
+    "experiments/school-avatar-quest/surface-renderer.mjs": "535474890de18a30b563ac172d75d6f39e791205082f2720757891813151e90e",
     "experiments/school-avatar-quest/surface-classic-masters.mjs": "8fcfb47ce8ef5b2a090671e8097a90dd16b649c8a8d6a9f40da0ed5203b46b51",
     "experiments/school-avatar-quest/image-avatar.mjs": "e4bbba0b606f4fd1d483467fee1608d13f95399a23155afe82b0d4e502a6e8d8",
     "experiments/school-avatar-quest/props.mjs": "c34c685a00d84fbafc2ceb3a1ac47b70e890264654cb3474afb36a2a40db5799",
     "experiments/school-avatar-quest/performance-illustration.mjs": "9f1aaa54ef2a366b56e3efd6430b2235841e687f74132f86def8e99aa925f1fa",
     "experiments/school-avatar-quest/color.mjs": "3befc2a3a7e64be3be65fabde96f23447206623ffeb3819e89841d9cfbb30c69",
-    "experiments/school-avatar-quest/app.mjs": "56384cdb1dece0ee252fae160e02b39b8fb834132ed32ba1aac614d367d45ece",
+    "experiments/school-avatar-quest/app.mjs": "82e7b1acedd64bd5359b0b02415263fa0ccfd9384a2e764cae354fb5c11b386e",
     "experiments/school-avatar-quest/surface-organic-masters.mjs": "33cab8d27fc01cf83784a0210901934c1bc2f77004b9909167253ad96d1881c5",
     "experiments/school-avatar-quest/wardrobe.css": "cd80ba71e899b207352ae3c1ec51f6209a3ac0555b1d4e42ed7bee6822a9b39a",
     "experiments/school-avatar-quest/interaction-geometry.mjs": "1c3a08c83fbc7a712df45f68c023761d400e6a56495faee0f996c00025e2b958",
@@ -87,7 +88,14 @@
     "skills/ascii-avatar-author/scripts/model-runtime.mjs": "6fb13431c07c236909bbea2e1956c848c7db34c0b5bf960434ff4f124301fd22",
     "skills/ascii-avatar-author/assets/example.avatar.json": "f8aae8c3186762828994c16ed5e2bb04f6698c2a68c9cfd75098a74f3a1a36d6",
     "skills/ascii-avatar-author/scripts/raster-model-author.mjs": "682670e5efa4a274c28dd1ce89e73fe6dfab4a03df37e29d0bbd213e6847ecaa",
-    "experiments/school-avatar-quest/presentation.mjs": "e9fa92d8132d88a83ab42ee6d00714e4cb492a3eb8a524614439ce4b87618e4d"
+    "experiments/school-avatar-quest/presentation.mjs": "e9fa92d8132d88a83ab42ee6d00714e4cb492a3eb8a524614439ce4b87618e4d",
+    "experiments/school-avatar-quest/archive-assets/nunito-OFL.txt": "580df76c95a1ec5ab878ceb25bb3d85c6a076804e9c970c8c6972aea775fdf65",
+    "experiments/school-avatar-quest/archive-assets/nunito.ttf": "bb55a5ca5c2042335b3991af27c4d0705d0ef41cac6164ac737fd8f2a1e85207",
+    "experiments/school-avatar-quest/archive-assets/phosphor-LICENSE.txt": "b5b1f1da112d18ea2147decfd48ddc1bf2b5aeb6c265381579340e95b15a2bb2",
+    "experiments/school-avatar-quest/archive-assets/pixelifysans-OFL.txt": "b66ba46f511a851ab09998b5a5a9fdbb102545a3864cb993095e1745996873a7",
+    "experiments/school-avatar-quest/archive-assets/pixelifysans.ttf": "9ba86cd010a4de309d263ceff8e8044092c9db7efda869620cb9ff1c4389e8a5",
+    "experiments/school-avatar-quest/archive-icons.mjs": "971fe96f604e7eb76b8dcdd7ce2e8082e3358f279ba8d93bae1b4d57cd5790b5",
+    "experiments/school-avatar-quest/archive.css": "515b1b849a5bc34be128d9a1ea0022b1c29a5113a8f824186c56c3372a2d2b48"
   },
   "previous_source_revision": "e1ef54bef8ed9a790b7d7d1807f0c73889c955d3"
 }
