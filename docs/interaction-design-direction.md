@@ -216,3 +216,9 @@ cut frame on the stationary outer menu and scroll its inner contents. A long
 session list must remain covered at every scroll position, including with the
 mobile keyboard open. This changes presentation only; session ownership,
 selection, actions and drafts remain with their existing controls.
+
+Nicolas removed the conversational presence strip on 9 November 2026: remove
+its DOM, caption/activity track, marquee observers and background rules rather
+than leaving a hidden reserved row. Pending work remains in For You and actual
+voice controls retain their own state. The authored avatar starts at the header's
+upper edge with no reserved 44px band; short-height keyboard compaction remains.
