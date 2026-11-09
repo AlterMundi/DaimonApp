@@ -260,6 +260,54 @@ rejections and actual reads separately. These are existing reader paths, not a
 new app memory bridge. This qualification changes no runtime code/configuration,
 provider/default, owner brief, native/Core, source/capture/storage bounds or grants.
 
+## Public Live memory handoff —9November2026
+
+The selected public Live/native route on App811 with compatible native809 now
+has one actual read-only memory-return observation. The synthetic spoken request
+asked the general conversation for Nexus's earlier name and the shared-world
+HUD direction. Its acknowledged acoustic window reached the existing native
+owner, using the configured Sol/medium and Cedar choices. Three real owner-bound
+DMK operations performed a search and read two relevant records. The linked
+canonical native answer identified Sobremesa and distinguished the HUD design
+horizon from an implemented virtual world. The existing result pipeline injected
+that answer into voice, which produced the corresponding transcript and nonzero
+decoded audio. Three original recordings,2091824bytes, match their retained
+hashes. Stop closed the single provider session with63seconds confirmed usage;
+the native context closed with4/4events incorporated and the native thread idle.
+This is machine-observed speech delivery, not physical hearing.
+
+The initial verifier exited1 after reading historical `doc.phase` and requiring
+`answered`. Its raw failure remains. `Store::conversation_inputs::read_on`
+overlays that JSON with the authoritative `phase`, `local_turn` and `retired`
+columns. Use `Provider.conversation_input_status()` or the existing typed owner
+projection when assessing an original. `accepted` establishes native admission;
+`answered` belongs to a different decision flow. Neither establishes completed
+work alone. The read-only adjudication checked admission against the linked
+completed native turn, retained canonical answer/current return, exact result
+injection, provider finalization and browser audio. It repeated no input,
+provider call, model work or source mutation. Future qualifiers use that typed
+projection rather than treating a stored JSON snapshot as current state.
+
+An earlier, distinct memory question remains partial. Its source seal succeeded
+and the actual native model performed seven DMK operations, including four
+revision-guarded pages of a long historical record. A temporary metadata reader
+had replaced the qualification bridge's persistent tool sender; the native
+controller replies failed. The native private-context answer was retained, but
+its canonical input and provider finalization remain uncertain and no spoken
+return is credited. A zero-provider interleaving reproduction failed before
+writer-selection correction and passed afterward. Keep metadata read/list
+connections separate from the actual subscribed writer. The successful case
+above used a new question; it did not replay or promote the uncertain operation.
+These were qualification repairs, not production changes or a diagnosis of the
+older phone failure.
+
+The earlier owner-memory pagination and one dated durable curation are separate
+observations. Voice-requested memory mutation, cold spoken continuity after that
+work, two automatic replacements in one actual-native/audio encounter, long or
+concurrent work, and physical phone/background/hearing remain incomplete under
+the unchanged full goal. No runtime/default/account/voice choice, context or
+storage bound, original receipt, goal control or old uncertain attempt changed.
+
 ## Identity clarification and ordinary speech
 
 A distinct actual selected654 full-view case used the byte-identical deployed
