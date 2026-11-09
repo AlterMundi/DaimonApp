@@ -848,10 +848,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation header:not(.voice-studio-intro) .companion-phases { max-height:16px; overflow:hidden; flex-wrap:nowrap; }
 .standalone-conversation header:not(.voice-studio-intro) .companion-phases > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-/* The conversational caption has the full row formerly occupied by the login label. */
 .standalone-conversation #feedback:empty { display:none; }
-.standalone-conversation #conversation-presence { flex-shrink:0; height:24px; min-height:24px; overflow:hidden; }
-.standalone-conversation #conversation-presence > .companion-caption { margin:0; font-size:16px; line-height:24px; white-space:nowrap; width:max-content; max-width:none; }
 .standalone-conversation header:not(.voice-studio-intro) .header-tools { flex-wrap:wrap; justify-content:flex-end; max-width:150px; }
 .standalone-conversation #conversation-account { display:block; text-align:left; color:var(--muted); font-size:14px; line-height:20px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
@@ -859,13 +856,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 #conversation-compose #conversation-voice-discard::before,#conversation-compose #conversation-voice-discard::after { content:""; position:absolute; left:50%; top:50%; width:16px; height:2px; border-radius:2px; background:currentColor; transform:translate(-50%,-50%) rotate(45deg); }
 #conversation-compose #conversation-voice-discard::after { transform:translate(-50%,-50%) rotate(-45deg); }
 
-/* One full-width status lane below all header tools; keep a generous touch target. */
-.standalone-conversation #conversation-presence { margin-top:6px; }
-.standalone-conversation .companion-status-track { display:flex; align-items:center; width:max-content; min-width:100%; height:24px; white-space:nowrap; }
-.standalone-conversation #conversation-presence .companion-phases { margin:0; padding:0; display:flex; flex-wrap:nowrap; gap:12px; overflow:visible; max-height:none; line-height:24px; }
-.standalone-conversation #conversation-presence .companion-phases > span { flex:none; white-space:nowrap; font-size:14px; }
-.standalone-conversation .companion-status-track > .companion-caption { margin:0; font-size:16px; line-height:24px; white-space:nowrap; }
-.standalone-conversation .companion-status-track:has(.companion-phases > span) > .companion-caption { display:none; }
 .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle { display:grid; place-items:center; padding:0; border:0; background:transparent; }
 .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--line); border-radius:50%; font-size:17px; }
 .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"] { background:transparent; color:var(--bg); }
@@ -981,8 +971,6 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .pending-current { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left; touch-action:pan-y; }
 .pending-all { flex:none; }
 .pending-carousel .pending-all { padding-inline:6px; font-variant-numeric:tabular-nums; color:var(--muted); }
-#conversation-presence[data-pending="true"] { height:auto; min-height:32px; overflow:visible; }
-#conversation-presence[data-pending="true"] > .companion-status-track { display:none; }
 .pending-panel { width:min(760px,calc(100vw - 24px)); max-height:calc(100dvh - 32px); padding:20px; overflow:auto; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:var(--radius,12px); }
 .pending-panel::backdrop { background:rgba(0,0,0,.65); }
 .pending-panel > h2 { display:inline-block; margin:0 12px 12px 0; }
@@ -1082,7 +1070,6 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion pre,
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-caption,
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-phases,
-.standalone-conversation.conversation-header-compact #conversation-presence,
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-account { display:none!important; }
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-name { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 @media(prefers-reduced-motion:reduce) { .standalone-conversation header:not(.voice-studio-intro) { transition:none; } }
@@ -1225,7 +1212,7 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .voice-studio input {box-sizing:border-box;width:100%;font:inherit;font-size:16px;min-height:44px;padding:.7rem;color:var(--dm-text,#eee);background:var(--dm-background,#0b1018);border:1px solid color-mix(in srgb,currentColor 40%,transparent);border-radius:var(--dm-radius,12px)}
 .voice-studio-phrase {display:flex;gap:.2rem}.voice-studio-phrase button:first-child{border-radius:var(--dm-radius,12px) 0 0 var(--dm-radius,12px)}.voice-studio-phrase button:last-child{border-radius:0 var(--dm-radius,12px) var(--dm-radius,12px) 0;min-width:44px}
 
-/* Keep avatar artwork behind the readable pending line; tools live in its frame. */
+/* Avatar tools remain in the portrait frame. */
 #conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame {position:relative;z-index:0;flex:none;min-width:0;width:180px;height:120px;}
 .avatar-frame .workshop-portrait {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
 .avatar-surface {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
@@ -1246,7 +1233,6 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .standalone-conversation header:not(.voice-studio-intro) .avatar-frame .workshop-portrait {top:0;transform:none;}
 .standalone-conversation header:not(.voice-studio-intro):has(#conversation-companion[data-pose="listening"]),
 .standalone-conversation header:not(.voice-studio-intro):has(#conversation-companion[data-pose="speaking"]) {background:radial-gradient(ellipse at 85% 0%,color-mix(in srgb,var(--accent) 22%,var(--bg)),var(--bg) 80%);}
-.standalone-conversation #conversation-presence {position:relative;z-index:1;background:var(--bg);}
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {display:none;}
 @media(max-width:480px){#conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame{width:126px;height:90px}.avatar-frame .workshop-portrait,.avatar-frame .avatar-surface{width:94px;height:90px}}
 
@@ -1278,14 +1264,14 @@ html[data-style-policy="authored"] .standalone-conversation main::after {
  clip-path:polygon(12px 0,calc(100% - 12px) 0,100% 12px,100% calc(100% - 12px),calc(100% - 12px) 100%,12px 100%,0 calc(100% - 12px),0 12px);
  background:transparent;
 }
-html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) {height:136px;min-height:136px;align-items:start;padding:0;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) {height:120px;min-height:120px;align-items:start;padding:0;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro)::before {
  content:"";position:absolute;inset:0 0 auto;height:44px;z-index:-1;pointer-events:none;
  border-bottom:1px solid var(--hud-copper-soft);background:linear-gradient(120deg,#18263099,#081019cc);
  clip-path:polygon(0 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%);
 }
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .identity {display:contents;}
-html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion {position:static;grid-column:1/-1;grid-row:1;align-items:start;grid-template-columns:148px minmax(0,1fr);padding-top:44px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion {position:static;grid-column:1/-1;grid-row:1;align-items:start;grid-template-columns:148px minmax(0,1fr);padding-top:0;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {width:148px;height:92px;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .companion-name {position:absolute;top:5px;left:174px;transform:none;max-width:58%;height:34px;display:flex;align-items:center;justify-content:center;font-size:0;line-height:30px;text-align:center;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-daimon {font:600 23px/30px ui-serif,Georgia,serif;color:var(--ink);}
@@ -1300,10 +1286,6 @@ html[data-style-policy="authored"] .standalone-conversation #conversation-dock #
 html[data-style-policy="authored"] .standalone-conversation #conversation-audio-tools #conversation-player:not([hidden]) {grid-template-columns:36px;}
 html[data-style-policy="authored"] .standalone-conversation .avatar-frame-controls {gap:8px;}
 html[data-style-policy="authored"] .standalone-conversation .avatar-frame-controls button {border:1px solid var(--hud-copper-soft);background:#0c1822e8;color:var(--ink);}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence {margin:0;min-height:32px;border-bottom:1px solid #bf906738;background:var(--bg);color:var(--ink);}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence[data-pending="true"] {position:relative;padding:1px 13px 1px 20px;border:0;background:linear-gradient(105deg,#65452377,#111b24 72%);}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence[data-pending="true"]::before {content:"";position:absolute;inset:0;pointer-events:none;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 40' preserveAspectRatio='none'%3E%3Cpath d='M22 1H378L399 20L378 39H1Z' fill='none' stroke='%23bf9067' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E") center/100% 100% no-repeat;}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence[data-pending="true"]::after {content:"";position:absolute;left:6px;top:0;bottom:0;width:2px;background:var(--hud-copper);transform:skewX(-37deg);pointer-events:none;}
 html[data-style-policy="authored"] .standalone-conversation .pending-carousel button {color:var(--ink);font-size:14px;min-height:32px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-timeline {padding:10px 8px 10px 16px;border-left:1px solid #78d7e088;margin:6px 0 4px 6px;scrollbar-color:#70959977 transparent;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-timeline .reply {padding:12px 8px;margin-block:8px;border-radius:0;background:transparent;}
@@ -1358,9 +1340,6 @@ html[data-style-policy="authored"] .standalone-conversation.conversation-header-
 html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .apps-launcher {position:static;}
 @media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools{top:0;right:0;flex-wrap:nowrap;}html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .apps-launcher{position:static;}html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .companion-name{left:0;transform:none;max-width:45%;}}
 
-html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence {position:relative;padding:1px 13px 1px 20px;border:0;background:linear-gradient(105deg,#65452377,#111b24 72%);}
-html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence::before {content:"";position:absolute;inset:0;pointer-events:none;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 40' preserveAspectRatio='none'%3E%3Cpath d='M22 1H378L399 20L378 39H1Z' fill='none' stroke='%23bf9067' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E") center/100% 100% no-repeat;}
-html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence::after {content:"";position:absolute;left:6px;top:0;bottom:0;width:2px;background:var(--hud-copper);transform:skewX(-37deg);pointer-events:none;}
 html[data-style-policy="authored"] .standalone-conversation :is(.for-you-navigation,.pending-carousel) button {border:0;border-radius:0;background:transparent;box-shadow:none;}
 html[data-style-policy="authored"] .standalone-conversation .pending-carousel .pending-current {text-align:left;padding-inline:8px;}
 @media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-account {display:none;}}

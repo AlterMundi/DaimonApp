@@ -183,6 +183,18 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
+ if(process.env.QUALIFICATION_COMPACT_AVATAR_HEADER==='1'){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  assert.equal(await page.locator('#conversation-presence,.companion-status-track,.companion-caption,.companion-phases').count(),0,'Caption lane and its status/background container are absent');
+  for(const [width,height] of [[1280,800],[390,844],[390,420]]){
+   await page.setViewportSize({width,height});await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+   const layout=await page.evaluate(()=>{const header=document.querySelector('header'),companion=document.querySelector('#conversation-companion'),frame=companion.querySelector('.avatar-frame');return {header:header.getBoundingClientRect().top,portrait:frame.getBoundingClientRect().top,padding:getComputedStyle(companion).paddingTop,hidden:getComputedStyle(frame).display==='none'};});
+   assert.equal(layout.padding,'0px','Avatar reserves no top strip');if(!layout.hidden)assert(Math.abs(layout.portrait-layout.header)<=1,'Avatar starts at the top header edge');
+   await page.screenshot({path:path.join(output,`avatar-top-${width}x${height}.png`)});
+  }
+  assert.equal(posts.length,0);assert.equal(questionPosts,0);assert.equal(errors.length,0);report.state='qualified-no-presence-strip-avatar-top';return;
+ }
+
  async function appearanceTransition(stage){
   if(!appearanceCase)return;
   const snapshot=()=>page.evaluate(()=>{const input=document.querySelector('#conversation-message');return {draft:input.value,start:input.selectionStart,end:input.selectionEnd,focus:document.activeElement.id,files:document.querySelector('#conversation-files-list').innerHTML,target:workspaceFixture.microphone.getReply(),recording:document.querySelector('#conversation-voice-remaining').hidden,contexts:window.countdownFixture?.contexts.length||0};});
@@ -793,16 +805,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.setViewportSize({width:390,height:844});
  const timeline=page.locator('#conversation-timeline');await timeline.evaluate(node=>{node.scrollTop=0;});await page.waitForTimeout(100);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Programmatic positioning does not compact header');
- await page.locator('#conversation-presence').evaluate(node=>{node.hidden=false;node.textContent='Pending work';});
+ assert.equal(await page.locator('#conversation-presence').count(),0,'Obsolete presence lane is removed');
  await timeline.hover();await page.mouse.wheel(0,900);await page.waitForTimeout(150);
  assert(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),'User forward scroll compacts header');
- assert.equal(await page.locator('#conversation-presence').isVisible(),false,'Compact header hides the pending line');
+ assert.equal(await page.locator('#conversation-presence').count(),0,'Compact header does not recreate the removed lane');
  const identity=await page.locator('header .companion-name').boundingBox(),header=await page.locator('header').boundingBox();
  assert(identity.y>=header.y&&identity.y+identity.height<=header.y+header.height,'Compact identity remains fully visible');
  await page.screenshot({path:path.join(output,'mobile-compact.png')});
  await page.mouse.wheel(0,-300);await page.waitForTimeout(150);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Reverse scroll restores header');
- assert(await page.locator('#conversation-presence').isVisible(),'Reverse scroll restores the pending line');
+ assert.equal(await page.locator('#conversation-presence').count(),0,'Reverse scroll does not restore the removed lane');
  await page.screenshot({path:path.join(output,'mobile-conversation.png')});
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  workspaceAllowed=false;await page.locator('#conversation-refresh').evaluate(button=>button.click());
