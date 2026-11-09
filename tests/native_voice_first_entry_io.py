@@ -2,12 +2,13 @@
 """Voice-first metadata creation through the real native owner; zero inference."""
 import json
 import sys
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from conversation_input_control_io import Inputs
 
 
 def run(binary):
-    j=Inputs(binary)
+    j=Inputs(str(Path(binary).resolve()))
     j.config.write_text(j.config.read_text()+'\n[voice]\ntranscription_command=["/usr/bin/false"]\ntranscriber_label="synthetic/must-not-run"\n')
     try:
         j.start();j.wait_control_socket(j.socket)
