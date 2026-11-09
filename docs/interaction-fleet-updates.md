@@ -246,7 +246,10 @@ older Python native-voice backend. Before enabling continuous native voice,
 qualify the composed backend rather than accepting assets/constructor health as
 proof of renewal. The current contract includes `openai_live_api`,
 `openai_live_visits`, `openai_live_native_session`, `integrator_startup` and the
-owner-bound `Provider.public_live_integrator_context` reader. Reuse published
+owner-bound `Provider.public_live_integrator_context` reader plus its existing
+`scripts/activity_indicator.Native` observer allowing `thread/items/list`. Verify
+the real same-owner paginated read before microphone or paid creation; importing
+the reader and exercising it with a fake transport misses a stale observer fence. Reuse published
 qualified components and preserve unrelated local Provider behavior. The API
 requires that reader before paid creation; continuous renewal also needs the
 finalization/context-readiness methods on the retained visit store.
