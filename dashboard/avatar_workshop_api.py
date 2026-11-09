@@ -19,14 +19,16 @@ def install(app,config,provider,authorize,origins):
     # Only the shipped MIT editor/modules are public. Account revisions never
     # enter this tree, and request paths cannot select arbitrary local files.
     public=Path(__file__).parent/'web/avatar-workshop'
+    font_assets={'experiments/school-avatar-quest/archive-assets/pixelifysans.ttf',
+                 'experiments/school-avatar-quest/archive-assets/nunito.ttf'}
     assets={p.relative_to(public).as_posix():p for p in public.rglob('*')
-            if p.is_file() and not p.is_symlink() and p.suffix in ('.mjs','.css','.html','.json')
+            if p.is_file() and not p.is_symlink() and (p.suffix in ('.mjs','.css','.html','.json') or p.relative_to(public).as_posix() in font_assets)
             and p.name!='PROVENANCE.json' and p.name!='validate-design.mjs'}
 
     @app.get('/assets/avatar-workshop/{name:path}')
     async def workshop_asset(name:str):
         if name not in assets:raise HTTPException(404,'Workshop asset unavailable')
-        media='text/javascript' if name.endswith('.mjs') else None
+        media='text/javascript' if name.endswith('.mjs') else 'font/ttf' if name.endswith('.ttf') else None
         return FileResponse(assets[name],media_type=media,headers={'Cache-Control':'public, max-age=0, must-revalidate'})
 
     async def owner(request,write=False):
