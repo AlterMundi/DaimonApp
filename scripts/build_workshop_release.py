@@ -67,7 +67,7 @@ def build(repo,revision,baseline,destination):
     names=subprocess.check_output(['git','-C',str(repo),'diff','--name-only','--diff-filter=A',previous,revision,'--','experiments/school-avatar-quest'],text=True,timeout=30).splitlines()
     for name in names:
         if name.endswith('/check.mjs'):continue
-        if not releases.safe_name(name) or Path(name).suffix not in releases.PUBLIC_SUFFIXES:raise ValueError('New runtime dependency needs its owning adapter')
+        if not releases.safe_name(name) or Path(name).suffix not in releases.PACKAGE_SUFFIXES:raise ValueError('New runtime dependency needs its owning adapter')
         data=git_bytes(repo,revision,name);files[name]=data;upstream[name]=releases.digest(data);changed.append(name)
     if len(files)>releases.MAX_FILES or sum(map(len,files.values()))>releases.MAX_BYTES:raise ValueError('Release inventory exceeds bounds')
     destination.mkdir(parents=True)

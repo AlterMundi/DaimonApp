@@ -16,7 +16,8 @@ MAX_FILES=128
 MAX_RELEASES=16
 SOURCE='AnnieScigliano/ASCII-Interfaces'
 CONTRACT=('validate-design.mjs','experiments/school-avatar-quest/model.mjs','skills/ascii-avatar-author/scripts/model-runtime.mjs')
-PUBLIC_SUFFIXES={'.mjs','.css','.html','.json','.ttf','.woff2','.txt'}
+PUBLIC_SUFFIXES={'.mjs','.css','.html','.json','.ttf','.woff2'}
+PACKAGE_SUFFIXES=PUBLIC_SUFFIXES|{'.txt'}
 
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
 def digest(raw):return hashlib.sha256(raw).hexdigest()
@@ -62,7 +63,7 @@ def unpack(raw,baseline):
     if manifest.get('compatibility')!={n:digest(read_beneath(Path(baseline).resolve(),n,1024*1024)) for n in CONTRACT}:raise ValueError('Frontend needs a compatible App validator update')
     decoded={};total=0
     for name,encoded in files.items():
-        if not safe_name(name) or (Path(name).suffix not in PUBLIC_SUFFIXES and name!='LICENSE'):raise ValueError('Unsupported release file')
+        if not safe_name(name) or (Path(name).suffix not in PACKAGE_SUFFIXES and name!='LICENSE'):raise ValueError('Unsupported release file')
         data=base64.b64decode(encoded,validate=True);total+=len(data)
         if len(data)>1024*1024 or total>MAX_BYTES or digest(data)!=manifest['files'][name]:raise ValueError('Release bytes changed')
         decoded[name]=data

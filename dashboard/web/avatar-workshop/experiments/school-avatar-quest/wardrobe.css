@@ -39,8 +39,6 @@
 .trial-tools{position:absolute;bottom:10px;right:10px;display:flex;gap:5px;z-index:3}.trial-tools button{font-size:16px;min-height:40px;min-width:40px;padding:6px 10px;background:#fff9ef}.trial-tools button:disabled{opacity:.45}.art-wrap:has(#appearance[open]) .trial-tools{visibility:hidden}
 @media(max-width:800px){#surprise span{display:none}#surprise{font-size:24px;width:40px;padding:0}}
 
-.stage .world-label .name-button{text-align:left}
-
 /* Interface surfaces follow receiving appearance; art keeps its chosen palette. */
 :root{--line:color-mix(in srgb,var(--ink) 35%,var(--surface));--muted:color-mix(in srgb,var(--ink) 75%,var(--surface));--radius:var(--dm-radius,22px);color-scheme:normal}
 body{background:var(--paper)}.wardrobe-shell{background:color-mix(in srgb,var(--accent) 18%,var(--surface));border-color:var(--line)}

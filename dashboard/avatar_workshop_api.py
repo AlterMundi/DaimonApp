@@ -21,8 +21,10 @@ def install(app,config,provider,authorize,origins):
     public=(Path(__file__).parent/'web/avatar-workshop').resolve()
     release_root=Path(config['state_dir']).resolve()/'shared-app-assets/avatar-workshop'
     from . import shared_asset_release as releases
+    font_assets={'experiments/school-avatar-quest/archive-assets/pixelifysans.ttf',
+                 'experiments/school-avatar-quest/archive-assets/nunito.ttf'}
     assets={p.relative_to(public).as_posix():p for p in public.rglob('*')
-            if p.is_file() and not p.is_symlink() and p.suffix in ('.mjs','.css','.html','.json','.ttf','.woff2','.txt')
+            if p.is_file() and not p.is_symlink() and (p.suffix in ('.mjs','.css','.html','.json') or p.relative_to(public).as_posix() in font_assets)
             and p.name!='PROVENANCE.json' and p.name!='validate-design.mjs'}
 
     @app.get('/assets/avatar-workshop/{name:path}')
@@ -48,7 +50,7 @@ def install(app,config,provider,authorize,origins):
                 if request.url.query:target+='?'+request.url.query
                 return RedirectResponse(target,status_code=307,headers={'Cache-Control':'no-store'})
             if name not in assets:raise FileNotFoundError(name)
-            media='text/javascript' if name.endswith('.mjs') else None
+            media='text/javascript' if name.endswith('.mjs') else 'font/ttf' if name.endswith('.ttf') else None
             return FileResponse(assets[name],media_type=media,headers={'Cache-Control':'public, max-age=0, must-revalidate'})
         except (FileNotFoundError,KeyError):raise HTTPException(404,'Workshop asset unavailable') from None
         except (OSError,ValueError,TypeError):raise HTTPException(503,'Workshop release unavailable; saved avatars are kept') from None

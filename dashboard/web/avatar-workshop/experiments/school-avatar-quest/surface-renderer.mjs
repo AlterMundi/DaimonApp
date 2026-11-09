@@ -28,6 +28,7 @@ export function surfaceFrame(design,frame=0,gesture=false,compact=false,blend=1,
  const propGesture=scene?.cue?design.gestures.find(g=>g.cue===scene.cue):g;const activeProps=gesture?propGesture?.props||[]:[];design={...design,activeProps};
  const performer=!scene&&gesture?performanceFor(design,g):null,count=performer?playbackSpec(design,g).frames:12;frame=((frame%count)+count)%count;
  const appearance=[design.previewFocus||'',performer?.id||'',g.performance||'',JSON.stringify(design.avatarModel),JSON.stringify(activeProps),design.characterStyle,design.body,JSON.stringify(design.bodyColors),design.palette,design.aperture,design.curvature,design.material,design.motion,blend,compact,cols,cue,design.speechLevel||0].join(':'),key=appearance+':'+frame;let art=cache.get(key);
+
  if(!art){const ref=references.get(appearance)||convertMaster(surfaceSource(design,0,cue,compact,blend,performer),'structure',cols,atlas);references.set(appearance,ref);if(references.size>10)references.delete(references.keys().next().value);art=convertMaster(surfaceSource(design,frame,cue,compact,blend,performer),'structure',cols,atlas,ref);cache.set(key,art);if(cache.size>40)cache.delete(cache.keys().next().value);}
  const colors=Array.from({length:art.rows},()=>Array(art.cols).fill(null));for(const p of art.cells)colors[p.y][p.x]=p.color;
  return {text:art.text,colors,flat:true,emphasis:'surface',characterStyle:design.characterStyle};

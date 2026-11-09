@@ -23,8 +23,9 @@ extensions. Disjoint adapted edits merge; conflicting edits refuse rather than
 invent a resolution. Unknown model-validator changes need the compatible owning
 App update. Source is code only: no school media, actor histories, credentials or
 private artwork enter a release. Original source and receiving hashes remain
-separate. The maintainer owns the workshop art direction; Conversation appearance
-does not overwrite Enchanted Archive.
+separate. The maintainer owns the workshop geometry, artwork and local typography.
+The existing Home appearance roles remain a separate receiving.css adapter, so
+new maintainer stylesheet rules do not conflict with an appended App theme block.
 
 The receiving API serves immutable component generations at
 `assets/avatar-workshop/releases/<digest>/…`. The existing unversioned entry

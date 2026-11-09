@@ -509,3 +509,29 @@ read follows the same path. The client labels the sample Audio expired, removes
 its Play action and explains the race without claiming playback or generating a
 replacement. Unknown attempts and normal explicit retirement retain their
 existing rules; expiry does not refill the four-batch allowance.
+
+## Archive Enchanted receiving presentation
+
+The wardrobe keeps Ani/Oliva's selected game composition: local Pixelify Sans and
+Nunito fonts, shared SVG controls, the selected letter import tile, upright name
+sticker, centered ascii-avatar.exe title and folder check, grouped retro sliders,
+face-focused expression thumbnails and bounded desktop trays. The former slogan
+is removed. Receiving material/text roles still follow the existing appearance
+bridge; artwork retains its authored palette. Parent navigator-hud selection no
+longer replaces this selected wardrobe with the superseded HUD skin. Its pre-paint
+presentation script remains a valid served .mjs asset; the surrounding Conversation
+and Voice workshop keep their independent current presentation.
+
+This source update is independent of School mission integration. Save, compact
+saved preview and explicit Use keep the current account bridge. Store, validator,
+canonical revision identity, attached hands, output mouth activity and reactions
+are unchanged. Only the two declared local font paths extend public asset serving;
+private/arbitrary fonts and provenance stay refused. Font and icon license texts
+remain bundled with the source. Receiving adoption and actual human visual/device
+acceptance need separate evidence.
+
+The Archive UI/header/artwork handoff objects retain their original snapshot
+hashes. The complete `receiving_hashes` inventory is authoritative for current
+bytes. PR771 is reused for the original Archive drawings and local fonts; the
+receiving appearance CSS is separated from upstream archive.css so normal
+maintainer stylesheet additions do not require another manual theme merge.
