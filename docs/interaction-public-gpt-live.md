@@ -591,6 +591,16 @@ description. For existing configurations without this optional field,
 file refuses startup rather than silently using the managed brief. Retained
 Responses-only backend settings are not used in native mode.
 
+`openai_live.default_native = true` selects that configured native Avatar route
+on initial page load. It requires an available native GPT-Live backend and defaults
+to false. This Avatar-only selection is independent of `voice_services_default`
+and does not require configuring separate file ASR or TTS. A later manual mode
+choice survives refresh. Existing model/account/voice, consent, physical-session
+and resource limits are unchanged; loading the page starts no capture or provider.
+It uses an existing native conversation. Empty-context initialization remains
+separate work and is not part of this presentation setting.
+
+
 Native mode requires source seals (enabled for that explicit mode), forbids
 upload-time native enrollment and managed-Responses conversation tools, and checks
 the selected native reader's `foreground_live_window="journal-input/v1"`

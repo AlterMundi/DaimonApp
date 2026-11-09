@@ -1889,7 +1889,7 @@ window.Conversation = (() => {
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
       publicLiveEnabled=value.can_converse_public_live===true&&window.PublicLiveConversation?.supported()===true;
       publicLiveNativeEnabled=publicLiveEnabled&&value.can_converse_public_live_native===true;
-      if(!servicesDefaultApplied){servicesDefaultApplied=true;if(value.voice_services_default==='openai'){conversationServices='openai';voiceChoice='gpt-live-native';}}
+      if(!servicesDefaultApplied){servicesDefaultApplied=true;if(value.voice_services_default==='openai'){conversationServices='openai';voiceChoice='gpt-live-native';}if(value.avatar_voice_default==='gpt-live-native'&&publicLiveNativeEnabled)voiceChoice='gpt-live-native';}
       selectVoiceEngine();
       if(codexEnabled)void codexVoiceSession?.restoreHistory().catch(()=>{});
       if(publicLiveEnabled)void publicLiveSession?.restoreHistory().catch(()=>{});

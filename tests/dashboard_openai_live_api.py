@@ -147,6 +147,15 @@ class Mounted(unittest.TestCase):
         install(app,config,self.owner,authorize,['https://example.test'])
         return app
 
+    def test_native_avatar_default_is_admitted_by_actual_config_without_a_provider_session(self):
+        app=self.app_with_history()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'backend_mode':'native','default_native':True}}
+        self.assertTrue(install(app,config,self.owner,authorize,['https://example.test']))
+        self.assertEqual(Client.instances,[])
+        self.assertEqual(list((self.state/'public-live-visits').glob('*.json')),[])
+
     def test_renewal_ready_follows_native_close_and_releases_owner_before_successor(self):
         app=self.renewal_app()
         with TestClient(app,base_url='https://example.test') as client:
