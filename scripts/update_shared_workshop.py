@@ -89,10 +89,11 @@ def deploy(config,package,state):
         if target.get('enabled',True) is False:
             row.update(phase='opted_out');atomic(state['receipt_path'],state);continue
         try:
-            if row.get('uncertain_until',0)>time.time():continue
+            if row['phase']=='activation_uncertain' and row.get('uncertain_until',0)>time.time():continue
             observed=target_call(target,'status')['current'];current=observed['release'] if observed else None
+            row.pop('observation_failed',None);row.pop('error',None)
             if row.get('release')==current and row.get('release'):
-                row.update(phase='adopted_verified',observation_only=True);continue
+                row.update(phase='adopted_verified',observation_only=True);row.pop('uncertain_until',None);continue
             if row['phase'] in ('adopted_verified','later_consumer_direction'):
                 row.update(phase='later_consumer_direction',observed_release=current,observation_only=True)
                 continue
@@ -100,23 +101,27 @@ def deploy(config,package,state):
             if row['phase']=='activation_uncertain':
                 # The remote helper's30s lifetime has elapsed. Current file is
                 # authoritative; a later selection is never overwritten.
-                if current!=row['expected']:raise ValueError('Later consumer direction changed')
+                if observed!=row['expected']:
+                    row.update(phase='later_consumer_direction',observed_release=current,original_selection_outcome='uncertain',observation_only=True)
+                    continue
                 row['phase']='prepared'
             if row['phase'] in ('known_unattempted','failed'):
-                prepared=target_call(target,'prepare',package=encoded);row.update(phase='prepared',release=prepared['release'],expected=prepared['current'])
+                prepared=target_call(target,'prepare',package=encoded);row.update(phase='prepared',release=prepared['release'],expected=prepared.get('selection'))
                 atomic(state['receipt_path'],state)
             if config.get('_config_path') and assets.digest(Path(config['_config_path']).read_bytes())!=config['_config_sha256']:
                 state['state']='partial_update_retained';atomic(state['receipt_path'],state);return state
             row.update(phase='activation_uncertain',uncertain_until=time.time()+60);atomic(state['receipt_path'],state)
             selected=target_call(target,'activate',release=row['release'],expected=row['expected']);assert selected['release']==row['release']
             actual=target_call(target,'status')['current'];assert actual and actual['release']==row['release']
-            row.update(phase='adopted_verified',native_restart=False,web_restart=False,provider_calls=0);row.pop('error',None)
+            row.update(phase='adopted_verified',native_restart=False,web_restart=False,provider_calls=0);row.pop('error',None);row.pop('uncertain_until',None)
         except (OSError,ValueError,AssertionError,KeyError):
-            if row['phase']!='activation_uncertain':row['phase']='failed'
+            if row['phase'] not in ('activation_uncertain','adopted_verified','later_consumer_direction'):row['phase']='failed'
+            row['observation_failed']=True
             row['error']='shared_frontend_update_incomplete'
         finally:atomic(state['receipt_path'],state)
     phases={state['targets'].get(t['id'],{}).get('phase') for t in targets}
-    state['state']=('all_consumers_adopted_verified' if phases<= {'adopted_verified','opted_out'} else 'completed_with_consumer_direction' if phases<= {'adopted_verified','opted_out','later_consumer_direction'} else 'partial_update_retained')
+    observation_failed=any(state['targets'].get(t['id'],{}).get('observation_failed') for t in targets if t.get('enabled',True))
+    state['state']=('partial_update_retained' if observation_failed else 'all_consumers_adopted_verified' if phases<= {'adopted_verified','opted_out'} else 'completed_with_consumer_direction' if phases<= {'adopted_verified','opted_out','later_consumer_direction'} else 'partial_update_retained')
     atomic(state['receipt_path'],state);return state
 
 def directory_bytes(path):return sum(p.stat().st_size for p in Path(path).rglob('*') if p.is_file() and not p.is_symlink())

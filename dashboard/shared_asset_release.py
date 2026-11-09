@@ -71,8 +71,10 @@ def unpack(raw,baseline):
 def current(root):
     try:value=json.loads(read_beneath(root,'current.json',512))
     except FileNotFoundError:return None
-    if set(value)!={'release','previous'} or not re.fullmatch('[0-9a-f]{64}',value['release']) or (value['previous'] is not None and not re.fullmatch('[0-9a-f]{64}',value['previous'])):raise ValueError('Invalid release selection')
-    return value
+    if set(value) not in ({'release','previous'},{'release','previous','generation'}) or not re.fullmatch('[0-9a-f]{64}',value['release']) or (value['previous'] is not None and not re.fullmatch('[0-9a-f]{64}',value['previous'])):raise ValueError('Invalid release selection')
+    generation=value.get('generation',0)
+    if type(generation) is not int or not 0<=generation<2**63:raise ValueError('Invalid release generation')
+    return {**value,'generation':generation}
 
 def manifest(root,release,baseline):
     if not re.fullmatch('[0-9a-f]{64}',release):raise ValueError('Invalid release identity')
@@ -97,7 +99,7 @@ def _prepare(root,raw,baseline):
         if manifest(root,release,baseline)!=m:raise ValueError('Existing release changed')
         for n,h in m['files'].items():
             if digest(read_beneath(root,release+'/'+n,1024*1024))!=h:raise ValueError('Existing asset changed')
-        return {'release':release,'current':selected['release'] if selected else None,'state':'prepared'}
+        return {'release':release,'current':selected['release'] if selected else None,'selection':selected,'state':'prepared'}
     known=[p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and re.fullmatch('[0-9a-f]{64}',p.name)]
     keep={selected['release'],selected['previous']} if selected else set()
     for path in known:
@@ -114,7 +116,7 @@ def _prepare(root,raw,baseline):
         stage.rename(target)
     finally:
         if stage.exists():shutil.rmtree(stage)
-    return {'release':release,'current':selected['release'] if selected else None,'state':'prepared'}
+    return {'release':release,'current':selected['release'] if selected else None,'selection':selected,'state':'prepared'}
 
 def activate(root,release,expected,baseline):
     """One observable compare-and-swap; exact retries never select twice."""
@@ -123,9 +125,11 @@ def activate(root,release,expected,baseline):
     with (root/'selection.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX);old=current(root);previous=old['release'] if old else None
         if previous==release:return {'state':'already_selected','release':release}
-        if previous!=expected:raise ValueError('Later release direction changed selection')
+        if old!=expected:raise ValueError('Later release direction changed selection')
+        generation=(old['generation'] if old else 0)+1
+        if generation>=2**63:raise ValueError('Release generation exhausted')
         with tempfile.NamedTemporaryFile(dir=root,delete=False) as stream:
-            temporary=Path(stream.name);stream.write(canonical({'release':release,'previous':previous}));stream.flush();os.fsync(stream.fileno())
+            temporary=Path(stream.name);stream.write(canonical({'release':release,'previous':previous,'generation':generation}));stream.flush();os.fsync(stream.fileno())
         temporary.chmod(0o644);temporary.replace(root/'current.json')
     return {'state':'selected','release':release}
 

@@ -22,12 +22,20 @@ class Releases(unittest.TestCase):
         a=r.prepare(self.releases,self.transfer(),self.vendor);r.activate(self.releases,a['release'],None,self.vendor)
         old=r.asset(self.releases,a['release'],'experiments/school-avatar-quest/index.html',self.vendor)[0]
         (self.vendor/'experiments/school-avatar-quest/index.html').write_bytes(b'new editor');self.write_metadata();b=r.prepare(self.releases,self.transfer(),self.vendor)
-        r.activate(self.releases,b['release'],a['release'],self.vendor)
+        r.activate(self.releases,b['release'],r.current(self.releases),self.vendor)
         self.assertEqual(r.asset(self.releases,a['release'],'experiments/school-avatar-quest/index.html',self.vendor)[0],old)
         self.assertEqual(r.asset(self.releases,b['release'],'experiments/school-avatar-quest/index.html',self.vendor)[0],b'new editor')
         self.assertEqual(r.activate(self.releases,b['release'],None,self.vendor)['state'],'already_selected')
         with self.assertRaises(ValueError):r.activate(self.releases,a['release'],None,self.vendor)
         self.assertEqual(r.current(self.releases)['release'],b['release'])
+    def test_lost_ack_then_rollback_cannot_pass_aba_selection_cas(self):
+        a=r.prepare(self.releases,self.transfer(),self.vendor);r.activate(self.releases,a['release'],None,self.vendor)
+        (self.vendor/'experiments/school-avatar-quest/index.html').write_bytes(b'another editor');self.write_metadata();b=r.prepare(self.releases,self.transfer(),self.vendor);r.activate(self.releases,b['release'],b['selection'],self.vendor)
+        expected=r.current(self.releases);r.activate(self.releases,a['release'],expected,self.vendor)
+        r.activate(self.releases,b['release'],r.current(self.releases),self.vendor)
+        self.assertEqual(r.current(self.releases)['release'],expected['release'])
+        self.assertNotEqual(r.current(self.releases)['generation'],expected['generation'])
+        with self.assertRaises(ValueError):r.activate(self.releases,a['release'],expected,self.vendor)
     def test_changed_validator_and_forged_bytes_refused_before_selection(self):
         raw=self.transfer();(self.vendor/r.CONTRACT[0]).write_bytes(b'new backend')
         with self.assertRaises(ValueError):r.prepare(self.releases,raw,self.vendor)
@@ -106,7 +114,24 @@ class Distribution(unittest.TestCase):
         state={'receipt_path':str(self.root/'receipt.json'),'targets':{'first':{'phase':'activation_uncertain','uncertain_until':0,'release':'a'*64,'expected':None}}}
         with patch('scripts.update_shared_workshop.target_call',side_effect=call):
             result=deploy({'targets':[{'id':'first'},{'id':'new'}]},b'frozen transfer',state)
-        self.assertEqual(result['state'],'partial_update_retained');self.assertEqual(current['first'],'later');self.assertNotIn(('first','activate'),calls);self.assertEqual(result['targets']['new']['phase'],'adopted_verified')
+        self.assertEqual(result['state'],'completed_with_consumer_direction');self.assertEqual(current['first'],'later');self.assertNotIn(('first','activate'),calls);self.assertEqual(result['targets']['new']['phase'],'adopted_verified')
+    def test_status_failure_preserves_confirmed_adoption_before_later_rollback(self):
+        from unittest.mock import patch
+        from scripts.update_shared_workshop import deploy
+        writes=[];reads=0
+        def call(target,action,**args):
+            nonlocal reads
+            if action=='status':
+                reads+=1
+                if reads==1:raise ValueError('Read transport unavailable')
+                return {'current':{'release':'b'*64,'generation':4,'previous':'a'*64}}
+            writes.append(action);raise AssertionError('Observation failure is never new admission')
+        state={'receipt_path':str(self.root/'receipt.json'),'targets':{'first':{'phase':'adopted_verified','release':'a'*64,'expected':{'release':'b'*64,'previous':None,'generation':2}}}}
+        with patch('scripts.update_shared_workshop.target_call',side_effect=call):
+            first=deploy({'targets':[{'id':'first'}]},b'frozen transfer',state)
+            self.assertEqual(first['state'],'partial_update_retained');self.assertEqual(first['targets']['first']['phase'],'adopted_verified')
+            later=deploy({'targets':[{'id':'first'}]},b'frozen transfer',first)
+        self.assertEqual(later['state'],'completed_with_consumer_direction');self.assertEqual(later['targets']['first']['phase'],'later_consumer_direction');self.assertEqual(writes,[])
     def test_confirmed_consumer_rollback_is_not_reinstalled_on_unchanged_publication(self):
         from unittest.mock import patch
         from scripts.update_shared_workshop import deploy
