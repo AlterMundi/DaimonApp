@@ -238,3 +238,39 @@ arguments proves no transport invocation; retain that failed intent and continue
 only the known-unattempted remote action with a separate recovery receipt. A
 transport timeout is different: inspect the original remote process/receipt and
 never use this local-preflight recovery rule to replay an uncertain launch.
+
+### Completing a basic child receiver's native voice configuration
+
+A basic text/Avatar receiver can have current client assets while retaining an
+older Python native-voice backend. Before enabling continuous native voice,
+qualify the composed backend rather than accepting assets/constructor health as
+proof of renewal. The current contract includes `openai_live_api`,
+`openai_live_visits`, `openai_live_native_session`, `integrator_startup` and the
+owner-bound `Provider.public_live_integrator_context` reader plus its existing
+`scripts/activity_indicator.Native` observer allowing `thread/items/list`. Verify
+the real same-owner paginated read before microphone or paid creation; importing
+the reader and exercising it with a fake transport misses a stale observer fence. Reuse published
+qualified components and preserve unrelated local Provider behavior. The API
+requires that reader before paid creation; continuous renewal also needs the
+finalization/context-readiness methods on the retained visit store.
+
+Use the existing selected child account custody and private brief/ASR bindings;
+never substitute Codex OAuth for its API key. Both raw file-only and completed
+Live-only profiles retain their distinct existing routes. Include the declared
+`websocket-client` dependency in the consuming interpreter's actual search path.
+For fixture imports of command-line `scripts/interaction_asr.py`, include its
+scripts directory as the CLI does; a package-style import failure is not evidence
+that the actual command lacks a dependency. Mounted qualification must preserve
+the serving dependency prefix in PYTHONPATH as well as the candidate source.
+
+Retain one private preimage/proposal pair. Under the existing voice fence, check
+all selected native work idle, preserve actual goals/revisions and native binary,
+and apply only the required configuration and coherent web delta. Preserve Codex
+and Matrix processes, identity/grants, journals, original media and later owner
+changes. A listener restart is distinct from restarting its native Codex backend.
+Verify consuming-user constructors, loaded capabilities, own Home entry, anonymous
+and foreign refusal, selected assets and unchanged goal/accounting. A first-sound
+probe is separately bounded to one new provider session per selected actor; an
+existing equivalent attempt must be inspected instead. Stop explicitly, retain
+unconfirmed final usage without refund/retry, and distinguish decoded technical
+audio from sustained family/device/hearing acceptance.
