@@ -285,7 +285,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
     assert(box.y>=0&&box.y+box.height<=height,selector+' fits keyboard viewport');
    }
    await page.locator('#conversation-message').focus();
-   assert(await page.locator('#conversation-message').evaluate(el=>getComputedStyle(el).outlineStyle!=='none'));
+   assert(await page.locator('#conversation-message').evaluate(el=>{const s=getComputedStyle(el);return s.outlineStyle!=='none'||s.boxShadow!=='none';}),'Writing focus has a visible indicator');
    await page.locator('#conversation-visual>summary').click();
    assert(await page.locator('#conversation-attachment-sheet').isVisible(),'Attachments stay available');
    await page.locator('#conversation-visual>summary').click();
@@ -320,6 +320,15 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    await notices.locator(':scope>summary').click();
    await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.textContent='';delete message.dataset.attention;});
    await page.screenshot({path:path.join(output,`hud-${width}-${height}.png`)});
+   if(width===375&&height===812){
+    const inspect=page.getByRole('button',{name:'Under the hood',exact:true});
+    await inspect.click();assert(await page.getByRole('region',{name:'Under the hood',exact:true}).isVisible());
+    await page.screenshot({path:path.join(output,'hud-inspector.png')});await inspect.click();
+    await page.getByRole('button',{name:/^Open alerts/}).click();
+    const alerts=await page.locator('#operations').boundingBox();
+    assert(alerts&&alerts.x>=0&&alerts.x+alerts.width<=width&&alerts.y+alerts.height<=height,'Alerts panel fits the phone');
+    await page.screenshot({path:path.join(output,'hud-alerts.png')});await page.locator('#conversation-alerts-close').click();
+   }
    layouts.push({width,height});
   }
   assert.equal(await page.locator('#conversation-message').inputValue(),'Explore this idea together.');

@@ -15,11 +15,13 @@
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
     const rail=el('aside',undefined,'session-rail');rail.id='session-rail';rail.hidden=true;rail.setAttribute('aria-label','Your sessions');
     const list=el('div',undefined,'session-list'),target=el('span','Conversation','session-input-target');
-    const toggle=button('☰','Show sessions',()=>showRail(rail.hidden));
+    const toggle=button('','Show sessions',()=>showRail(rail.hidden));
+    toggle.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h12M4 18h16"/></svg>';
     function showRail(open){if(open)void refresh(binding);rail.hidden=!open;toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Hide sessions':'Show sessions';toggle.setAttribute('aria-label',toggle.title);}
     toggle.setAttribute('aria-controls',rail.id);toggle.setAttribute('aria-expanded','false');
     const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
     reset.className='session-workspace-reset';
+    reset.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6"/></svg><span>Reset</span>';
     const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;expanded=undefined;leave();changed();});
     unpin.innerHTML=pinIcon;
     const status=el('p','','session-workspace-status');status.setAttribute('role','status');
@@ -28,6 +30,7 @@
     const view=el('section',undefined,'session-conversation');view.hidden=true;view.setAttribute('aria-label','Selected session conversation');
     const viewBar=el('div',undefined,'session-view-toolbar'),heading=el('h3','Session');
     const back=button('←','Back to the conversation',()=>{expanded=undefined;leave();changed();toggle.focus?.();});
+    back.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 5-7 7 7 7M4 12h16"/></svg>';
     function setView(detail){
       if(technical===detail)return;
       technical=detail;syncView();clearHistory();void history();

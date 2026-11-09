@@ -51,7 +51,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    const bootstrap=await page.request.get(origin+'/assets/avatar-workshop/experiments/school-avatar-quest/presentation.mjs');
    assert.equal(bootstrap.status(),200,'Pre-paint bootstrap must use an admitted static asset suffix');
    await page.goto(origin);
-   await page.evaluate(()=>{document.documentElement.dataset.stylePolicy='authored';});
+   await page.evaluate(()=>{document.documentElement.dataset.stylePolicy='authored';document.body.classList.add('standalone-conversation');});
    await page.locator('#avatar-workshop-open').click();
    const editor=page.frameLocator('iframe');
    await editor.locator('html[data-presentation="navigator-hud"]').waitFor();

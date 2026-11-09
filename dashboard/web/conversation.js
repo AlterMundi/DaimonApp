@@ -147,8 +147,8 @@ window.Conversation = (() => {
     if(standalone){
       const presence=$("#conversation-companion"),identity=$("header .identity"),tools=$("header .header-tools"),beacon=$("#conversation-sound-toggle");
       if(presence && identity)identity.append(presence);
-      const build=$("#client-build"),labels=presence?.querySelector?.("div");
-      if(build && labels)labels.prepend(build);
+      const build=$("#client-build"),diagnostics=$("#conversation-diagnostics .conversation-diagnostics-content");
+      if(build && diagnostics)diagnostics.prepend(build);
       if(tools && beacon){tools.insertBefore(beacon,tools.firstChild);beacon.title="Session sound · Beacon";}
       $("#conversation-sound").append($("#conversation-sound-controls"),$("#conversation-sound-feedback"));
       const compose = $("#conversation-compose"), playback = $("#conversation-audio-tools");
@@ -544,7 +544,8 @@ window.Conversation = (() => {
           else {if(mutedSessions.size>=256)return;mutedSessions.add(selected);}
           audioFilterChanged();
         });
-        card.solo=node("button","S","session-audio-solo");card.solo.type="button";
+        card.solo=node("button",undefined,"session-audio-solo");card.solo.type="button";
+        card.solo.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 14v-3a8 8 0 0 1 16 0v3M4 12H2v8h5v-8ZM20 12h2v8h-5v-8Z"/></svg>';
         card.solo.addEventListener("click",()=>{
           const selected=sessionKey(card.muteSource);if(!selected)return;
           if(soloSessions.has(selected))soloSessions.delete(selected);
