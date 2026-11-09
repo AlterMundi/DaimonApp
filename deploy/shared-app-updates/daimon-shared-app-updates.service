@@ -4,9 +4,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+WorkingDirectory=%h/.local/libexec/daimon-shared-app-updates/current
 ExecStart=/usr/bin/python3 -B %h/.local/libexec/daimon-shared-app-updates/current/scripts/update_shared_workshop.py --config %h/.config/daimon-shared-app-updates/config.json
 TimeoutStartSec=610
-RuntimeMaxSec=600
 MemoryMax=1G
 CPUQuota=100%
 TasksMax=256
