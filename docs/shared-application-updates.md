@@ -47,6 +47,14 @@ workshop is advertised as current. No new identity, enrollment or Telegram is
 required. This operator does not install native Core, change voice or grant new
 application access.
 
+The pinned updater installation includes the consuming web runtime, both browser
+fixture files, both update scripts, shared_asset_release.py and
+avatar_workshop_provenance.py. Preserve the unit WorkingDirectory so the existing
+fixture resolves its synthetic import asset inside that generation. Use a short
+owning data-filesystem build_root: Chromium temporary Unix socket paths must fit
+the platform limit. These are code/fixture dependencies, never copies of account
+state. A failed qualification produces no release activation.
+
 The configured user timer follows the selected production branch every15minutes,
 with at most30s jitter. A maintainer/operator can invoke the same oneshot for
 immediate convergence. Runs are serialized, bounded to600s/1GiB/one CPU. They
