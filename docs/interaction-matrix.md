@@ -1,5 +1,85 @@
 # Selected Matrix execution adapter
 
+## Prepared portable Conversation publication
+
+The optional `interaction.matrix_publication` configuration adds a typed,
+owner-local publication writer to the existing Conversation store. This is the
+App portion of [Matrix #496](https://github.com/AlterMundi/daimon-matrix/issues/496),
+not a selected production installation or a messaging-delivery claim. It needs
+no Telegram account, bot token, browser or model turn.
+
+The selected descriptor contains `surface_ref`, a sorted unique `audience`
+(at most 256 entries and 32 KiB serialized), and an absolute `signing_key_file`.
+The latter is a same-owner, mode-0600 regular file holding an Ed25519 seed;
+symlinks and unsafe permissions refuse. Keep actual custody paths and private
+bytes out of project records. The `status` operation returns only the public
+descriptor and verification key. Installation must use the existing authorized
+resource/owner route; this configuration does not grant arbitrary actors access.
+
+Existing owner control commands are:
+
+```text
+telecodex --control CONFIG matrix publication status
+telecodex --control CONFIG matrix publication commit < REQUEST.json
+telecodex --control CONFIG matrix publication inspect PUBLICATION_UUID
+telecodex --control CONFIG matrix publication confirm PUBLICATION_UUID REQUEST_SHA256
+telecodex --control CONFIG matrix publication retire
+telecodex --control CONFIG matrix publication list CURSOR
+```
+
+`commit` takes at most 64 KiB on stdin and validates the exact deterministic
+publication ID, native binding digest, selected surface/audience and bounded
+part. An immediate SQLite transaction commits the immutable content and receipt
+body before the backend signs it. Exact duplicate requests recover the same
+proof; changed content, binding, owner, audience or signing key refuses. Missing
+acknowledgment requires inspecting that identity, never reauthoring speech.
+Existing Stop and maintenance admission fences apply to fresh publication.
+The request binds `not_after_ms` from the original native operation in both its
+native obligation digest and deterministic part UUID. Expired fresh requests
+refuse; existing exact proofs remain inspectable after expiry.
+
+The normal authenticated Conversation feed has an independent `publications`
+cursor. Its `matrix_visibility` sources use the existing revision-checked part
+reader and retain explicit provenance. They are neither human utterances nor
+execution authority, receiving-copy evidence or task completion. They do not
+trigger automatic speech or companion reactions. Older native readers keep the
+old cursor form when this optional configuration is absent.
+
+The staged journal caps each owner's conversation at 4096 parts / 64 MiB. Its
+technical copies have a rolling 24-hour retention window after both the native
+deadline and the host acknowledgment of durably retained native confirmation.
+`confirm` is a trusted model-free host operation with the exact request digest,
+invoked only after that native journal commit. It establishes visibility proof
+acknowledgment, never receiving delivery, human reading or task completion. A
+lost acknowledgment leaves the copy pending and pinned.
+
+Each new commit and the owner `retire` operation removes at most 64 eligible
+copies. Deletion and a constant-size per-conversation retired-deadline fence
+share one transaction. No per-message tombstone archive is created; a regressed
+clock cannot recreate a retired exact request. Monotonic sequences preserve feed
+cursors. Native histories and ordinary inbox/response records are unchanged.
+Pending/ambiguous copies are never deleted for capacity. If they fill the journal,
+publication refuses rather than losing work. No new timer or model turn is used.
+
+**Production selection remains unfinished:** the native installation/transport
+must supply the real deadline and confirm only after its committed proof, and
+the seven-body journey must be qualified. App retirement tests alone do not
+establish that live connection.
+
+`tests/matrix_publication_http_io.py` drives the actual Matrix native journal
+and `ConversationJournalTransport` through the real owner socket and SQLite,
+verifies native commit before metadata acknowledgment using another connection,
+and exercises the authenticated HTTP feed/part reader and restart recovery.
+Home identity and the native harness are synthetic. Its lost-result case recovers through one durably reserved exact proof read,
+without another publication. A failed proof read keeps uncertainty pinned across
+restart/calls and does not reset the read budget. Both fresh and warm metadata
+acknowledgments run outside the native SQLite transaction.
+Set `PYTHONPATH` to the selected Matrix candidate SDK; CI pins
+`ae2bd0b5c014dda5d4cf4ac63b730468e271a453` for this composition. It verifies no Telegram token,
+transmission, inference, fabricated input or native turn. The portable fixture
+is public synthetic test material, not operational custody. The seven-body
+native installation and useful messaging journey remain separate qualification.
+
 The optional host module `scripts/matrix_execution.py` connects an already
 approved Matrix `ExecutionStore` cycle to its authenticated owner-local SDK
 client. It is a building block for [Matrix #367](https://github.com/AlterMundi/daimon-matrix/issues/367),
