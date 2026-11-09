@@ -1378,3 +1378,49 @@ source chooses `gpt-live-1-codex` forV3 without an override; actual serving-mode
 identity remains unavailable. Do not activate the tested alias or claim public
 GPT-Live lifecycle parity from connection success. No runtime, default, API key,
 endpoint, native configuration or ordinary backing model changed in these probes.
+
+## Confirmed duration expiry during pending work —9November2026
+
+A new bounded public Live/native encounter held the exact response to one
+read-only controller capabilities call for174.625seconds. The original request
+was not repeated. Voice answered a separate fictional colour question while the
+read was pending, and one automatic replacement entered Listening before the
+response was released. The native task then completed with its canonical answer.
+The successor unexpectedly finalized with `reason:expired` and15seconds of
+confirmed usage, before the application's planned replacement. Its final-result
+append remained `sent`, without an ACK; preserve that uncertain receipt.
+The provider's documented reason identifies a duration expiry, not its underlying
+cause or the cause of the earlier phone incident. See
+[GPT-Live finalization](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close).
+
+The original browser verifier also failed independently: it required the noun
+“farol” after the correct answer “Es verde”. Its failure remains retained and is
+not the explanation for provider expiry. One explicitly bounded readback
+continuation used the already completed canonical answer in actual startup
+history; it spoke the two selected operations with decoded nonzero audio and
+closed through Stop. It performed no second capabilities call, memory lookup or
+uncertain append replay. Total three calls finalized177/15/31seconds, including
+the original two; no counter was reset or refunded. This proves pending-read
+survival and cold spoken retrieval, not spontaneous late speech on the expired
+connection, arbitrary long computation, two native workers or phone/hearing.
+
+Continuous public native voice now also handles a trusted `expired` finalization
+with confirmed usage. It waits for the existing native-context/owner-release
+barrier and one same-epoch successor token, retaining the microphone, locks,
+originals and work. It does not send another close command to an already closed
+provider. Explicit Stop, revocation, unfinished source admission and unsettled
+context still prevent successor opening. Content/network failures and unknown
+POSTs are not automatic renewal authority. Noncontinuous modes keep their current
+behaviour. A second consecutive expiry below60seconds pauses for explicit review
+rather than making a rapid chain of paid calls; normal-length expiries and
+planned replacements retain continuous operation. Existing300–600second physical,
+64k/48k context, storage and accounting bounds are unchanged.
+
+Separately, the retained two-replacement actual-audio encounter produced a real
+native semantic checkpoint through source3:2226UTF-8bytes, preserving memory
+source revisions, the corrected seven-flower/blue-cup facts and the
+incomplete pending question. The exact uncheckpointed source4 remained alongside
+all four native source receipts. Both subsequent seeds inherited that language
+once and appended only their own flat event window, without nesting a previous
+serialized envelope. Spoken readback after both replacements agreed. This is
+natural semantic checkpoint evidence, not a forced64k-pressure test.
