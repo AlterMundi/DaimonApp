@@ -193,6 +193,61 @@ struct RecoveryOutput {
     item: String,
 }
 
+/// Open every directory relative to the previous descriptor, never through a
+/// symlink. The same walk is used for initial recovery and persisted-job reopen.
+#[cfg(unix)]
+fn directory_without_symlinks(path: &Path) -> Result<fs::File> {
+    anyhow::ensure!(path.is_absolute(), "Select an absolute trusted workspace");
+    let root = anchor(Path::new("/"))?.context("Workspace anchoring unavailable")?;
+    directory_beneath(&root, path.strip_prefix("/")?)
+}
+#[cfg(unix)]
+fn directory_beneath(root: &fs::File, relative: &Path) -> Result<fs::File> {
+    use std::{
+        ffi::CString,
+        os::fd::{AsRawFd, FromRawFd},
+    };
+    let mut current = root.try_clone()?;
+    for part in relative.components() {
+        let std::path::Component::Normal(name) = part else {
+            bail!("Only relative directory components are allowed")
+        };
+        let name = CString::new(name.as_encoded_bytes())?;
+        let fd = unsafe {
+            libc::openat(
+                current.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        current = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+#[cfg(unix)]
+fn reopen_recovery_output(doc: &serde_json::Value, out: &Path) -> Result<fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    let workspace = Path::new(
+        doc["recovery_workspace"]
+            .as_str()
+            .context("Missing recovery workspace")?,
+    );
+    let root = directory_without_symlinks(workspace)?;
+    let meta = root.metadata()?;
+    anyhow::ensure!(
+        Some(meta.dev()) == doc["workspace_device"].as_u64()
+            && Some(meta.ino()) == doc["workspace_inode"].as_u64(),
+        "Recovery workspace identity changed"
+    );
+    let relative = out
+        .strip_prefix(workspace)
+        .context("Recovery output left its workspace")?;
+    directory_beneath(&root, relative)
+}
+
 /// Recover explicitly selected original output bytes without replaying a turn.
 #[cfg(unix)]
 pub(super) fn recover_selected(
@@ -229,7 +284,10 @@ pub(super) fn recover_selected(
         .store
         .get_session(entry)?
         .context("Artifact entry unavailable")?;
-    let base = session.cwd.canonicalize()?.join(".telecodex/turns");
+    let workspace = session.cwd.canonicalize()?;
+    let trusted_workspace = directory_without_symlinks(&workspace)?;
+    let workspace_identity = trusted_workspace.metadata()?;
+    let base = workspace.join(".telecodex/turns");
     let parent = out
         .parent()
         .context("Select an existing output directory")?;
@@ -244,11 +302,10 @@ pub(super) fn recover_selected(
     anyhow::ensure!(
         out.is_absolute()
             && out.file_name().is_some_and(|s| s == "out")
-            && parent.parent() == Some(base.as_path())
-            && out.canonicalize()? == out,
+            && parent.parent() == Some(base.as_path()),
         "Output is outside this conversation workspace"
     );
-    let source = anchor(out)?.context("Output anchoring unavailable")?;
+    let source = directory_beneath(&trusted_workspace, out.strip_prefix(&workspace)?)?;
     let directory = source.metadata()?;
     anyhow::ensure!(
         directory.uid() == unsafe { libc::geteuid() },
@@ -322,7 +379,7 @@ pub(super) fn recover_selected(
     }
     output["files"] = serde_json::Value::Object(selected);
     output["expected_sha256"] = serde_json::to_value(files)?;
-    let doc = serde_json::json!({"out":out,"device":directory.dev(),"inode":directory.ino(),"output":output,"publish_files":false,"explicit_owner_recovery":true});
+    let doc = serde_json::json!({"out":out,"device":directory.dev(),"inode":directory.ino(),"output":output,"publish_files":false,"explicit_owner_recovery":true,"recovery_workspace":workspace,"workspace_device":workspace_identity.dev(),"workspace_inode":workspace_identity.ino()});
     shared
         .store
         .artifact_recovery_stage(human, entry, binding, local, &doc)?;
@@ -351,6 +408,13 @@ fn copy_job(
             .as_str()
             .context("Missing retained output directory")?,
     );
+    #[cfg(unix)]
+    let source = if doc.get("recovery_workspace").is_some() {
+        Arc::new(reopen_recovery_output(doc, out)?)
+    } else {
+        anchor(out)?.context("Output directory anchor unsupported")?
+    };
+    #[cfg(not(unix))]
     let source = anchor(out)?.context("Output directory anchor unsupported")?;
     #[cfg(unix)]
     {
@@ -745,4 +809,55 @@ pub(super) fn verified_bytes(
         bail!("Retained file integrity changed");
     }
     Ok(bytes)
+}
+
+#[cfg(all(test, unix))]
+mod recovery_directory_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    #[test]
+    fn recovery_refuses_execution_ancestor_swap_before_initial_open_and_copy_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap().join("workspace");
+        let relative = Path::new(".telecodex/turns/5-11111111-1111-4111-8111-111111111111/out");
+        fs::create_dir_all(workspace.join(relative)).unwrap();
+        let trusted = directory_without_symlinks(&workspace).unwrap();
+        let meta = trusted.metadata().unwrap();
+        let source = directory_beneath(&trusted, relative).unwrap();
+        let source_meta = source.metadata().unwrap();
+        let doc = serde_json::json!({"recovery_workspace":workspace,"workspace_device":meta.dev(),"workspace_inode":meta.ino()});
+        let execution = workspace.join(relative).parent().unwrap().to_path_buf();
+        let moved = temp.path().join("moved-execution");
+        fs::rename(&execution, &moved).unwrap();
+        symlink(&moved, &execution).unwrap();
+        assert!(
+            directory_beneath(&trusted, relative).is_err(),
+            "An ancestor swap cannot redirect the initial selected output"
+        );
+        assert!(
+            reopen_recovery_output(&doc, &workspace.join(relative)).is_err(),
+            "Persisted copying cannot reopen through the substituted ancestor"
+        );
+        assert_eq!(
+            source.metadata().unwrap().ino(),
+            source_meta.ino(),
+            "Previously anchored source remains the same descriptor"
+        );
+    }
+
+    #[test]
+    fn recovery_refuses_trusted_workspace_replacement_and_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().canonicalize().unwrap().join("workspace");
+        fs::create_dir_all(workspace.join("out")).unwrap();
+        let trusted = directory_without_symlinks(&workspace).unwrap();
+        let meta = trusted.metadata().unwrap();
+        let doc = serde_json::json!({"recovery_workspace":workspace,"workspace_device":meta.dev(),"workspace_inode":meta.ino()});
+        assert!(directory_beneath(&trusted, Path::new("../outside")).is_err());
+        let moved = temp.path().join("moved-workspace");
+        fs::rename(&workspace, &moved).unwrap();
+        symlink(&moved, &workspace).unwrap();
+        assert!(reopen_recovery_output(&doc, &workspace.join("out")).is_err());
+    }
 }

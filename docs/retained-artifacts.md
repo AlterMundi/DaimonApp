@@ -122,8 +122,10 @@ telecodex --control OWN_RECEIVER_CONFIG input artifacts recover '{"binding":"CUR
 This is an explicit owner association with an actual completed final in the same
 logical conversation; it does not claim historical automatic capture. The selected
 output directory must belong to that execution under its own current workspace.
-Descriptor-relative reads reject symlinks, hard links, changed bytes and unexpected
-owners. Current owner/grant/generation and the canonical final are checked in the
+The trusted workspace is anchored, and every descendant directory is opened
+relative to descriptors without following symlinks, both initially and when the
+copy job reopens it. Workspace identity is frozen. Reads also reject hard links,
+changed bytes and unexpected owners. Current owner/grant/generation and the canonical final are checked in the
 same transaction that registers the existing copy job. Copying verifies the frozen
 SHA256 again. Existing jobs keep their original immutable selection. No native
 turn, prompt, image generation, email, topic publication or original input is replayed.
