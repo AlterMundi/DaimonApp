@@ -292,6 +292,12 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
     from .openai_live_api import install as install_openai_live
     can_public_live=install_openai_live(app,config,provider,authorize_async,[origin,*additional_origins])
+    native_avatar_default=config.get('openai_live',{}).get('default_native',False)
+    if (type(native_avatar_default)is not bool or native_avatar_default and
+            (not can_public_live or not (config.get('openai_live',{}).get('native_backend_enabled')is True
+                or config.get('openai_live',{}).get('backend_mode')=='native'))):
+        raise ValueError('Configured native Avatar default is unavailable')
+
     app.state.voice_preview_capacity=openai_speech.capacity if openai_speech else None
     from .avatar_workshop_api import install as install_avatar_workshop
     install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins])
@@ -649,6 +655,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
                 'can_listen':default_speech is not None,
                 'voice_services_default':services_default,
+                'avatar_voice_default':'gpt-live-native' if native_avatar_default else None,
                 'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
                 'can_openai_live_result':bool(can_openai_stream_transcribe and config.get('streaming_transcription_openai',{}).get('mode')=='prepared' and 'openai-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
@@ -662,7 +669,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_codex':bool(can_codex_voice and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_public_live':bool(can_public_live and dict(session).get('scope')!='monitor_readonly'),
-                'can_converse_public_live_native':bool(can_public_live and config.get('openai_live',{}).get('native_backend_enabled') is True
+                'can_converse_public_live_native':bool(can_public_live and (config.get('openai_live',{}).get('native_backend_enabled') is True
+                    or config.get('openai_live',{}).get('backend_mode')=='native')
                     and dict(session).get('scope')!='monitor_readonly'),
                 'can_session_workspace':workspace_granted(session),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')

@@ -6,6 +6,14 @@ review-permission question is withdrawn. Reuse the existing authorized review
 route; do not create another approval question. Source checks and receiving
 adoption are separate from a completed independent review.
 
+Voice-first public-native entry initializes an empty owned native context only on
+explicit authenticated Avatar entry, through `input voice native initialize`.
+Keep its durable metadata receipt, stable logical binding and existing originals;
+never invent a seed message, start inference or repeat an uncertain creation.
+History/page reads stay read-only. Optional `openai_live.default_native` selects
+only the configured Avatar route on initial page load, preserving later choices.
+See docs/interaction-native-codex-voice.md#voice-first-native-conversation-entry.
+
 Ordinary voice messages already recording survive browser tab visibility changes,
 as do their in-flight original uploads. Keep late microphone permission blocked
 while hidden, direct Avatar suspension, nativecapturebackground, pagehide and

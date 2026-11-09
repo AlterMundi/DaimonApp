@@ -147,6 +147,43 @@ class Mounted(unittest.TestCase):
         install(app,config,self.owner,authorize,['https://example.test'])
         return app
 
+    def test_cold_native_entry_auth_failure_never_initializes(self):
+        calls=[]
+        self.owner.prepare_native_voice=lambda binding:calls.append(binding)
+        app=self.app_with_history()
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        async def authorize(request):
+            if not self.allowed:raise HTTPException(401,'Expired synthetic access')
+            return {'human':100,'csrf':'fresh','scope':self.scope}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        with TestClient(app,base_url='https://example.test') as client:
+            for allowed,scope,csrf in ((False,None,'fresh'),(True,'monitor_readonly','fresh'),(True,None,'wrong')):
+                self.allowed=allowed;self.scope=scope
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    socket.send_json({**self.meta,'csrf':csrf})
+                    self.assertEqual(socket.receive_json()['type'],'unconfirmed')
+        self.assertEqual(calls,[]);self.assertEqual(Client.instances,[])
+
+    def test_cold_native_entry_initializes_after_auth_before_context_and_not_on_history(self):
+        calls=[];bound=False
+        original=self.owner.public_live_binding
+        def initialize(binding):
+            nonlocal bound
+            self.assertEqual(binding,self.owner.binding);calls.append('initialize');bound=True
+        def current(binding):
+            self.assertTrue(bound,'Context owner lookup must follow explicit metadata initialization')
+            calls.append('binding');return original(binding)
+        self.owner.prepare_native_voice=initialize
+        self.owner.public_live_binding=current
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            response=client.get('/api/interaction/voice/gpt-live/visits',headers=self.headers)
+            self.assertEqual(response.status_code,200);self.assertEqual(calls,[])
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                self.start(socket);self.close(socket)
+        self.assertEqual(calls.count('initialize'),1)
+        self.assertEqual(calls[0],'initialize')
+
     def test_renewal_ready_follows_native_close_and_releases_owner_before_successor(self):
         app=self.renewal_app()
         with TestClient(app,base_url='https://example.test') as client:
@@ -1200,6 +1237,27 @@ class Journal(unittest.TestCase):
             self.assertTrue(permitted(method,path));self.assertFalse(permitted(method,path,scope='monitor_readonly'))
         self.assertFalse(permitted('POST',root+'/visits/'+ident+'/tools'))
         self.assertFalse(permitted('POST',root+'/visits/'+ident+'/recordings/32'))
+    def test_prepare_native_voice_initializes_only_the_exact_empty_owned_entry(self):
+        owner=Provider.__new__(Provider);owner.human=100;calls=[]
+        capabilities={'binding':'a'*64,'voice_available':True,
+            'entry_binding':[100,{'chat_id':100,'thread_id':7},1,'']}
+        def presentation(command):
+            calls.append(command)
+            return capabilities.copy()
+        owner.presentation=presentation
+        owner.prepare_native_voice('a'*64)
+        self.assertEqual(calls[0],'input voice capabilities')
+        self.assertEqual(json.loads(calls[1].split('initialize ',1)[1]),{'binding':'a'*64})
+        capabilities['entry_binding'][-1]='existing-native';calls.clear()
+        owner.prepare_native_voice('a'*64)
+        self.assertEqual(calls,['input voice capabilities'])
+        for change in ({'binding':'b'*64},{'voice_available':False},
+                       {'entry_binding':[101,{},1,'']}):
+            calls.clear();old=capabilities.copy();capabilities.update(change)
+            with self.assertRaises(ProviderUnavailable):owner.prepare_native_voice('a'*64)
+            self.assertEqual(calls,['input voice capabilities'])
+            capabilities.clear();capabilities.update(old)
+
     def test_public_binding_does_not_require_native_codex_voice_entitlement(self):
         owner=Provider.__new__(Provider);owner.human=100
         owner.presentation=lambda _:{'binding':'a'*64,'native_codex_voice':None,

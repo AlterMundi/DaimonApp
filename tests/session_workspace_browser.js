@@ -7,7 +7,8 @@ const hudCase=process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||process.
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
-const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
+const publicDefaultCase=process.env.QUALIFICATION_PUBLIC_DEFAULT==='1';
+const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=publicDefaultCase||process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
 const nativeDecisionCase=process.env.QUALIFICATION_HOME_DECISIONS;let nativeDecisionGranted=nativeDecisionCase==='allowed';const nativeDecisionPosts=[];
 const codexActivityCase=process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
 const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=hudCase||!!nativeDecisionCase,questionPosts=0;const voiceUploads=[];
@@ -79,7 +80,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase,can_listen:listenCase,can_speak:countdownCase||hudCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_converse_public_live_native:publicDefaultCase,avatar_voice_default:publicDefaultCase?'gpt-live-native':null,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase,can_listen:listenCase,can_speak:countdownCase||hudCase||publicDefaultCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -214,6 +215,19 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   if(await panel.isVisible())await panel.getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep my draft while I review this decision.');assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));
   report.state='qualified-shared-home-decision-'+nativeDecisionCase;report.decisions=nativeDecisionPosts;report.existingDraft='preserved';return;
+ }
+ if(publicDefaultCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  await page.evaluate(()=>clearInterval(timer));
+  const engine=page.locator('#conversation-voice-engine'),draft=page.locator('#conversation-message');
+  assert.equal(await engine.inputValue(),'gpt-live-native','Explicit native Avatar default does not require another TTS route');
+  await draft.fill('Preserve my draft when I choose a voice mode.');
+  await engine.evaluate(el=>{el.value='provider';el.dispatchEvent(new Event('change'));});
+  await page.evaluate(()=>conversationView.refresh());
+  assert.equal(await engine.inputValue(),'provider','A later refresh cannot replace the selected page mode');
+  assert.equal(await draft.inputValue(),'Preserve my draft when I choose a voice mode.');
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-explicit-native-avatar-default';return;
  }
  if(process.env.QUALIFICATION_REPLY==='1'){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
