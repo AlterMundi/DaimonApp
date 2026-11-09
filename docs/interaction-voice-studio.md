@@ -47,9 +47,35 @@ bound; native identity, language, name pronunciation and execution remain intact
 The initial transport is GPT-Live; ordinary Conversation speech retains its
 separate Realtime route. API identities are not silently pooled or substituted.
 The current configured voice is always first. Additional documented GPT-Live
-identities require an explicit receiving `voice_studio.voices` list, qualified
-for that project's account. The list is bounded by the maintained public model
-catalogue; it performs no provider/custom-voice or entitlement discovery.
+identities use an explicit receiving `voice_studio.voices` list for the current GPT-Live
+model. Adding documented built-ins is a configuration change, not an audition
+or proof that an account has produced speech with each voice. It does not
+require a paid synthesis per option. The list is bounded by the public model
+catalogue and performs no provider/custom-voice or entitlement discovery.
+The current configured voice stays first; adding choices does not select a
+saved revision, switch accounts or replace a running capture's voice.
+
+For the complete currently supported built-in catalogue:
+
+```toml
+[voice_studio]
+voices = [
+  "marin", "cedar", "quartz", "ripple", "vesper", "willow", "stone", "gleam",
+  "meridian", "bossa", "tempo", "beacon", "delta", "cinder", "nuri", "juni",
+  "flitz", "brise", "sillage", "nira", "harema", "shida", "noeul",
+]
+```
+
+Use the same voice-idle web maintenance route for this receiving configuration
+change. Verify the authenticated `GET /api/interaction/avatars/voice` catalogue, unchanged
+active/generation/revisions and actual visible choices. Do not click a voice in
+that read-only check: the voice button starts an audition through the existing
+bounded preview route. Availability, pronunciation and hearing remain outcomes
+of that explicit audition, with its original retained receipts.
+
+The IDs are documented in [OpenAI voice options](https://developers.openai.com/api/docs/guides/live-conversations#voice-options).
+Keep `LIVE_VOICES`, the explicit receiving list and that source aligned when the
+provider's supported catalogue changes.
 
 A real configured-source preview ended without a confirmed session start/audio.
 A distinct candidate-source single sample retained `model_not_found`; a bounded
