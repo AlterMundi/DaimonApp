@@ -198,3 +198,10 @@ mark remain separate at desktop, narrow phone and keyboard heights. Focus rings
 stay outside decorative backgrounds; inherited Homemaker geometry remains intact.
 This addresses the observed overlapping title and residual generic controls;
 full rendered reference/device acceptance remains open.
+
+Nicolas905ef77b removes the rotating pending line. All current conversation
+questions/actions/goal choices and routed-session questions/actions now share
+one For you panel and count, including Avatar review. The existing scoped card
+readers and decision endpoints remain their writers; opening the panel submits
+nothing. Keep namespaces separate, preserve drafts/focus and observe both card
+sections through the same metadata observer without another poller or store.
