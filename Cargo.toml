@@ -11,12 +11,14 @@ description = "Telegram bridge for a local Codex CLI instance"
 
 [dependencies]
 anyhow = "1.0.98"
+base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["clock", "serde"] }
 dotenvy = "0.15.7"
 futures-util = "0.3.31"
 html-escape = "0.2.13"
 libc = "0.2.183"
 regex = "1.11.1"
+ring = "0.17.14"
 reqwest = { version = "0.12.24", default-features = false, features = ["charset", "http2", "json", "multipart", "rustls-tls", "stream"] }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

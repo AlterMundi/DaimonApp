@@ -133,6 +133,27 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
         ["goals", "detail", id] if Uuid::parse_str(id).is_ok() => {
             app.shared.store.goal_control_view(human, cfg.entry(), id)
         }
+        [
+            operation,
+            delivery,
+            native,
+            matrix,
+            inbox,
+            responses,
+            publications,
+        ] if matches!(*operation, "list" | "before") => {
+            app.shared.store.interaction_presentation_page_publications(
+                human,
+                cfg.entry(),
+                delivery.parse()?,
+                native.parse()?,
+                Some(matrix.parse()?),
+                Some(inbox.parse()?),
+                Some(responses.parse()?),
+                Some(publications.parse()?),
+                *operation == "before",
+            )
+        }
         [operation, delivery, native, matrix, inbox, responses]
             if matches!(*operation, "list" | "before") =>
         {

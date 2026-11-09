@@ -42,6 +42,8 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub matrix_targets: Vec<MatrixTarget>,
     pub matrix_transport: Option<MatrixTransportConfig>,
+    /// Owner-only durable visibility publication; never a model signing API.
+    pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
     pub matrix_inbox_channel: Option<String>,
     #[serde(default = "default_active_workers")]
@@ -193,6 +195,9 @@ impl InteractionConfig {
             {
                 bail!("Interaction targets require distinct topic IDs and single-token selectors");
             }
+        }
+        if let Some(publication) = &self.matrix_publication {
+            publication.validate()?;
         }
         if let Some(transport) = &self.matrix_transport {
             transport.source.validate()?;
@@ -607,6 +612,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             matrix_inbox_channel: None,
+            matrix_publication: None,
             targets: vec![
                 Target {
                     name: "Nexus".into(),

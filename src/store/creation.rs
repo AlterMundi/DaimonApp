@@ -539,6 +539,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             matrix_inbox_channel: None,
+            matrix_publication: None,
             targets: vec![Target {
                 name: "Explicit".into(),
                 topic_id: 10,
@@ -1100,6 +1101,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             matrix_inbox_channel: None,
+            matrix_publication: None,
             targets: vec![Target {
                 name: "Alpha".into(),
                 topic_id: 7,

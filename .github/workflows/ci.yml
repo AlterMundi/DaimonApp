@@ -342,6 +342,7 @@ jobs:
           ref: 5e1dba7a1466104495650fc31e52f0f167472776
           path: .matrix-sdk
       - run: python3 -m pip install cryptography==50.0.0 jsonschema==4.26.0 wasmtime==45.0.0 idna==3.20
+      - run: python3 -B tests/matrix_publication_http_io.py target/release/telecodex
       - run: python3 -B tests/matrix_conversation_http_io.py target/release/telecodex
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk

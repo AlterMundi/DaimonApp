@@ -1,0 +1,45 @@
+{
+  "fixture": "Synthetic seed byte0x70 repeated32times; no service key or real publication. Generated with Matrix507 portable proof primitive.",
+  "policy": {
+    "schema": "daimon-visibility-policy/v3",
+    "generation": 1,
+    "origin": "fixture-owner",
+    "representation": "plain-json/v2",
+    "acceptance_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "proof_key_id": "fixture-proof-key",
+    "publication": {
+      "kind": "conversation-journal/v1",
+      "surface_ref": "fixture:general-conversation",
+      "audience": [
+        "human:local:00000000-0000-4000-8000-000000000100"
+      ],
+      "receipt_key": "GSBMjDuoW6BZzRiskBe9AqGNpdEMaPt3mjS-Q-8Gd5E"
+    }
+  },
+  "request": {
+    "schema": "dm.visibility.publication/v1",
+    "publication_id": "05913368-9783-542f-8ea0-d26c816939d4",
+    "binding_sha256": "e39e18cac9ae11b753b40da55330ffea65d7f0e4930da8635dbaa9228c5b6732",
+    "surface_ref": "fixture:general-conversation",
+    "audience": [
+      "human:local:00000000-0000-4000-8000-000000000100"
+    ],
+    "part_index": 0,
+    "part_count": 1,
+    "text": "Daimon Matrix visibility v2 · part 1/1\n{\n  \"content\": {\n    \"text\": \"Complete attributed projection 😀\\n<not human speech>\"\n  },\n  \"event_digest\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"event_id\": \"synthetic-event\",\n  \"kind\": \"message\",\n  \"recipients\": [\n    \"synthetic-being/bob/embodiment-b\"\n  ],\n  \"reply_to\": null,\n  \"sender\": \"synthetic-being/alice/embodiment-a\",\n  \"thread_id\": \"synthetic-thread\"\n}"
+  },
+  "receipt": {
+    "schema": "dm.visibility.publication-receipt/v1",
+    "request_sha256": "1acb59034af8649d9c72f942a8f27319e0b073aadd678e17b545331705d8bdc1",
+    "publication_id": "05913368-9783-542f-8ea0-d26c816939d4",
+    "surface_ref": "fixture:general-conversation",
+    "audience": [
+      "human:local:00000000-0000-4000-8000-000000000100"
+    ],
+    "text_sha256": "ffea045bf61cc27f59695b99ea0a15b1e9fa118e9b8fd024c5ca86c09127e642",
+    "committed_at_ms": 1,
+    "sequence": 1,
+    "durable": true,
+    "signature": "YN3vswMIIMT1hnrE7R2GBMpC-ok57bDP_rVeRudS_BKa9tO9cpQCvRfJQXexdo-35ZtPgNqotow1YmGR9iYnDQ"
+  }
+}

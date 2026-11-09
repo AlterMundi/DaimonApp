@@ -1,5 +1,62 @@
 # Selected Matrix execution adapter
 
+## Prepared portable Conversation publication
+
+The optional `interaction.matrix_publication` configuration adds a typed,
+owner-local publication writer to the existing Conversation store. This is the
+App portion of [Matrix #496](https://github.com/AlterMundi/daimon-matrix/issues/496),
+not a selected production installation or a messaging-delivery claim. It needs
+no Telegram account, bot token, browser or model turn.
+
+The selected descriptor contains `surface_ref`, a sorted unique `audience`
+(at most 256 entries and 32 KiB serialized), and an absolute `signing_key_file`.
+The latter is a same-owner, mode-0600 regular file holding an Ed25519 seed;
+symlinks and unsafe permissions refuse. Keep actual custody paths and private
+bytes out of project records. The `status` operation returns only the public
+descriptor and verification key. Installation must use the existing authorized
+resource/owner route; this configuration does not grant arbitrary actors access.
+
+Existing owner control commands are:
+
+```text
+telecodex --control CONFIG matrix publication status
+telecodex --control CONFIG matrix publication commit < REQUEST.json
+telecodex --control CONFIG matrix publication inspect PUBLICATION_UUID
+telecodex --control CONFIG matrix publication list CURSOR
+```
+
+`commit` takes at most 64 KiB on stdin and validates the exact deterministic
+publication ID, native binding digest, selected surface/audience and bounded
+part. An immediate SQLite transaction commits the immutable content and receipt
+body before the backend signs it. Exact duplicate requests recover the same
+proof; changed content, binding, owner, audience or signing key refuses. Missing
+acknowledgment requires inspecting that identity, never reauthoring speech.
+Existing Stop and maintenance admission fences apply to fresh publication.
+
+The normal authenticated Conversation feed has an independent `publications`
+cursor. Its `matrix_visibility` sources use the existing revision-checked part
+reader and retain explicit provenance. They are neither human utterances nor
+execution authority, receiving-copy evidence or task completion. They do not
+trigger automatic speech or companion reactions. Older native readers keep the
+old cursor form when this optional configuration is absent.
+
+The staged journal caps each owner's conversation at 4096 parts / 64 MiB. It
+currently refuses new publication at capacity and deletes nothing. **It is not
+ready for production until bounded retirement is implemented and qualified.**
+That retirement must preserve pending/ambiguous obligations and the durable
+human-readable record, prevent a retired exact request from publishing again,
+and bound proof/tombstone storage. Merely moving rows to another unbounded table
+or deleting them on carrier expiry does not meet this requirement. The native
+obligation lifetime and the canonical Conversation retention route must be
+connected before selecting this backend.
+
+`tests/matrix_publication_http_io.py` exercises the real owner socket, SQLite,
+signature, authenticated HTTP feed/part reader and restart recovery, with a
+synthetic Home identity and native harness. It verifies no Telegram token,
+transmission, inference, fabricated input or native turn. The portable fixture
+is public synthetic test material, not operational custody. The seven-body
+native installation and useful messaging journey remain separate qualification.
+
 The optional host module `scripts/matrix_execution.py` connects an already
 approved Matrix `ExecutionStore` cycle to its authenticated owner-local SDK
 client. It is a building block for [Matrix #367](https://github.com/AlterMundi/daimon-matrix/issues/367),

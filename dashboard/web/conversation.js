@@ -1299,7 +1299,7 @@ window.Conversation = (() => {
       selected.followed=true;
     }
     let enabled = false, ready = false, reading = false, binding, canListen = false, canStreamSpeech = false, canReportPlayback=false,canReportWordPosition=false,canLimitCaptureQuestions=false;
-    let newest = {delivery:0, native:0, matrix:0,inbox:0,responses:0}, oldest = {delivery:0, native:0, matrix:0,inbox:0,responses:0};
+    let newest = {delivery:0, native:0, matrix:0,inbox:0,responses:0,publications:0}, oldest = {delivery:0, native:0, matrix:0,inbox:0,responses:0,publications:0};
     let initialized = false, active, generation = 0, requestAbort, blobUrl, prefetched;
     function playerStatus() {
       if(nativeEnabled&&nativeVoiceSession?.active){
@@ -1499,7 +1499,7 @@ window.Conversation = (() => {
     }
     function offerVoice(source) {
       // Attributed peer speech/own delivery intents are visible, not automatic speech as this daimon.
-      if(["matrix_inbox","matrix_response"].includes(source.kind))return;
+      if(["matrix_inbox","matrix_response","matrix_visibility"].includes(source.kind))return;
       if(nativeEnabled&&nativeVoiceSession?.active)return;
       if(automaticInterrupted(source)){rememberSkipped(source);return;}
       if(!voiceEnabled || voiceSeen.has(voiceKey(source)) || skippedMessages.has(messageKey(source)))return;
@@ -1752,7 +1752,7 @@ window.Conversation = (() => {
       sessionTitle(card,source,integrator ? "Conversation" : source.label);
       const matrix=source.kind==="matrix_inbox"||source.kind==="matrix_response";
       const deliveryPhase=source.handling?.phase;
-      card.status.textContent = matrix ? (source.kind==="matrix_response" ?
+      card.status.textContent = source.kind==="matrix_visibility" ? "Durable communication copy. This record is not a human message or a delivery confirmation." : matrix ? (source.kind==="matrix_response" ?
         deliveryPhase==="recipient_copy_proved" ? "Recipient receiving copy proved. Reading and work completion are unconfirmed." :
         deliveryPhase==="uncertain" ? "Delivery uncertain. The original response intent is retained; it has not been resent." :
         deliveryPhase==="submitted" ? "Submitted; recipient delivery is not proved." : "Response intent retained; delivery is not proved."
@@ -1788,7 +1788,7 @@ window.Conversation = (() => {
       const value = await api(`interaction?${new URLSearchParams({...cursor, direction})}`);
       if (binding && value.binding !== binding) {
         workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
-        newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0}; oldest = {delivery:0,native:0,matrix:0,inbox:0,responses:0};
+        newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}; oldest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
         $("#conversation-answers").replaceChildren(); $("#conversation-results").replaceChildren();
       }
       if(standalone){
@@ -1837,7 +1837,7 @@ window.Conversation = (() => {
         const card=cards.get(source.id);
         if(card)card.listen.disabled=canSpeakLive && liveSpeech?.needsReconcile(source)===true;
       }
-      if(direction==="after")for(const source of value.items)if(!["matrix_inbox","matrix_response"].includes(source.kind))companion?.reply(source);
+      if(direction==="after")for(const source of value.items)if(!["matrix_inbox","matrix_response","matrix_visibility"].includes(source.kind))companion?.reply(source);
       for(const source of [...value.items].sort((a,b)=>(Date.parse(a.observed_at)||0)-(Date.parse(b.observed_at)||0))){
         if(active?.source.kind==="integrator_live" && active.source.native_turn===source.native_turn && active.source.native_item===source.native_item)rememberPosition();
         const reconciled=canSpeakLive && (direction==="after" || liveSpeech?.needsReconcile(source))?await liveSpeech?.reconcile(source,part):undefined;
@@ -1869,7 +1869,7 @@ window.Conversation = (() => {
         newest.delivery = Math.max(newest.delivery, value.newest.delivery);
         newest.native = Math.max(newest.native, value.newest.native);
         newest.matrix = Math.max(newest.matrix || 0, value.newest.matrix || 0);
-        for(const key of ["inbox","responses"])newest[key]=Math.max(newest[key]||0,value.newest[key]||0);
+        for(const key of ["inbox","responses","publications"])newest[key]=Math.max(newest[key]||0,value.newest[key]||0);
       }
       return value;
     }
@@ -1893,18 +1893,18 @@ window.Conversation = (() => {
       $("#conversation-older").disabled = true;
       try {
         if (!initialized) {
-          newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0};
-          await page({delivery:0,native:0,matrix:0,inbox:0,responses:0}, "before");
+          newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
+          await page({delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}, "before");
           initialized = true;
         } else {
           let more = true;
           for (let n = 0; n < 4 && more && enabled && playbackAllowed(); n++) {
             const value = await page(newest, "after");
-            if (!initialized) { newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0}; await page(newest,"before"); initialized = true; break; }
+            if (!initialized) { newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}; await page(newest,"before"); initialized = true; break; }
             more = value.more;
             if(n===3 && more)refreshAgain=true;
           }
-          if (enabled && playbackAllowed()) await page({delivery:0,native:0,matrix:0,inbox:0,responses:0}, "before", false);
+          if (enabled && playbackAllowed()) await page({delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}, "before", false);
         }
         void workspace?.refresh(binding);
         // Resolve current questions before starting newly observed speech. Input

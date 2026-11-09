@@ -53,6 +53,17 @@ async fn main() -> Result<()> {
             );
         }
         let config = config::Config::load(args[2].clone().into())?;
+        if args.get(3).map(String::as_str) == Some("matrix")
+            && args.get(4).map(String::as_str) == Some("publication")
+            && args.get(5).map(String::as_str) == Some("commit")
+        {
+            use std::io::Read;
+            anyhow::ensure!(args.len() == 6, "Pass the exact publication JSON on stdin");
+            let mut raw = String::new();
+            std::io::stdin().take(65537).read_to_string(&mut raw)?;
+            anyhow::ensure!(raw.len() <= 65536, "Publication request exceeds bound");
+            return control_client::run(&config, &format!("matrix publication commit {raw}")).await;
+        }
         let command = if matches!(
             args[3].as_str(),
             "attach-active"

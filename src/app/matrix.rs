@@ -347,6 +347,40 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     if human != cfg.human_id {
         bail!("Matrix origin owner differs from the authenticated controller");
     }
+    if let Some(selected) = args.strip_prefix("publication ") {
+        let publication = cfg
+            .matrix_publication
+            .as_ref()
+            .context("Conversation publication is not configured")?;
+        if selected == "status" {
+            return publication.descriptor();
+        }
+        if let Some(raw) = selected.strip_prefix("commit ") {
+            anyhow::ensure!(raw.len() <= 65536, "Publication request exceeds bound");
+            let request: crate::store::PublicationRequest = serde_json::from_str(raw)?;
+            return app.shared.store.matrix_publication_commit(
+                human,
+                cfg.entry(),
+                publication,
+                &request,
+            );
+        }
+        if let Some(id) = selected.strip_prefix("inspect ") {
+            return app.shared.store.matrix_publication_receipt(
+                human,
+                cfg.entry(),
+                publication,
+                id,
+            );
+        }
+        if let Some(after) = selected.strip_prefix("list ") {
+            return app
+                .shared
+                .store
+                .matrix_publications(human, cfg.entry(), after.parse()?);
+        }
+        bail!("Expected publication status, commit JSON, inspect UUID or list CURSOR");
+    }
     if let Some(id) = args.strip_prefix("status ") {
         return app
             .shared

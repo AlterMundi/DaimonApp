@@ -226,7 +226,7 @@ class Provider:
                     if titles[(chat, tid)]: node['label'] = prefix+titles[(chat, tid)]
         return value
 
-    def presentation_list(self, delivery, native, direction='after', matrix=None, inbox=None, responses=None):
+    def presentation_list(self, delivery, native, direction='after', matrix=None, inbox=None, responses=None, publications=None):
         if type(delivery) is not int or type(native) is not int or min(delivery, native) < 0:
             raise ValueError('Invalid presentation cursor')
         if direction not in ('after', 'before'):
@@ -239,6 +239,12 @@ class Provider:
             if matrix is None or any(type(v) is not int or v<0 for v in (inbox,responses)):
                 raise ValueError('Invalid Matrix source cursors')
             suffix+=f' {inbox} {responses}'
+        if publications is not None:
+            if type(publications) is not int or publications<0 or any(v is None for v in (matrix,inbox,responses)):
+                raise ValueError('Invalid publication cursor')
+            # Older receivers remain readable when this new optional capability is absent.
+            if self.receiver.get('interaction',{}).get('matrix_publication'):
+                suffix+=f' {publications}'
         return self.presentation(f'presentation {operation} {delivery} {native}'+suffix)
 
     def session_workspace(self):
@@ -388,7 +394,7 @@ class Provider:
 
     def presentation_part(self, source, revision, offset):
         import re
-        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix|matrix-inbox|matrix-response):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
+        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix|matrix-inbox|matrix-response|matrix-publication):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
                 or not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{64}', revision)
                 or type(offset) is not int or not 0 <= offset <= 10**9):
             raise ValueError('Invalid presentation selection')
