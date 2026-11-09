@@ -218,7 +218,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             (' '+appearance+'/home-style.js' if appearance else '') +
             "; style-src 'self'" + (' '+appearance if appearance else '') +
             "; font-src 'self'" + (' '+appearance if appearance else '') +
-            "; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+            "; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
             "frame-ancestors 'self' https://web.telegram.org")
         return response
 

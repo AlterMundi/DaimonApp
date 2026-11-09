@@ -65,6 +65,13 @@ class DashboardHTTP(unittest.TestCase):
         return self.client.get('/api/state').json()['csrf']
     def stop(self,nonce,csrf):
         return self.client.post('/api/stop',json={'nonce':nonce},headers={**self.headers,'x-dashboard-csrf':csrf})
+    def test_verified_image_preview_allows_local_blob_without_remote_image_sources(self):
+        policy=self.client.get('/').headers['content-security-policy']
+        directives=dict(part.strip().split(' ',1) for part in policy.split(';') if part.strip())
+        self.assertEqual(directives['img-src'].split(), ["'self'", 'data:', 'blob:'])
+        self.assertEqual(directives['connect-src'], "'self'")
+        self.assertEqual(directives['default-src'], "'self'")
+
     def test_health_binds_maintenance_to_the_actual_voice_lock_without_stopping_other_routes(self):
         from dashboard.voice_admission import HEADER, maintenance_guard
         with maintenance_guard(self.config['state_dir']) as guard:
