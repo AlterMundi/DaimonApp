@@ -2,9 +2,10 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 (async()=>{
- const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});
+ const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox','--disk-cache-size=1048576','--media-cache-size=1048576']});
+ const newPage=async options=>{const page=await browser.newPage(options);const origin=new URL(process.argv[2]).origin;await page.context().route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());return page;};
  try{
-  const page=await browser.newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
+  const page=await newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
   page.setDefaultTimeout(5000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser error:',e.message);});page.on('dialog',dialog=>dialog.accept());
   // Browser interaction proof is synthetic; mounted provider/cache ownership is
   // covered by dashboard_voice_studio_preview_api.py, without paid auditions.
@@ -337,10 +338,13 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await editor.locator('#cancel-workshop').click();assert.equal(await page.locator('.workshop-portrait').evaluate(c=>c.toDataURL()),image,'Cancel keeps current active version');
   await page.evaluate(()=>{for(const [key,value] of Object.entries({background:'#f4efdf',surface:'#fffaf0',text:'#352745',accent:'#654ba0'}))document.body.style.setProperty('--dm-'+key,value);});
   await page.locator('#avatar-workshop-open').click();await editor.locator('main:not([inert])').waitFor();
-  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(255, 250, 240)','Light surface follows the selected appearance');
-  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).color),'rgb(53, 39, 69)','Light text follows the selected appearance');
+  assert.equal(await editor.locator('html').getAttribute('data-workshop-presentation'),'maintainer','Maintainer owns the workshop art direction');
+  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).backgroundColor),'rgba(0, 0, 0, 0)','Archive stage retains its authored composition');
+  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).color),'rgb(66, 47, 100)','Archive text retains maintainer palette');
   await page.evaluate(()=>{document.body.style.setProperty('--dm-text','#112233');window.dispatchEvent(new Event('home-style:resolved'));});
-  await page.waitForFunction(()=>getComputedStyle(document.querySelector('iframe').contentDocument.querySelector('.stage.world')).color==='rgb(17, 34, 51)');
+  assert.equal(await editor.locator('.stage.world').evaluate(e=>getComputedStyle(e).color),'rgb(66, 47, 100)','Parent appearance cannot overwrite selected maintainer art');
+  await editor.locator('body').evaluate(()=>document.fonts.ready);
+  assert(await editor.locator('body').evaluate(()=>document.fonts.check('16px ArchiveText')&&document.fonts.check('16px ArchivePixel')),'Maintainer local fonts actually load');
   await editor.locator('#tab-avatar').focus();await page.keyboard.press('ArrowRight');
   assert.equal(await editor.locator('#tab-expression').getAttribute('aria-selected'),'true','Original keyboard tab navigation works');
   await editor.locator('#versions').click();
@@ -514,7 +518,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await editor.locator('#use-avatar').click();await editor.locator('#cancel-workshop').click();await page.reload();await page.locator('.workshop-portrait').waitFor();
   assert.equal(await page.locator('.workshop-portrait').count(),1,'New saved acting avatar reloads through existing account activation');
   // Spanish first-use presentation, explicit choices and selected Home themes.
-  const child=await browser.newPage({locale:'es-AR',viewport:{width:375,height:850},reducedMotion:'reduce'});
+  const child=await newPage({locale:'es-AR',viewport:{width:375,height:850},reducedMotion:'reduce'});
   const childErrors=[];child.on('pageerror',error=>childErrors.push(error.message));
   await child.route('**/api/interaction/avatars/voice',async route=>{const response=await route.fetch(),value=await response.json();if(route.request().method()==='GET')value.audition_available=true;await route.fulfill({response,json:value});});
   await child.goto(process.argv[2]+'/?workshop=voice');

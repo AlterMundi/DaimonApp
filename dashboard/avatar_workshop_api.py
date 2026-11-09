@@ -6,7 +6,7 @@ import secrets
 from pathlib import Path
 
 from fastapi import HTTPException,Request
-from fastapi.responses import FileResponse,Response
+from fastapi.responses import FileResponse,Response,RedirectResponse
 
 from .avatar_workshop import AvatarWorkshop,WorkshopConflict
 from .provider import ProviderUnavailable
@@ -18,16 +18,40 @@ def install(app,config,provider,authorize,origins):
     app.state.avatar_workshop=store
     # Only the shipped MIT editor/modules are public. Account revisions never
     # enter this tree, and request paths cannot select arbitrary local files.
-    public=Path(__file__).parent/'web/avatar-workshop'
+    public=(Path(__file__).parent/'web/avatar-workshop').resolve()
+    release_root=Path(config['state_dir']).resolve()/'shared-app-assets/avatar-workshop'
+    from . import shared_asset_release as releases
     assets={p.relative_to(public).as_posix():p for p in public.rglob('*')
-            if p.is_file() and not p.is_symlink() and p.suffix in ('.mjs','.css','.html','.json')
+            if p.is_file() and not p.is_symlink() and p.suffix in ('.mjs','.css','.html','.json','.ttf','.woff2','.txt')
             and p.name!='PROVENANCE.json' and p.name!='validate-design.mjs'}
 
     @app.get('/assets/avatar-workshop/{name:path}')
-    async def workshop_asset(name:str):
-        if name not in assets:raise HTTPException(404,'Workshop asset unavailable')
-        media='text/javascript' if name.endswith('.mjs') else None
-        return FileResponse(assets[name],media_type=media,headers={'Cache-Control':'public, max-age=0, must-revalidate'})
+    async def workshop_asset(name:str,request:Request):
+        try:
+            if name.startswith('releases/'):
+                parts=name.split('/',2)
+                if len(parts)!=3:raise FileNotFoundError(name)
+                _,release,path=parts
+                raw,sha=releases.asset(release_root,release,path,public)
+                media='text/javascript' if path.endswith('.mjs') else 'font/ttf' if path.endswith('.ttf') else None
+                if media is None:
+                    import mimetypes
+                    media=mimetypes.guess_type(path)[0] or 'application/octet-stream'
+                return Response(raw,media_type=media,headers={'ETag':'"'+sha+'"','Cache-Control':'public, max-age=31536000, immutable'})
+            selected=releases.current(release_root)
+            if selected:
+                releases.manifest(release_root,selected['release'],public)
+                if not releases.safe_name(name):raise FileNotFoundError(name)
+                # Pin the entire module/font graph before an editor opens. An
+                # update never reloads an active editor or changes its draft.
+                target='../'*(len(name.split('/'))-1)+'releases/'+selected['release']+'/'+name
+                if request.url.query:target+='?'+request.url.query
+                return RedirectResponse(target,status_code=307,headers={'Cache-Control':'no-store'})
+            if name not in assets:raise FileNotFoundError(name)
+            media='text/javascript' if name.endswith('.mjs') else None
+            return FileResponse(assets[name],media_type=media,headers={'Cache-Control':'public, max-age=0, must-revalidate'})
+        except (FileNotFoundError,KeyError):raise HTTPException(404,'Workshop asset unavailable') from None
+        except (OSError,ValueError,TypeError):raise HTTPException(503,'Workshop release unavailable; saved avatars are kept') from None
 
     async def owner(request,write=False):
         session=await authorize(request)

@@ -3,11 +3,12 @@
 ## Original source and adapted-byte verification
 
 The selected author source is ASCII-Interfaces
-`4acdb30f85848933d2c50c9557bbc2fc7d51ec9d`, following the earlier `e1ef54b`
-wardrobe sync and its pillow/sleep refinement. All32 declared original file
-hashes were checked against that exact upstream Git object. Later App adaptations
-have their own36-file receiving inventory; they never replace original hashes,
-authorship, license or handoff evidence.
+`5967ee3c0295bd60cc04297a5030da653651f766` (Enchanted Archive), following
+`4acdb30f85848933d2c50c9557bbc2fc7d51ec9d`. All39 original hashes and the
+separate44-file App receiving inventory retain Ani/Oliva attribution.
+The authenticated account adapter and saved artwork remain App-owned.
+Automatic publication/consumer delivery, compatibility, retention and recovery
+are documented in [shared application updates](shared-application-updates.md).
 
 After changing vendored workshop files, refresh only that adapted inventory in
 the development checkout, then run its existing validator/store tests:
