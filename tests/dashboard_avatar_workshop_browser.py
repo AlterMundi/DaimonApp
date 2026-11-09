@@ -5,6 +5,7 @@ One temporary state root/server/browser,120s cap, no provider/model/device calls
 Set PLAYWRIGHT_MODULE and CHROMIUM_EXECUTABLE to the existing browser tools.
 """
 import asyncio
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -21,7 +22,9 @@ from dashboard.avatar_workshop_api import install
 
 def qualify():
     with tempfile.TemporaryDirectory(prefix='avatar-browser-') as root:
-        app=FastAPI();public=Path(__file__).resolve().parents[1]/'dashboard/web'
+        import dashboard.avatar_workshop_api as mounted_api
+        app=FastAPI();public=Path(mounted_api.__file__).resolve().parent/'web'
+        workshop_root=Path(os.environ.get('QUALIFICATION_WORKSHOP_ROOT',str(public/'avatar-workshop'))).resolve()
         class Owner:
             def authorized(self,human):return human in (100,200)
         async def authorize(request):
@@ -30,6 +33,13 @@ def qualify():
             return {'human':int(actor),'scope':'interaction_only','csrf':'test-action'}
         sock=socket.socket();sock.bind(('127.0.0.1',0));origin='http://127.0.0.1:'+str(sock.getsockname()[1])
         install(app,{'state_dir':root,'voice_studio':{'voices':['cedar','marin']},'openai_live':{'enabled':True,'session_options':{'audio':{'output':{'voice':'cedar'}}}}},Owner(),authorize,[origin])
+        if workshop_root != (public/'avatar-workshop').resolve():
+            from dashboard import shared_asset_release as releases
+            from dashboard.avatar_workshop_provenance import receiving_hashes
+            import json
+            metadata=json.loads((workshop_root/'PROVENANCE.json').read_text()); assert receiving_hashes(workshop_root)==metadata['receiving_hashes']
+            transfer=releases.package(workshop_root,metadata['source_revision']); target=Path(root)/'shared-app-assets/avatar-workshop'
+            staged=releases.prepare(target,transfer,public/'avatar-workshop');releases.activate(target,staged['release'],None,public/'avatar-workshop')
         @app.get('/assets/{name}')
         def asset(name:str):
             if name not in ('avatar-workshop.js','voice-studio.js','voice-mode.js','companion.js','style.css','webrtc-native-audio.js','voice-output-pcm.js'):raise HTTPException(404)

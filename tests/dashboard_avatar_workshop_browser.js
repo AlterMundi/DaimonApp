@@ -2,9 +2,10 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 (async()=>{
- const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});
+ const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox','--disk-cache-size=1048576','--media-cache-size=1048576']});
+ const newPage=async options=>{const page=await browser.newPage(options);const origin=new URL(process.argv[2]).origin;await page.context().route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());return page;};
  try{
-  const page=await browser.newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
+  const page=await newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
   page.setDefaultTimeout(5000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser error:',e.message);});page.on('dialog',dialog=>dialog.accept());
   // Browser interaction proof is synthetic; mounted provider/cache ownership is
   // covered by dashboard_voice_studio_preview_api.py, without paid auditions.
@@ -526,7 +527,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await editor.locator('#use-avatar').click();await editor.locator('#cancel-workshop').click();await page.reload();await page.locator('.workshop-portrait').waitFor();
   assert.equal(await page.locator('.workshop-portrait').count(),1,'New saved acting avatar reloads through existing account activation');
   // Spanish first-use presentation, explicit choices and selected Home themes.
-  const child=await browser.newPage({locale:'es-AR',viewport:{width:375,height:850},reducedMotion:'reduce'});
+  const child=await newPage({locale:'es-AR',viewport:{width:375,height:850},reducedMotion:'reduce'});
   const childErrors=[];child.on('pageerror',error=>childErrors.push(error.message));
   await child.route('**/api/interaction/avatars/voice',async route=>{const response=await route.fetch(),value=await response.json();if(route.request().method()==='GET')value.audition_available=true;await route.fulfill({response,json:value});});
   await child.goto(process.argv[2]+'/?workshop=voice');
