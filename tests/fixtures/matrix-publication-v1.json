@@ -1,0 +1,46 @@
+{
+  "fixture": "Synthetic seed byte0x70 repeated32times; no service key or real publication. Generated with Matrix507 portable proof primitive.",
+  "policy": {
+    "schema": "daimon-visibility-policy/v3",
+    "generation": 1,
+    "origin": "fixture-owner",
+    "representation": "plain-json/v2",
+    "acceptance_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "proof_key_id": "fixture-proof-key",
+    "publication": {
+      "kind": "conversation-journal/v1",
+      "surface_ref": "fixture:general-conversation",
+      "audience": [
+        "human:local:00000000-0000-4000-8000-000000000100"
+      ],
+      "receipt_key": "GSBMjDuoW6BZzRiskBe9AqGNpdEMaPt3mjS-Q-8Gd5E"
+    }
+  },
+  "request": {
+    "schema": "dm.visibility.publication/v1",
+    "publication_id": "aac1bd9c-559f-5daf-a6d0-b88cf83e4e2c",
+    "binding_sha256": "4f3ee43838706a7221a7cda9bd0a6c081635cc90229fb02bdc18d36ff9147daf",
+    "not_after_ms": 4102444800000,
+    "surface_ref": "fixture:general-conversation",
+    "audience": [
+      "human:local:00000000-0000-4000-8000-000000000100"
+    ],
+    "part_index": 0,
+    "part_count": 1,
+    "text": "Daimon Matrix visibility v2 · part 1/1\n{\n  \"content\": {\n    \"text\": \"Complete attributed projection 😀\\n<not human speech>\"\n  },\n  \"event_digest\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"event_id\": \"synthetic-event\",\n  \"kind\": \"message\",\n  \"recipients\": [\n    \"synthetic-being/bob/embodiment-b\"\n  ],\n  \"reply_to\": null,\n  \"sender\": \"synthetic-being/alice/embodiment-a\",\n  \"thread_id\": \"synthetic-thread\"\n}"
+  },
+  "receipt": {
+    "schema": "dm.visibility.publication-receipt/v1",
+    "request_sha256": "59e64ed1f22cb184cafd112b287ff235456e1dacf306a00ab20e6f4d875a9917",
+    "publication_id": "aac1bd9c-559f-5daf-a6d0-b88cf83e4e2c",
+    "surface_ref": "fixture:general-conversation",
+    "audience": [
+      "human:local:00000000-0000-4000-8000-000000000100"
+    ],
+    "text_sha256": "ffea045bf61cc27f59695b99ea0a15b1e9fa118e9b8fd024c5ca86c09127e642",
+    "committed_at_ms": 1,
+    "sequence": 1,
+    "durable": true,
+    "signature": "TMf3gobMVCJ75YGMOjS1ehA7pmz7MjDdpozCFUBqb-3TZQp-9lCw_-U1ZwuQ1yhqsjsOxc0kPjJZcviH9Jj5Bg"
+  }
+}

@@ -218,7 +218,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             (' '+appearance+'/home-style.js' if appearance else '') +
             "; style-src 'self'" + (' '+appearance if appearance else '') +
             "; font-src 'self'" + (' '+appearance if appearance else '') +
-            "; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+            "; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
             "frame-ancestors 'self' https://web.telegram.org")
         return response
 
@@ -631,11 +631,13 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return value
 
     @app.get('/api/interaction')
-    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None, inbox: int | None = None, responses: int | None = None):
+    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None, inbox: int | None = None, responses: int | None = None, publications: int | None = None):
         session = await authorize_async(request)
         try:
             from starlette.concurrency import run_in_threadpool
-            if inbox is not None or responses is not None:
+            if publications is not None:
+                result=await run_in_threadpool(provider.presentation_list,delivery,native,direction,matrix,inbox,responses,publications)
+            elif inbox is not None or responses is not None:
                 result=await run_in_threadpool(provider.presentation_list,delivery,native,direction,matrix,inbox,responses)
             else:
                 result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)

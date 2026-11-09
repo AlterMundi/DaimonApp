@@ -461,3 +461,25 @@ Fresh canonical Matrix originals retained during busy work expose
 release a finished ordinary collector when Messaging is enabled. Already
 attempted source revisions and a paused Messaging lane cannot trigger that
 handoff. Status reads only local retained metadata and perform no live inbox I/O.
+
+## First activation and recovery after a native profile refusal
+
+Provision the App and its native Codex package as a compatible release set.
+A running upstream daemon does not establish support for
+`turn/startBoundedIfIdle`; an actual unsupported-method reply is a package
+compatibility defect, not missing human authorization. Reuse the qualified
+complete native package and the existing scoped daemon update route. Do not
+reenroll the being, collect fresh membership signatures or substitute accounts.
+
+Initial producer/resource configuration now persists its existing paused
+control at generation zero. Selecting continuous operation therefore needs no
+redundant pause solely to materialize a database row. Activation still requires
+explicit global/lane resume with current generations.
+
+After fixing a native refusal, ordinary explicit resume also reconciles a
+rejected heartbeat return when its exact source and native-thread execution
+receipt proves terminal `not_submitted` with no physical turn. Recovery keeps
+the original source identity, attempts, resource reservations and history; the
+existing worker makes the next bounded admission attempt. A mismatched,
+physically admitted or uncertain execution remains ineligible. Do not edit the
+live database or manufacture a new message to get past a pending batch.

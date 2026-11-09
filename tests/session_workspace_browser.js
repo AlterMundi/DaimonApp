@@ -3,7 +3,11 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
-const hudCase=process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||process.env.QUALIFICATION_AUTHORED==='1';
+const imageCase=process.env.QUALIFICATION_IMAGE_PREVIEW==='1';let imageAccess=true;
+const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
+const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
+const reconnectCase=process.env.QUALIFICATION_SESSION_RECONNECT==='1';let workspaceOutage=false;
+const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
@@ -25,6 +29,7 @@ const question=()=>({id:'9'.repeat(32),sequence:1,binding,revision:'d'.repeat(64
 const sources=Array.from({length:30},(_,i)=>({id:`native:${i+1}`,kind:'integrator_answer',revision,preview:`A small observation ${i+1}. `+'A retained synthetic conversation gives this reading area enough room to scroll naturally. '.repeat(8),observed_at:new Date(1704067200000+i*1000).toISOString()}));
 sources[29]={...sources[29],kind:'worker_result',label:'Materials',target:{chat_id:100,thread_id:7},preview:'A synthetic worker result for the shared title controls.',current:true,native_binding_current:true,completed:true};
 if(hudCase){sources.splice(0,29);sources[0]={...sources[0],kind:'integrator_answer',preview:'Let us explore this idea together.\n\nWe can open the result and keep creating.',text_characters:85};}
+if(imageCase)sources[0].artifacts=[imageArtifact];
 const base=()=>({binding,csrf:'fixture-csrf',items:[],cursor:0,newest:0,more:false});
 const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,'http://fixture.invalid');
@@ -32,6 +37,7 @@ const server=http.createServer(async(req,res)=>{
  try{
  if(url.pathname.startsWith('/api/')){
   const route=url.pathname.slice(5);
+  if(imageCase&&route==='interaction/artifacts/'+imageArtifact.id){res.writeHead(200,{'content-type':'application/octet-stream','X-Artifact-Sha256':imageArtifact.sha256});res.end(imageBytes);return;}
   if(route==='interaction/voice/gpt-live/visits'){
    const older=url.searchParams.has('before');
    return json({visits:publicCase?[{id:older?'22222222-2222-4222-8222-222222222222':'11111111-1111-4111-8111-111111111111',created_at:1704067000-(older?10:0),state:'created'}]:[],more:publicCase&&!older,before:publicCase&&!older?'11111111-1111-4111-8111-111111111111':null});
@@ -66,6 +72,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(route==='interaction/access'){accessReads++;return authDenied?json({detail:'Expired'},401):json({csrf:'fixture-csrf',label:'Synthetic operator'});}
   if(route==='interaction' && readRejections>0 && (!authCase||url.searchParams.get('qualification')==='auth')){readRejections--;return json({detail:'Synthetic access rejection'},401);}
+  if(route==='interaction/sessions'&&workspaceOutage)return json({detail:'Synthetic transient status outage'},503);
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
@@ -80,7 +87,7 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_converse_public_live_native:publicDefaultCase,avatar_voice_default:publicDefaultCase?'gpt-live-native':null,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase,can_listen:listenCase,can_speak:countdownCase||hudCase||publicDefaultCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
+  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_converse_public_live_native:publicDefaultCase,avatar_voice_default:publicDefaultCase?'gpt-live-native':null,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase||imageCase&&imageAccess,can_listen:listenCase,can_speak:countdownCase||hudCase||publicDefaultCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{items:[],more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -164,6 +171,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  if(hudCase)await context.addInitScript(()=>{
   let module;Object.defineProperty(window,'PublicLiveConversation',{configurable:true,get:()=>module,set(value){module={...value,create(options){window.hudRecovery=options.onRecovery;return value.create(options);}};}});
  });
+ if(reconnectCase)await context.addInitScript(()=>{
+  let source;Object.defineProperty(window,'SessionWorkspace',{configurable:true,get:()=>source,set(value){source={...value,mount(options){const control=value.mount(options);window.workspaceFixture.workspace=control;return control;}};}});
+ });
  const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  async function appearanceTransition(stage){
@@ -176,6 +186,36 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--dm-ui-text').trim()),authoredCase?'':palette.text,'Selected authored policy or inherited roles are respected');
   }
   (report.appearanceTransitions??=[]).push(stage);
+ }
+ if(reconnectCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected&&workspaceFixture.workspace?.active);
+  await page.evaluate(()=>{clearInterval(timer);liveConversation?.stop();});
+  for(const size of [{width:390,height:844},{width:375,height:430}]){
+   await page.setViewportSize(size);await page.locator('#conversation-message').fill('Keep this draft across a normal reconnection.');
+   const baseline=await page.locator('#conversation-message').boundingBox();
+   workspaceOutage=true;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   assert.equal(await page.locator('.session-workspace-status').textContent(),'');
+   assert.equal(await page.getByRole('button',{name:'Retry session status',exact:true}).isVisible(),false);
+   workspaceOutage=false;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   workspaceOutage=true;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   await page.waitForTimeout(8150);
+   const notice=page.locator('#conversation-compose-notices');
+   assert.equal(await notice.isVisible(),true,'Persistent failure uses the existing notice icon');
+   assert.equal(await page.getByRole('button',{name:'Retry session status',exact:true}).isVisible(),false,'Failure text stays folded in the notice panel');
+   await notice.locator(':scope>summary').click();
+   await page.getByRole('button',{name:'Retry session status',exact:true}).waitFor({state:'visible'});
+   const status=page.locator('.session-workspace-status');
+   assert.equal(await status.evaluate(e=>!!e.closest('.composer-notice-panel')),true);
+   assert.deepEqual(await page.locator('#conversation-message').boundingBox(),baseline,'Notice never moves or resizes the writing field');
+   await page.screenshot({path:path.join(output,'persistent-status-'+size.height+'.png')});
+   workspaceOutage=false;await page.evaluate(b=>workspaceFixture.workspace.refresh(b),'a'.repeat(64));
+   assert.equal(await status.textContent(),'');assert.equal(await notice.isVisible(),false);
+   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft across a normal reconnection.');
+   // An open empty notice is harmless, but reset it for the next viewport.
+   await notice.evaluate(e=>e.open=false);
+  }
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);assert.deepEqual(errors,[]);
+  report.state='qualified-quiet-reconnect-persistent-status-popover';report.notice_grace_ms=8000;report.viewports=['390x844','375x430'];return;
  }
  if(appearanceCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
@@ -229,6 +269,19 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);assert.equal(errors.length,0,errors.join('\n'));
   report.state='qualified-explicit-native-avatar-default';return;
  }
+ if(imageCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected);await page.evaluate(()=>clearInterval(timer));
+  await page.setViewportSize({width:320,height:640});await page.locator('#conversation-message').fill('Keep this draft while viewing the image.');
+  await page.getByRole('button',{name:'View image',exact:true}).click();
+  const image=page.locator('.artifact-image-preview');await image.waitFor();await image.evaluate(el=>el.decode());
+  assert.equal(await image.evaluate(el=>el.naturalWidth),1);assert.equal(await image.getAttribute('alt'),'drawing.png');
+  const rect=await image.boundingBox();assert(rect.x>=0&&rect.x+rect.width<=320);
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while viewing the image.');
+  await page.screenshot({path:path.join(output,'conversation-image-320.png')});
+  imageAccess=false;await page.evaluate(()=>conversationView.refresh());assert.equal(await image.count(),0);
+  assert.equal(posts.length,0);assert.equal(voiceUploads.length,0);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-hash-verified-image-in-original-reply';report.draft='preserved';report.grant_revocation='preview_removed';return;
+ }
  if(process.env.QUALIFICATION_REPLY==='1'){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   await page.evaluate(()=>clearInterval(timer));
@@ -281,7 +334,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
     assert(box.y>=0&&box.y+box.height<=height,selector+' fits keyboard viewport');
    }
    await page.locator('#conversation-message').focus();
-   assert(await page.locator('#conversation-message').evaluate(el=>getComputedStyle(el).outlineStyle!=='none'));
+   assert(await page.locator('#conversation-message').evaluate(el=>{const s=getComputedStyle(el);return s.outlineStyle!=='none'||s.boxShadow!=='none';}),'Writing focus has a visible indicator');
    await page.locator('#conversation-visual>summary').click();
    assert(await page.locator('#conversation-attachment-sheet').isVisible(),'Attachments stay available');
    await page.locator('#conversation-visual>summary').click();
@@ -316,6 +369,15 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    await notices.locator(':scope>summary').click();
    await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.textContent='';delete message.dataset.attention;});
    await page.screenshot({path:path.join(output,`hud-${width}-${height}.png`)});
+   if(width===375&&height===812){
+    const inspect=page.getByRole('button',{name:'Under the hood',exact:true});
+    await inspect.click();assert(await page.getByRole('region',{name:'Under the hood',exact:true}).isVisible());
+    await page.screenshot({path:path.join(output,'hud-inspector.png')});await inspect.click();
+    await page.getByRole('button',{name:/^Open alerts/}).click();
+    const alerts=await page.locator('#operations').boundingBox();
+    assert(alerts&&alerts.x>=0&&alerts.x+alerts.width<=width&&alerts.y+alerts.height<=height,'Alerts panel fits the phone');
+    await page.screenshot({path:path.join(output,'hud-alerts.png')});await page.locator('#conversation-alerts-close').click();
+   }
    layouts.push({width,height});
   }
   assert.equal(await page.locator('#conversation-message').inputValue(),'Explore this idea together.');

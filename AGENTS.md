@@ -14,6 +14,17 @@ History/page reads stay read-only. Optional `openai_live.default_native` selects
 only the configured Avatar route on initial page load, preserving later choices.
 See docs/interaction-native-codex-voice.md#voice-first-native-conversation-entry.
 
+After the final edit beneath `dashboard/web/avatar-workshop`, run
+`python3 -B -m dashboard.avatar_workshop_provenance --update` and the workshop
+provenance tests. Refresh only adapted hashes; preserve Ani/Oliva source attribution.
+
+Recover selected historical output bytes through `input artifacts recover` and
+its existing canonical copy job; never regenerate an image, replay the user or
+invent an old delivery receipt. Keep explicit recovery attribution, exact source
+SHA256 and same-conversation ownership. Verified raster previews belong beside
+their original reply and release bytes/URLs on expiry or revoked access. See
+`docs/retained-artifacts.md` for the supported operator and bounds.
+
 Ordinary voice messages already recording survive browser tab visibility changes,
 as do their in-flight original uploads. Keep late microphone permission blocked
 while hidden, direct Avatar suspension, nativecapturebackground, pagehide and

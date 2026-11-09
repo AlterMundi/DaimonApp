@@ -491,6 +491,35 @@ impl Store {
         after_response: Option<i64>,
         before: bool,
     ) -> Result<Value> {
+        self.interaction_presentation_page_publications(
+            human,
+            entry,
+            after_delivery,
+            after_native,
+            after_matrix,
+            after_inbox,
+            after_response,
+            None,
+            before,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn interaction_presentation_page_publications(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        after_delivery: i64,
+        after_native: i64,
+        after_matrix: Option<i64>,
+        after_inbox: Option<i64>,
+        after_response: Option<i64>,
+        after_publication: Option<i64>,
+        before: bool,
+    ) -> Result<Value> {
+        if after_publication.is_some_and(|v| v < 0) {
+            bail!("Invalid publication cursor");
+        }
         if after_inbox.is_some_and(|v| v < 0) || after_response.is_some_and(|v| v < 0) {
             bail!("Invalid Matrix source cursor");
         }
@@ -584,7 +613,31 @@ impl Store {
         };
         let inbox = inbox_rows(after_inbox, false)?;
         let responses = inbox_rows(after_response, true)?;
+        let publications = if let Some(cursor) = after_publication {
+            let bound = if before && cursor == 0 {
+                i64::MAX
+            } else {
+                cursor
+            };
+            let mut q=conn.prepare(&format!("SELECT rowid,publication_id FROM conversation_matrix_publications
+                WHERE human_id=?1 AND entry_session=?2 AND rowid{comparison}?3 ORDER BY rowid {order} LIMIT 9"))?;
+            q.query_map(params![human, session, bound], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
         let mut items = Vec::new();
+        for (sequence, id) in publications.iter().take(8) {
+            if let Some(mut source) =
+                source_on(&conn, human, entry, &format!("matrix-publication:{id}"))?
+            {
+                source["sequence"] = json!(sequence);
+                preview(&mut source);
+                items.push(source);
+            }
+        }
         for (rows, prefix) in [(&inbox, "matrix-inbox"), (&responses, "matrix-response")] {
             for (sequence, id) in rows.iter().take(8) {
                 if let Some(mut source) = source_on(&conn, human, entry, &format!("{prefix}:{id}"))?
@@ -622,7 +675,7 @@ impl Store {
                       "native":natives.iter().take(8).next_back().copied().unwrap_or(after_native)},
             "newest":{"delivery":deliveries.iter().take(8).map(|r|r.0).max().unwrap_or(0),
                       "native":natives.iter().take(8).copied().max().unwrap_or(0)},
-            "more":deliveries.len()>8 || natives.len()>8 || matrices.len()>8 || inbox.len()>8 || responses.len()>8,"playback":"not_observed"});
+            "more":deliveries.len()>8 || natives.len()>8 || matrices.len()>8 || inbox.len()>8 || responses.len()>8 || publications.len()>8,"playback":"not_observed"});
         let draft:Option<String>=conn.query_row("SELECT b.value FROM bot_state b JOIN turns t ON t.id=json_extract(b.value,'$.local') JOIN native_collections n ON n.local_turn=t.id
             WHERE b.key=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL
             AND json_extract(b.value,'$.thread')=?4 AND json_extract(b.value,'$.generation')=?5 AND length(trim(json_extract(b.value,'$.text')))>0
@@ -648,6 +701,7 @@ impl Store {
         for (name, cursor, rows) in [
             ("inbox", after_inbox, &inbox),
             ("responses", after_response, &responses),
+            ("publications", after_publication, &publications),
         ] {
             if let Some(cursor) = cursor {
                 result["cursor"][name] =
@@ -793,7 +847,13 @@ pub(super) fn source_on(
     id: &str,
 ) -> Result<Option<Value>> {
     let (entry_session, entry_native) = entry_on(conn, human, entry)?;
-    let mut source = if let Some(matrix) = id.strip_prefix("matrix-inbox:") {
+    let mut source = if let Some(publication) = id.strip_prefix("matrix-publication:") {
+        let Some(source) = super::matrix::publication::source_on(conn, human, entry, publication)?
+        else {
+            return Ok(None);
+        };
+        source
+    } else if let Some(matrix) = id.strip_prefix("matrix-inbox:") {
         let Some(source) = super::matrix::inbox::source_on(conn, human, entry, matrix)? else {
             return Ok(None);
         };

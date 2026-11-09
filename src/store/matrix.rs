@@ -1,6 +1,7 @@
 //! Retained cross-body correlation. Matrix owns transport and receiving execution;
 //! this store neither signs execution approvals nor schedules/activates a peer.
 pub(in crate::store) mod inbox;
+pub(in crate::store) mod publication;
 pub(in crate::store) mod response;
 use super::*;
 use crate::interaction::{InputReference, MatrixDestination, RequestRelation};

@@ -1867,6 +1867,7 @@ name = "telecodex"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "dotenvy",
  "futures-util",
@@ -1874,6 +1875,7 @@ dependencies = [
  "libc",
  "regex",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

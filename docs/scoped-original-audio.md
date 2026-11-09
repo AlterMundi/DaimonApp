@@ -125,3 +125,16 @@ completion and restart to verify the source survives archive capacity, receiver
 capacity refuses before admission, exact retry creates no second ASR/work, and
 later exact handoff permits cleanup. `--archive-legacy` verifies old-writer
 refusal. All peers and transcription are synthetic; this is not phone acceptance.
+
+
+## Full incoming capture store
+
+The receiver's 128-original/256MiB admission refusal is a known storage failure
+(HTTP507), not an uncertain native delivery. The browser keeps the same local
+original and offers storage recovery guidance; Check delivery reads status only.
+An archive handoff may already be full while the disk itself has ample capacity.
+Do not diagnose this from filesystem free space or retry recognition/native work.
+Inspect both bounded stores and their actual consumer incorporation receipts.
+Preserve protected/uncertain originals and existing limits; retire producer copies
+only through a verified owning archive transfer. Status and transcription success
+do not establish that transfer or make an unhanded-off original disposable.

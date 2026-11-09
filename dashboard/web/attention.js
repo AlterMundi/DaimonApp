@@ -11,7 +11,7 @@ window.AttentionCarousel = (() => {
     current.className="pending-current";all.className="pending-all";
     if(localOnly){
       line.classList.add("has-for-you");
-      all.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 6 2 2 3-4M11 6h10M3 13l2 2 3-4M11 13h10M11 20h10"/></svg><span class="pending-count"></span>';
+      all.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 9 5-9 5-9-5Z M3 12l9 5 9-5 M3 17l9 5 9-5"/></svg><span class="pending-count"></span>';
       strip.append(all);
     }else strip.append(previous,current,next,all);
     line.append(strip);

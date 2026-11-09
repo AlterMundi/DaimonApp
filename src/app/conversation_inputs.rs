@@ -189,6 +189,26 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .store
             .conversation_request_binding(human, cfg.entry());
     }
+    if let Some(body) = args.strip_prefix("artifacts recover ") {
+        let selected: super::artifact_outputs::Recovery = serde_json::from_str(body)?;
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        anyhow::ensure!(
+            current["binding"] == selected.binding,
+            "Artifact recovery binding changed"
+        );
+        super::artifact_outputs::recover_selected(
+            app.shared.clone(),
+            human,
+            cfg.entry(),
+            &selected,
+        )?;
+        return Ok(
+            json!({"schema":"telecodex.artifact-recovery/v1","binding":selected.binding,"local_turn":selected.local_turn,"state":"copy_recovery_registered","native_replay":false,"publication_replay":false}),
+        );
+    }
     if let Some(body) = args.strip_prefix("voice native attach ") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
