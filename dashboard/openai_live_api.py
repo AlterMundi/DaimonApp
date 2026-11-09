@@ -41,7 +41,7 @@ def install(app, config, provider, authorize, origins):
     native_backend=backend_mode=='native'
     if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options','continuous_renewal',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
