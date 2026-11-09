@@ -171,6 +171,26 @@ class Mounted(unittest.TestCase):
         self.assertEqual(new['native_continuation_from'],prior)
         self.assertEqual(len(Client.instances),2)
 
+    def test_confirmed_provider_expiry_uses_same_native_barriers_without_reclosing_provider(self):
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                native.events.put({'type':'session.closed','event_id':'expiry',
+                    'reason':'expired','usage':{'seconds':15},'session':{'id':'live_opaque:provider/42'}})
+                final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                self.assertTrue(final['renewal_pending'])
+                ready=socket.receive_json();self.assertEqual(ready['type'],'successor_ready')
+                self.assertTrue(native.detached)
+                self.assertEqual(app.state.voice_active,set())
+                self.assertFalse(any(event['type']=='session.close' for event in native.sent))
+                prior=self.ident;self.ident=str(uuid.uuid4())
+                self.meta={**self.meta,'id':self.ident,'voice_continuation':prior,'renewal':ready['renewal']}
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as successor:
+                self.start(successor);self.close(successor)
+        self.assertEqual(len(Client.instances),2)
+        self.assertEqual(self.read()['renewal_from'],prior)
+
     def test_unsettled_native_context_never_publishes_successor_ready(self):
         app=self.renewal_app()
         async def failed_close(*args,**kwargs):raise ProviderUnavailable('Synthetic context remains uncertain')
@@ -989,6 +1009,27 @@ class Mounted(unittest.TestCase):
 
 
 class Journal(unittest.TestCase):
+    def test_expiry_requires_explicit_server_readiness_complete_usage_and_no_stop_or_source_gap(self):
+        value=self.history.read(self.ident,100,self.frozen)
+        value['backend_mode']='native';self.history._write(value)
+        self.history.end_capture(self.ident,100,self.frozen['binding'])
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'expired',
+            'reason':'expired','session':{'id':'live_opaque:provider/42'},'usage':{'seconds':15}})
+        with self.assertRaises(ValueError):self.history.ready_for_renewal(self.ident,100,self.frozen)
+        original=self.history.read(self.ident,100,self.frozen)
+        for mutation in ('stop','usage','source'):
+            value=copy.deepcopy(original)
+            if mutation=='stop':value['client_close_reason']='user_hold'
+            elif mutation=='usage':value['finalization']['voice_usage_confirmed']=False
+            else:value['delegations']['pending']={'target':'client'}
+            self.history._write(value)
+            with self.assertRaises(ValueError):self.history.ready_for_renewal(self.ident,100,self.frozen,allow_expired=True)
+        self.history._write(original)
+        ready=self.history.ready_for_renewal(self.ident,100,self.frozen,allow_expired=True)
+        child=str(uuid.uuid4())
+        self.history.prepare(child,100,self.frozen,backend_mode='native',voice_continuation=self.ident,renewal=ready)
+        self.assertEqual(self.history.read(child,100,self.frozen)['renewal_from'],self.ident)
+
     def renewal_ready(self):
         value=self.history.read(self.ident,100,self.frozen)
         value['backend_mode']='native';self.history._write(value)

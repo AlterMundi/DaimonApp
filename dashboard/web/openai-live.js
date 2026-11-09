@@ -165,7 +165,8 @@ window.PublicLiveConversation=(()=>{
       const retired=unlock;unlock=undefined;uploads.then(()=>retired?.(),()=>retired?.());
       closing=false;state(completionMessage||message);notify();
     }
-    async function renew(){
+    let shortExpiries=0;
+    async function renew({finalized=false}={}){
       if(!active||starting||closing||renewing||document.hidden||binding!==getBinding())return;
       const logical=logicalGeneration,previous=visit,transport=socket;
       renewing=true;clearTimeout(timer);state('Reconnecting voice · keeping your microphone and conversation.');
@@ -173,7 +174,7 @@ window.PublicLiveConversation=(()=>{
       const ready=new Promise(resolve=>{renewalReadyAck=resolve;});
       try{
         if(transport?.readyState!==WebSocket.OPEN)throw Error('Renewal transport is unavailable');
-        transport.send(JSON.stringify({type:'close',reason:'transport_renewal'}));
+        if(!finalized){shortExpiries=0;transport.send(JSON.stringify({type:'close',reason:'transport_renewal'}));}
         const next=await Promise.race([ready,new Promise(resolve=>{timeout=setTimeout(()=>resolve(),85000);})]);
         clearTimeout(timeout);renewalReadyAck=undefined;
         if(logical!==logicalGeneration||closing||!renewing)return;
@@ -204,7 +205,7 @@ window.PublicLiveConversation=(()=>{
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       if(renewal&&(logical!==logicalGeneration||!media||!unlock))return false;
-      if(!renewal){logicalGeneration++;captureLocks=new Map();continuity=false;}
+      if(!renewal){logicalGeneration++;captureLocks=new Map();continuity=false;shortExpiries=0;}
       starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
       completionMessage=undefined;
       const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
@@ -267,6 +268,16 @@ window.PublicLiveConversation=(()=>{
               completionMessage=value.message||(value.type==='closed'?'Voice ended.':undefined);
               closedAck?.(value.type==='closed');
               if(renewing&&value.type==='closed'&&value.renewal_pending===true)return;
+              if(value.type==='closed'&&value.renewal_pending===true&&continuity&&active&&!starting&&!closing
+                  &&!document.hidden&&binding===getBinding()&&value.finalization?.reason==='expired'
+                  &&value.finalization.voice_usage_confirmed===true){
+                // Keep one microphone through a confirmed provider expiry. A
+                // second consecutive short expiry needs explicit review instead
+                // of admitting a rapid chain of paid sessions.
+                if(value.finalization.usage_seconds>=60)shortExpiries=0;
+                if(++shortExpiries<=1){void renew({finalized:true});return;}
+                completionMessage='Voice reached repeated short session limits. Tap Reconnect to continue.';
+              }
               if(renewing)renewalReadyAck?.();
               abortOpen?.(Error('Voice connection ended. Original audio is kept.'));
               if(!closing){socket=undefined;transport.close();void hold(value.message||'Voice paused. Your original audio is kept.');}
