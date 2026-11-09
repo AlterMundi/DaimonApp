@@ -25,6 +25,11 @@ class ProviderUnavailable(Exception):
     pass
 
 
+class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
+    """Known admission refusal, also compatible with existing voice consumers."""
+    pass
+
+
 def receiving_authority(receiver):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
@@ -1219,7 +1224,7 @@ class Provider:
                         used += info.st_size
                         inodes.add(key)
                     if entries >= 128 or used + len(data) > budget:
-                        raise ProviderUnavailable('Voice recording storage full; use text')
+                        raise VoiceStorageFull('Audio storage is full; existing originals are preserved. This recording was not submitted. Keep the local recording until storage is restored.')
                 temporary = directory / ('.'+secrets.token_hex(16))
                 try:
                     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
