@@ -274,3 +274,16 @@ probe is separately bounded to one new provider session per selected actor; an
 existing equivalent attempt must be inspected instead. Stop explicitly, retain
 unconfirmed final usage without refund/retry, and distinguish decoded technical
 audio from sustained family/device/hearing acceptance.
+
+The browser `openai-live.js` is also part of that coherent closure: current HUD
+assets and a renewal-capable server do not prove the selected client renews its
+physical visit. Qualify the actual served client with the lifecycle/source/
+recording-recovery suite; keep the same microphone, per-visit upload locks,
+confirmed-close/context-readiness barriers and unchanged bounds. A short first
+answer demonstrates audio, not continuous renewal.
+
+Sideband source requests can precede WebRTC's connected callback during healthy
+activation. Reserve the same bounded source request and wait for that owned
+activation's readiness; confirm raw bytes only afterward. Stop or failed/retired
+activation rejects that wait. Duplicate requests reuse one prefix/upload; they
+never create another voice call or bypass binding, capture or source checks.
