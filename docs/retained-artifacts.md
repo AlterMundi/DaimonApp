@@ -108,3 +108,31 @@ transactionally without dropping their outcomes. Keep a compatible native reader
 after that migration; a web/UI rollback must not reinstall the older job writer.
 Original audio and artifact bytes remain retained. Delivery and hearing still
 require actual observations; a local path written in Markdown is not an attachment.
+
+
+## Explicit retained-output recovery
+
+An output created before storage was configured may lack a durable copy job.
+An owner can recover selected existing bytes through the same native writer:
+
+```sh
+telecodex --control OWN_RECEIVER_CONFIG input artifacts recover '{"binding":"CURRENT_BINDING","local_turn":5,"directory":"/own/workspace/.telecodex/turns/5-11111111-1111-4111-8111-111111111111/out","output":{"native":"EXACT_NATIVE","turn":"EXACT_TURN","item":"EXACT_FINAL_ITEM"},"files":{"drawing.png":"EXACT_SHA256"}}'
+```
+
+This is an explicit owner association with an actual completed final in the same
+logical conversation; it does not claim historical automatic capture. The selected
+output directory must belong to that execution under its own current workspace.
+Descriptor-relative reads reject symlinks, hard links, changed bytes and unexpected
+owners. Current owner/grant/generation and the canonical final are checked in the
+same transaction that registers the existing copy job. Copying verifies the frozen
+SHA256 again. Existing jobs keep their original immutable selection. No native
+turn, prompt, image generation, email, topic publication or original input is replayed.
+The operation is owner control, not an additional browser/device write capability.
+Inspect the existing artifact list for actual availability afterward.
+
+PNG, JPEG and WebP attachments up to8MiB offer **View image** in their original
+reply. They use the same authenticated immutable download and full hash check;
+no public link or external viewer is created. At most four previews/16MiB stay
+open per page, sharing the existing two-download limit. Close, removed replies,
+expiry, binding reset or file-access revocation releases their object URLs.
+Other files keep the existing verified download/Android Save behavior.

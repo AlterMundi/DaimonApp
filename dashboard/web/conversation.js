@@ -21,16 +21,19 @@ window.Conversation = (() => {
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
     const liveUsage=window.PublicLiveUsage?.mount($('#conversation-live-usage'));
     let canFiles=false,filesConnected=true;
-    const files=new Map(),fileDownloads=new Map(),fileStatus=new Map();let fileJobs=[];
+    const files=new Map(),fileDownloads=new Map(),fileStatus=new Map(),filePreviews=new Map();let fileJobs=[];
+    const imageFile=file=>/\.(png|jpe?g|webp)$/i.test(file.name||"")&&file.bytes>0&&file.bytes<=8*1024*1024;
+    function closeFilePreview(id){const value=filePreviews.get(id);if(value)URL.revokeObjectURL(value.url);filePreviews.delete(id);}
+    const previewRoom=file=>filePreviews.size<4&&[...filePreviews.values()].reduce((n,v)=>n+v.bytes,0)+file.bytes<=16*1024*1024;
     const fileCredential=()=>JSON.stringify(Object.entries(headers()).filter(([key])=>key.toLowerCase()==="authorization"));
-    function clearFiles(){for(const work of fileDownloads.values())work.abort();fileDownloads.clear();files.clear();fileStatus.clear();fileJobs=[];canFiles=false;}
+    function clearFiles(){for(const work of fileDownloads.values())work.abort();fileDownloads.clear();for(const id of filePreviews.keys())closeFilePreview(id);files.clear();fileStatus.clear();fileJobs=[];canFiles=false;}
     function renderFiles(card){
       const sameSource=file=>file.native_source===card.source.id || file.result_id && file.result_id===card.source.result_id;
       const selected=[...new Map((canFiles?[...(card.source.artifacts||[]),...[...files.values()].filter(sameSource)]:[]).map(file=>[file.id,file])).values()].map(file=>({...file,available:!!file.available && (!file.expires_at || Date.parse(file.expires_at)>Date.now())}));
       const stage=canFiles?(fileJobs.find(sameSource)?.phase || card.source.artifact_status):null,preparing=stage==="pending" || stage==="running";
-      if(!selected.length && !preparing && stage!=="partial"){if(card.files)card.files.hidden=true;return;}
+      if(!selected.length && !preparing && stage!=="partial"){if(card.files){card.files.hidden=true;card.files.replaceChildren();delete card.files.dataset.version;}return;}
       if(!card.files){card.files=node("div",undefined,"artifact-files");card.files.setAttribute("role","group");card.files.setAttribute("aria-label","Generated files");card.box.append(card.files);}
-      const version=JSON.stringify([filesConnected,stage,selected,[...fileDownloads.keys()],[...fileStatus]]);
+      const version=JSON.stringify([filesConnected,stage,selected,[...fileDownloads.keys()],[...fileStatus],[...filePreviews.keys()]]);
       if(card.files.dataset.version===version){card.files.hidden=false;return;}
       card.files.dataset.version=version;card.files.hidden=false;card.files.replaceChildren(node("h4","Files"));
       if(preparing || stage==="partial"){const status=node("p",preparing?"Preparing files… You can keep chatting.":"Some files could not be prepared.","reply-status");status.setAttribute("role","status");card.files.append(status);}
@@ -38,10 +41,35 @@ window.Conversation = (() => {
         const row=node("div",undefined,"artifact-file"),button=node("button",`↓ ${file.name||"File"}`),status=node("span",fileStatus.get(file.id)||(!filesConnected?"Files connection unavailable":file.available?`${Math.ceil((file.bytes||0)/1024)} KB`:"Unavailable or expired"),"reply-status");
         button.type="button";button.disabled=!filesConnected || !file.available || fileDownloads.has(file.id) || fileDownloads.size>=2;status.setAttribute("role","status");
         button.addEventListener("click",()=>downloadFile(file));row.append(button,status);card.files.append(row);
+        const shown=filePreviews.get(file.id);
+        if(imageFile(file)){
+          const view=node("button",shown?"Close image":"View image");view.type="button";
+          view.disabled=!shown&&(!filesConnected||!file.available||fileDownloads.has(file.id)||fileDownloads.size>=2||!previewRoom(file));
+          view.addEventListener("click",()=>{if(filePreviews.has(file.id)){closeFilePreview(file.id);fileStatus.delete(file.id);refreshFiles();}else return downloadFile(file,true);});row.append(view);
+          if(shown&&file.available&&shown.sha256===file.sha256){const image=node("img",undefined,"artifact-image-preview");image.src=shown.url;image.alt=file.name;card.files.append(image);}
+        }
       }
     }
-    function refreshFiles(){for(const card of cards.values())renderFiles(card);}
-    async function downloadFile(file){
+    function refreshFiles(){
+      for(const [id,preview] of filePreviews){
+        const file=files.get(id)||preview.file;
+        if(!file.available||file.expires_at&&Date.parse(file.expires_at)<=Date.now()||![...cards.values()].some(card=>(card.source.artifacts||[]).some(v=>v.id===id)||file.native_source===card.source.id||file.result_id&&file.result_id===card.source.result_id))closeFilePreview(id);
+      }
+      for(const card of cards.values())renderFiles(card);
+    }
+    async function verifyArtifact(blob,asImage){
+      const bytes=await blob.arrayBuffer(),view=new Uint8Array(bytes);
+      const hash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(value=>value.toString(16).padStart(2,"0")).join("");
+      const starts=prefix=>prefix.every((n,i)=>view[i]===n);let type;
+      if(asImage){
+        if(starts([137,80,78,71,13,10,26,10]))type="image/png";
+        else if(starts([255,216,255]))type="image/jpeg";
+        else if(view.length>=12&&starts([82,73,70,70])&&[87,69,66,80].every((n,i)=>view[i+8]===n))type="image/webp";
+      }
+      return {hash,type};
+    }
+    async function downloadFile(file,preview=false){
+      if(preview&&(!imageFile(file)||!previewRoom(file)))return;
       if(!canFiles || fileDownloads.has(file.id) || fileDownloads.size>=2 || !file.available)return;
       if(!/^[a-f0-9-]{36}$/.test(file.id) || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes<0 || file.bytes>256*1024*1024)return;
       const controller=new AbortController(),credential=fileCredential(),deadline=setTimeout(()=>controller.abort(),120000);
@@ -51,9 +79,14 @@ window.Conversation = (() => {
         if(!response.ok)throw Object.assign(Error("File unavailable or access changed."),{status:response.status});
         if(response.headers.get("X-Artifact-Sha256")!==file.sha256)throw Error("File changed. Refresh before downloading.");
         const blob=await response.blob();if(blob.size!==file.bytes)throw Error("Download interrupted. Try the same file again.");
-        const hash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",await blob.arrayBuffer()))].map(value=>value.toString(16).padStart(2,"0")).join("");
+        const {hash,type}=await verifyArtifact(blob,preview);
         if(hash!==file.sha256)throw Error("File verification failed. Nothing was saved.");
         if(controller.signal.aborted || fileDownloads.get(file.id)!==controller || !canFiles || fileCredential()!==credential || files.has(file.id) && files.get(file.id).sha256!==file.sha256)return;
+        if(preview){
+          if(!type)throw Error("This file cannot be shown as an image.");
+          if(!previewRoom(file))throw Error("Close another image before opening this one.");
+          const url=URL.createObjectURL(new Blob([blob],{type}));filePreviews.set(file.id,{url,sha256:file.sha256,bytes:file.bytes,file});fileStatus.set(file.id,"Image verified");return;
+        }
         if(window.NativeFiles?.save){
           const saved=await window.NativeFiles.save(blob,file.name,file.sha256);
           fileStatus.set(file.id,saved?"Saved":"Save cancelled. Original remains available.");return;
