@@ -11,7 +11,7 @@ window.PublicLiveConversation=(()=>{
     let continuity=false,active=false,starting=false,closing=false,renewing=false,renewalReadyAck,logicalGeneration=0,paused=false,audible=true,epoch=0,pendingPermission=false,completionMessage;
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
-    let captureLocks;
+    let captureLocks,releaseMicrophone;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
     let replacementReview,voiceContinuation,outputLevel=0;
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -154,6 +154,7 @@ window.PublicLiveConversation=(()=>{
         let timeout;const complete=await Promise.race([finished,new Promise(resolve=>{timeout=setTimeout(()=>resolve(false),1000);})]);clearTimeout(timeout);
         flush(!complete);unsubscribe?.();unsubscribe=undefined;capture.close();capture=undefined;
       }
+      releaseMicrophone?.();releaseMicrophone=undefined;
       for(const track of media?.getTracks()||[])track.stop();media=undefined;
       if(socket?.readyState===WebSocket.OPEN){
         const finalized=new Promise(resolve=>{closedAck=resolve;});
@@ -321,6 +322,17 @@ window.PublicLiveConversation=(()=>{
           .then(stream=>{if(!current()){for(const track of stream.getTracks())track.stop();throw Error('Microphone permission retired');}return stream;})
           .finally(()=>{pendingPermission=false;});
         permission.catch(()=>{});media=await wait(permission,Math.min(300000,admission.remaining_seconds*1000));
+        const selectedMedia=media,selectedLogical=logicalGeneration,tracks=media.getAudioTracks();
+        const ended=()=>{
+          // Device loss is terminal for this logical microphone, unlike a
+          // transient WebRTC disconnect. Never reopen permission or replay audio.
+          if(media===selectedMedia&&selectedLogical===logicalGeneration&&!closing)
+            void hold('Microphone disconnected. Reconnect voice when it is available.','capture_unavailable');
+        };
+        for(const track of tracks)track.addEventListener('ended',ended);
+        releaseMicrophone=()=>{for(const track of tracks)track.removeEventListener('ended',ended);};
+        if(!tracks.length||tracks.some(track=>track.readyState==='ended'))throw Error('Microphone is unavailable');
+
         }
         if(!current())throw Error('Voice activation ended');
         peer=new RTCPeerConnection();channel=peer.createDataChannel('oai-events');

@@ -14,8 +14,10 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
- const media={getTracks:()=>[{stop(){stops++;}}],getAudioTracks:()=>[{}]};
- const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;order.push('permission');return media;}}};
+ const trackListeners=new Map();
+ const track={readyState:'live',stop(){stops++;this.readyState='ended';},addEventListener(name,run){trackListeners.set(name,run);},removeEventListener(name,run){if(trackListeners.get(name)===run)trackListeners.delete(name);}};
+ const media={getTracks:()=>[track],getAudioTracks:()=>[track]};
+ const navigator={locks:locks(),mediaDevices:{getUserMedia:async()=>{permission++;track.readyState='live';order.push('permission');return media;}}};
  class Socket{
   static OPEN=1;
   constructor(){this.readyState=1;this.sent=[];sockets.push(this);queueMicrotask(()=>this.onopen());}
@@ -89,7 +91,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
+ return {engine,start,track,trackListeners,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   expireNetworkClocks:()=>{for(const clock of networkClocks)clock.controller.abort();},
@@ -157,7 +159,11 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   renewal.peers[1].ice();await until(()=>renewal.states.at(-1).active);
   await until(()=>renewal.requests.length===1);
   assert(renewal.requests[0].url.includes(first.id));
-  await renewal.engine.hold();assert.equal(renewal.stops(),1);assert.equal(renewal.sockets.length,2);
+  assert.equal(renewal.trackListeners.size,1,'The same device-loss fence spans physical renewal');
+  renewal.track.readyState='ended';renewal.trackListeners.get('ended')();
+  assert(!renewal.engine.hasAudio);await until(()=>!renewal.states.at(-1).working);
+  assert.equal(second.sent.find(v=>v.type==='close').reason,'capture_unavailable');
+  assert.equal(renewal.stops(),1);assert.equal(renewal.sockets.length,2);assert.equal(renewal.trackListeners.size,0);
  }finally{await renewal.engine.hold();}
  // A provider can report its duration limit before our timer. It still needs
  // native readiness, keeps one capture, and never sends close to a dead call.
@@ -266,6 +272,25 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   transient.peers[0].connectionState='failed';transient.peers[0].onconnectionstatechange();
   await until(()=>!transient.engine.active);assert.equal(transient.stops(),1);assert.equal(transient.sockets[0].sent.find(v=>v.type==='close').reason,'transport_failed');
  }finally{await transient.engine.hold();}
+ const endedPermission=fixture();
+ endedPermission.navigator.mediaDevices.getUserMedia=async()=>{endedPermission.track.readyState='ended';return endedPermission.media;};
+ assert.equal(await endedPermission.engine.start(),false,'An already-ended device cannot enter Listening');
+ assert.equal(endedPermission.peers.length,0);assert.equal(endedPermission.trackListeners.size,0);
+ const lostMicrophone=fixture();await lostMicrophone.start();
+ try{
+  const retiredEnded=lostMicrophone.trackListeners.get('ended');
+  lostMicrophone.pcm();lostMicrophone.track.readyState='ended';retiredEnded?.();
+  assert(!lostMicrophone.engine.hasAudio,'A removed microphone cannot keep showing Listening');
+  await until(()=>lostMicrophone.sockets[0].sent.some(v=>v.type==='close'));
+  assert.equal(lostMicrophone.sockets[0].sent.find(v=>v.type==='close').reason,'capture_unavailable');
+  await until(()=>!lostMicrophone.states.at(-1).working);
+  assert.equal(lostMicrophone.permission(),1);assert.equal(lostMicrophone.sockets.length,1,'Device loss never automatically opens another paid session');
+  assert.equal(lostMicrophone.requests.length,1,'Retain the exact captured prefix');
+  assert.equal(lostMicrophone.trackListeners.size,0,'Release the ended listener on Stop');
+  await lostMicrophone.start();retiredEnded?.();
+  assert(lostMicrophone.engine.hasAudio,'An old device event cannot close a later logical visit');
+  assert.equal(lostMicrophone.sockets.length,2);
+ }finally{await lostMicrophone.engine.hold();}
  const diagnosticFailure=fixture({usageFailure:true});await diagnosticFailure.start();await diagnosticFailure.engine.hold();
  assert(!diagnosticFailure.engine.active,'A diagnostic callback failure cannot break voice cleanup');
  const metered=fixture({nativeChoice:true});await metered.start();
@@ -387,7 +412,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  const retired=permission.engine.start();await until(()=>resolvePermission);await permission.engine.hold();
  assert.equal(await retired,false);assert.equal(await permission.engine.start(),false,'No second permission request while the first is unresolved');
  resolvePermission(permission.media);await until(()=>permission.stops()===1);assert(!permission.sockets[0].sent.some(v=>v.type==='offer'));
- permission.navigator.mediaDevices.getUserMedia=async()=>permission.media;await permission.start();await permission.engine.hold();
+ permission.navigator.mediaDevices.getUserMedia=async()=>{permission.track.readyState='live';return permission.media;};await permission.start();await permission.engine.hold();
 
  const recorder=fixture();let resolveRecorder;const open=recorder.window.StreamingVoice.openCapture;
  recorder.window.StreamingVoice.openCapture=()=>new Promise(resolve=>{resolveRecorder=resolve;});
