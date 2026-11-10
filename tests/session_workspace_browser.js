@@ -111,7 +111,7 @@ const server=http.createServer(async(req,res)=>{
  let body=fs.readFileSync(file);
  if(name==='index.html')body=body.toString().replace('<html lang="en">','<html lang="en" data-shared-auth="true"'+(authoredCase?' data-style-policy="authored"':'')+'>').replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>','');
  if(name==='index.html'&&appearanceCase)body=body.toString().replace('</head>','<style>:root{--dm-background:#ffffff;--dm-surface:#ffffff;--dm-text:#111111;--dm-accent:#176241}</style></head>');
- if(name==='index.html'&&hudCase)body=body.toString().replace('<div id="client-build" hidden></div>','<div id="client-build" aria-label="Client version fixture">ui <code>fixture-version</code></div>');
+ if(name==='index.html'&&hudCase)body=body.toString().replace('<body>','<body class="conversation-mode standalone-conversation">').replace('<div id="client-build" hidden></div>','<div id="client-build" aria-label="Client version fixture">ui <code>fixture-version</code></div>');
  res.writeHead(200,{'content-type':(name.endsWith('.js')||name.endsWith('.mjs'))?'application/javascript':name.endsWith('.json')?'application/json':name.endsWith('.ttf')?'font/ttf':name.endsWith('.css')?'text/css':name.endsWith('.woff2')?'font/woff2':'text/html'});res.end(body);
  }catch(error){errors.push(String(error));res.writeHead(500);res.end('Fixture error');}
 });
@@ -121,6 +121,12 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
  browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox','--mute-audio','--autoplay-policy=no-user-gesture-required','--disk-cache-size=1048576','--media-cache-size=1048576']});
  const context=await browser.newContext({viewport:{width:1280,height:800}});await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+ if(hudCase){
+  const cold=await context.newPage();await cold.route('**/*.js',route=>route.abort());
+  await cold.goto(origin+'/?view=conversation&client=standalone');
+  assert.equal(await cold.locator('#client-build').isVisible(),false,'The first render keeps debugging inside closed technical details even when scripts fail');
+  await cold.close();
+ }
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
  });
