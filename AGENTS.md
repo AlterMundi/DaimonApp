@@ -95,12 +95,20 @@ media-retiring convenience readers, expose private analysis,
 start work or enable another provider to obtain startup context. Source/transport
 qualification is not proof of useful speech or physical continuity.
 
-Prepared iOS BeaconSynth is the pure six-carrier Android-compatible DSP core,
-not native playback or an advertised capability. Preserve normalized mix,
-phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.
-Future output must reuse the shared session,<=20s observation expiry without
-cached-refresh renewal, two-hour nonrenewable owner and bounded latest controls.
-No provider, observer, background activation or automatic resumption is implied.
+Prepared iOS Beacon IPC reuses the existing Android beacon_begin/frame/level/stop
+contract under the exact main origin/frame/document fence. Strict canonical UUID
+owners stay separate from PCM; at most128 starts/controller, no accepted ID reuse.
+Frames retain absolute monotonic milliseconds; gain cannot carry a new deadline.
+Navigation/process/background closes both outputs. Normal capability stays OFF.
+
+BeaconPlaybackDriver uses the existing shared session with independent speech
+and Beacon holders, at most two40ms buffers and one reschedulable timer. Preserve
+contiguous played callbacks, two-second stalled-output close, <=20s source expiry,
+nonrenewable two-hour owner, stale fade, normalized mix, phase/ramp continuity,
+exact silence and Android-compatible PCM16 rounding. Retained native/JS simulator
+qualification does not establish physical hearing, actual OS background, music
+routes, capture/duplex, shared login, signing or phone delivery. No provider,
+observer, background activation or automatic resumption is implied.
 
 iOS preparation is in clients/ios. Keep the Android-compatible verified PCM span
 contract, one serial owner, bounded queue/source metadata and nonrenewable lifetime
