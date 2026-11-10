@@ -212,6 +212,7 @@ pub(in crate::store) fn save_returns(
 ) -> Result<()> {
     let mut p = p.clone();
     p.native_returns = returns.to_vec();
+    settle_terminal_attention_on(conn, &mut p)?;
     save(conn, &p)
 }
 pub(super) fn save(conn: &Connection, p: &Parent) -> Result<()> {
@@ -490,10 +491,11 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         .iter()
         .rev()
         .find(|r| {
-            matches!(
-                r.phase.as_str(),
-                "attention_failed" | "attention_interrupted"
-            )
+            r.reported_revision.is_none()
+                && matches!(
+                    r.phase.as_str(),
+                    "attention_failed" | "attention_interrupted"
+                )
         })
         .map(|r| {
             json!({"return_id":r.id,"native_turn":r.native_turn,"state":r.phase,
@@ -563,7 +565,14 @@ fn pending(p: &Parent) -> bool {
 /// not review, response delivery or task completion.
 fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()> {
     for r in &mut p.native_returns {
-        if r.reported_revision.is_some() || r.phase != "accepted" {
+        let reviewed = r.reported_revision.is_some()
+            && r.reported_revision.as_deref() == r.envelope["revision"].as_str();
+        if reviewed && r.phase == "accepted_terminal_unreviewed" {
+            // The exact terminal outcome was already observed before review.
+            r.phase = "accepted_terminal_reviewed".into();
+            continue;
+        }
+        if r.phase != "accepted" || (r.reported_revision.is_some() && !reviewed) {
             continue;
         }
         let (Some(local), Some(physical)) = (r.local, r.native_turn.as_deref()) else {
@@ -588,9 +597,14 @@ fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()>
         let phase = match execution["terminal_status"].as_str() {
             Some("failed") => "attention_failed",
             Some("interrupted") => "attention_interrupted",
+            Some("completed") if reviewed => "accepted_terminal_reviewed",
             Some("completed") => "accepted_terminal_unreviewed",
             _ => continue,
         };
+        if reviewed {
+            r.phase = phase.into();
+            continue;
+        }
         let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
         for offer in offers {
             p.seen.insert(offer.key, offer.revision);
@@ -601,6 +615,42 @@ fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()>
     anyhow::ensure!(p.seen.len() <= 256, "Heartbeat attempted-source capacity");
     Ok(())
 }
+/// Retain exact terminal proof before the separate execution cache retires it.
+/// This is metadata settlement only; it cannot review or replay an original.
+pub(super) fn settle_observed_return_on(conn: &Connection, local: i64, source: &str) -> Result<()> {
+    let Some(rest) = source.strip_prefix("heartbeat:") else {
+        return Ok(());
+    };
+    let parts: Vec<_> = rest.split(':').collect();
+    if parts.len() != 3 || parts[0].parse::<i64>().is_err() || parts[1].parse::<i64>().is_err() {
+        return Ok(());
+    }
+    let Some(mut parent) = load(conn, parts[0].parse()?, parts[1].parse()?)? else {
+        return Ok(());
+    };
+    let Some(index) = parent.native_returns.iter().position(|r| r.id == source) else {
+        return Ok(());
+    };
+    if parent.native_returns[index].local != Some(local) {
+        return Ok(());
+    }
+    let before: Vec<_> = parent
+        .native_returns
+        .iter()
+        .map(|r| r.phase.clone())
+        .collect();
+    settle_terminal_attention_on(conn, &mut parent)?;
+    if parent
+        .native_returns
+        .iter()
+        .map(|r| &r.phase)
+        .ne(before.iter())
+    {
+        save(conn, &parent)?;
+    }
+    Ok(())
+}
+
 pub(super) fn resume_on(
     conn: &Connection,
     human: i64,
@@ -871,6 +921,16 @@ fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
         if r.reported_revision.as_deref() != r.envelope["revision"].as_str() {
             continue;
         }
+        if matches!(
+            r.phase.as_str(),
+            "accepted_terminal_reviewed"
+                | "accepted_terminal_unreviewed"
+                | "attention_failed"
+                | "attention_interrupted"
+        ) {
+            completed.push(i);
+            continue;
+        }
         if let Some(local) = r.local {
             if super::executions::load(conn, local)?
                 .is_some_and(|e| matches!(e["phase"].as_str(), Some("terminal" | "transferred")))
@@ -879,8 +939,12 @@ fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
             }
         }
     }
-    // Keep eight complete/reviewed batches and every unresolved receipt.
-    for i in completed.into_iter().rev().skip(8) {
+    // Preserve every unresolved receipt, but leave one of the existing sixteen
+    // slots for fresh work. Eight reviewed batches plus old pinned outcomes can
+    // otherwise fill the queue permanently despite available resources.
+    let pinned = p.native_returns.len() - completed.len();
+    let reviewed_to_keep = 8.min(15usize.saturating_sub(pinned));
+    for i in completed.into_iter().rev().skip(reviewed_to_keep) {
         p.native_returns.remove(i);
     }
     // Preserve pending/deferred/submitted/uncertain originals. Only a proved
@@ -1615,6 +1679,195 @@ mod inbox_tests {
                     "last_attention_failure"
                 }]["review_reported"],
                 false
+            );
+        }
+    }
+
+    #[test]
+    fn continuous_retirement_leaves_headroom_without_retiring_pinned_outcomes() {
+        let (_fixture, store, entry, _source) = setup();
+        let generation = store.heartbeat_control(100, entry, H::Pause).unwrap()["generation"]
+            .as_u64()
+            .unwrap();
+        store
+            .heartbeat_enable_continuous(100, entry, generation, 48)
+            .unwrap();
+        let session = store.get_session(entry).unwrap().unwrap().id;
+        let before = store.heartbeat_control(100, entry, H::Status).unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut parent = load(&conn, 100, session).unwrap().unwrap();
+        parent
+            .seen
+            .insert("report:retained".into(), "exact-attempted-revision".into());
+        for index in 0..16 {
+            let local = 1000 + index;
+            if index != 7 {
+                super::super::executions::save(
+                    &conn,
+                    local,
+                    &json!({"phase":"terminal","terminal_status":"completed"}),
+                )
+                .unwrap();
+            }
+            parent.native_returns.push(WorkflowReturn {
+                id: format!("headroom:{index}"),
+                workflow: String::new(),
+                attention_generation: Some(generation),
+                attention_activation: None,
+                reported_revision: (index >= 7).then(|| "reviewed".into()),
+                envelope: json!({"revision":"reviewed","offers":[],"original":index}),
+                phase: if index < 7 {
+                    "accepted_terminal_unreviewed"
+                } else {
+                    "accepted"
+                }
+                .into(),
+                local: Some(local),
+                collection_local: None,
+                native_turn: None,
+                instance: store.instance_id.clone(),
+                attempts: 1,
+                retry_after: None,
+            });
+        }
+        // Seven unreviewed terminal outcomes and a reviewed receipt whose old
+        // execution detail is unavailable must remain byte-for-byte intact.
+        let pinned = serde_json::to_value(&parent.native_returns[..8]).unwrap();
+        let seen = parent.seen.clone();
+        for index in 16..48 {
+            compact_resolved_on(&conn, &mut parent).unwrap();
+            assert_eq!(parent.native_returns.len(), 15);
+            assert_eq!(
+                serde_json::to_value(&parent.native_returns[..8]).unwrap(),
+                pinned
+            );
+            assert_eq!(parent.seen, seen);
+            let local = 1000 + index;
+            super::super::executions::save(
+                &conn,
+                local,
+                &json!({"phase":"terminal","terminal_status":"completed"}),
+            )
+            .unwrap();
+            let mut next = parent.native_returns.last().unwrap().clone();
+            next.id = format!("headroom:{index}");
+            next.local = Some(local);
+            parent.native_returns.push(next);
+        }
+        compact_resolved_on(&conn, &mut parent).unwrap();
+        assert_eq!(parent.native_returns.len(), 15);
+        save(&conn, &parent).unwrap();
+        drop(conn);
+        let reopened = store.heartbeat_control(100, entry, H::Status).unwrap();
+        assert_eq!(reopened["resources"], before["resources"]);
+        assert_eq!(reopened["admission_paused"], before["admission_paused"]);
+        assert_eq!(reopened["lanes"], before["lanes"]);
+        assert_eq!(reopened["producer"]["retained_returns"], 15);
+    }
+
+    #[test]
+    fn reviewed_terminal_proof_survives_execution_cache_retirement_in_both_orders() {
+        for review_first in [false, true] {
+            let (_fixture, store, entry, _source) = setup();
+            let generation = store.heartbeat_control(100, entry, H::Pause).unwrap()["generation"]
+                .as_u64()
+                .unwrap();
+            store
+                .heartbeat_enable_continuous(100, entry, generation, 48)
+                .unwrap();
+            let session = store.get_session(entry).unwrap().unwrap().id;
+            let before = store.heartbeat_control(100, entry, H::Status).unwrap();
+            let conn = store.conn.lock().unwrap();
+            let mut parent = load(&conn, 100, session).unwrap().unwrap();
+            for index in 0..16 {
+                parent.native_returns.push(WorkflowReturn {
+                    id: format!(
+                        "heartbeat:100:{session}:{}",
+                        uuid::Uuid::from_u128(index + 1)
+                    ),
+                    workflow: String::new(),
+                    attention_generation: Some(generation),
+                    attention_activation: None,
+                    reported_revision: (index >= 8 && review_first).then(|| "reviewed".into()),
+                    envelope: json!({"revision":"reviewed","offers":[],"original":index}),
+                    phase: if index < 8 {
+                        "accepted_terminal_unreviewed"
+                    } else {
+                        "accepted"
+                    }
+                    .into(),
+                    local: Some(1000 + index as i64),
+                    collection_local: None,
+                    native_turn: Some(format!("physical:{index}")),
+                    instance: store.instance_id.clone(),
+                    attempts: 1,
+                    retry_after: None,
+                });
+            }
+            save(&conn, &parent).unwrap();
+            let protected = serde_json::to_value(&parent.native_returns[..8]).unwrap();
+            for index in 8..16 {
+                let r = &parent.native_returns[index];
+                let local = r.local.unwrap();
+                let mut execution = json!({"phase":"terminal","terminal_status":"completed",
+                    "physical":r.native_turn,"source":r.id,"native":parent.native,"generation":generation});
+                if index == 8 {
+                    execution["physical"] = json!("foreign-physical");
+                    super::super::executions::save(&conn, local, &execution).unwrap();
+                    assert_eq!(
+                        load(&conn, 100, session).unwrap().unwrap().native_returns[index].phase,
+                        "accepted"
+                    );
+                    execution["physical"] = json!(r.native_turn);
+                }
+                super::super::executions::save(&conn, local, &execution).unwrap();
+                conn.execute(
+                    "DELETE FROM bot_state WHERE key=?1",
+                    [format!("heartbeat_execution:{local}")],
+                )
+                .unwrap();
+            }
+            let mut observed = load(&conn, 100, session).unwrap().unwrap();
+            if !review_first {
+                assert!(
+                    observed.native_returns[8..]
+                        .iter()
+                        .all(|r| r.phase == "accepted_terminal_unreviewed"
+                            && r.reported_revision.is_none())
+                );
+                for r in &mut observed.native_returns[8..] {
+                    r.reported_revision = Some("reviewed".into());
+                }
+                save_returns(&conn, &observed, &observed.native_returns).unwrap();
+                observed = load(&conn, 100, session).unwrap().unwrap();
+            }
+            assert!(
+                observed.native_returns[8..]
+                    .iter()
+                    .all(|r| r.phase == "accepted_terminal_reviewed")
+            );
+            compact_resolved_on(&conn, &mut observed).unwrap();
+            assert_eq!(observed.native_returns.len(), 15);
+            assert_eq!(
+                serde_json::to_value(&observed.native_returns[..8]).unwrap(),
+                protected
+            );
+            save(&conn, &observed).unwrap();
+            // A later duplicate terminal observation must not fail merely
+            // because its reviewed cache receipt was already retired.
+            let retired = &parent.native_returns[8];
+            super::super::executions::save(
+                &conn,
+                retired.local.unwrap(),
+                &json!({
+                "phase":"terminal","terminal_status":"completed","physical":retired.native_turn,
+                "source":retired.id,"native":parent.native,"generation":generation}),
+            )
+            .unwrap();
+            drop(conn);
+            assert_eq!(
+                store.heartbeat_control(100, entry, H::Status).unwrap()["resources"],
+                before["resources"]
             );
         }
     }

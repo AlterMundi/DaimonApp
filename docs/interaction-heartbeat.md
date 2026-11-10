@@ -259,7 +259,7 @@ the actual live loop, current owner, eligible native entry/profile, capacity and
 fresh exact-generation source check; its proof expires after15seconds. A continuous
 mode label or open gate alone cannot pulse the heart.
 
-Continuous cache retention keeps eight completed and reviewed heartbeat batches,
+Continuous cache retention keeps at most eight completed and reviewed heartbeat batches,
 eight resolved incoming-original projections (`recipient_copy_proved` or explicit
 `no_reply`), and64 own-body echoes. Unreported/native-unresolved batches and
 pending, deferred, merely submitted or uncertain replies are preserved. Retirement
@@ -267,8 +267,23 @@ never changes accounting or the persisted native inbox frontier. Old pages canno
 reintroduce a retired projection. Canonical signed Matrix originals/authoring/
 delivery receipts and native conversation turns remain in their owning journals;
 this is bounded projection retirement, not history deletion or task completion.
+The reviewed cache is reduced further when protected outcomes consume space, so
+one of the existing16return slots remains available for fresh work. Only receipts
+with an exact reported revision and known terminal execution qualify, using the
+exact observed proof retained on the return or its current execution receipt;
+unreviewed outcomes and missing execution evidence stay intact. Terminal
+observation preserves its exact identity-bound disposition on the existing return
+before the separate bounded execution cache retires it. Later review can use that
+retained proof in either arrival order; old missing proof is never reconstructed
+or inferred from review alone. Eight protected
+outcomes therefore retain seven reviewed details, rather than deadlocking with
+all16slots occupied. This retires resolved cache detail only, with no replay,
+review fabrication, refund, reservation reset or budget expansion.
+
 The existing16batch/256original/4MiB limits still refuse genuinely unresolved
-backlog, rather than discard it. Older finite policies retain their prior behavior.
+backlog, rather than discard it. If every slot is protected, the owning unresolved
+work must be reconciled; the producer does not silently drop it. Older finite
+policies retain their prior behavior.
 
 Use `matrix_response` action `no_reply` with the exact original/revision and a
 bounded reason only when neither a response nor further work is needed. It sends
