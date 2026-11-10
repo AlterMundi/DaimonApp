@@ -16,6 +16,8 @@ window.AvatarWorkshopUI=(()=>{
   const resize=new ResizeObserver(()=>{try{paint?.(frame);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
   const credential=()=>JSON.stringify(headers());
+  const missionId=new URLSearchParams(window.location?.search||'').get('avatar_mission');
+  const missionPath=missionId&&uuid(missionId)?'interaction/avatars/missions/'+missionId:null;
   function appearance(){const style=getComputedStyle(document.body),value={};for(const role of ['background','surface','text','accent','body-font','heading-font','radius','gap']){const v=style.getPropertyValue('--dm-'+role).trim();if(v&&v.length<256&&!/url\(/i.test(v))value['--dm-'+role]=v;}if(document.documentElement.dataset.stylePolicy==='authored'){for(const [role,name] of Object.entries({background:'--bg',surface:'--panel',text:'--ink',accent:'--accent'}))value['--dm-'+role]=style.getPropertyValue(name).trim();value.presentation='navigator-hud';}return value;}
   window.addEventListener('home-style:resolved',()=>iframe?.contentWindow.postMessage({kind:'daimon.workshop.appearance',appearance:appearance()},location.origin));
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
@@ -26,8 +28,9 @@ window.AvatarWorkshopUI=(()=>{
   }
   function stop(){clearTimeout(timer);timer=undefined;}
   function run(){stop();if(!paint||paused||motion.matches||document.hidden||dialog?.open)return;timer=setTimeout(()=>{try{paint(frame=(frame+1)%(paint.frames||12));run();}catch{stop();message('Avatar animation paused. Your saved selection is kept.');}},Math.max(80,Math.min(320,paint.frameMs||180)));}
-  function reset(){clearCompactPreview();requestedSpeechLevel=0;epoch++;studio?.reset();loaded=loadFailed=false;message('');artisticCue=undefined;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
+  function reset(){clearCompactPreview();requestedSpeechLevel=0;epoch++;document.querySelector('#avatar-mission-preview')?.remove();studio?.reset();loaded=loadFailed=false;message('');artisticCue=undefined;stop();resize.disconnect();canvas?.remove();canvas=paint=undefined;portrait.hidden=false;surface.dataset.avatarState='loading';surface.setAttribute('aria-busy','true');document.querySelector('#avatar-workshop-pause')?.setAttribute('hidden','');if(dialog?.open)dialog.close();iframe?.remove();iframe=undefined;}
   async function prepared(record,parent){
+
    const selected=epoch,key=credential(),renderer=await import(asset('renderer.mjs'));
    if(selected!==epoch||key!==credential())throw Error('Avatar account changed');
    const candidate=document.createElement('canvas');candidate.className='workshop-portrait';candidate.setAttribute('role','img');candidate.setAttribute('aria-label',record.name||'Your chosen avatar');
@@ -68,6 +71,19 @@ window.AvatarWorkshopUI=(()=>{
    preview.render.selectCue?.(artisticCue);preview.render(0);
    stop();resize.disconnect();canvas?.remove();canvas=preview.candidate;paint=preview.render;canvas.style.visibility='';portrait.hidden=true;surface.dataset.avatarState='custom';surface.setAttribute('aria-busy','false');loadFailed=false;message('');document.querySelector('#avatar-workshop-pause')?.removeAttribute('hidden');frame=0;renderSpeech();resize.observe(canvas);run();
   }
+  async function missionPreview(saved){
+   const selected=epoch,key=credential(),record=await api('interaction/avatars/'+saved.id);
+   const model=await import(asset('experiments/school-avatar-quest/model.mjs'));
+   if(await model.digest(record.design)!==saved.sha256)throw Error('La vista de misión no coincide con la versión guardada.');
+   const renderer=await import(asset('renderer.mjs'));
+   if(selected!==epoch||key!==credential())throw Error('La cuenta cambió.');
+   document.querySelector('#avatar-mission-preview')?.remove();
+   const panel=document.createElement('section');panel.id='avatar-mission-preview';panel.setAttribute('aria-label','Vista del avatar de la misión');
+   const title=document.createElement('p');title.textContent='Vista de tu misión · '+record.name;
+   const c=document.createElement('canvas');c.style.width='140px';c.style.height='140px';c.setAttribute('role','img');c.setAttribute('aria-label',record.name);c.dataset.revision=saved.id;c.dataset.sha256=saved.sha256;
+   panel.append(title,c);const status=document.querySelector('#avatar-workshop-status');(status||frameBox).after(panel);
+   try{renderer.prepare(c,record.design);}catch(error){panel.remove();throw error;}
+  }
   function artisticRest(value){
    const aliases={calm:'calm',curious:'curious',focused:'focus',focus:'focus',delighted:'joy',joy:'joy',sad:'sad',anger:'anger',uncertain:'uncertain',welcome:'welcome',sleep:'sleep'};
    const cue=Object.hasOwn(aliases,value)?aliases[value]:undefined;
@@ -75,6 +91,7 @@ window.AvatarWorkshopUI=(()=>{
    if(!paint)return;
    try{if(paint.selectCue?.(cue)){frame=0;paint(frame);}run();}
    catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}
+
   }
   async function refresh(retry=false){
    if(loaded&&!retry||!actor)return;loaded=true;loadFailed=false;const selected=epoch,key=credential();
@@ -94,6 +111,7 @@ window.AvatarWorkshopUI=(()=>{
    if(!iframe||event.source!==iframe.contentWindow||event.origin!==location.origin)return;
    if(event.data?.kind==='daimon.workshop.ready'){editorReady=true;return;}
    if(event.data?.kind==='daimon.workshop.closed'){close();return;}
+   if(event.data?.kind==='daimon.workshop.mission-returned'&&missionPath&&event.data.request_id===missionId){message('Versión conservada para la misión. Podés volver a abrirla; la revisión sigue separada.');close();return;}
    const data=event.data;if(data?.kind!=='daimon.workshop.request'||!uuid(data.id))return;
    const target=iframe.contentWindow,selected=epoch,key=credential();
    const respond=value=>{if(selected===epoch&&target===iframe?.contentWindow&&key===credential()){
@@ -104,10 +122,17 @@ window.AvatarWorkshopUI=(()=>{
    try{
     if(JSON.stringify(data).length>1048576||!data.args||typeof data.args!=='object')throw Error('Diseño demasiado grande.');
     const a=data.args;let value;if(data.action!=='preview')clearCompactPreview();
-    if(data.action==='snapshot'&&Object.keys(a).length===0)value=await api('interaction/avatars');
+    if(data.action==='snapshot'&&Object.keys(a).length===0){
+     const mission=missionPath?await api(missionPath):null;
+     value=await api('interaction/avatars');
+     if(mission){if(mission.returned)await missionPreview(mission.returned.saved_revision);value={...value,editing:mission.returned?.saved_revision?.id||value.editing,mission};}
+    }
+    else if(data.action==='mission-return'&&missionPath&&Object.keys(a).join(',')==='id'&&uuid(a.id)){value=await api(missionPath,{revision_id:a.id});await missionPreview(value.saved_revision);}
     else if(data.action==='preview'&&Object.keys(a).length===1&&uuid(a.id)){const version=previewEpoch;value=await showCompactPreview(await api('interaction/avatars/'+a.id),target,a.id,selected,key,version);}
+
     else if(data.action==='get'&&Object.keys(a).length===1&&uuid(a.id))value=await api('interaction/avatars/'+a.id);
     else if(['edit','activate'].includes(data.action)&&Object.keys(a).sort().join(',')==='generation,id'&&uuid(a.id)&&Number.isSafeInteger(a.generation)){
+     if(data.action==='activate'&&missionPath)throw Error('Volvé a la misión con la versión guardada; Usar es una elección separada.');
      if(data.action==='activate')preview=await prepared(await api('interaction/avatars/'+a.id));
      if(selected!==epoch||key!==credential())throw Error('La cuenta cambió.');
      value=await api('interaction/avatars',{action:data.action,...a});
@@ -121,8 +146,8 @@ window.AvatarWorkshopUI=(()=>{
   pause?.addEventListener('click',()=>{paused=!paused;renderSpeech();pause.setAttribute('aria-pressed',String(paused));icon(pause,paused?'play':'pause',paused?voiceLabel('Animate avatar','Animar avatar'):voiceLabel('Pause avatar','Pausar avatar'));run();});
   document.addEventListener('visibilitychange',()=>{renderSpeech();run();stopCompactPreview();});motion.addEventListener('change',()=>{renderSpeech();run();stopCompactPreview();});window.addEventListener('pagehide',clearCompactPreview);
   function openVoiceEntry(){
-   if(!actor||!voiceEntry||voiceEntryOpened||!window.VoiceStudioUI)return;
-   voiceEntryOpened=true;button.click();if(studio?.panel.hidden)voiceTab.click();
+   if(!actor||(!voiceEntry&&!missionPath)||voiceEntryOpened||(voiceEntry&&!window.VoiceStudioUI))return;
+   voiceEntryOpened=true;button.click();if(voiceEntry&&studio?.panel.hidden)voiceTab.click();
   }
   return {bind(value){if(value!==actor){reset();actor=value;}void refresh();openVoiceEntry();},reset,artisticRest,speechLevel};
  }

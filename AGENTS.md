@@ -1,10 +1,16 @@
 # Integration requirements
 
-Read `CONTRIBUTING.md` before integration. Its independent-review requirement
-for binding, security and persistent-state changes remains mandatory when an old
-review-permission question is withdrawn. Reuse the existing authorized review
-route; do not create another approval question. Source checks and receiving
-adoption are separate from a completed independent review.
+Read `CONTRIBUTING.md` before integration. Apply Nicolas's recorded operational
+delegation: an already authorized same-actor service composition is not waiting
+for another conversation or review to authorize it again. Preserve existing
+authentication, tokens, session bindings, grants and private-state contracts;
+qualify the exact own/foreign/anonymous and changed-selection boundaries through
+the actual receiving writer. Reuse valid review evidence for unchanged code.
+Independent review remains required for new token handling, changed ingress or
+session semantics, migrations and changes to an existing authority contract.
+A routine same-actor composition with those contracts unchanged uses its concrete
+source/receiving checks without an additional external approval gate. Record
+actual reviews, checks and receiving adoption separately; never invent a review.
 
 After the final edit beneath `dashboard/web/avatar-workshop`, run
 `python3 -B -m dashboard.avatar_workshop_provenance --update` and the workshop

@@ -55,6 +55,12 @@ def selected(paths, previous=None):
 
 
 class MatrixHostScope(unittest.TestCase):
+    def test_contribution_guidance_keeps_owning_web_checks_without_native_rebuild(self):
+        self.assertEqual(selected(['CONTRIBUTING.md','AGENTS.md']),set())
+        self.assertEqual(selected(['CONTRIBUTING.md','dashboard/school_mission_host.py']),set())
+        self.assertEqual(selected(['CONTRIBUTING.md.extra']),{'text','audio','activity'})
+        self.assertIn('text',selected(['CONTRIBUTING.md','src/app.rs']))
+
     def test_inert_avatar_model_fixtures_use_dashboard_without_native_requalification(self):
         files=['tests/avatar_layer_model.mjs','tests/avatar_layer_model_browser.cjs']
         for path in files:

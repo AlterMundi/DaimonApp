@@ -57,7 +57,8 @@
     "renderer.mjs/surface-renderer.mjs/model-runtime.mjs: local raster-part hierarchy, held-object hand anchors and optional transient mechanical mouth; original art and saved rest cues remain unchanged at level zero.",
     "app.mjs/index.html/storage.mjs: explicit immutable saved-revision compact preview through existing actor-owned parent bridge; preview never saves, uses or awards a mission.",
     "Archive Enchanted presentation restored on current App: selected local licensed fonts/icons, ascii-avatar.exe header, grouped controls, face-focused expression thumbnails; preserve immutable API, preview/use, v2 mouth/hand rendering and pre-paint presentation bootstrap.",
-    "Shared release consumer: full maintainer5967ee3 baseline reconciles the separately attributed Archive UI/header/artwork handoffs; retains actual PR771 artwork and existing account/raster/preview adapters."
+    "Shared release consumer: full maintainer5967ee3 baseline reconciles the separately attributed Archive UI/header/artwork handoffs; retains actual PR771 artwork and existing account/raster/preview adapters.",
+    "PR776 mission bridge composed with the existing App owner selection: clean saved-revision return/reopen; Use, actual participation, display review and Oca credit remain separate."
   ],
   "receiving_hashes": {
     "renderer.mjs": "4bac887e1750c521486ad31f2a536b60639f43cc576c85cf635b391d507f3dc8",
@@ -65,7 +66,7 @@
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
     "experiments/school-avatar-quest/index.html": "0751eff50e1a1e2b5dd783f3246ff683c506c260921fa9851980708a15a619ab",
     "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
-    "experiments/school-avatar-quest/storage.mjs": "cf606a383a2fc05b701377347d098abd12908e16bea7205b9462f3cf4e88ae7b",
+    "experiments/school-avatar-quest/storage.mjs": "2fedbb1de2b46a0d840a98a367b8afeac174b2eaa91f2ad10202bcbf30f3096a",
     "experiments/school-avatar-quest/wardrobe.mjs": "8508c3ae0f328461bd3eb1b96e4c2859046e1c70d3368414e3f658c1ceec5a92",
     "experiments/school-avatar-quest/precision-renderer.mjs": "8ea8f42c6eedf08bb08d1b8fb7782fd886f432a028d880a27d401384ee8cc9be",
     "experiments/school-avatar-quest/pillow.mjs": "363a5d745893983ee8046da8d810f0bf4bfd9021cb22d11b13c35eddd7aec16a",
@@ -82,7 +83,7 @@
     "experiments/school-avatar-quest/props.mjs": "c34c685a00d84fbafc2ceb3a1ac47b70e890264654cb3474afb36a2a40db5799",
     "experiments/school-avatar-quest/performance-illustration.mjs": "9f1aaa54ef2a366b56e3efd6430b2235841e687f74132f86def8e99aa925f1fa",
     "experiments/school-avatar-quest/color.mjs": "3befc2a3a7e64be3be65fabde96f23447206623ffeb3819e89841d9cfbb30c69",
-    "experiments/school-avatar-quest/app.mjs": "82e7b1acedd64bd5359b0b02415263fa0ccfd9384a2e764cae354fb5c11b386e",
+    "experiments/school-avatar-quest/app.mjs": "6d1cf357eb676205b03248266d8282c06351402543cfb58c15e02f27345c7b9c",
     "experiments/school-avatar-quest/surface-organic-masters.mjs": "33cab8d27fc01cf83784a0210901934c1bc2f77004b9909167253ad96d1881c5",
     "experiments/school-avatar-quest/wardrobe.css": "cd80ba71e899b207352ae3c1ec51f6209a3ac0555b1d4e42ed7bee6822a9b39a",
     "experiments/school-avatar-quest/interaction-geometry.mjs": "1c3a08c83fbc7a712df45f68c023761d400e6a56495faee0f996c00025e2b958",
