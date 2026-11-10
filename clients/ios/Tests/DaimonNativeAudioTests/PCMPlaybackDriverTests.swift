@@ -83,4 +83,50 @@ final class PCMPlaybackDriverTests: XCTestCase {
         XCTAssertEqual(channel[2], Float(32767) / 32768)
         XCTAssertThrowsError(try ApplePCMOutput.buffer(Data([0])))
     }
+    @MainActor func testDecoderWaitsForPlayedCapacityInsteadOfExpandingTheByteQueue() async throws {
+        let output = OutputFixture(), id = UUID().uuidString.lowercased()
+        let driver = try PCMPlaybackDriver(seconds: 300, device: output, activate: {},
+            deactivate: {}, clock: { 0 }, emit: { _ in })
+        defer { driver.close() }
+        let data = Data(repeating: 0, count: 32000)
+        for n in 0..<45 {
+            try driver.append(sequence: n, utterance: id, end: (n + 1) * data.count,
+                              data: data, sha256: PCMPlaybackQueue.digest(data))
+        }
+        var entered = false, admitted = false
+        let waiter = Task { entered = true; try await driver.waitForCapacity(8192); admitted = true }
+        await settle(); XCTAssertTrue(entered); XCTAssertFalse(admitted)
+        XCTAssertEqual(output.completions.count, 8)
+        output.completions[0](); await settle()
+        try await waiter.value; XCTAssertTrue(admitted)
+        XCTAssertEqual(output.completions.count, 9, "Only playback completion frees scheduled capacity")
+    }
+    @MainActor func testSpanBackpressureAlsoRetiresOnFlushStopAndTaskCancellation() async throws {
+        for operation in 0..<3 {
+            let output = OutputFixture(), id = UUID().uuidString.lowercased()
+            let driver = try PCMPlaybackDriver(seconds: 300, device: output, activate: {},
+                deactivate: {}, clock: { 0 }, emit: { _ in })
+            defer { driver.close() }
+            for n in 0..<512 { try append(driver, n, id) }
+            var entered = false, admitted = false
+            let waiter = Task { entered = true; try await driver.waitForCapacity(2); admitted = true }
+            await settle(); XCTAssertTrue(entered); XCTAssertFalse(admitted)
+            if operation == 0 { try driver.flush() }
+            else if operation == 1 { driver.close() }
+            else { waiter.cancel() }
+            switch await waiter.result {
+            case .success: XCTFail("Retired decoder wait admitted stale PCM")
+            case .failure: break
+            }
+            output.completions[0](); await settle()
+            XCTAssertFalse(admitted)
+            if operation != 1 {
+                if operation == 2 { try driver.flush() }
+                try await driver.waitForCapacity(2)
+                let data = Data([0,0]), fresh = UUID().uuidString.lowercased()
+                try driver.append(sequence: 512, utterance: fresh, end: 2,
+                                  data: data, sha256: PCMPlaybackQueue.digest(data))
+            }
+        }
+    }
 }
