@@ -18,6 +18,16 @@ handoff; a web-only change does not restart native work. Preserve paused/blocked
 goals and uncertain inputs. Never clear journals or replay a command to manufacture
 convergence. Reuse actual outcomes after a failed verifier.
 
+For collector-preserving listener replacement, snapshot every owned goal's
+identity, revision, pause state and accounting, but enumerate turns only for
+currently loaded owned threads (`thread/loaded/list`, then `thread/turns/list`).
+Reading every historical unloaded rollout adds latency without identifying more
+live collectors. Keep both enumerations bounded; native task-lifetime admission
+remains authoritative for Core maintenance. This observation neither resumes a
+thread nor establishes global idle. If preparation expires before any selector
+write, inspect that retained outcome and current preimage before continuing the
+known-unstarted operation with the same qualified artifact.
+
 Native selectors may use a symlink. Compare the effective existing ExecStart
 argument with the process executable's resolved identity and qualified digest;
 conditionally replace that actual argument, rather than searching the unit for
