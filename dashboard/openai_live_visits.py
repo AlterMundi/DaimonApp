@@ -200,6 +200,33 @@ class LiveCreations:
                     or value.get('admission',{}).get('ended') is not True):return None
             return {'id':value['id'],'revision':self._revision(value)}
 
+    def accepted_replacement(self,human,frozen,replacement):
+        """Read a consumed review only when its new attempt never created a call."""
+        if not isinstance(replacement,dict) or set(replacement)!={'id','revision'}:return None
+        owner=self._owner(human,frozen)
+        with history_lock(self.root/'.lock'):
+            value=self._read(replacement['id']);self._matches(value,owner)
+            review=value.get('replacement_review')
+            if (value['state']!='created' or value.get('backend_mode')!='native'
+                    or value.get('admission',{}).get('ended') is not True
+                    or not review or review['revision']!=replacement['revision']):return None
+            target=self._read(review['target']);self._matches(target,owner)
+            if (target.get('replaces')!=value['id'] or target['state']!='not_created'
+                    or target.get('backend_mode')!='native' or target.get('admission',{}).get('ended') is not True
+                    or target.get('request_sha256') or target.get('call')):return None
+            return dict(replacement)
+
+    def startup_failure(self,ident,human,frozen,stage,code):
+        """One fixed diagnostic; no exception text, retries or outcome rewriting."""
+        if (stage not in ('configuration','native_context','offer','creation','sideband') or code not in (
+                'context_changed','context_pending','startup_bound','native_unavailable',
+                'client_disconnected','timeout','unavailable','invalid_state','transport_unavailable')):
+            raise ValueError('Select a fixed voice startup diagnostic')
+        with history_lock(self.root/'.lock'):
+            value=self.read(ident,human,frozen)
+            if 'startup_failure' not in value:
+                value['startup_failure']={'stage':stage,'code':code};self._write(value)
+
     def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)

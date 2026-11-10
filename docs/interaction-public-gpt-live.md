@@ -1181,3 +1181,27 @@ A retained `created` session from an earlier attachment failure remains created
 with unconfirmed final usage. Installing the dependency does not close, recreate,
 refund or rewrite it. Use the existing exact-owner disconnection review/manual
 Reconnect path for a later explicit replacement, preserving the original receipt.
+
+## Preparing voice after an admitted replacement
+
+A reviewed replacement is consumed by durable admission, before native context
+preparation, microphone permission or a provider POST. Its accepted receipt now
+travels with the existing context-preparing/error events. The client clears only
+the exact current binding/backend/review and keeps the server-confirmed frozen
+voice continuation for the next explicit Reconnect. A later preparation failure
+must not resubmit the consumed descriptor. No automatic reconnect is added.
+
+If that ACK was lost, a read-only observation can confirm the consumed review
+only when its target is ended, `not_created`, and has no request digest or call.
+Unknown POST outcomes remain held; their review cannot be cleared by this path.
+Original calls, usage/finalization uncertainty, source identities and native work
+are retained. Legacy attempts without a frozen studio voice do not invent one.
+
+One optional first-write-only `startup_failure` in the existing visit contains a
+fixed stage/code, without exception text, paths, transcripts or provider payloads.
+It survives normal cleanup but is omitted from ordinary recovery/status output.
+Optional diagnostic storage failure must not prevent cleanup. Existing receipt
+and storage bounds apply; there is no new journal or historical backfill. The
+original phone startup exception was not retained and is not retroactively
+attributed to the reproduced reconnect defect. Phone/hearing acceptance remains
+separate from the mounted synthetic and lifecycle regressions.
