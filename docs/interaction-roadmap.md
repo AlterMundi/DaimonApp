@@ -5,7 +5,26 @@ implemented. Human selection, 2026-10-26: move from the accepted single-chat bas
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
 
-## Current receiving —8November2026
+## Current receiving —10November2026
+
+The maintained [receiving cockpit](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-current.md)
+and its resource record select the current seven receivers and exact component
+qualification; dated records below do not select a rollback or another rollout.
+Basic child Conversation admission and the School/Oca owner workspace/canonical
+return authority have technical qualification. Family device/workshop/mission
+journeys and sustained useful voice/hearing remain open; do not repeat admission
+or fabricate a first child input to demonstrate them.
+
+Phone Avatar startup and sustained stability remain the priority. The selected
+WHITE artwork and deployed startup/reconnection correction do not prove physical
+acceptance. Keep the existing pending phone trial, retained recordings and unknown
+provider outcomes; no duplicate trial, replay or fallback follows this roadmap.
+Prepared iOS source/SDK/simulator evidence remains separate from native capability
+activation, signing/distribution and actual microphone/device/hearing acceptance.
+The active goal contains only the remaining work while retaining the full original
+scope; completed software checks never close its physical acceptance requirements.
+
+## Retained receiving —8November2026
 
 Shared Resources `interaction-current.md` selects the actual receiving record;
 all earlier component checkpoints below retain their dates and limits. Original
