@@ -115,7 +115,7 @@ The producer separately retains one replaceable `last_check` with sequence,
 generations, start/completion milliseconds and outcome, plus the last successful
 check time. A failed read uses `matrix_inbox_unavailable`; an interrupted check
 may remain `in_progress`, which never claims that an old process is still alive.
-The existing256KiB producer cap includes this record. These source timestamps
+The producer metadata cap includes this record (256KiB finite,4MiB continuous). These source timestamps
 alone still do not prove operational readiness, native action or reply delivery.
 
 ## Versioned native control successor
@@ -259,7 +259,7 @@ the actual live loop, current owner, eligible native entry/profile, capacity and
 fresh exact-generation source check; its proof expires after15seconds. A continuous
 mode label or open gate alone cannot pulse the heart.
 
-Continuous cache retention keeps eight completed and reviewed heartbeat batches,
+Continuous cache retention keeps at most eight completed and reviewed heartbeat batches,
 eight resolved incoming-original projections (`recipient_copy_proved` or explicit
 `no_reply`), and64 own-body echoes. Unreported/native-unresolved batches and
 pending, deferred, merely submitted or uncertain replies are preserved. Retirement
@@ -267,8 +267,22 @@ never changes accounting or the persisted native inbox frontier. Old pages canno
 reintroduce a retired projection. Canonical signed Matrix originals/authoring/
 delivery receipts and native conversation turns remain in their owning journals;
 this is bounded projection retirement, not history deletion or task completion.
-The existing16batch/256original/4MiB limits still refuse genuinely unresolved
-backlog, rather than discard it. Older finite policies retain their prior behavior.
+Continuous operation has128 retained-return slots and a4MiB producer document,
+separate from the unchanged48 execution envelopes/hour,64 possible provider
+attempts/execution and600second execution deadline. This accommodates more than
+two full hours of exceptional retained outcomes; ordinary reviewed work rotates
+indefinitely with at most eight reviewed details. Finite contracts keep their
+original16-return/256KiB bounds. Metadata headroom is not spending authority.
+The reviewed cache is reduced further if protected outcomes approach capacity.
+Exact reported revision plus an observed terminal execution is required to retire
+reviewed detail. Terminal proof is retained on the same return before its separate
+execution cache can age out. Unknown, unreviewed and uncertain outcomes stay
+intact; they are not replayed or falsely marked reviewed to create headroom.
+
+The continuous128batch/256cursor/4MiB limits still refuse genuinely unresolved
+backlog, rather than discard it. If every slot is protected, the owning unresolved
+work must be reconciled; the producer does not silently drop it. Older finite
+policies retain their prior behavior.
 
 Use `matrix_response` action `no_reply` with the exact original/revision and a
 bounded reason only when neither a response nor further work is needed. It sends

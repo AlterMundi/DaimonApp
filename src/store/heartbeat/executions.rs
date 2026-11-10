@@ -16,6 +16,15 @@ pub(super) fn load(conn: &Connection, local: i64) -> Result<Option<Value>> {
 }
 pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     conn.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key(local),serde_json::to_string(value)?])?;
+    if matches!(value["phase"].as_str(), Some("terminal" | "transferred"))
+        && matches!(
+            value["terminal_status"].as_str(),
+            Some("completed" | "failed" | "interrupted")
+        )
+        && let Some(source) = value["source"].as_str()
+    {
+        super::producer::settle_observed_return_on(conn, local, source)?;
+    }
     Ok(())
 }
 pub(super) fn selected(conn: &Connection, human: i64, entry: SessionKey) -> Result<Vec<Value>> {
