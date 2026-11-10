@@ -284,8 +284,10 @@ settles that admission as `attention_failed` or `attention_interrupted`. Its ret
 originals and response uncertainty stay retained; no review, reply or completion
 is invented. The attempted source revisions are fenced against automatic replay,
 without refunding reservations. New genuine originals can still be admitted.
-Completed but unreported work and unmatched/transferred/uncertain executions
-remain pending. Status retains `last_attention_failure` separately from present
+Unmatched, running and uncertain executions remain pending. A transferred
+execution settles only after an exact terminal receipt for its original physical
+turn; human successor turns and cancellation ownership stay unchanged.
+Status retains `last_attention_failure` separately from present
 operational readiness. This does not authorize a failed task retry.
 
 
@@ -393,7 +395,10 @@ is introduced. An unavailable report is a failed source observation with explici
 A proved completed physical attention turn without `heartbeat_reported` retains
 `accepted_terminal_unreviewed`, not a semantic review/task/delivery claim. Its
 exact attempted source revisions are fenced from automatic replay, while new
-originals may proceed. Status exposes `last_completed_without_review`. Existing
+originals may proceed. The same rule applies to transferred ownership only when
+that original physical turn has an exact terminal receipt. It does not cancel,
+resume or settle a later human successor. Status exposes
+`last_completed_without_review`. Existing
 reported-review semantics and bounded retention are unchanged. Unknown, running
 or mismatched physical outcomes never authorize this settlement. This corrects
 an observed Oliva deadlock at completed local581; do not forge its review mark.
