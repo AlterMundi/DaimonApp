@@ -415,3 +415,16 @@ the Beacon test device still implemented the previous activate() signature. Its
 fixture now implements activate(mode:); no runtime activation logic was changed
 by that correction. SDK/app installation and simulator were not reached. The
 corrected combined qualification remains pending; this failure is retained.
+
+Corrected combined source7f6bdefa passed36Swift cases (zero failures), Node
+capture races, both SDK apps and normal fixture-helper absence. Main CI42782144174
+passed. Native42782143985 stopped before app installation: bootstatus exhausted
+its120second observation while the simulator reported data migration/system-app
+startup. Shutdown/delete and the one server TERM/exit observations were also
+unconfirmed. No app, bridge, microphone or audio acceptance follows.
+
+The fixture cleanup now retains its one TERM result and independently observed
+process exit without masking the original journey failure or retrying a signal.
+Three synthetic regressions cover unknown signal/exit, acknowledgment without
+exit and already-exited ownership. Simulator deadlines, single launch, normal
+TLS/capability policy and runtime audio code remain unchanged.

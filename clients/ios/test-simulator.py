@@ -61,6 +61,23 @@ def run(argv, *, timeout=30):
     return result.stdout
 
 
+def stop_fixture(server, state):
+    """One owned TERM attempt; observation failure never hides the journey error."""
+    signal = 'not_needed'
+    if server.poll() is None and (state/'server.pid').exists():
+        try:
+            result = subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],
+                                    capture_output=True,timeout=10)
+            signal = 'acknowledged' if result.returncode == 0 else 'unconfirmed'
+        except (subprocess.TimeoutExpired,OSError):
+            signal = 'unconfirmed'
+    try:
+        server.wait(timeout=10)
+    except (subprocess.TimeoutExpired,OSError):
+        pass
+    return {'signal':signal,'stopped':server.poll() is not None}
+
+
 def qualify(app):
     device = None
     server = None
@@ -172,13 +189,12 @@ def qualify(app):
                         except (subprocess.TimeoutExpired,RuntimeError) as error:
                             cleanup.append({'action':command[2],'state':'unconfirmed','error':str(error)[-1000:]})
             finally:
-                if server:
-                    if server.poll() is None and (state/'server.pid').exists():
-                        subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],capture_output=True,timeout=10)
-                    server.wait(timeout=10)
+                fixture = stop_fixture(server,state) if server else {'signal':'not_needed','stopped':True}
                 if server_log: server_log.close()
-            print(json.dumps({'cleanup':cleanup,'fixture_server_stopped':server is None or server.poll() is not None}),flush=True)
+            print(json.dumps({'cleanup':cleanup,'fixture_server_signal':fixture['signal'],
+                              'fixture_server_stopped':fixture['stopped']}),flush=True)
             if passed:
+                assert fixture['stopped'],'Fixture server exit not confirmed'
                 assert any(c['action']=='delete' and c['state']=='acknowledged' for c in cleanup),'Simulator deletion not confirmed'
     print('Owned simulator, HTTPS fixture, one-day CA and temporary state removed',flush=True)
 
