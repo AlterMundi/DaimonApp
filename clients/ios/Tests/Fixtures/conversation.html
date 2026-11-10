@@ -42,6 +42,13 @@ window.runQualification=async()=>{
     // Reserve the duplex session only. This never invokes getUserMedia, changes
     // OS permissions, creates a recording or calls a provider.
     captureOwner=crypto.randomUUID();await capture('capture_begin',captureOwner);
+    const physicalVisit=crypto.randomUUID();
+    await capture('capture_connection',captureOwner,{visit:physicalVisit});
+    await capture('capture_connection',captureOwner,{visit:physicalVisit});
+    let inactiveRenewalRefused=false;
+    try{await capture('capture_connection',captureOwner,{visit:crypto.randomUUID(),predecessor:physicalVisit});}
+    catch{inactiveRenewalRefused=true;}
+    if(!inactiveRenewalRefused)throw Error('Inactive microphone renewed a capture lease');
     let duplicateRefused=false;
     try{await capture('capture_begin',crypto.randomUUID());}catch{duplicateRefused=true;}
     if(!duplicateRefused)throw Error('Concurrent microphone session admitted');
@@ -77,7 +84,7 @@ window.runQualification=async()=>{
     output.close();output=undefined;
     await capture('capture_end',captureOwner);captureOwner=undefined;
     if(failures.length)throw Error(JSON.stringify(failures));
-    sessionStorage.setItem('qualification',JSON.stringify({state:'native_bridge_passed',played_bytes:3*tone.length,capture_iframe:'refused',duplex_reservation:'held_across_pcm_idle',microphone_requested:false,beacon_qualification:window.__nativeBeaconQualification,beacon_bridge:{states:beaconStates,replay_refused:replayRefused,microphone_requested:false},iframe_attempt:'could_not_reserve_owner',phases}));
+    sessionStorage.setItem('qualification',JSON.stringify({state:'native_bridge_passed',played_bytes:3*tone.length,capture_iframe:'refused',duplex_reservation:'held_across_pcm_idle',capture_connection:'identity_bound_inactive_renewal_refused',microphone_requested:false,beacon_qualification:window.__nativeBeaconQualification,beacon_bridge:{states:beaconStates,replay_refused:replayRefused,microphone_requested:false},iframe_attempt:'could_not_reserve_owner',phases}));
     location.href='/outside/';
   }catch(error){
     await fetch('/result',{method:'POST',body:JSON.stringify({state:'failed',message:error.name+': '+error.message})});

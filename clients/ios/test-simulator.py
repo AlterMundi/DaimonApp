@@ -166,6 +166,7 @@ def qualify(app):
             assert (result.get('state')=='passed' and result.get('played_bytes')==28800
                     and result.get('capture_iframe')=='refused'
                     and result.get('duplex_reservation')=='held_across_pcm_idle'
+                    and result.get('capture_connection')=='identity_bound_inactive_renewal_refused'
                     and result.get('microphone_requested') is False), result
             beacon = result.get('beacon_qualification',{})
             assert (beacon.get('state')=='passed' and beacon.get('microphone_requested') is False

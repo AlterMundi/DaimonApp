@@ -146,6 +146,25 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
  }
  // A transport handover retains one microphone/lock and never replays
  // retained closing speech into the successor. Source IDs stay per visit.
+ // Optional iOS ownership is bound only after its own valid HTTP answer/SDP.
+ // A delayed native receipt fences Listening, and Stop wins over that receipt.
+ const ios=fixture({nativeChoice:true,continuous:true}),links=[];
+ ios.window.__DaimonCaptureConnection=async(stream,link)=>{assert.equal(stream,ios.media);links.push(link);};
+ try{await ios.start();assert.equal(links.length,1);assert.equal(links[0].visit,ios.sockets[0].id);assert.equal(links[0].predecessor,undefined);
+ ios.renew();await until(()=>ios.peers[1]?.listeners.has('icegatheringstatechange'));ios.peers[1].ice();
+ await until(()=>ios.states.at(-1).active&&links.length===2);
+ assert.equal(links[1].predecessor,links[0].visit);assert.equal(links[1].visit,ios.sockets[1].id);
+ assert.equal(ios.permission(),1);assert.equal(ios.stops(),0);}finally{await ios.engine.hold();}
+ const iosLate=fixture({nativeChoice:true});let nativeLinkAck;
+ iosLate.window.__DaimonCaptureConnection=()=>new Promise(r=>nativeLinkAck=r);
+ const iosStarting=iosLate.engine.start();await until(()=>iosLate.peers[0]?.listeners.has('icegatheringstatechange'));iosLate.peers[0].ice();
+ await until(()=>nativeLinkAck);assert(!iosLate.engine.hasAudio&&iosLate.states.at(-1).starting,'No Listening before native ownership acknowledgment');
+ await iosLate.engine.hold();nativeLinkAck();assert.equal(await iosStarting,false);
+ assert(!iosLate.engine.active);assert.equal(iosLate.permission(),1);assert.equal(iosLate.stops(),1);assert.equal(iosLate.sockets.length,1);
+ const iosRefused=fixture({nativeChoice:true});
+ iosRefused.window.__DaimonCaptureConnection=async()=>{throw Error('Native ownership not confirmed');};
+ const iosAttempt=iosRefused.engine.start();await until(()=>iosRefused.peers[0]?.listeners.has('icegatheringstatechange'));iosRefused.peers[0].ice();
+ assert.equal(await iosAttempt,false);assert.equal(iosRefused.permission(),1);assert.equal(iosRefused.stops(),1);assert.equal(iosRefused.sockets.length,1);
  const renewal=fixture({nativeChoice:true,continuous:true});await renewal.start();
  try{
   renewal.pcm();renewal.renew();

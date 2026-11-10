@@ -1,14 +1,14 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto');
 const source=fs.readFileSync(__dirname+'/Resources/native-capture.js','utf8');
-function fixture({begin,permission}={}){
+function fixture({begin,permission,connection}={}){
   const messages=[],listeners=new Map();let requests=0,stops=0;
   const track={readyState:'live',stop(){stops++;this.readyState='ended';},addEventListener(type,fn){this.ended=fn;}};
   const stream={getTracks:()=>[track]},document=crypto.randomUUID();
   const devices={getUserMedia:async()=>{requests++;return permission?permission():stream;}};
   const window={__DaimonAudioDocument:document,webkit:{messageHandlers:{capture:{postMessage:raw=>{
     const value=JSON.parse(raw);messages.push(value);
-    return value.command==='capture_begin'&&begin?begin():Promise.resolve(true);
+    return value.command==='capture_begin'&&begin?begin():value.command==='capture_connection'&&connection?connection(value):Promise.resolve(true);
   }}}},addEventListener:(name,fn)=>listeners.set(name,fn)};
   vm.runInNewContext(source,{window,navigator:{mediaDevices:devices},crypto,DOMException,Promise,Object});
   return {devices,window,track,stream,messages,requests:()=>requests,stops:()=>stops,event:name=>listeners.get(name)?.()};
@@ -38,5 +38,28 @@ function fixture({begin,permission}={}){
   assert.equal(inactive.messages.length,0);assert.equal(inactive.requests(),0);
   const revoked=fixture();await revoked.devices.getUserMedia({audio:true});revoked.event('nativecapturebackground');
   assert.equal(revoked.stops(),1);assert.equal(revoked.messages.length,2);
+  const connected=fixture();await connected.devices.getUserMedia({audio:true});
+  const firstVisit=crypto.randomUUID(),nextVisit=crypto.randomUUID();
+  await connected.window.__DaimonCaptureConnection(connected.stream,{visit:firstVisit});
+  await connected.window.__DaimonCaptureConnection(connected.stream,{visit:firstVisit});
+  assert.equal(connected.messages.filter(v=>v.command==='capture_connection').length,1,'Known duplicate never repeats a native write');
+  await assert.rejects(connected.window.__DaimonCaptureConnection({}, {visit:crypto.randomUUID(),predecessor:firstVisit}),{name:'InvalidStateError'});
+  await assert.rejects(connected.window.__DaimonCaptureConnection(connected.stream,{visit:nextVisit,predecessor:crypto.randomUUID()}),{name:'InvalidStateError'});
+  await connected.window.__DaimonCaptureConnection(connected.stream,{visit:nextVisit,predecessor:firstVisit});
+  assert.equal(connected.messages.at(-1).predecessor,firstVisit);assert.equal(connected.messages.at(-1).visit,nextVisit);
+  assert.equal(connected.requests(),1,'Physical connection binding reuses the exact microphone');
+  connected.window.__DaimonCaptureStop();
+  await assert.rejects(connected.window.__DaimonCaptureConnection(connected.stream,{visit:crypto.randomUUID(),predecessor:nextVisit}),{name:'InvalidStateError'});
+  let connectionAck;const afterStop=fixture({connection:()=>new Promise(r=>connectionAck=r)});
+  await afterStop.devices.getUserMedia({audio:true});
+  const linking=afterStop.window.__DaimonCaptureConnection(afterStop.stream,{visit:crypto.randomUUID()});
+  const retiredLink=assert.rejects(linking,{name:'AbortError'});afterStop.window.__DaimonCaptureStop();connectionAck(true);await retiredLink;
+  assert.equal(afterStop.stops(),1);assert.equal(afterStop.messages.filter(v=>v.command==='capture_end').length,1);
+  const unknownLink=fixture({connection:()=>Promise.reject(Error('Unknown native write outcome'))});
+  await unknownLink.devices.getUserMedia({audio:true});const unknownVisit=crypto.randomUUID();
+  await assert.rejects(unknownLink.window.__DaimonCaptureConnection(unknownLink.stream,{visit:unknownVisit}),/Unknown native/);
+  await assert.rejects(unknownLink.window.__DaimonCaptureConnection(unknownLink.stream,{visit:unknownVisit}),{name:'InvalidStateError'});
+  assert.equal(unknownLink.messages.filter(v=>v.command==='capture_connection').length,1,'Uncertain link is not retried');
+  unknownLink.window.__DaimonCaptureStop();
   console.log('iOS capture ownership: stop/release, concurrency, late native/OS grants, refusal and lifecycle passed; no real microphone/provider');
 })().catch(error=>{console.error(error);process.exitCode=1;});
