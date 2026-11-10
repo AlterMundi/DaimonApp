@@ -409,3 +409,9 @@ Beacon qualification does not establish qualification of this composition, actua
 microphone input or physical device/hearing acceptance. Source delivery follows
 Nicolas's direction to integrate prepared work; no new independent review is
 claimed.
+
+The first combined run42781912791 stopped during Foundation test compilation:
+the Beacon test device still implemented the previous activate() signature. Its
+fixture now implements activate(mode:); no runtime activation logic was changed
+by that correction. SDK/app installation and simulator were not reached. The
+corrected combined qualification remains pending; this failure is retained.

@@ -111,6 +111,6 @@ final class BeaconPlaybackDriverTests: XCTestCase {
 }
 @MainActor private final class SharedBeaconSessionFixture: AudioSessionDevice {
     var starts = 0, stops = 0
-    func activate() throws { starts += 1 }
+    func activate(mode: AudioSessionMode) throws { starts += 1 }
     func deactivate() throws { stops += 1 }
 }
