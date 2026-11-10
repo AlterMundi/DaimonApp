@@ -1464,3 +1464,27 @@ model, account, voice and physical-session/resource bounds remain unchanged.
 proxy and SQLite restart with a synthetic backend: exactly one `thread/start`,
 zero `turn/start` or invented originals. Provider audio and device/hearing
 acceptance remain separate from this metadata qualification.
+
+## Graceful Stop with an unsealed native client request
+
+A retained GPT-Live client delegation can still be waiting for its capture seal
+when the human presses Stop. The old close guard treated that pending native
+request like session-owned Responses work and withheld session.close until the
+finalization deadline. Native client work belongs to the existing application
+owner: close the voice transport without completing, cancelling or rewriting
+that request. Keep Responses draining in its existing modes.
+
+The mounted regression closes an unsealed request on explicit Stop, confirms
+usage, preserves the exact delegation and sends one close command. The durable
+regression also checks restart: an uncertain prior close is never resent. The
+scheduled-renewal regression carries a sealed, admitted job through close, native
+context readiness and one successor, then delivers its late result exactly once
+without another original, transcription or dispatch. That admitted-job renewal
+already worked in the deployed baseline; it is not the cause established here.
+Older phone cutoffs remain undiagnosed.
+
+This follows the official [client-delegation lifecycle](https://developers.openai.com/api/docs/guides/live-conversations#close-idle-sessions-and-resume)
+and [graceful-close sequence](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close).
+Keep the receiver alive for session.closed and its final usage. Do not weaken
+source-seal, context, authorization, single-successor or uncertain-write barriers
+and do not replay pending work to repair transport closure.

@@ -571,11 +571,13 @@ class LiveCreations:
                 value['client_close_reason']=reason;self._write(value)
 
     def close_intent(self,ident,human,frozen):
-        """Never close over a known pending Responses delegation or retry a write."""
+        """Drain session-owned Responses; native client work keeps its own owner."""
         with history_lock(self.root / '.lock'):
             value=self.read(ident,human,frozen)
             if (value['state']!='created' or value.get('close_intent')
-                    or any(v['state']=='pending' or v.get('needs_client') for v in value['delegations'].values())):
+                    or any((v['state']=='pending' or v.get('needs_client'))
+                        and not (value.get('backend_mode')=='native' and v.get('target')=='client')
+                        for v in value['delegations'].values())):
                 return None
             event={'type':'session.close','event_id':str(uuid.uuid4())}
             value['close_intent']=event
