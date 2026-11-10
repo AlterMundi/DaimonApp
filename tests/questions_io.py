@@ -594,6 +594,12 @@ def scenario(binary, mode):
             assert len([m for m in j.rpc if m.get('method')=='turn/start'])==2
             print(json.dumps({'scenario':mode,'two_tasks_survive_native_completion_and_restart':True,'scoped_force_reply_and_stale_controls':True}),flush=True);return
         if mode == 'disconnect':
+            # Session busy is cleared before record_turn_finished commits the
+            # uncertain answers. Observe that durable outcome before restart;
+            # an idle session alone is not a receipt for the answer's result.
+            j.wait(lambda: all(j.row('SELECT status FROM incoming_updates WHERE update_id=?',
+                                     (update_id,))==[('undetermined',)]
+                               for update_id in (option_id, answer_id)))
             for update_id in (option_id, answer_id):
                 assert j.row('SELECT status FROM incoming_updates WHERE update_id=?',(update_id,))==[('undetermined',)]
             j.stop(); j.start(); j.admit('late answer',reply=second[0]['message_id']); j.admit('/questions')
