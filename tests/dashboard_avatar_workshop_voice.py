@@ -54,6 +54,17 @@ class VoiceRevisions(unittest.TestCase):
         with self.assertRaises(ValueError):self.store.voice_save(100,self.ident,bad,'',None,0)
         self.assertEqual(self.store.voice_snapshot(100)['versions'],[])
 
+    def test_named_revision_survives_reload_and_lost_ack_without_selection(self):
+        name='Mi voz exploradora 🌿'
+        value=self.store.voice_save(100,self.ident,self.profile,'Warm.',None,0,name)
+        self.assertEqual(AvatarWorkshop(self.temp.name).voice_snapshot(100),value)
+        self.assertEqual(self.store.voice_save(100,self.ident,self.profile,'Warm.',None,0,name),value)
+        self.assertEqual(value['versions'][0]['name'],name);self.assertIsNone(value['active'])
+        with self.assertRaises(WorkshopConflict):self.store.voice_save(100,self.ident,self.profile,'Warm.',None,0,'Changed')
+        for bad in ('','x'*81,'\0',False):
+            with self.assertRaises(ValueError):self.store.voice_save(100,str(uuid.uuid4()),self.profile,'',None,1,bad)
+        self.assertEqual(self.store.voice_snapshot(200)['versions'],[])
+
     def test_same_existing_quota_and_failed_commit_keep_previous_selection(self):
         self.store.max_versions=1;self.save();before=self.store.voice_snapshot(100)
         with self.assertRaises(ValueError):self.save(ident=str(uuid.uuid4()),generation=1)

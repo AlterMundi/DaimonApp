@@ -127,8 +127,22 @@ impl Store {
                 offered["revision"] == revision,
                 "Human purpose was not offered at this revision"
             );
-            let (source, actual) = producer::purpose_on(&conn, &parent)?
-                .context("No human operating-purpose original selected")?;
+            let is_review = parent.review.is_some()
+                && parent.native_returns[index]
+                    .attention_activation
+                    .as_ref()
+                    .is_some_and(|a| a.lane == HeartbeatLane::Reports);
+            let purpose_ref = if is_review {
+                Some(&parent.review.as_ref().unwrap().contract.purpose)
+            } else {
+                parent.contract.purpose.as_ref()
+            };
+            let (source, actual) = if is_review {
+                super::review::purpose_on(&conn, &parent)?
+            } else {
+                producer::purpose_on(&conn, &parent)?
+            }
+            .context("No human operating-purpose original selected")?;
             anyhow::ensure!(actual == revision, "Human purpose source changed");
             let total = source.text.chars().count();
             anyhow::ensure!(offset <= total, "Human purpose offset exceeds source");
@@ -136,7 +150,7 @@ impl Store {
             let next = offset + text.chars().count();
             let parents = crate::store::workflows::purpose_parents_on(&conn, human, &source)?;
             return Ok(
-                json!({"source":"purpose:human","revision":revision,"input_ref":parent.contract.purpose.as_ref().unwrap().input_ref,"human_id":source.human_id,"channel":source.channel,"event_id":source.event_id,"text":text,"total_chars":total,"next_offset":if next<total{Some(next)}else{None},"retained_human_original":true,"new_human_input":false,"primary_routing":parents,"publication_grant":false,"meaning":"Actual earlier human original, not a new utterance or an expansion of its task scope. Peer evidence remains separately attributed. An already routed original needs its exact primary instruction for an additional bounded workflow; preserve that owner's responsibility and never reissue the original."}),
+                json!({"source":"purpose:human","revision":revision,"input_ref":purpose_ref.unwrap().input_ref,"human_id":source.human_id,"channel":source.channel,"event_id":source.event_id,"text":text,"total_chars":total,"next_offset":if next<total{Some(next)}else{None},"retained_human_original":true,"new_human_input":false,"primary_routing":parents,"publication_grant":false,"meaning":"Actual earlier human original, not a new utterance or an expansion of its task scope. Peer evidence remains separately attributed. An already routed original needs its exact primary instruction for an additional bounded workflow; preserve that owner's responsibility and never reissue the original."}),
             );
         }
         let key = format!("report:{source_id}");

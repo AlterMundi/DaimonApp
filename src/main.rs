@@ -49,10 +49,21 @@ async fn main() -> Result<()> {
             )
         {
             anyhow::bail!(
-                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|configure-resources GENERATION CONTRACT_JSON; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
+                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
             );
         }
         let config = config::Config::load(args[2].clone().into())?;
+        if args.get(3).map(String::as_str) == Some("matrix")
+            && args.get(4).map(String::as_str) == Some("publication")
+            && args.get(5).map(String::as_str) == Some("commit")
+        {
+            use std::io::Read;
+            anyhow::ensure!(args.len() == 6, "Pass the exact publication JSON on stdin");
+            let mut raw = String::new();
+            std::io::stdin().take(65537).read_to_string(&mut raw)?;
+            anyhow::ensure!(raw.len() <= 65536, "Publication request exceeds bound");
+            return control_client::run(&config, &format!("matrix publication commit {raw}")).await;
+        }
         let command = if matches!(
             args[3].as_str(),
             "attach-active"

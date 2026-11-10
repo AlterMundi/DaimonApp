@@ -129,6 +129,86 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("voice native initialize ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Initialize {
+            binding: String,
+        }
+        let selected: Initialize = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        anyhow::ensure!(
+            app.shared.config.codex.shared_app_server && app.shared.config.voice.is_some(),
+            "Configured native voice is required"
+        );
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        anyhow::ensure!(
+            current["binding"] == selected.binding,
+            "Voice initialization binding changed"
+        );
+        if current["entry_binding"][3]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        {
+            return Ok(current);
+        }
+        let session = app
+            .shared
+            .store
+            .get_session(cfg.entry())?
+            .context("Voice entry unavailable")?;
+        let token = uuid::Uuid::now_v7().to_string();
+        let native = app
+            .shared
+            .codex
+            .initialize_voice_context(&session, &super::dialogue::tool_specs(), || {
+                app.shared.store.conversation_voice_initialize_claim(
+                    human,
+                    cfg.entry(),
+                    &selected.binding,
+                    &token,
+                )
+            })
+            .await?;
+        let bound = app.shared.store.conversation_voice_initialize_observe(
+            human,
+            cfg.entry(),
+            session.id,
+            &token,
+            &native,
+        )?;
+        anyhow::ensure!(
+            bound,
+            "Observed native thread retained; voice ownership changed during initialization"
+        );
+        return app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry());
+    }
+    if let Some(body) = args.strip_prefix("artifacts recover ") {
+        let selected: super::artifact_outputs::Recovery = serde_json::from_str(body)?;
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        anyhow::ensure!(
+            current["binding"] == selected.binding,
+            "Artifact recovery binding changed"
+        );
+        super::artifact_outputs::recover_selected(
+            app.shared.clone(),
+            human,
+            cfg.entry(),
+            &selected,
+        )?;
+        return Ok(
+            json!({"schema":"telecodex.artifact-recovery/v1","binding":selected.binding,"local_turn":selected.local_turn,"state":"copy_recovery_registered","native_replay":false,"publication_replay":false}),
+        );
+    }
     if let Some(body) = args.strip_prefix("voice native attach ") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -1154,7 +1234,9 @@ async fn voice_submit(
     // A deferred acoustic reservation starts no recognizer and therefore does
     // not require an unused completed-transcript command. Ordinary foreground
     // recovery still selects only its configured completed reader.
-    if recover || (request.foreground_dialogue.is_some() && !request.defer_foreground) {
+    let completed_only =
+        recover || (request.foreground_dialogue.is_some() && !request.defer_foreground);
+    if completed_only {
         config.transcription_command = config
             .completed_transcription_command
             .clone()
@@ -1271,7 +1353,8 @@ async fn voice_submit(
                 worker
                     .shared
                     .store
-                    .conversation_voice_validate(human, &captured.id)?;
+                    .conversation_voice_validate(human, &captured.id)
+                    .context(crate::voice::VoiceFailureStage::SourceValidation)?;
                 let expected = &captured
                     .voice
                     .as_ref()
@@ -1286,12 +1369,11 @@ async fn voice_submit(
                 )
                 .await?;
                 let _ingress = worker.shared.conversation_ingress.lock().await;
-                let ready = worker.shared.store.conversation_voice_commit(
-                    human,
-                    &captured.id,
-                    &text,
-                    proof,
-                )?;
+                let ready = worker
+                    .shared
+                    .store
+                    .conversation_voice_commit(human, &captured.id, &text, proof)
+                    .context(crate::voice::VoiceFailureStage::TranscriptCommit)?;
                 // The persisted capture, not a later retry's policy argument,
                 // owns this hold. Python may retire it only after exact archive
                 // handoff. Process restart/ASR completion cannot drop that fence.
@@ -1312,19 +1394,27 @@ async fn voice_submit(
                         .shared
                         .store
                         .conversation_input_finish(human, &captured.id)?;
-                    return Err(error);
+                    return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
                 }
                 Ok::<_, anyhow::Error>(())
             });
-            let result = tokio::select! {biased;_ = worker.shared.voice_shutdown.cancelled()=>Err(anyhow!("Voice preparation ended for listener restart")),result=preparation=>result};
+            let result = tokio::select! {biased;_ = worker.shared.voice_shutdown.cancelled()=>Err(anyhow!(crate::voice::VoiceFailureStage::ListenerShutdown)),result=preparation=>result};
             if let Err(error) = result {
-                let _ = worker
+                let mut diagnostic = crate::voice::VoiceFailureDiagnostic::from_error(
+                    &error,
+                    crate::voice::VoiceFailureStage::Unclassified,
+                );
+                diagnostic.completed_only = completed_only;
+                if worker
                     .shared
                     .store
-                    .conversation_voice_fail(human, &captured.id);
-                tracing::warn!(
-                    error = %error, "Committed conversation voice preparation unconfirmed; no automatic retry"
-                );
+                    .conversation_voice_fail_diagnostic(human, &captured.id, &diagnostic)
+                    .is_err()
+                {
+                    tracing::warn!("Voice failure diagnostic could not be retained");
+                }
+                tracing::warn!(stage=?diagnostic.stage, interrupted=diagnostic.interrupted,
+                    "Committed conversation voice preparation unconfirmed; no automatic retry");
             }
         });
     }

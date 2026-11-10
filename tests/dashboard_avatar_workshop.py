@@ -25,6 +25,20 @@ class Workshop(unittest.TestCase):
     def save(self,ident=None,design=None,parent=None,expected=0,human=100):
         return self.store.save(human,ident or self.ident,design or self.design,parent,expected)
 
+    def test_current_color_and_acting_semantics_survive_account_roundtrip(self):
+        d=copy.deepcopy(self.design)
+        d['bodyColors']={body:'#2266ee' for body in ('pocket-dragon','modular-bot','moon-visitor','cloud-axolotl','comet-fox','little-mushroom')}
+        g=d['gestures'][0];g.update(cue='sleep',performance='accessory/v1')
+        g['props']=[{'id':'pillow','color':'#b185dc','side':'left','size':1.25}]
+        self.save(design=d)
+        actual=AvatarWorkshop(self.root).get(100,self.ident)['design']
+        self.assertEqual(actual['bodyColors'],d['bodyColors'])
+        self.assertEqual(actual['gestures'][0]['props'],g['props'])
+        self.assertEqual(actual['gestures'][0]['performance'],'accessory/v1')
+        self.assertEqual(actual['gestures'][0]['cue'],'sleep')
+        bad=copy.deepcopy(d);bad['bodyColors']['custom-model']='#ff0000'
+        with self.assertRaises(ValueError):validate_design(bad)
+
     def test_visual_and_voice_share_one_document_and_capacity_without_pointer_changes(self):
         visual=self.save()
         profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'cedar'}
@@ -51,6 +65,20 @@ class Workshop(unittest.TestCase):
         cancelled=self.store.select(100,self.ident,3)
         self.assertEqual(cancelled['active'],self.ident);self.assertEqual(cancelled['editing'],self.ident)
         self.assertEqual(self.store.get(100,self.ident),first,'Editing never mutates the previous version')
+
+    def test_layered_model_validator_and_durable_revision(self):
+        script=Path(__file__).with_name('avatar_layer_model.mjs')
+        subprocess.run(['node',str(script)],check=True,timeout=4)
+        module=script.as_uri()
+        layered=json.loads(subprocess.check_output(['node','--input-type=module','-e',
+            'import {fixture} from '+json.dumps(module)+'; console.log(JSON.stringify(fixture));'],timeout=4).decode().splitlines()[-1])
+        d=copy.deepcopy(self.design);d.update(avatarModel=layered,body='custom-model',characterStyle='model/v1',image=None)
+        self.save(design=d)
+        actual=AvatarWorkshop(self.root).get(100,self.ident)
+        self.assertEqual(actual['design']['avatarModel']['schema'],'ascii-avatar-model/v2')
+        self.assertEqual(actual['sha256'],validate_design(d)[1])
+        self.assertIsNone(self.store.snapshot(100)['active'])
+        with self.assertRaises(KeyError):self.store.get(200,self.ident)
 
     def test_custom_firefly_model_uses_same_original_validator_and_hash(self):
         model=json.loads((self.vendor/'skills/ascii-avatar-author/assets/example.avatar.json').read_text())
@@ -101,6 +129,36 @@ class Workshop(unittest.TestCase):
         from scripts.speech_render import RenderError
         with self.assertRaises((ValueError,RenderError,OSError)):self.store.snapshot(100)
         self.assertEqual(foreign.read_text(),'{}')
+
+
+class WorkshopProvenance(unittest.TestCase):
+    def test_adapted_manifest_matches_current_source_bytes(self):
+        from dashboard.avatar_workshop_provenance import discrepancies
+        root=Path(__file__).resolve().parents[1]/'dashboard/web/avatar-workshop'
+        self.assertEqual(discrepancies(root),{},'Refresh adapted hashes after the final workshop edit')
+
+    def test_refresh_retains_upstream_authority_and_detects_missing_added_changed_files(self):
+        from dashboard.avatar_workshop_provenance import discrepancies,refresh,receiving_hashes
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'candidate';root.mkdir();(root/'renderer.mjs').write_text('original renderer')
+            document={'source':'upstream/example','source_revision':'unchanged source',
+                      'author':'Original artist','files':{'renderer.mjs':'original upstream hash'},
+                      'receiving_adaptations':['Retained original rationale'],
+                      'receiving_hashes':receiving_hashes(root)}
+            manifest=root/'PROVENANCE.json';manifest.write_text(json.dumps(document))
+            previous=Path(directory)/'previous.json';previous.write_bytes(manifest.read_bytes());manifest.unlink();manifest.hardlink_to(previous)
+            original_receipt=previous.read_bytes()
+            self.assertEqual(discrepancies(root),{})
+            (root/'renderer.mjs').write_text('adapted renderer')
+            (root/'new.mjs').write_text('new local adapter')
+            self.assertEqual(discrepancies(root),{'new.mjs':'unlisted','renderer.mjs':'changed'})
+            refresh(root);actual=json.loads(manifest.read_text())
+            self.assertEqual(previous.read_bytes(),original_receipt,'Candidate refresh cannot rewrite hardlinked prior metadata')
+            self.assertEqual({k:v for k,v in actual.items() if k!='receiving_hashes'},
+                             {k:v for k,v in document.items() if k!='receiving_hashes'})
+            self.assertEqual(discrepancies(root),{})
+            (root/'new.mjs').unlink()
+            self.assertEqual(discrepancies(root),{'new.mjs':'missing'})
 
 
 if __name__=='__main__':unittest.main()

@@ -6,6 +6,52 @@ use std::collections::BTreeMap;
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
+/// Fixed diagnostic vocabulary. Never retain arbitrary subprocess/provider errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceFailureStage {
+    SourceValidation,
+    SourceRead,
+    AudioDecode,
+    AudioSignal,
+    TranscriptionCommand,
+    TranscriptValidation,
+    TranscriptCommit,
+    NativeAdmission,
+    ListenerShutdown,
+    Unclassified,
+}
+impl std::fmt::Display for VoiceFailureStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Voice preparation stage: {:?}", self)
+    }
+}
+impl std::error::Error for VoiceFailureStage {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceFailureDiagnostic {
+    pub stage: VoiceFailureStage,
+    pub interrupted: bool,
+    #[serde(default)]
+    pub completed_only: bool,
+}
+impl VoiceFailureDiagnostic {
+    pub fn from_error(error: &anyhow::Error, fallback: VoiceFailureStage) -> Self {
+        // anyhow retains typed Context separately from std::error::Error's
+        // source chain. Downcast the owned error so that stage is not lost.
+        let stage = error
+            .downcast_ref::<VoiceFailureStage>()
+            .copied()
+            .unwrap_or(fallback);
+        Self {
+            stage,
+            interrupted: stage == VoiceFailureStage::ListenerShutdown,
+            completed_only: false,
+        }
+    }
+}
+
 pub const MAX_BYTES: usize = 20 * 1024 * 1024;
 const MAX_SECONDS: usize = 120;
 
@@ -323,16 +369,18 @@ pub async fn transcribe_committed(
     expected_sha256: Option<&str>,
 ) -> Result<(String, TranscriptSource)> {
     if telegram_file_id.is_some() == capture_id.is_some() {
-        bail!("Voice requires one original identity");
+        bail!(VoiceFailureStage::SourceValidation);
     }
     let preparation_started = std::time::Instant::now();
-    let bytes = read_media(path).await?;
+    let bytes = read_media(path)
+        .await
+        .context(VoiceFailureStage::SourceRead)?;
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
-        bail!("Voice media size outside bounds");
+        bail!(VoiceFailureStage::SourceValidation);
     }
     let hash = format!("{:x}", Sha256::digest(&bytes));
     if expected_sha256.is_some_and(|expected| expected != hash) {
-        bail!("Committed voice bytes changed before preparation");
+        bail!(VoiceFailureStage::SourceValidation);
     }
     // Decode the whole bounded clip before paid ASR. Digital silence is not speech.
     let mut decode = Command::new("ffmpeg");
@@ -340,25 +388,30 @@ pub async fn transcribe_committed(
         .args(["-v", "error", "-nostdin", "-i"])
         .arg(path)
         .args(["-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"]);
-    let pcm = bounded(decode, MAX_SECONDS * 16000 * 4, 15).await?;
+    let pcm = bounded(decode, MAX_SECONDS * 16000 * 4, 15)
+        .await
+        .context(VoiceFailureStage::AudioDecode)?;
     if pcm.is_empty() || pcm.len() % 4 != 0 {
-        bail!("Voice decode incomplete");
+        bail!(VoiceFailureStage::AudioDecode);
     }
     let peak = pcm
         .chunks_exact(4)
         .map(|v| f32::from_le_bytes(v.try_into().expect("sample width")).abs())
         .fold(0f32, f32::max);
     if !peak.is_finite() || peak < 0.0001 {
-        bail!("No audible signal; no ASR or work admitted");
+        bail!(VoiceFailureStage::AudioSignal);
     }
     let mut command = Command::new(&config.transcription_command[0]);
     command.args(&config.transcription_command[1..]).arg(path);
     let transcription_started = std::time::Instant::now();
-    let output = bounded(command, 64 * 1024, config.timeout_seconds).await?;
+    let output = bounded(command, 64 * 1024, config.timeout_seconds)
+        .await
+        .context(VoiceFailureStage::TranscriptionCommand)?;
     let transcription_millis = transcription_started.elapsed().as_millis() as u64;
-    let value: serde_json::Value = serde_json::from_slice(&output)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&output).context(VoiceFailureStage::TranscriptValidation)?;
     if value["final"] == false || value["partial"] == true {
-        bail!("Transcriber returned a partial interpretation");
+        bail!(VoiceFailureStage::TranscriptValidation);
     }
     let actual_transcriber = match value.get("streaming_model") {
         None => None,
@@ -366,19 +419,27 @@ pub async fn transcribe_committed(
             Some(
                 "gemini-3.8-live" | "gemini-3.5-transcribe-live" | "qwen-audio-3.0-realtime-plus",
             ) => model.as_str().map(str::to_owned),
-            _ => bail!("Transcriber returned an unsupported streaming model"),
+            _ => bail!(VoiceFailureStage::TranscriptValidation),
         },
     };
     let text = value["text"]
         .as_str()
-        .context("Transcriber returned no final text")?
+        .context(VoiceFailureStage::TranscriptValidation)?
         .trim()
         .to_string();
     if text.is_empty() || text.len() > 16000 {
-        bail!("Voice transcript outside bounds");
+        bail!(VoiceFailureStage::TranscriptValidation);
     }
-    if format!("{:x}", Sha256::digest(read_media(path).await?)) != hash {
-        bail!("Voice source changed during preparation");
+    if format!(
+        "{:x}",
+        Sha256::digest(
+            read_media(path)
+                .await
+                .context(VoiceFailureStage::SourceRead)?
+        )
+    ) != hash
+    {
+        bail!(VoiceFailureStage::SourceValidation);
     }
     Ok((text,TranscriptSource{audio_sha256:hash,telegram_file_id:telegram_file_id.map(str::to_owned),capture_id:capture_id.map(str::to_owned),capture_stop:None,configured_transcriber:config.transcriber_label.clone(),actual_transcriber,committed_at:chrono::Utc::now().to_rfc3339(),audio_millis:(pcm.len()/4) as u64*1000/16000,preparation_millis:preparation_started.elapsed().as_millis() as u64,transcription_millis,interpretation:"Machine transcription of the original human voice clip; not exact verified written speech".into()}))
 }
@@ -808,5 +869,50 @@ mod live_window_tests {
         assert!(public_live_window_source(&link, &proof).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(public_live_window_source(&path, &proof).is_err());
+    }
+}
+
+#[cfg(test)]
+mod failure_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn fixed_stage_never_serializes_underlying_error_text() {
+        let private = "private transcript/provider stderr/token";
+        let error = anyhow::anyhow!(private).context(VoiceFailureStage::TranscriptionCommand);
+        let diagnostic =
+            VoiceFailureDiagnostic::from_error(&error, VoiceFailureStage::Unclassified);
+        assert_eq!(
+            serde_json::to_value(&diagnostic).unwrap(),
+            serde_json::json!({"stage":"transcription_command","interrupted":false,"completed_only":false})
+        );
+        assert!(
+            !serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains(private)
+        );
+        let interrupted = VoiceFailureDiagnostic::from_error(
+            &anyhow::anyhow!(VoiceFailureStage::ListenerShutdown),
+            VoiceFailureStage::Unclassified,
+        );
+        assert!(interrupted.interrupted);
+    }
+    #[tokio::test]
+    async fn missing_source_fails_before_any_transcriber_command() {
+        let root = tempfile::tempdir().unwrap();
+        let config:VoiceConfig=serde_json::from_value(serde_json::json!({"transcription_command":["/not-an-executable"],"transcriber_label":"Synthetic fixture"})).unwrap();
+        let error = transcribe_committed(
+            &config,
+            &root.path().join("missing"),
+            None,
+            Some("capture"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            VoiceFailureDiagnostic::from_error(&error, VoiceFailureStage::Unclassified).stage,
+            VoiceFailureStage::SourceRead
+        );
+        assert_eq!(root.path().read_dir().unwrap().count(), 0);
     }
 }

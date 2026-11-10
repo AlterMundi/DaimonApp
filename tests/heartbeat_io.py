@@ -22,11 +22,20 @@ class HeartbeatJourney(WorkflowJourney):
             raise AssertionError(str(error).split('; messages=', 1)[0]) from None
 
     def handle_extra_rpc(self, message, send):
+        if message.get('method')=='initialize':
+            send({'id':message['id'],'result':{'boundedIdleTurn':True}})
+            return True
+        if message.get('method')=='thread/read':
+            send({'id':message['id'],'result':{'thread':{'id':message['params']['threadId'],'model':'fixture-model','modelProvider':'fixture','canAcceptDirectInput':True,'status':{'type':'active' if getattr(self,'native_fixture_busy',False) else 'idle'}}}})
+            return True
+        if message.get('method')=='thread/turns/list' and getattr(self,'native_continuation',None):
+            send({'id':message['id'],'result':{'data':[{'id':self.native_continuation,'status':'inProgress'}],'nextCursor':None}})
+            return True
         if message.get('method') == 'turn/startBoundedIfIdle':
             p = message['params']
             turn = p['turn']
             assert turn['input'] == [] and 'clientUserMessageId' not in turn
-            assert p['allowance']['maxProviderAttempts'] == 3
+            assert p['allowance']['maxProviderAttempts'] == getattr(self,'expected_attempts',3)
             assert 0 < p['allowance']['maxRequestBytes'] <= 1024 * 1024
             assert p['allowance']['deadlineUnixMs'] > datetime.now(timezone.utc).timestamp() * 1000
             kind = turn['toolOutput']['name']
@@ -128,7 +137,59 @@ def qualify(binary):
         assert j.row('SELECT count(*) FROM conversation_inputs') == [(1,)]
         assert not j.messages and not j.telegram_methods, j.telegram_methods
         assert len(j.bounded) == 2
+        # Simulate the finite observation period's exhausted counter in this
+        # synthetic journal, then exercise the actual owner command boundary.
+        j.row("UPDATE bot_state SET value=json_set(value,'$.checks',json_extract(value,'$.contract.max_checks')) WHERE key LIKE 'heartbeat_producer:%'")
+        predecessor = j.read('heartbeat', 'status')['result']
+        successor_args = ('renew-observation', str(paused['generation']), str(expiry), str(expiry + 60_000), '10')
+        successor = j.read('heartbeat', *successor_args)['result']
+        assert successor['producer']['checks'] == predecessor['producer']['checks'] == 4
+        assert successor['producer']['contract']['max_checks'] == 10
+        assert successor['producer']['observation_window_renewal']['previous_max_checks'] == 4
+        assert successor['resources'] == predecessor['resources']
+        assert successor['admission_paused'] and successor['generation'] == paused['generation']
+        repeated = j.read('heartbeat', *successor_args)['result']
+        # The renewal/accounting result is idempotent; readiness is a fresh
+        # observation, whose timestamp must not be frozen by an exact retry.
+        assert repeated['operational_evidence']['observed_at_unix_ms'] >= successor['operational_evidence']['observed_at_unix_ms']
+        repeated['operational_evidence']['observed_at_unix_ms'] = successor['operational_evidence']['observed_at_unix_ms']
+        assert repeated == successor
+        j.stop(); j.start(); j.wait_control_socket(j.socket)
+        restarted = j.read('heartbeat', 'status')['result']
+        assert restarted['producer'] == successor['producer']
+        assert restarted['resources'] == successor['resources']
+        assert len(j.bounded) == 2
         print('PASS finite maintenance -> exact bounded root -> owned controller source read -> reserved bounded workflow child -> batch review -> same Conversation report; Telegram disabled, original account charged6, no fabricated original or provider call. Synthetic native, not receiving/model/device acceptance.')
+        print('PASS owner-only finite observation successor and lost-ACK repeat/restart conserve count4, original sources and inference account; explicit cumulative ceiling10 creates no native execution.')
+        # Explicit permanent-operation selection retains pilot history while
+        # replacing its expired operating lifetime, through the actual CLI.
+        current = j.read('heartbeat', 'status')['result']
+        j.row("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',1,'$.checks',json_extract(value,'$.contract.max_checks'),'$.next_check_ms',0) WHERE key LIKE 'heartbeat_producer:%'")
+        j.row("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',1) WHERE key LIKE 'heartbeat_resources:%'")
+        pilot = j.read('heartbeat', 'status')['result']
+        adopted = j.read('heartbeat', 'continuous', str(current['generation']), '6')['result']
+        assert adopted['admission_paused'] and adopted['producer']['mode'] == 'continuous'
+        assert adopted['producer']['checks'] == pilot['producer']['checks']
+        assert adopted['producer']['contract'] == pilot['producer']['contract']
+        assert adopted['resources']['contract'] == pilot['resources']['contract']
+        assert adopted['resources']['reserved_provider_attempts'] == pilot['resources']['reserved_provider_attempts'] == 6
+        assert adopted['resources']['continuous']['reserved_provider_attempts'] == 0
+        assert adopted['producer']['state'] == 'configured' and adopted['resources']['state'] == 'available'
+        j.read('heartbeat', 'resume', str(adopted['generation']))
+        try:
+            j.wait(lambda: j.read('heartbeat', 'status')['result']['producer']['checks'] > pilot['producer']['checks'], seconds=45)
+        except AssertionError:
+            status = j.read('heartbeat', 'status')['result']
+            raise AssertionError(json.dumps({'producer': status['producer'], 'lanes': status['lanes'],
+                'executions': status.get('executions'), 'running_turns': j.row("SELECT id,status,native_thread_id FROM turns WHERE status='running'")})) from None
+        observed = j.read('heartbeat', 'pause')['result']
+        j.stop(); j.start(); j.wait_control_socket(j.socket)
+        permanent = j.read('heartbeat', 'status')['result']
+        assert permanent['admission_paused'] and permanent['resources'] == observed['resources']
+        assert permanent['producer']['checks'] == observed['producer']['checks']
+        assert permanent['producer']['mode'] == 'continuous' and len(j.bounded) == 2
+        print('PASS owner continuous selection beyond expired/exhausted pilot, preserved counters/reservations, model-free ongoing observation and paused restart; no extra native/provider turn.')
+
     finally:
         j.close()
 

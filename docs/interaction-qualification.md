@@ -3,6 +3,93 @@
 Status: qualification is in progress against the reviewed [v0.2 executable plan](interaction-v02.md). Selected native journeys and the standalone UI have receiving evidence; full product acceptance remains open. This protocol does not authorize new capture, publication or background attention. Owner: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
 Design: [integrating conversation](interaction.md).
 
+## Session reading position across Detail and Back —8November2026
+
+The shipped browser journey now checks the exact Conversation `scrollTop` before
+opening another session and after returning with Back. Desktop1280 and phone
+widths390/320 preserve that position, the unsent draft and the prior pinned
+source/revision. Opening Detail still advances the input-admission epoch; Back
+must not restore an obsolete capture generation. The first additional assertion
+incorrectly compared that epoch as part of the destination; its failure was
+retained and corrected to compare the exact reference plus an advancing epoch.
+No product behavior was changed to satisfy the verifier.
+
+Actual Chromium journeys passed with both inherited and authored/HUD appearance,
+then with the selected Root792 public-runtime composition. The workspace module
+matches the source bytes. Other selected shell assets retain valid composed
+deltas; qualification used the receiving working directory as the fixture's
+public root rather than selecting the moving source tree into production.
+The fixture uses synthetic HTTP data and checks existing access-loss/draft/audio
+controls; it sends no native input, provider request or real media capture.
+No runtime rollout or avatar/voice/grant/goal mutation accompanies this change.
+This establishes browser behavior; physical touch/keyboard/hearing and the full
+continuous-voice/memory/children/School roadmap remain open.
+
+## Media uploads without an application-clock cutoff —7November2026
+
+Ordinary recorded-audio and selected-PNG POSTs no longer abort on an application
+wall-clock timer. Selected-file uploads already work without that timer. Network
+failure and existing explicit selection/lifecycle cancellation still end the
+request. Ordinary read/JSON and download deadlines, image/audio byte caps,
+hashes, frozen targets, CSRF/authentication and recovery ownership are unchanged.
+No automatic image resend is added; audio keeps its existing receipt-first,
+limited same-original recovery. The image selector still coalesces concurrent
+text/voice requests into one upload and preserves drafts/images on failure.
+
+Shipped state-machine tests hold both uploads, fire every application timer and
+then complete each upload once with its same original. The image journey also
+fails the transport and response body, preserves its draft and selected bytes,
+and retries only after another explicit send. Existing audio recovery, target
+and unknown-acknowledgment cases pass. These are synthetic zero-provider checks,
+not human network acceptance. A stalled request retains its existing owner;
+this change creates no upload workers, scheduled retry or larger media buffer.
+
+Actual receiving logs show client disconnections before body reception completed
+in both reported failure windows. They do not identify the exact browser request
+or establish whether its20second timer, network, proxy or another client action
+caused each disconnect. The hard client deadline is a verified limitation; its
+removal is not proof of the incidents' root cause. Physical-network upload
+acceptance and the full roadmap remain open.
+
+## Retained real voice native handoff —7November2026
+
+A read-only inspection of the already retained human public-Live/native visit
+verifies the following bounded chain through the current consuming owner reader.
+That historical visit used the then-selected clip interpretation path; it does
+not qualify the subsequently selected live-window/continuous-ASR input path:
+
+- Two accepted native work roots retain three exact acoustic originals. Their
+  original IDs, audio/text hashes, formulation, chronological capture order and
+  dialogue/intent references match the separate native admission records. Both
+  roots used the existing integrating native execution; no new being/thread/work
+  was created by this verification. Raw capture receipts alone still do not admit
+  work: the distinct retained work admissions supply this evidence.
+- One canonical native progress part matches the exact retained append content,
+  revision and cursor and has its trusted provider acknowledgement. This proves
+  context transport, not task completion, semantic incorporation or human hearing.
+- The retained voice journal is closed with capture ended. Its last filesystem
+  write precedes the native final observation; this is a local retained-state
+  ordering, not a provider invoice or audio-duration-derived clock. That final
+  still reads completely through the current owner-bound canonical presentation
+  API with the original native binding. The separate existing DMK curation/readback
+  matches the genuine voice original. This supports native work surviving the
+  voice connection, without claiming that the late final was spoken in that visit.
+
+The verifier used raw read-only presentation/status operations and an SQLite
+read-only connection. It did not invoke status/list convenience paths with media
+retirement, repeat ASR, open a provider/voice connection, append context, replay
+originals/work, curate again or modify the real visit journal. Its bytes were
+checked unchanged. Private IDs, language, memory content and bounded evidence
+stay in the owning operator checkpoint; no human episode is published here.
+
+Still unqualified: a fresh voice connection actually returning that late final,
+lookup/pagination from inside the live conversation, useful speech after repeated
+physical replacement, semantic listening/latency/noise/interruption, real account/
+phone/background/hearing and the remaining full roadmap. The next real trial is
+already requested; do not synthesize a human input, re-run a terminal paid trial
+or infer acceptance from this read-only chain. Existing unknown provider outcomes
+retain their own journals and billing uncertainty.
+
 ## Native waveform timing observations —1November2026
 
 One distinct three-phrase Spanish Chromium/CPU/Gemini session on **ec883adf**

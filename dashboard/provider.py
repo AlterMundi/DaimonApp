@@ -25,6 +25,11 @@ class ProviderUnavailable(Exception):
     pass
 
 
+class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
+    """Known admission refusal, also compatible with existing voice consumers."""
+    pass
+
+
 def receiving_authority(receiver):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
@@ -33,8 +38,12 @@ def receiving_authority(receiver):
         'session_control': receiver.get('session_control'),
         'interaction': receiver.get('interaction'),
         'voice': receiver.get('voice'),
-        'telegram': {key: telegram.get(key) for key in
-                     ('api_base', 'bot_token', 'bot_token_file')},
+        # Disabled transport is part of a web-only receiver's authority. Keep
+        # legacy enabled/omitted bindings byte-identical while fencing any
+        # post-start change away from explicitly disabled Telegram.
+        'telegram': {**{key: telegram.get(key) for key in
+                       ('api_base', 'bot_token', 'bot_token_file')},
+                     **({'enabled': False} if telegram.get('enabled') is False else {})},
         'native_binary': receiver.get('codex', {}).get('binary', 'codex'),
     }, sort_keys=True, separators=(',', ':')).encode()
 
@@ -222,7 +231,7 @@ class Provider:
                     if titles[(chat, tid)]: node['label'] = prefix+titles[(chat, tid)]
         return value
 
-    def presentation_list(self, delivery, native, direction='after', matrix=None):
+    def presentation_list(self, delivery, native, direction='after', matrix=None, inbox=None, responses=None, publications=None):
         if type(delivery) is not int or type(native) is not int or min(delivery, native) < 0:
             raise ValueError('Invalid presentation cursor')
         if direction not in ('after', 'before'):
@@ -231,6 +240,16 @@ class Provider:
         if matrix is not None and (type(matrix) is not int or matrix < 0):
             raise ValueError('Invalid Matrix presentation cursor')
         suffix='' if matrix is None else f' {matrix}'
+        if inbox is not None or responses is not None:
+            if matrix is None or any(type(v) is not int or v<0 for v in (inbox,responses)):
+                raise ValueError('Invalid Matrix source cursors')
+            suffix+=f' {inbox} {responses}'
+        if publications is not None:
+            if type(publications) is not int or publications<0 or any(v is None for v in (matrix,inbox,responses)):
+                raise ValueError('Invalid publication cursor')
+            # Older receivers remain readable when this new optional capability is absent.
+            if self.receiver.get('interaction',{}).get('matrix_publication'):
+                suffix+=f' {publications}'
         return self.presentation(f'presentation {operation} {delivery} {native}'+suffix)
 
     def session_workspace(self):
@@ -336,7 +355,8 @@ class Provider:
         # An after-maximum cursor returns metadata/choices without transporting
         # original messages. This is the existing input-list cursor contract.
         choices=self.presentation(f'input list {2**63-1} after')['routing_choices']
-        if not isinstance(choices,list) or len(choices)>64:
+        # 127 local destinations plus at most 16 explicit Matrix destinations.
+        if not isinstance(choices,list) or len(choices)>143:
             raise ProviderUnavailable('Routing membership unavailable')
         for target in choices:
             selector=target.get('selector')
@@ -379,7 +399,7 @@ class Provider:
 
     def presentation_part(self, source, revision, offset):
         import re
-        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
+        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix|matrix-inbox|matrix-response|matrix-publication):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
                 or not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{64}', revision)
                 or type(offset) is not int or not 0 <= offset <= 10**9):
             raise ValueError('Invalid presentation selection')
@@ -630,9 +650,39 @@ class Provider:
         self.check_capture_questions(body.get('capture_questions'))
         return self.decorate_input(self.presentation('input foreground retain '+json.dumps(body,ensure_ascii=False)))
 
+    def prepare_native_voice(self, binding):
+        """Explicit voice entry only: initialize an empty own native context, no input."""
+        value=self.presentation('input voice capabilities')
+        entry=value.get('entry_binding')
+        if (value.get('binding')!=binding or value.get('voice_available') is not True
+                or not isinstance(entry,list) or len(entry)!=4 or entry[0]!=self.human):
+            raise ProviderUnavailable('Configured voice entry unavailable or changed')
+        if entry[3] not in (None,''):return
+        self.presentation('input voice native initialize '+json.dumps({'binding':binding}))
+
     def public_live_binding(self, binding):
         """Resolve the integrating owner without borrowing Codex voice entitlement."""
         return self._voice_binding(binding, native=False)
+
+    def public_live_integrator_context(self, frozen, max_bytes=16384):
+        """Fresh current integrator conversation; existing observer, no work start."""
+        if self.public_live_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Current integrator context owner changed')
+        from .integrator_startup import read, integrating_sources
+        if type(max_bytes) is not int or not 3072<=max_bytes<=24576:
+            raise ValueError('Current integrator context needs semantic preparation')
+        deadline=time.monotonic()+12
+        def check():
+            if time.monotonic()>=deadline:
+                raise ProviderUnavailable('Current integrator context preparation deadline reached')
+        native=Native(self.receiver['codex'].get('binary','codex'))
+        try:
+            result=read(native,frozen['native_thread'],max_bytes=max_bytes//2,check=check)
+        finally:native.close()
+        result['integrating_sources']=integrating_sources(self,frozen,max_bytes=max_bytes//2-256,check=check)
+        if self.public_live_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Current integrator context owner changed during read')
+        return result
 
     def heartbeat_status(self):
         """Read the existing configured owner console; never activate attention."""
@@ -937,12 +987,12 @@ class Provider:
         if value is None: return
         if (not isinstance(value, dict) or set(value) not in ({'source', 'revision'}, {'source', 'revision', 'context_only'})
                 or 'context_only' in value and value['context_only'] is not True
-                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'task:', 'native:', 'session:'))
+                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'matrix-inbox:', 'matrix-response:', 'task:', 'native:', 'session:'))
                 or not isinstance(value['revision'], str) or not re.fullmatch('[a-f0-9]{64}', value['revision'])):
             raise ValueError('Select one retained original or worker result')
-        if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:', 'task:', 'native:')):
+        if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:', 'matrix-inbox:', 'matrix-response:', 'task:', 'native:')):
             raise ValueError('Context must refer to a reported conversation source')
-        if value['source'].startswith(('matrix:','task:')) and not value.get('context_only'):
+        if value['source'].startswith(('matrix:','matrix-inbox:','matrix-response:','task:')) and not value.get('context_only'):
             raise ValueError('Matrix/task references are selected contextual evidence')
         ident=value['source'].split(':', 1)[1]
         if value['source'].startswith(('native:','session:')):
@@ -1184,7 +1234,7 @@ class Provider:
                         used += info.st_size
                         inodes.add(key)
                     if entries >= 128 or used + len(data) > budget:
-                        raise ProviderUnavailable('Voice recording storage full; use text')
+                        raise VoiceStorageFull('Audio storage is full; existing originals are preserved. This recording was not submitted. Keep the local recording until storage is restored.')
                 temporary = directory / ('.'+secrets.token_hex(16))
                 try:
                     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

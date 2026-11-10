@@ -117,10 +117,10 @@ impl VisualReference {
         }
         let captured = DateTime::parse_from_rfc3339(&self.captured_at)?;
         let selected = DateTime::parse_from_rfc3339(&self.selected_at)?;
+        let age = (Utc::now() - selected.with_timezone(&Utc)).num_seconds();
         if selected < captured
             || self.source_kind == "camera_frame" && (selected - captured).num_seconds() > 5
-            || fresh
-                && !(-5..=300).contains(&(Utc::now() - selected.with_timezone(&Utc)).num_seconds())
+            || fresh && (age < -5 || self.source_kind != "selected_image" && age > 300)
         {
             bail!("Visual selection is stale; select the captured image again");
         }
@@ -295,8 +295,27 @@ mod tests {
         r.state = "selected".into();
         r.selected_at = (Utc::now() - chrono::Duration::minutes(10)).to_rfc3339();
         r.captured_at = r.selected_at.clone();
-        assert!(r.validate(true).is_err());
+        r.validate(true).unwrap();
+        assert!(r.rendered().contains(&r.selected_at));
+        for kind in ["camera_frame", "application_selection"] {
+            r.source_kind = kind.into();
+            assert!(r.validate(true).is_err());
+        }
         r.validate(false).unwrap();
         // A retained snapshot remains referable after native work takes time.
+        r.source_kind = "selected_image".into();
+        let photos = VisualSelection::Multiple(
+            (0..6)
+                .map(|_| {
+                    let mut photo = r.clone();
+                    photo.source_id = uuid::Uuid::now_v7().to_string();
+                    photo
+                })
+                .collect(),
+        );
+        photos.validate(true).unwrap();
+        r.selected_at = (Utc::now() + chrono::Duration::seconds(30)).to_rfc3339();
+        r.captured_at = r.selected_at.clone();
+        assert!(r.validate(true).is_err());
     }
 }

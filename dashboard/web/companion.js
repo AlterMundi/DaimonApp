@@ -36,13 +36,14 @@ window.ConversationCompanion = (() => {
     for(const glyph of art){color=colors[glyph]||'#778ca5';if(color!==last){run=document.createElement('span');run.style.color=color;fragment.append(run);last=color;}run.append(document.createTextNode(glyph));}
     face.replaceChildren(fragment);
   }
-  function mount({now=()=>Date.now()}={}) {
+  function mount({now=()=>Date.now(),onArtisticRest=()=>{}}={}) {
     const box=document.querySelector("#conversation-companion");
     if(!box)return;
     const face=box.querySelector("pre"), title=box.querySelector(".companion-caption");
     const phases=box.querySelector(".companion-phases");
     const motion=window.matchMedia?.("(prefers-reduced-motion: reduce)");
     let state={}, observed=0, expiry, animation, lastReply, lastPhases, rest="calm";
+    let authoredCue, deliveredCue, reaction, pulseUntil=0, pulseTimer, previousGoals=new Map();
     const staleAfter=20000;
     let pack, catalog, packSignature, frameTimer, frameIndex=0, frameExpression,lastExpression;
     function stopFrames(){clearTimeout(frameTimer);frameTimer=undefined;frameIndex=0;frameExpression=undefined;}
@@ -95,20 +96,22 @@ window.ConversationCompanion = (() => {
           && Number.isInteger(d.rows) && d.rows>0 && d.rows<=100 && !!value.expressions[d.expression]?.variants[d.variant];
       });
     }
+    // A presentation observer cannot break ordinary source ingestion.
+    function artistic(value){try{onArtisticRest(value);}catch{}}
     function configure(value,digest){
       let selected;
       try {if(typeof digest==="string" && /^[a-f0-9]{64}$/.test(digest) && validPack(value))selected=value;}catch{}
       const signature=JSON.stringify([selected,digest]);
       if(signature===packSignature)return;
-      stopAmbient();stopFrames();animation?.cancel();pack=selected;catalog=digest;packSignature=signature;lastReply=undefined;
-      rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;draw(false);
+      stopAmbient();stopFrames();clearTimeout(pulseTimer);pulseUntil=0;reaction=undefined;previousGoals.clear();animation?.cancel();pack=selected;catalog=digest;packSignature=signature;lastReply=undefined;
+      rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;authoredCue=undefined;draw(false);
     }
     function selection(expression){
       const entry=pack.expressions[expression] || pack.expressions[pack.defaults.app.expression];
       const d=pack.defaults.app;
       // Fit actual available width using this client's rendered monospace glyph.
       let columns=d.columns;
-      const width=(face.parentElement?.classList?.contains("voice-mode-portrait")?face.parentElement:box).getBoundingClientRect?.().width;
+      const width=(face.closest?.(".voice-mode-portrait")||box).getBoundingClientRect?.().width;
       if(width && window.getComputedStyle){
         const style=window.getComputedStyle(face), context=document.createElement("canvas").getContext?.("2d");
         if(context){context.font=style.font;const glyph=context.measureText("M").width;
@@ -131,8 +134,35 @@ window.ConversationCompanion = (() => {
       };
       frameTimer=setTimeout(tick,selected.frame_ms);
     }
+    function freshSources() {
+      if(!sonicFrame?.connected || state.connected===false || now()-sonicAt>=staleAfter)return [];
+      return sonicFrame.sources.filter(source=>{
+        const age=(sonicFrame.observed_at-Number(source?.observed_at))*1000+now()-sonicAt;
+        return source?.fresh===true && Number.isFinite(source.observed_at) && Number.isFinite(age) && age>=0 && age<staleAfter
+          && ["working","idle"].includes(source.execution)
+          && ["absent","active","paused","blocked","usageLimited","budgetLimited","complete"].includes(source.goal_state)
+          && typeof source.waiting_for_human==="boolean";
+      });
+    }
+    function reactionCue() {
+      const fresh=state.connected && observed && now()-observed<staleAfter, sources=freshSources();
+      if(fresh && (state.activity?.integrator_busy===true || state.activity?.sources?.some(s=>s.known===true && s.busy===true))
+        || sources.some(s=>s.execution==="working" || s.tools_running===true))return "focused";
+      if(state.question || sources.some(s=>s.waiting_for_human))return "curious";
+      if(sources.some(s=>s.goal_state==="blocked"))return "uncertain";
+      // The portrait represents the observed receiver, not one arbitrary limited sibling.
+      if(!sonicFrame?.truncated && sources.length && sources.length===sonicFrame.sources.length && sources.every(s=>["usageLimited","budgetLimited"].includes(s.goal_state)))return "sleep";
+      if(now()<pulseUntil)return reaction;
+      return undefined;
+    }
+    function pulse(cue) {
+      reaction=cue;pulseUntil=now()+1600;clearTimeout(pulseTimer);
+      pulseTimer=setTimeout(()=>{pulseUntil=0;reaction=undefined;draw(false);},1600);
+    }
     function draw(animateChange=true) {
       const fresh=state.connected && observed && now()-observed<staleAfter;
+      const cue=reactionCue() || authoredCue;
+      if(cue!==deliveredCue){deliveredCue=cue;artistic(cue);}
       const rows=[];
       const add=(icon,label)=>rows.push({icon,label});
       if(state.capture==="permission")add("◉","Opening microphone");
@@ -170,9 +200,10 @@ window.ConversationCompanion = (() => {
       }
       paint(face,art,!pack);
       box.dataset.pose=expression;
+      box.dataset.question=String(!!state.question);
       const caption=!state.connected?(state.connected===false?"Let’s reconnect.":"Ready when you are."):state.question?"Your turn, whenever you’re ready.":
         state.capture==="recording"?"I’m listening.":rows.length?"You can keep talking or writing.":"Where shall we go next?";
-      if(title.textContent!==caption)title.textContent=caption;
+      if(title && title.textContent!==caption)title.textContent=caption;
       const signature=JSON.stringify(rows);
       if(signature!==lastPhases){
         const chips=rows.map(({icon,label})=>{
@@ -180,16 +211,23 @@ window.ConversationCompanion = (() => {
           symbol.textContent=icon;symbol.setAttribute("aria-hidden","true");
           chip.append(symbol,document.createTextNode(label));return chip;
         });
-        phases.replaceChildren(...chips);lastPhases=signature;
+        phases?.replaceChildren(...chips);lastPhases=signature;
       }
       box.dataset.fresh=String(!!fresh);
     }
     function arm() {
       clearTimeout(expiry);
-      if(!document.hidden && observed && state.connected)
-        expiry=setTimeout(draw,Math.max(0,observed+staleAfter-now()));
+      const deadlines=[];
+      if(observed && state.connected)deadlines.push(observed+staleAfter);
+      if(sonicFrame?.connected && state.connected!==false){
+        deadlines.push(sonicAt+staleAfter);
+        for(const s of sonicFrame.sources){const age=(sonicFrame.observed_at-Number(s?.observed_at))*1000;
+          if(Number.isFinite(age) && age>=0)deadlines.push(sonicAt+staleAfter-age);}
+      }
+      const next=deadlines.filter(t=>t>now()).sort((a,b)=>a-b)[0];
+      if(!document.hidden && next)expiry=setTimeout(()=>{draw(false);arm();},next-now());
     }
-    function update(patch) {state={...state,...patch};draw();}
+    function update(patch) {state={...state,...patch};if(state.connected===false){pulseUntil=0;reaction=undefined;}draw();arm();}
     function observe(activity) {
       state.activity=activity?.schema==="telecodex.interaction-activity/v1"?activity:undefined;
       observed=state.activity?now():0;state.connected=true;draw();arm();
@@ -203,8 +241,9 @@ window.ConversationCompanion = (() => {
       // No operation, label, text, timer or HTML comes from the model.
       const hint=source.companion_hint;
       stopFrames();
-      rest=pack?(hint?.catalog===catalog && hint?.pack===pack.id && hint?.revision===pack.revision && Object.hasOwn(pack.expressions,hint?.rest)
-        ?hint.rest:pack.defaults.app.expression):(fallbackExpressions.has(hint?.rest)?hint.rest:"calm");
+      const chosen=pack?hint?.catalog===catalog && hint?.pack===pack.id && hint?.revision===pack.revision && Object.hasOwn(pack.expressions,hint?.rest):fallbackExpressions.has(hint?.rest);
+      rest=chosen?hint.rest:pack?pack.defaults.app.expression:"calm";
+      authoredCue=chosen?rest:undefined;
       draw(false);
       animation?.cancel();
       if(hint?.gesture!=="none" && !document.hidden && !motion?.matches)playFrames(rest);
@@ -216,14 +255,21 @@ window.ConversationCompanion = (() => {
         animation=face.animate?.(frames,{duration:850,iterations:1});
       }
     }
-    function reset(){clearTimeout(expiry);stopAmbient();sonicFrame=undefined;sonicAt=0;stopFrames();animation?.cancel();state={};observed=0;lastReply=undefined;rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;draw(false);}
+    function reset(){clearTimeout(expiry);clearTimeout(pulseTimer);pulseUntil=0;reaction=undefined;authoredCue=undefined;previousGoals.clear();stopAmbient();sonicFrame=undefined;sonicAt=0;stopFrames();animation?.cancel();state={};observed=0;lastReply=undefined;rest=pack?pack.defaults.app.expression:"calm";lastExpression=undefined;draw(false);}
     document.addEventListener("visibilitychange",()=>{
       if(document.hidden){clearTimeout(expiry);stopAmbient();stopFrames();animation?.cancel();draw();}
       else {draw();arm();}
     });
     motion?.addEventListener?.("change",()=>{if(motion.matches){stopAmbient();stopFrames();animation?.cancel();}draw();});
     box.hidden=false;draw();
-    return {update,observe,reply,reset,configure,sonic(value){if(value?.schema!=="telecodex.sonic-state/v1" || !Array.isArray(value.sources) || value.sources.length>65 || !Number.isFinite(value.observed_at))return;sonicFrame=value;sonicAt=now();draw(false);}};
+    return {update,observe,reply,reset,configure,sonic(value){if(value?.schema!=="telecodex.sonic-state/v1" || !Array.isArray(value.sources) || value.sources.length>65 || !Number.isFinite(value.observed_at) || sonicFrame && value.observed_at<sonicFrame.observed_at)return;const wasSleeping=reactionCue()==="sleep";
+      sonicFrame=value;sonicAt=now();
+      const sources=freshSources(), next=new Map();
+      for(const s of sources){if(typeof s.id!=="string")continue;next.set(s.id,{goal:s.goal_state,at:now()});
+        if(s.goal_state==="complete" && previousGoals.get(s.id)?.goal==="active" && now()-previousGoals.get(s.id).at<staleAfter)pulse("delighted");}
+      previousGoals=next;
+      if(wasSleeping && !value.truncated && sources.length && sources.length===value.sources.length && sources.every(s=>s.execution==="idle" && ["absent","active","paused","complete"].includes(s.goal_state)))pulse("welcome");
+      draw(false);arm();}};
   }
   return {mount};
 })();

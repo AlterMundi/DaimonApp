@@ -1,5 +1,6 @@
 // Authored associations drawn from the project's research; not emotion measurements.
 export const gallery=[
+ {id:'sleep',name:'Sueño',description:'Cabecea, se acomoda y respira despacio.',reading:'Una actuación de descanso; no indica disponibilidad real.',shape:{opening:.7,bend:.1,width:1,height:.96,lean:.08,tempo:.6,motion:'together'}},
  {id:'calm',name:'Calma',description:'Un centro estable, espacio y un pulso lento.',reading:'Puede sentirse sereno o en reposo.',shape:{opening:1,bend:0,width:1,height:1,lean:0,tempo:.6,motion:'together'}},
  {id:'curious',name:'Curiosidad',description:'Se abre un poco y se inclina hacia algo.',reading:'Puede leerse como interés o exploración.',shape:{opening:1.2,bend:.3,width:1.08,height:.98,lean:.18,tempo:1.1,motion:'rejoin'}},
  {id:'joy',name:'Alegría',description:'Se expande y sus partes vuelven a encontrarse.',reading:'Puede sugerir entusiasmo, celebración o alivio.',shape:{opening:1.4,bend:.2,width:1.18,height:1.12,lean:-.05,tempo:1.6,motion:'rejoin'}},
@@ -9,6 +10,6 @@ export const gallery=[
  {id:'focus',name:'Concentración',description:'Se estrecha y reúne su espacio alrededor del centro.',reading:'Puede leerse como atención o concentración.',shape:{opening:.65,bend:-.2,width:.82,height:1.12,lean:0,tempo:.7,motion:'together'}},
  {id:'welcome',name:'Bienvenida',description:'Deja más espacio y se abre hacia un lado.',reading:'Puede sugerir cercanía, acogida o disposición.',shape:{opening:1.35,bend:.8,width:1.12,height:.96,lean:.12,tempo:.85,motion:'together'}}
 ];
-export function galleryGesture(entry){return {id:'gallery-'+entry.id,name:entry.name,...entry.shape,rig:'local/v1',cue:entry.id};}
+export function galleryGesture(entry){return {id:'gallery-'+entry.id,name:entry.name,...entry.shape,rig:'local/v1',cue:entry.id,...(entry.id==='sleep'?{performance:'accessory/v1'}:{})};}
 
 export function gestureTitle(gesture){return gallery.find(e=>e.id===gesture?.cue)?.name||'Animación anterior';}

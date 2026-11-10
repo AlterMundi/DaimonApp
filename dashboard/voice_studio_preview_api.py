@@ -1,4 +1,4 @@
-"""Account/CSRF-owned A/B requests; same workshop, voice fence and speech cache."""
+"""Account-owned auditions and retained audio; same workshop and speech cache."""
 import asyncio
 import base64
 import copy
@@ -33,7 +33,7 @@ class PreviewService:
         if base['provider']!='openai-realtime':raise ValueError('Select the existing OpenAI speech cache')
         key=self.config['openai_live']['api_key_file']
         if not isinstance(key,str) or not Path(key).is_absolute():raise ValueError('Select the configured project access')
-        fingerprint=speech.sha(speech.canonical([speech.sha(raw),key,profiles]))
+        fingerprint=speech.sha(speech.canonical([speech.sha(raw),key,profiles[:1]]))
         return base,key,profiles,capacity,fingerprint
 
     def available(self,human):
@@ -60,16 +60,16 @@ class PreviewService:
         if not self.available(human):raise ValueError('Voice previews are not available for this account')
         *_,profiles,capacity,fingerprint=self.receiving()
         if body['profile'] not in profiles:raise ValueError('Voice is not configured for this account')
-        def planner(row):return {slot:self.plan(human,row,slot)[2] for slot in ('A','B')}
+        def planner(row):return {slot:self.plan(human,row,slot)[2] for slot in row['choices']}
         return self.store.preview_prepare(human,body['id'],body['profile'],body['delivery'],
-            body['voice_generation'],body['generation'],planner,receiving_fingerprint=fingerprint)
+            body['voice_generation'],body['generation'],planner,receiving_fingerprint=fingerprint,passage=body.get('passage'))
 
     def observed(self,human,row,slot):
         route,request,ident=self.plan(human,row,slot)
         if row['renders'][slot]['id']!=ident:raise ValueError('Frozen preview render identity changed')
         job=Path(route['cache_root'])/ident;path=job/'state.json'
         if not path.exists() and not path.is_symlink():return None
-        state=json.loads(speech.private_bytes(path,32768));provider=state.get('provider_receipt',{})
+        raw=speech.private_bytes(path,32768);state=json.loads(raw);provider=state.get('provider_receipt',{})
         if (state.get('identity_sha256')!=ident or state.get('provider')!='openai-live'
                 or state.get('voice')!=route['voice'] or state.get('language')!=route['language']
                 or state.get('text_sha256')!=speech.sha(request['text'].encode())):
@@ -79,6 +79,9 @@ class PreviewService:
         receipt={'render_id':ident,'provider_receipt':{key:copy.deepcopy(provider[key]) for key in (
             'model','session_id','usage','reason','finalized','first_pcm_millis','generation_millis',
             'audio_millis','passage_match','hearing','live_conversation_latency') if key in provider}}
+        from scripts.openai_live_speech import diagnostic
+        if diagnostic(provider.get('diagnostic')):
+            receipt.update(automatic_retry=False,diagnostic=diagnostic(provider['diagnostic']))
         if state.get('phase')=='rendered' and finalized:
             audio=job/'audio.wav';data=speech.private_bytes(audio,speech.MAX_AUDIO);info=speech.audio_info(data)
             if speech.sha(data)!=state.get('audio_sha256') or info!=state.get('format') or info['audio_millis']>30000:
@@ -86,11 +89,25 @@ class PreviewService:
             receipt.update(audio_sha256=state['audio_sha256'],format=info,voice=route['voice'],language=route['language'])
             return {'state':'rendered','receipt':receipt}
         if finalized:return {'state':'cancelled_verified','receipt':receipt}
+        if speech.preview_start_rejection(state) and not (job/'audio.wav').exists() and not (job/'audio.wav').is_symlink():
+            receipt.update(automatic_retry=False,diagnostic=copy.deepcopy(provider['diagnostic']),
+                render_state_sha256=speech.sha(raw),request_rejected=True,finalization='not_observed',
+                accounting='not_refunded')
+            # Return only the same fixed diagnostic classifications as unknowns.
+            from scripts.openai_live_speech import diagnostic
+            receipt['diagnostic']=diagnostic(provider['diagnostic'])
+            return {'state':'rejected_before_start','receipt':receipt}
+        if state.get('phase')=='unconfirmed':
+            from scripts.openai_live_speech import diagnostic
+            details=diagnostic(provider.get('diagnostic'))
+            if details:
+                receipt.update(automatic_retry=False,diagnostic=details)
+                return {'state':'unconfirmed','receipt':receipt}
         return None
 
     def reconcile(self,human,row):
         if row['phase']=='retiring':return row
-        for slot in ('A','B'):
+        for slot in row['renders']:
             current=row['renders'][slot]
             if current['state'] in ('intent','cancel_requested','unconfirmed'):
                 outcome=self.observed(human,row,slot)
@@ -98,12 +115,35 @@ class PreviewService:
                     row=self.store.preview_observe(human,row['id'],row['generation'],slot,current['id'],outcome)
         return row
 
+    def describe(self,human,row):
+        # Availability is a current read projection, never a rewrite/refund of
+        # the frozen generation receipt or authority to render another sample.
+        shown=copy.deepcopy(row)
+        for slot,render in shown['renders'].items():
+            if render['state']!='rendered':continue
+            try:
+                route,request,ident=self.plan(human,row,slot);job=Path(route['cache_root'])/ident
+                state=json.loads(speech.private_bytes(job/'state.json',32768))
+                proof=render['outcome']['receipt']
+                if (state.get('phase')!='audio_expired' or state.get('identity_sha256')!=ident
+                        or state.get('provider')!='openai-live' or state.get('voice')!=route['voice']
+                        or state.get('language')!=route['language']
+                        or state.get('text_sha256')!=speech.sha(request['text'].encode())
+                        or state.get('audio_sha256')!=proof.get('audio_sha256')
+                        or state.get('format')!=proof.get('format')):continue
+                try:(job/'audio.wav').lstat()
+                except FileNotFoundError:render['audio_state']='expired'
+            except (OSError,ValueError,KeyError,TypeError,speech.RenderError):pass
+        return shown
+
     def snapshot(self,human):
         state=self.store.preview_snapshot(human)
         for row in state['batches']:
             try:self.reconcile(human,row)
             except (OSError,ValueError,KeyError,TypeError,speech.RenderError):pass
-        return self.store.preview_snapshot(human)
+        result=self.store.preview_snapshot(human)
+        result['batches']=[self.describe(human,row) for row in result['batches']]
+        return result
 
     def audio(self,human,row,slot):
         if row['renders'][slot]['state']!='rendered':return None
@@ -114,10 +154,27 @@ class PreviewService:
             raise ValueError('Recorded preview needs review')
         return {'mime':'audio/wav','data':base64.b64encode(data).decode(),'playback':'not_observed'}
 
+    def retained_audio(self,human,body):
+        row=self.store.preview_get(human,body['id'],body['batch_generation'])
+        if row['phase']=='retiring' or body['slot'] not in row['renders']:
+            raise ValueError('Select a retained sample')
+        # This path deliberately cannot reconcile, allocate, start or cancel work.
+        row=self.describe(human,row);slot=body['slot']
+        if row['renders'][slot].get('audio_state')=='expired':
+            return {'batch':row,'audio':None,'audio_state':'expired'}
+        try:audio=self.audio(human,row,slot)
+        except FileNotFoundError:
+            # Retention can finish after the initial metadata observation.
+            row=self.describe(human,row)
+            if row['renders'][slot].get('audio_state')=='expired':
+                return {'batch':row,'audio':None,'audio_state':'expired'}
+            raise
+        return {'batch':row,'audio':audio}
+
     def retire(self,human,body):
         def remove(row):
             seen=set()
-            for slot in ('A','B'):
+            for slot in row['renders']:
                 route,_,ident=self.plan(human,row,slot)
                 if ident in seen:continue
                 seen.add(ident);render=row['renders'][slot]
@@ -138,7 +195,7 @@ class PreviewService:
         row=await asyncio.to_thread(self.reconcile,human,row)
         if row['phase']=='retiring':raise ValueError('Preview retirement needs completion')
         if row['renders'].get(slot,{}).get('state')=='rendered':
-            return {'batch':row,'audio':await asyncio.to_thread(self.audio,human,row,slot)}
+            return await asyncio.to_thread(self.retained_audio,human,body)
         if row['renders'].get(slot,{}).get('state')!='prepared':return {'batch':row,'audio':None}
         route,payload,render_id=self.plan(human,row,slot)
         if render_id!=row['renders'][slot]['id']:raise ValueError('Preview source identity changed')
@@ -207,8 +264,14 @@ def install(app,config,provider,store,owner,call):
         try:
             if action=='prepare' and set(body)=={'action','id','profile','delivery','voice_generation','generation'}:
                 return await call(request,service.prepare,body,write=True)
+            if action=='prepare_sample' and set(body)=={'action','id','profile','delivery','voice_generation','generation','passage'}:
+                if body['passage'] is None:raise ValueError('Write a short sample')
+                return await call(request,service.prepare,body,write=True)
+            if action=='audio' and set(body)=={'action','id','batch_generation','slot'}:
+                if body['slot'] not in ('A','B','sample'):raise ValueError('Select an exact preview')
+                return await call(request,service.retained_audio,body,write=True)
             if action in ('render','cancel') and set(body)==({'action','id','batch_generation','slot'} if action=='render' else {'action','id','batch_generation'}):
-                if action=='render' and body['slot'] not in ('A','B'):raise ValueError('Select preview A or B')
+                if action=='render' and body['slot'] not in ('A','B','sample'):raise ValueError('Select an exact preview')
                 if action=='cancel':value=await service.cancel(human,body['id'],body['batch_generation'])
                 else:value=await service.render(request,human,body,owner)
                 await owner(request,True);return value

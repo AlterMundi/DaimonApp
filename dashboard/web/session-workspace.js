@@ -1,5 +1,6 @@
 /* One owner-scoped workspace. Refresh reuses Conversation's existing events;
- * no timer, transcript persistence, model call or alternate routing store. */
+ * no extra poller, transcript persistence, model call or routing store. The
+ * bounded notice grace changes presentation only; it never repeats a request. */
 (() => {
   const pinIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 6-4 1-3 5-5-5 5-3Z"/><path d="m9 15-6 6"/></svg>';
   const replyIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H9l-5 5Z"/><path d="M8 8h8M8 12h5"/></svg>';
@@ -9,25 +10,28 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,toolbarHost,noticeHost,daimonName='Daimon',onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
     const rail=el('aside',undefined,'session-rail');rail.id='session-rail';rail.hidden=true;rail.setAttribute('aria-label','Your sessions');
     const list=el('div',undefined,'session-list'),target=el('span','Conversation','session-input-target');
-    const toggle=button('☰','Show sessions',()=>showRail(rail.hidden));
+    const toggle=button('','Show sessions',()=>showRail(rail.hidden));
+    toggle.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h12M4 18h16"/></svg>';
     function showRail(open){if(open)void refresh(binding);rail.hidden=!open;toggle.setAttribute('aria-expanded',String(open));toggle.title=open?'Hide sessions':'Show sessions';toggle.setAttribute('aria-label',toggle.title);}
     toggle.setAttribute('aria-controls',rail.id);toggle.setAttribute('aria-expanded','false');
     const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
     reset.className='session-workspace-reset';
+    reset.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6"/></svg><span>Reset</span>';
     const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;expanded=undefined;leave();changed();});
     unpin.innerHTML=pinIcon;
-    const status=el('p','','session-workspace-status');status.setAttribute('role','status');
+    const status=el('p','','session-workspace-status');status.setAttribute('role','status');status.setAttribute('data-attention','true');
     const retryStatus=button('Retry status','Retry session status',()=>refresh(binding));retryStatus.hidden=true;retryStatus.className='session-workspace-retry';
     const body=el('div',undefined,'session-workspace-body'),content=el('div',undefined,'session-workspace-content');
     const view=el('section',undefined,'session-conversation');view.hidden=true;view.setAttribute('aria-label','Selected session conversation');
     const viewBar=el('div',undefined,'session-view-toolbar'),heading=el('h3','Session');
     const back=button('←','Back to the conversation',()=>{expanded=undefined;leave();changed();toggle.focus?.();});
+    back.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 5-7 7 7 7M4 12h16"/></svg>';
     function setView(detail){
       if(technical===detail)return;
       technical=detail;syncView();clearHistory();void history();
@@ -52,9 +56,24 @@
     function syncScope(){const label=showAll?'Show recent sessions':'Show all sessions';scopeToggle.textContent=label;scopeToggle.setAttribute('aria-label',label);scopeToggle.setAttribute('aria-pressed',String(showAll));railHeading.textContent=showAll?'Sessions · All':'Sessions · 24h';}
     const scopeToggle=button('Show all sessions','Show all sessions',()=>{showAll=!showAll;syncScope();remember();render();});scopeToggle.className='session-scope-toggle';
     const railHeader=el('div',undefined,'session-rail-header');railHeader.append(railHeading,reset);
-    rail.append(railHeader,scopeToggle,list);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,status,retryStatus,toolbar);
+    const railScroll=el('div',undefined,'session-rail-scroll');railScroll.append(railHeader,scopeToggle,list);rail.append(railScroll);toolbar.append(toggle,back,target,unpin);body.append(rail,content);shell.append(body,toolbar);(noticeHost||shell).append(status,retryStatus);
+    if(toolbarHost)toolbarHost.insertBefore(toolbar,toolbarHost.firstChild);
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
+    let statusFailureAt, statusFailureTimer;
+    const statusFailureText='Session status is unavailable. Your input destination is unchanged.';
+    function clearStatusFailure(){clearTimeout(statusFailureTimer);statusFailureTimer=undefined;statusFailureAt=undefined;}
+    function observeStatusFailure(){
+      statusFailureAt ??= Date.now();
+      const owned=epoch;
+      const show=()=>{
+        statusFailureTimer=undefined;
+        if(owned!==epoch || statusFailureAt===undefined || document.hidden===true)return;
+        if(!status.textContent || status.textContent===statusFailureText){status.textContent=statusFailureText;retryStatus.hidden=false;}
+      };
+      if(Date.now()-statusFailureAt>=8000){clearTimeout(statusFailureTimer);show();}
+      else if(statusFailureTimer===undefined)statusFailureTimer=setTimeout(show,8000-(Date.now()-statusFailureAt));
+    }
     const followKey='interaction.followed-session.v1';
     function saved(){
       try{const raw=window.localStorage?.getItem(followKey);if(!raw||raw.length>1024)return;const value=JSON.parse(raw),opaque=id=>id===null||typeof id==='string'&&/^[a-f0-9]{24}$/.test(id);if(value?.version===1&&value.binding===binding&&opaque(value.id)&&(!Object.hasOwn(value,'view')||opaque(value.view))&&(!Object.hasOwn(value,'all')||typeof value.all==='boolean'))return value;}catch{}
@@ -68,7 +87,7 @@
     function capture(){const value=selected();if(value&&!value.is_entry&&!value.destination)throw Error('Your saved session is unavailable. Select a destination before sending.');return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){remember();renderSelection();onTarget();}
     function renderSelection(){
-      const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';
+      const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';target.title=target.textContent;
       back.hidden=!expanded;
       unpin.hidden=!current;unpin.setAttribute('aria-pressed',String(!!pin&&pin.id===current?.id));
       unpin.title=pin?`Unpin ${pin.title}: send to the conversation`:'Send to the conversation';
@@ -130,8 +149,8 @@
     function render(){
       // Visibility is separate from intent: an expired row must not silently
       // erase a selected pin or change the target of an existing recording.
-      const recent=[...inventory.values()].filter(row=>showAll||active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
-        .sort((a,b)=>Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
+      const recent=[...inventory.values()].filter(row=>row.is_entry||showAll||active(row)||Number.isFinite(row.last_activity_at)&&row.last_activity_at>=observedAt-86400)
+        .sort((a,b)=>Number(b.is_entry===true)-Number(a.is_entry===true)||Number(active(b))-Number(active(a))||(b.last_activity_at||0)-(a.last_activity_at||0)||a.id.localeCompare(b.id));
       const visible=new Set(recent.map(row=>row.id));
       for(const [id,row] of rows)if(!visible.has(id)){row.box.remove();rows.delete(id);}
       for(const data of recent){
@@ -156,7 +175,7 @@
       renderSelection();syncAudio();
     }
     function resetBinding(next){
-      epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;restoreChecked=false;showAll=false;syncScope();inventory.clear();rows.clear();list.replaceChildren();leave();
+      clearStatusFailure();epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;restoreChecked=false;showAll=false;syncScope();inventory.clear();rows.clear();list.replaceChildren();leave();
       allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';retryStatus.hidden=true;onReady(false);onTarget();
     }
     async function refresh(nextBinding){
@@ -166,8 +185,8 @@
       try{
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
-        observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
-        inventory=new Map(value.sessions.map(row=>[row.id,row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';retryStatus.hidden=true;
+        clearStatusFailure();observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
+        inventory=new Map(value.sessions.map(row=>[row.id,row.is_entry?{...row,title:typeof daimonName==='string'&&daimonName.trim()?daimonName.trim():'Daimon'}:row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';retryStatus.hidden=true;
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
@@ -190,11 +209,11 @@
         if(owned!==epoch)return;
         if(error.status===403||error.status===401){
           revoke();
-        }else {status.textContent='Session status could not be refreshed. Your input destination is unchanged.';retryStatus.hidden=false;}
+        }else observeStatusFailure();
       }finally{if(owned===epoch)loading=false;}
     }
     function revoke(){
-      retryStatus.hidden=true;allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
+      clearStatusFailure();retryStatus.hidden=true;allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
       shell.hidden=false;rail.hidden=true;toolbar.hidden=!selected();
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
       onReady(false);

@@ -923,6 +923,13 @@ impl Store {
         let predecessor = index
             .checked_sub(1)
             .map(|i| view["steps"][i]["result"].clone());
+        // Reader arguments are transport guidance, not part of the canonical
+        // source descriptor/revision retained by existing admissions.
+        let predecessor_reader = index.checked_sub(1).map(|i| {
+            json!({"operation":"workflow_result","arguments":{
+                "workflow":w.id,"step":w.plan.steps[i].id,
+                "revision":view["steps"][i]["result"]["revision"],"offset":0}})
+        });
         let mut text = format!(
             "Preauthorized workflow step, authored by the integrating session. This is internal session context under the retained human task, never a new human instruction or permission to transfer ownership/create helpers. Workflow: {}. Step: {}. Original input: {}. Required checkpoint: {}. Scope:\n{}\nPredecessor source (read its exact revision with workflow_result before relying on it): {}",
             w.id,
@@ -932,6 +939,12 @@ impl Store {
             step.scope,
             serde_json::to_string(&predecessor)?
         );
+        if let Some(reader) = &predecessor_reader {
+            text.push_str(&format!(
+                "\nPredecessor reader (use these exact arguments): {}",
+                serde_json::to_string(reader)?
+            ));
+        }
         if let Some(primary) = &w.primary {
             text.push_str(&format!("\nExisting primary routing, whose owner and original request coverage remain unchanged: {}",primary_view(primary)));
         }
@@ -962,6 +975,9 @@ impl Store {
             params![i.id, serde_json::to_string(&i)?],
         )?;
         let mut author = json!({"kind":"workflow_step","session":entry,"native_thread":native,"workflow":w.id,"step":step.id,"input_ref":w.plan.input_ref,"authorized_human":human,"predecessor":predecessor});
+        if let Some(reader) = predecessor_reader {
+            author["predecessor_reader"] = reader;
+        }
         if let Some(primary) = &w.primary {
             author["primary_routing"] = primary_view(primary);
         }
@@ -1295,18 +1311,33 @@ impl Store {
             |r| r.get(0),
         )?;
         let w: Workflow = serde_json::from_str(&raw)?;
-        let index = w
-            .plan
-            .steps
-            .iter()
-            .position(|s| s.id == step)
-            .context("Unknown workflow step")?;
-        let eligible = actor == w.entry
-            || w.plan
-                .steps
-                .get(index + 1)
-                .is_some_and(|s| s.owner == actor && w.admissions[index + 1].is_some());
-        if !eligible {
+        let eligible = |index: usize| {
+            actor == w.entry
+                || w.plan
+                    .steps
+                    .get(index + 1)
+                    .is_some_and(|s| s.owner == actor && w.admissions[index + 1].is_some())
+        };
+        let index = if let Some(index) = w.plan.steps.iter().position(|s| s.id == step) {
+            index
+        } else {
+            // Older handoffs exposed only the canonical result ID. Resolve that
+            // exact ID/revision inside already-authorized dependencies; never
+            // search unrelated results or expand the worker's reader scope.
+            let mut selected = None;
+            for index in 0..w.plan.steps.len() {
+                if eligible(index)
+                    && let Some((source, _)) = result_on(&conn, &w, index)?
+                    && source["id"].as_str() == Some(step)
+                    && source["revision"].as_str() == Some(revision)
+                {
+                    anyhow::ensure!(selected.is_none(), "Ambiguous canonical result dependency");
+                    selected = Some(index);
+                }
+            }
+            selected.context("Unknown workflow step or canonical result dependency")?
+        };
+        if !eligible(index) {
             bail!("Result outside this step's selected dependency");
         }
         let (source, d) = result_on(&conn, &w, index)?.context("Canonical result unavailable")?;
@@ -3812,6 +3843,137 @@ mod tests {
     }
 
     #[test]
+    fn generated_predecessor_reader_and_legacy_result_id_keep_the_selected_scope() {
+        let (_f, s, e, plan) = setup();
+        let v = declare(&s, &e, plan);
+        let id = v["id"].as_str().unwrap();
+        let first = advance(&s, &e, &v).unwrap();
+        let local = accept(&s, &first);
+        let d = answer(
+            &s,
+            &first,
+            local,
+            "complete",
+            vec![first.id.clone()],
+            "Exact predecessor 🦉; not a new human request",
+        );
+        let second = s.interaction_workflow_return(100, &d.id).unwrap().unwrap();
+        let source = status(&s, &e, id)["steps"][0]["result"].clone();
+        let author = s.interaction_author(&second.id, 100).unwrap().unwrap();
+        let reader: Value = serde_json::from_str(
+            second
+                .text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("Predecessor reader (use these exact arguments): ")
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reader, author["predecessor_reader"]);
+        assert_eq!(author["predecessor"], source);
+        assert!(source.get("predecessor_reader").is_none());
+        assert_eq!(reader["operation"], "workflow_result");
+        let args = &reader["arguments"];
+        let part = s
+            .interaction_workflow_result(
+                100,
+                second.target,
+                "native-8",
+                args["workflow"].as_str().unwrap(),
+                args["step"].as_str().unwrap(),
+                args["revision"].as_str().unwrap(),
+                args["offset"].as_u64().unwrap() as usize,
+            )
+            .unwrap();
+        assert!(
+            part["text"]
+                .as_str()
+                .unwrap()
+                .contains("Exact predecessor 🦉")
+        );
+        // Simulate an already-admitted older packet, without altering its source
+        // or workflow/admission. Its retained result ID is enough for this read.
+        let mut old_author = author.clone();
+        old_author
+            .as_object_mut()
+            .unwrap()
+            .remove("predecessor_reader");
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_session_authors SET doc=?2 WHERE input_id=?1",
+                params![second.input_id, old_author.to_string()],
+            )
+            .unwrap();
+        let result_id = source["id"].as_str().unwrap();
+        let revision = source["revision"].as_str().unwrap();
+        assert_eq!(
+            s.interaction_workflow_result(
+                100,
+                second.target,
+                "native-8",
+                id,
+                result_id,
+                revision,
+                0
+            )
+            .unwrap(),
+            part
+        );
+        assert_eq!(
+            s.interaction_workflow_result(100, e.key, "native-1", id, result_id, revision, 0)
+                .unwrap(),
+            part
+        );
+        for (human, actor, native, workflow, result, selected_revision) in [
+            (101, second.target, "native-8", id, result_id, revision),
+            (100, first.target, "native-7", id, result_id, revision),
+            (100, second.target, "old-native-8", id, result_id, revision),
+            (
+                100,
+                second.target,
+                "native-8",
+                "another-workflow",
+                result_id,
+                revision,
+            ),
+            (
+                100,
+                second.target,
+                "native-8",
+                id,
+                "another-result",
+                revision,
+            ),
+            (
+                100,
+                second.target,
+                "native-8",
+                id,
+                result_id,
+                "another-revision",
+            ),
+        ] {
+            assert!(
+                s.interaction_workflow_result(
+                    human,
+                    actor,
+                    native,
+                    workflow,
+                    result,
+                    selected_revision,
+                    0
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(status(&s, &e, id)["steps"][0]["result"], source);
+        assert!(s.interaction_workflow_return(100, &d.id).unwrap().is_none());
+    }
+
+    #[test]
     fn committed_result_advances_only_the_current_predeclared_successor_once() {
         let (_f, s, e, plan) = setup();
         let v = declare(&s, &e, plan);
@@ -5461,5 +5623,301 @@ mod tests {
         let records = s.heartbeat_executions(100, entry.key, true).unwrap();
         assert_eq!(records.len(), 16);
         assert!(records.iter().all(|r| r["phase"] == "stopping"));
+    }
+    #[test]
+    fn production_review_sources_evolve_without_refunding_or_retiming() {
+        use crate::store::{HeartbeatCommand as H, HeartbeatPurpose, HeartbeatReviewContract};
+        let (_file, s, e, plan) = setup();
+        producer_configure(&s, &e, 4);
+        let paused = s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        s.heartbeat_enable_continuous(100, e.key, generation, 576)
+            .unwrap();
+        s.heartbeat_production_defaults(100, e.key, generation, "owner production direction")
+            .unwrap();
+        let report = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            report.path(),
+            r#"{"status":"pending","blocker":"native admission"}"#,
+        )
+        .unwrap();
+        let mut contract = HeartbeatReviewContract {
+            purpose: HeartbeatPurpose {
+                input_ref: plan.input_ref,
+                channel: "conversation".into(),
+            },
+            reports: vec![crate::store::HeartbeatReportSource {
+                id: "children".into(),
+                path: report.path().into(),
+                pointers: vec!["/status".into()],
+            }],
+            interval_seconds: 900,
+            max_checks: None,
+            expires_at_unix_ms: None,
+            production: true,
+        };
+        s.heartbeat_select_review(100, e.key, generation, contract.clone())
+            .unwrap();
+        producer_edit(&s, &e, |p| {
+            p["review"]["checks"] = json!(7);
+            p["review"]["next_check_ms"] = json!(Utc::now().timestamp_millis() + 900_000);
+        });
+        let before = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        contract.reports[0].pointers.push("/blocker".into());
+        assert!(
+            s.heartbeat_select_review(101, e.key, generation, contract.clone())
+                .is_err()
+        );
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation + 1, contract.clone())
+                .is_err()
+        );
+        let mut changed = contract.clone();
+        changed.interval_seconds = 1800;
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation, changed)
+                .is_err()
+        );
+        let mut changed = contract.clone();
+        changed.purpose.channel = "another-original-channel".into();
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation, changed)
+                .is_err()
+        );
+        s.heartbeat_select_review(100, e.key, generation, contract.clone())
+            .unwrap();
+        let after = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(before["resources"], after["resources"]);
+        assert_eq!(before["lanes"], after["lanes"]);
+        for field in [
+            "checks",
+            "next_check_ms",
+            "cursor_entries",
+            "retained_returns",
+        ] {
+            assert_eq!(before["producer"][field], after["producer"][field]);
+        }
+        for field in ["checks", "next_check_ms"] {
+            assert_eq!(
+                before["producer"]["finite_review"][field],
+                after["producer"]["finite_review"][field]
+            );
+        }
+        assert_eq!(
+            after["producer"]["finite_review"]["contract"]["reports"][0]["pointers"],
+            json!(["/status", "/blocker"])
+        );
+        s.heartbeat_control(100, e.key, H::Resume { generation })
+            .unwrap();
+        assert!(
+            s.heartbeat_select_review(100, e.key, generation, contract.clone())
+                .is_err()
+        );
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ResumeLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+                generation: after["lanes"]["reports"]["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::WorkflowReturns,
+            },
+        )
+        .unwrap();
+        producer_edit(&s, &e, |p| p["review"]["next_check_ms"] = json!(0));
+        let check = s.heartbeat_begin_check(100, e.key).unwrap().unwrap();
+        s.heartbeat_finish_observation(&check, None, false).unwrap();
+        // Model a lost native ACK: pausing must retain this original, unlike
+        // a proved unsubmitted offer which pause can safely retire.
+        producer_edit(&s, &e, |p| {
+            let returns = p["native_returns"].as_array_mut().unwrap();
+            assert_eq!(returns.len(), 1);
+            returns[0]["phase"] = json!("uncertain");
+        });
+        let paused = s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        let pending = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(pending["producer"]["pending"], true);
+        contract.reports[0].pointers = vec!["/blocker".into()];
+        assert!(
+            s.heartbeat_select_review(100, e.key, paused["generation"].as_u64().unwrap(), contract)
+                .is_err()
+        );
+        let retained = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(pending["producer"], retained["producer"]);
+        assert_eq!(pending["resources"], retained["resources"]);
+    }
+    #[test]
+    fn finite_review_selection_keeps_parent_counters_and_exact_human_purpose() {
+        use crate::store::{
+            HeartbeatCommand as H, HeartbeatProducerContract, HeartbeatPurpose,
+            HeartbeatReviewContract,
+        };
+        let (file, s, e, plan) = setup();
+        s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        let resources = crate::store::heartbeat::test_contract();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ConfigureResources {
+                generation: 1,
+                contract: resources.clone(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ConfigureProducer {
+                generation: 1,
+                contract: HeartbeatProducerContract {
+                    purpose: None,
+                    interval_seconds: 30,
+                    max_checks: 4,
+                    expires_at_unix_ms: resources.expires_at_unix_ms,
+                    matrix_replies: true,
+                    matrix_inbox: None,
+                    workflows: false,
+                    session_progress: false,
+                    reports: vec![],
+                },
+            },
+        )
+        .unwrap();
+        let report = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            report.path(),
+            r#"{"milestone":"fixture checkpoint","clock":1}"#,
+        )
+        .unwrap();
+        let contract = HeartbeatReviewContract {
+            purpose: HeartbeatPurpose {
+                input_ref: plan.input_ref,
+                channel: "conversation".into(),
+            },
+            interval_seconds: 900,
+            max_checks: Some(96),
+            expires_at_unix_ms: Some(resources.expires_at_unix_ms),
+            production: false,
+            reports: vec![crate::store::HeartbeatReportSource {
+                id: "children".into(),
+                path: report.path().to_owned(),
+                pointers: vec!["/milestone".into()],
+            }],
+        };
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        for lane in [
+            crate::store::heartbeat::lanes::HeartbeatLane::Messaging,
+            crate::store::heartbeat::lanes::HeartbeatLane::WorkflowReturns,
+            crate::store::heartbeat::lanes::HeartbeatLane::SessionProgress,
+        ] {
+            s.heartbeat_control(100, e.key, H::PauseLane { lane })
+                .unwrap();
+        }
+        let before = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert!(
+            s.heartbeat_select_review(100, e.key, 2, contract.clone())
+                .is_err()
+        );
+        s.heartbeat_select_review(100, e.key, 1, contract.clone())
+            .unwrap();
+        let after = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(before["resources"], after["resources"]);
+        for key in [
+            "checks",
+            "next_check_ms",
+            "cursor_entries",
+            "retained_returns",
+        ] {
+            assert_eq!(before["producer"][key], after["producer"][key]);
+        }
+        assert_eq!(before["lanes"], after["lanes"]);
+        assert!(s.heartbeat_select_review(100, e.key, 1, contract).is_err());
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ResumeLane {
+                lane: crate::store::heartbeat::lanes::HeartbeatLane::Reports,
+                generation: after["lanes"]["reports"]["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, e.key, H::Resume { generation: 1 })
+            .unwrap();
+        let check = s.heartbeat_begin_check(100, e.key).unwrap().unwrap();
+        assert!(
+            s.heartbeat_finish_observation(&check, None, false)
+                .unwrap()
+                .is_none()
+        );
+        let waiting = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(waiting["producer"]["pending"], true);
+        assert_eq!(waiting["resources"]["reserved_provider_attempts"], 0);
+        let mut retained = s.heartbeat_returns_recover_unsent(100, e.key).unwrap();
+        assert_eq!(retained.len(), 1);
+        let r = retained.remove(0);
+        assert_eq!(
+            r.attempts, 2,
+            "Existing finite known-unsent recovery accounting is preserved"
+        );
+        let packet: Value = serde_json::from_str(&r.output).unwrap();
+        let revision = packet["evidence"]["operating_purpose"]["revision"]
+            .as_str()
+            .unwrap();
+        let purpose = s
+            .heartbeat_source(100, e.key, "native-1", &r.id, "purpose:human", revision, 0)
+            .unwrap();
+        assert!(purpose["retained_human_original"].as_bool().unwrap());
+        assert!(
+            purpose["text"]
+                .as_str()
+                .unwrap()
+                .contains("A produces a checkpoint")
+        );
+        assert!(s.heartbeat_produce(100, e.key).unwrap().is_none());
+        let after = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(after["producer"]["finite_review"]["checks"], 1);
+        assert_eq!(after["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(after["producer"]["pending"], true);
+        {
+            let conn = s.conn.lock().unwrap();
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.review.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_producer:100:{}", e.id), Utc::now().timestamp_millis()-1]).unwrap();
+        }
+        let expired = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(expired["producer"]["finite_review"]["state"], "expired");
+        assert_eq!(
+            expired["producer"]["contract"]["expires_at_unix_ms"],
+            resources.expires_at_unix_ms
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let restarted = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(restarted["producer"]["finite_review"]["state"], "expired");
+        assert_eq!(restarted["resources"], expired["resources"]);
+        assert_eq!(
+            restarted["producer"]["retained_returns"],
+            expired["producer"]["retained_returns"]
+        );
     }
 }

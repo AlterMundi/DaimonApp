@@ -539,6 +539,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             matrix_inbox_channel: None,
+            matrix_publication: None,
             targets: vec![Target {
                 name: "Explicit".into(),
                 topic_id: 10,
@@ -580,6 +581,25 @@ mod tests {
                 .resolve("t2")
                 .is_empty()
         );
+        // A sixty-fifth owned conversation must not take down the whole entry.
+        // One entry + 127 destinations matches the existing web reader ceiling.
+        for topic in 100..223 {
+            let key = SessionKey::new(100, Some(topic));
+            store.ensure_session(key, 100, &defaults).unwrap();
+            store
+                .set_session_codex_thread(key, &format!("native-{topic}"))
+                .unwrap();
+            if topic == 160 {
+                assert_eq!(store.interaction_profile(&cfg).unwrap().targets.len(), 65);
+            }
+        }
+        assert_eq!(store.interaction_profile(&cfg).unwrap().targets.len(), 127);
+        let extra = SessionKey::new(100, Some(223));
+        store.ensure_session(extra, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(extra, "native-over-capacity")
+            .unwrap();
+        assert!(store.interaction_profile(&cfg).is_err());
         store
             .conn
             .lock()
@@ -1081,6 +1101,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             matrix_inbox_channel: None,
+            matrix_publication: None,
             targets: vec![Target {
                 name: "Alpha".into(),
                 topic_id: 7,

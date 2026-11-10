@@ -22,8 +22,11 @@ def qualify(binary):
         j.goals[native]={'threadId':native,'objective':'Keep original work and history','status':'active',
                          'tokenBudget':1000,'tokensUsed':42,'timeUsedSeconds':17,'createdAt':10,'updatedAt':11}
         def observed(): return j.owner('goal','inspect','100','7')
-        def prepare(seconds=240):
+        def prepare(seconds=240, usage_advance=False):
             snapshot=observed()
+            if usage_advance:
+                j.goals[native]['tokensUsed'] += 1
+                j.goals[native]['timeUsedSeconds'] += 1
             plan={'request_id':str(uuid.uuid4()),'source':'synthetic retained human scoped-maintenance approval',
                   'entry':{'chat_id':100,'thread_id':1},'deadline':int(time.time())+seconds,
                   'targets':[{'target':{'chat_id':100,'thread_id':7},'binding':snapshot['target_binding'],'snapshot':snapshot['snapshot']}]}
@@ -33,7 +36,7 @@ def qualify(binary):
         def status(i):return j.owner('goal','maintenance','status',i)
         def writes():return [m for m in j.rpc if m.get('method') in ('thread/goal/conditionalSet','thread/goal/conditionalActivate')]
         before=len(j.rpc)
-        i=prepare()
+        i=prepare(usage_advance=True)
         assert not writes()
         doc=j.owner('goal','maintenance','pause',i)
         assert doc['targets'][0]['phase']=='paused',doc
@@ -46,7 +49,7 @@ def qualify(binary):
         j.stop();j.start();j.wait_control_socket(j.socket)
         j.wait(lambda:status(i)['targets'][0]['phase']=='restored')
         assert j.goals[native]['status']=='active'
-        assert j.goals[native]['tokensUsed']==42 and j.goals[native]['timeUsedSeconds']==17
+        assert j.goals[native]['tokensUsed']==43 and j.goals[native]['timeUsedSeconds']==18
         assert len(writes())==2
         j.owner('goal','maintenance','restore',i)
         assert len(writes())==2

@@ -625,3 +625,21 @@ full platform mirrors, download media, export cookies, install search watchers
 or accumulate per-query logs. Revisit a missing source through an already
 authorized working reader when it can resolve a concrete implementation choice.
 No inference, provider switch, limit change or new recording occurred here.
+
+### Optional result reads must not terminate current speech —8November2026
+
+A failed read/append of current or earlier native work stops that visit's optional result
+poller, retaining its original cursor and any uncertain append. It does not close
+an otherwise healthy current WebRTC voice connection or repeat work/reads. Owner
+and access checks remain active; explicit Stop and required capture/context
+failures retain their existing closure path. A one-shot notice distinguishes
+missing work results from lost voice transport.
+
+Explicit browser closure can retain one enumerated `client_close_reason` in the
+existing owner-bound visit, never raw exception text or a new event archive. It
+is client-reported diagnostic evidence, not proof of network/physical cause.
+Legacy close actions remain valid and provider close commands stay unchanged.
+The previous short human visits retain confirmed closure but no such reason;
+this change cannot retroactively identify their cause. Mounted failure-injection
+and UI lifecycle checks are technical evidence, not sustained provider/phone or
+human hearing acceptance.

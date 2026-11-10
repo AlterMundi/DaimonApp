@@ -77,16 +77,41 @@ Server admission acquires the existing cross-mode voice lease before microphone
 permission. One monotonic admission covers negotiation/capture: at most600seconds
 and19,200,000input PCM bytes. Configuration may reduce this to300–600seconds;
 reconnect cannot enlarge an existing admission. Local recording starts before the
-WebRTC offer. Listening requires a connected peer and matching `session.started`.
+WebRTC offer. Listening requires the validated HTTP creation answer and a connected
+peer. The HTTP request starts a WebRTC session; an optional frontend data-channel
+startup event is not another admission gate. The WebSocket transport's separate
+`session.started` requirement must not be imposed on WebRTC. Backend events still
+retain their exact session/source ownership. See the
+[official transport startup contract](https://developers.openai.com/api/docs/guides/live-conversations#prepare-a-session-for-forking).
 
 Originals reuse the browser20MiB/128-record budget and receiving original store.
 Engine tags isolate recovery in the historical `codex_voice` store; its name does
 not select Codex. One-second fragments permit interrupted-prefix recovery; an
 unsaved tail may be missing. Server receipts must match visit, binding, ordinal,
-SHA-256, bytes and provenance before local retirement. **Retry saving** retains
+SHA-256, bytes and provenance before local retirement. **Try saving audio** retains
 the same original: it never reruns ASR, submits speech, dispatches work or creates
 another session. Save/Discard affect local originals, not server work. Rollback
 must keep a reader that ignores foreign-engine records and preserves originals.
+
+Original-audio POSTs have no application wall-clock abort. Network failure still
+retains the same local original; only its confirmed receipt permits source sealing
+or local retirement. This extends the ordinary audio/image upload policy to the
+public voice path, keeping all byte/storage and capture bounds unchanged.
+The public and native capture-only server routes also omit an absolute body-read
+deadline; the two upload slots, byte ceiling, fresh authentication/CSRF and
+post-read owner recheck remain. Disconnect or network failure retains the
+unconfirmed local original. Provider/capture/cleanup deadlines are unchanged.
+
+A WebRTC `disconnected` transition shows reconnecting while allowing the same
+transport to recover. It does not close and replace a paid call. Explicit Stop,
+background lifecycle and the existing visit/capture limit still end capture;
+`failed` or `closed` pauses as before. No automatic ICE restart, new negotiation,
+provider call or audio replay is introduced. See the
+[WebRTC state/restart contract](https://w3c.github.io/webrtc-pc/#dom-rtcofferoptions-icerestart).
+The deterministic browser journey covers a delayed confirmed upload after all
+application network clocks expire, transient recovery on the same call, and a
+subsequent terminal failure. This is source qualification, not phone/WiFi/hearing
+acceptance or proof of the cause of each historical disconnect.
 
 The journal is limited to512records/32MiB,256KiB per receipt, two unsettled
 creations total and one per human. Admission reserves2MiB of trusted source
@@ -129,8 +154,10 @@ are complete. Unconfigured function/client work is never fabricated or executed.
 finalization stays unconfirmed. Disconnect cleanup detaches control, releases the
 media lease and retains outcomes; it never sends close as a cancellation shortcut.
 Do not delete records, change UUIDs or replay commands to clear uncertainty.
-Owner-led reconciliation of interrupted public calls remains unfinished and
-blocks another billed visit.
+An unresolved prior call blocks automatic billed admission. A known-created
+native visit with ended capture can use the explicit source-bound replacement
+review described below; this retires its transport without confirming its bill.
+Unknown creation outcomes and incomplete replacement commits remain held.
 
 An unexpected exception from the owned native preparation task follows the same
 graceful-close path as a held preparation. Retain its original and uncertain
@@ -139,6 +166,23 @@ wait for trusted `session.closed`. Log only the exception class. A failed task
 must not abruptly detach the sideband and turn a recoverable failure into lost
 finalization evidence. Cancellation and independent accepted native work remain
 separate; this does not reconcile an older already-detached visit.
+
+### Documented observation limits after disconnect
+
+Checked7November2026 against the official [Live Sessions reference](https://developers.openai.com/api/reference/python/resources/live/subresources/sessions)
+and [session lifecycle guide](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close).
+The reference documents recording download and accept/fork/hangup/refer/reject
+actions; it does not document a generic session-state or final-usage GET.
+Recording availability or duration does not replace cumulative billed usage.
+Do not invent an endpoint or repeat attach/close/create to clear a lost receipt.
+A sideband receives future events; no replay of finalization is promised.
+
+Keep latest usage provisional until a trusted `session.closed` confirms its final
+value. Missing final usage is unconfirmed, not zero. The native replacement offer
+is a read-only review of the retained owner, capture and source revision, not
+settlement or a new admission. Only the later explicit reviewed reconnect can
+admit its destination. Preserve the old record and original effects, and keep
+provider billing uncertainty separate from source/native continuity acceptance.
 
 ## Optional current-conversation context
 
@@ -217,6 +261,12 @@ and late-work routing remain unfinished. No timeout or diagnostic context bound
 is enlarged by this option.
 
 ## Qualification boundary
+
+The current [retained real-voice chain](interaction-qualification.md#retained-real-voice-native-handoff--7november2026)
+adds two actual source-bound native admissions, one acknowledged canonical progress
+return and a current canonical final after the closed voice visit. Existing memory
+curation/readback matches its original. This is partial work continuity, not an
+audible final return or memory lookup from inside a fresh live connection.
 
 Mounted authorization/upload/cancellation tests and Chromium synthetic desktop/
 mobile journeys cover wiring and original recovery. They make no public provider
@@ -541,6 +591,16 @@ description. For existing configurations without this optional field,
 file refuses startup rather than silently using the managed brief. Retained
 Responses-only backend settings are not used in native mode.
 
+`openai_live.default_native = true` selects that configured native Avatar route
+on initial page load. It requires an available native GPT-Live backend and defaults
+to false. This Avatar-only selection is independent of `voice_services_default`
+and does not require configuring separate file ASR or TTS. A later manual mode
+choice survives refresh. Existing model/account/voice, consent, physical-session
+and resource limits are unchanged; loading the page starts no capture or provider.
+It uses an existing native conversation. Empty-context initialization remains
+separate work and is not part of this presentation setting.
+
+
 Native mode requires source seals (enabled for that explicit mode), forbids
 upload-time native enrollment and managed-Responses conversation tools, and checks
 the selected native reader's `foreground_live_window="journal-input/v1"`
@@ -672,6 +732,68 @@ Source preparation is separate from receiving selection and real trial acceptanc
 
 # Native results across fresh voice connections
 
+## Current integrating context at entry
+
+This prepared increment is evaluated against the later same-general-conversation
+direction. It does not establish another persona, native thread, login or history
+store. Voice/text windows belong to the existing authenticated native entry. The
+old PR737 review-delegation question was withdrawn after the revised direction;
+its historical pending label is not a current approval or delivery receipt.
+
+On8November the source was rebased onto798. The actual configured owner read
+12native messages and14canonical sources from the same selected general thread:
+14,516 embedded bytes within16KiB, no provider, native input or memory write.
+78startup/context/mounted API tests passed against that base. Source preparation
+and read-only authority evidence do not prove speech, receiving adoption or the
+complete shared-conversation experience.
+
+The prepared public-native entry now reads the current integrating thread with
+the existing owner-local read-only observer (`thread/items/list`) and the latest
+canonical integrating originals/results through their existing readers. This
+second window matters: a visible correction or worker return may not yet have
+been incorporated into the native thread. The previous voice producer is still
+settled through its existing semantic continuation, with its original opening
+time and relative transcript timing; it is no longer the sole startup source.
+
+The voice policy reconciles timestamps and original capture order across the
+windows, including the inverse case where voice is newer than native text.
+Read/append order does not make an old statement current. Native harness roles
+retain their attribution; original voice language remains machine interpretation.
+Private analysis and tool outputs are excluded. Current progress remains progress,
+not a completed goal or a new action. Unknown order and earlier-history coverage
+stay explicit; missing facts go to the same native integrator and memory tools.
+
+The observer reads at most four16-item pages and retains at most16 complete
+conversational items. The integrating window uses one bounded input/result page,
+at most16 selected sources, and exact canonical text cursors. A bounded window
+stops scheduling reads after12seconds; one already-issued read keeps its existing
+transport deadline and the mounting owner's late-I/O exclusion until it ends.
+A bounded window
+omits only complete older sources with an explicit earlier-history marker; an
+oversized latest source refuses for semantic preparation rather than clipping its
+text. The combined reserve is at most16KiB inside the unchanged complete32KiB
+public session specification. Charge context as JSON text embedded in the final
+JSON request, including both escaping layers; quotes/backslashes cannot use a
+raw-byte estimate. Measure the actual developer-message envelope and policy
+before allocating that reserve. Whole older sources can be omitted; the latest
+source still refuses if it cannot fit. The boundary fixture fills the complete
+32KiB specification without clipping or another context read. Existing
+native24KiB resume and64k/48k/600s limits
+are unchanged. No history store, provider call, new human original, work replay,
+memory write, daemon start, native login change or context injection is needed
+to read this startup data. Only the short-lived existing observer proxy closes.
+
+Source qualification covers current corrections and progress after voice, whole
+source bounds/cursors, changed-owner refusal and prior-voice seed preservation.
+The actual receiving owner read both current native history and newer canonical
+integrating updates without opening voice or making a paid/model request. A
+three-visit mounted fixture retains the actual wrapper/source/projection path;
+its Core observer and speech are synthetic. This is prepared source, not receiving
+selection or semantic/physical acceptance. Actual useful speech, inverse chronology,
+repeated replacements and the full original roadmap remain open.
+
+## Historical result transport
+
 The native client-delegation mode now has a source-prepared return path for work
 that outlives a voice connection. This is not provider stored-session forking or
 proof of semantic/physical continuity. The existing persistent native thread owns
@@ -708,7 +830,17 @@ Using this unscoped context channel for an earlier native result is an applicati
 integration choice; the documentation and synthetic ACKs do not prove actual
 semantic incorporation, correct spoken continuation or hearing.
 
-Seven renewal-component tests cover three successive connections, exact long-result
+Historical return fragments now identify the original connection's UTC opening
+date. The native voice brief treats their first-person wording and relative time
+as belonging to that earlier encounter, follows the current topic, and never
+turns a retained result into a claim of newly performed work. This addresses an
+observed fresh-visit transcript that restated an earlier result as a current
+action. It preserves the canonical text, cursor, result availability and exact
+append/replay fences. An opening date supplies chronology, not authorization or
+proof that a result is still applicable. Source qualification is not a verified
+spoken correction; the next genuine trial must check that distinction.
+
+Nine renewal-component tests cover three successive connections, exact long-result
 cursors, restart/new admission, flat scan persistence, unknown append and partial
 commit preservation, current-source and actor refusal. The mounted API journey
 also closes the original native voice, introduces a late worker result and returns
@@ -780,6 +912,23 @@ incorporation. Actual memory/hearing, repeated physical renewal and full origina
 roadmap acceptance remain open. Synthetic tests cover later-page return, exact
 revision changes, foreign bindings, nonadvancing cursors, retained cursor reads
 through a fresh journal reader, and no repeated native work.
+
+#### Corrected results after an acknowledged partial
+
+A long worker result may become noncurrent while its remaining text is waiting.
+Before continuing that tail, the return task checks the existing owned trace or
+its exact result lookup. An available matching source explicitly marked
+`current=false` or `correction_pending=true` does not block discovery of the new
+current result. The old acknowledged fragment, revision and continuation cursor
+remain intact; no old context event or native work is replayed.
+
+This applies only after every earlier context append is confirmed. An unknown
+append still holds the return. Missing/unavailable source metadata, a foreign
+binding or an unsupported exact lookup do not prove supersession. Every new
+fragment still uses the ordinary fresh canonical revision/association checks.
+Synthetic tests cover the live visit, paginated association, a fresh journal
+reader after replacements, unknown injection and foreign/missing-source refusal.
+They do not establish actual spoken incorporation or human hearing.
 
 ### Explicit replacement after a disconnected native visit
 
@@ -877,3 +1026,182 @@ open. Follow OpenAI's
 [transcript provenance](https://developers.openai.com/api/docs/guides/live-migration#preserve-context-and-apply-corrections)
 and [saved-context](https://developers.openai.com/api/docs/guides/live-delegation#keep-the-conversation-context-in-your-application)
 guidance when qualifying the lifecycle.
+
+### Shared canonical fragments after voice renewal
+
+Several admitted originals can be covered by the same native answer. In a fresh
+voice connection their old delegation IDs no longer need separate provider
+responses. Repeating the same source/revision/offset once per old delegation
+therefore duplicated historical context, as observed in retained real journals.
+Current-connection delegations still receive their own scoped responses.
+
+The historical return path now validates the requesting original and current
+canonical association first, then reuses an exact existing acknowledged append.
+It adds one bounded flat origin claim with `shared_delegation`, pointing directly
+to the actual target visit and append key. It copies neither text nor an ACK,
+creates no alias chain, sends no second event and dispatches no work. The original
+append row remains unchanged. Each original retains its own ordered cursor;
+missing/changed destination rows and unconfirmed matching appends stay held.
+The existing128-claim/256KiB-record/32MiB-journal bounds still apply.
+
+After such a shared claim is written, web rollback must retain a compatible
+`openai_live_native_results.py` reader. The older reader refuses that association
+rather than resolving it; do not clear claims or replay work to bypass refusal.
+No real journal is migrated or deduplicated retroactively. Synthetic tests cover
+shared results across multiple replacements/restart, long fragments, unknowns,
+changed receipts, unrelated pending fragments, fresh native/worker association
+and unchanged current-connection delegation replies. Transport evidence does not
+establish semantic incorporation, memory lookup or human hearing.
+
+### Encoded reply playback and avatar activity
+
+Conversation's existing encoded-reply HTML media element can expose its decoded
+audio through `captureStream` (or `mozCaptureStream`). That optional stream reuses
+the existing outputless RMS worklet; the media element remains the only player.
+Five transient jaw levels use the same quantization as live voice. No provider,
+microphone, stored PCM, speech synthesis or new playback destination is added.
+
+Pause, mute, ended, source replacement and the existing explicit player Stop or
+capture hold retire the cosmetic stream/observer and clear the jaw. Late setup
+and callbacks cannot publish to its successor. Observer setup retains the existing
+five-second bound and600-second worklet ceiling. Each retired capture stream's
+owned tracks stop; the original media element keeps its playback and cursor.
+Unsupported browsers/native media proxies keep sound without the optional jaw
+signal; observer failure cannot stop or retry speech. Actual encoded Chromium
+sound/silence/pause/resume/mute/source replacement and delayed-setup fixtures
+qualify that boundary, not physical hearing, Android proxy support or phonemes.
+
+
+### Continuous public-native transport renewal
+
+`openai_live.continuous_renewal = true` explicitly enables the native backend's
+planned physical-transport replacement. It does not select that backend, change
+voice/account/model, enable background capture or renew any existing call after
+deployment. The default is false; Responses and old clients retain their finite
+visit behavior. Each physical visit still admits 300–600 seconds and its own
+PCM/source/storage bounds. A logical foreground capture keeps one microphone
+permission and WebLock until Stop or a concrete failure/capacity refusal.
+
+The browser requests graceful close 120 seconds before the physical deadline.
+It keeps the WebRTC/data channel and trusted receiver alive while the predecessor
+closes. Existing source seals/preparation settle before planned close; explicit
+Stop takes precedence. `session.closed` confirms provider finalization only.
+`successor_ready` is emitted separately, after owned native context closes,
+in-flight context work settles and the old application lease is released.
+Both current authorization and the exact frozen owner are rechecked. Native work
+keeps its original ownership and is never replayed to prepare the successor.
+
+The server records one same-process readiness token and claims the exact sole
+successor before writing its admission. Lost receipts, partial admission writes,
+service restart, changed binding, unconfirmed context/provider close, non-planned
+hangup or a provider `content` closure do not authorize automatic replacement.
+Original uncertain receipts and existing history/capacity bounds remain; there
+is no retry, counter refill or fallback. A partial claim blocks fresh admissions
+until its actual outcome is reconciled through supported owning recovery.
+
+The microphone remains owned through the handover. Raw speech during graceful
+close is retained as an interrupted prefix of the old visit, never replayed as
+newly heard speech. Recorder/output transports are then replaced; preparing the
+successor can leave an audible listening gap. This is not gapless duplex audio.
+The browser waits at most 85 seconds for readiness, then pauses for review.
+Stop, hidden-page teardown and binding changes prevent a late successor.
+
+Source/fixture qualification is separate from receiving adoption and real audio.
+A finite provider journey should use an explicitly synthetic microphone, at most
+two physical calls and 660 seconds total, a corrected fact before the handover
+and semantic readback afterward, followed by Stop. Retain both finalization and
+original-audio receipts; never replay a completed call to repair its verifier.
+Human hearing and phone/OS acceptance remain distinct.
+
+
+Receiving qualification, 8 November 2026: source `a4fc9d8` (PR803, merge
+`6ad0e7fc`) passed seven applicable CI checks, the mounted receiver API/lifecycle
+fixtures on all three original receivers, and actual receiving asset/health/auth
+checks. The three receivers adopted the compatible implementation; only the
+requesting CompAII receiver enables continuous renewal. Other pairs keep their
+own finite policy. Keep the803 renewal-claim reader/API on rollback; disabling
+this feature does not erase old claims, originals or uncertain outcomes.
+
+One finite public-provider journey used the existing configured GPT-Live project
+and Cedar, one synthetic microphone permission, the actual native owning writer
+and a synthetic Core harness. The first call confirmed476 usage seconds, the
+successor15; these are separate cumulative provider totals, not latency or an
+invoice. The successor recalled the corrected fictional project Faro/nine after
+the planned handover. Both provider closures were confirmed, Stop left two calls
+with no third opening, and17 originals/15,768,490 bytes matched their retained
+hashes. Both decoded output streams had nonzero PCM peaks. No physical microphone,
+human hearing, native reasoning/compaction or mobile-background proof follows.
+
+The raw verifier exited unsuccessfully: it queried `getStats()` on the already
+closed predecessor and treated unavailable byte statistics as zero audio. Its
+failed result remains retained. The existing on-track decoded PCM observations,
+trusted output transcripts and finalization/original receipts established the
+outcome without another provider call. Read transport statistics before retiring
+a peer; missing post-close statistics are unavailable, not zero delivery. Two
+pre-provider fixture errors (wrong executable, missing explicit synthetic voice
+metadata) were corrected before any paid creation; their original failures stay.
+One peer's daemon-reload client timed out after its manager loaded the new unit.
+Recovery observed that completed reload and performed only the unattempted start;
+a later missing verifier variable was repaired by observation alone. No stop,
+reload, selector, native input or provider action was replayed.
+
+
+### Source confirmation and closing presentation
+
+A failed Avatar or recovery-notice renderer must not interrupt capture/transport
+cleanup after `closing` becomes true. State and recovery callbacks are isolated
+from that lifecycle. Conversation updates the critical fullscreen state before
+optional companion/sound presentation, avoiding a stranded disabled Reconnect.
+This is covered with a callback which throws specifically during close; the same
+original still saves once and only an explicit next start obtains a new capture.
+It does not establish that a rendering exception caused a particular phone fault.
+
+The prepared admission advertises a bounded set of fixed `source_close_reasons`.
+Source confirmation can distinguish an owner change, boundary limit/overlap,
+missing boundary response, capture exception, unconfirmed upload or changed byte
+boundary. Only advertised codes replace the legacy `source_unconfirmed` reason.
+They are client observations, not physical/network diagnoses, work authority or
+proof of closure. Existing first-write-only diagnostic storage, exact byte ACKs,
+authorization, explicit Stop and no-replay rules remain. No transcript, raw error,
+URL or credential enters these codes. Older admissions keep the legacy reason.
+A prior generic failure cannot retrospectively acquire a more specific cause.
+
+### Required sideband transport in receiving packages
+
+Public Live requires the `websocket-client` version already pinned by
+`scripts/requirements-speech.lock`, also included from the dashboard lock.
+HTTP creation and a healthy basic-text constructor do not qualify that optional
+feature. Check the consuming service user's complete Python path; a basic-only
+package may lack the client even when project/model metadata is accessible.
+`OpenAILive.prepare_transport()` checks the project key and local connector before
+microphone admission, native context preparation or paid session creation.
+Missing transport yields a fixed pre-admission message and starts nothing.
+
+A retained `created` session from an earlier attachment failure remains created
+with unconfirmed final usage. Installing the dependency does not close, recreate,
+refund or rewrite it. Use the existing exact-owner disconnection review/manual
+Reconnect path for a later explicit replacement, preserving the original receipt.
+
+## Preparing voice after an admitted replacement
+
+A reviewed replacement is consumed by durable admission, before native context
+preparation, microphone permission or a provider POST. Its accepted receipt now
+travels with the existing context-preparing/error events. The client clears only
+the exact current binding/backend/review and keeps the server-confirmed frozen
+voice continuation for the next explicit Reconnect. A later preparation failure
+must not resubmit the consumed descriptor. No automatic reconnect is added.
+
+If that ACK was lost, a read-only observation can confirm the consumed review
+only when its target is ended, `not_created`, and has no request digest or call.
+Unknown POST outcomes remain held; their review cannot be cleared by this path.
+Original calls, usage/finalization uncertainty, source identities and native work
+are retained. Legacy attempts without a frozen studio voice do not invent one.
+
+One optional first-write-only `startup_failure` in the existing visit contains a
+fixed stage/code, without exception text, paths, transcripts or provider payloads.
+It survives normal cleanup but is omitted from ordinary recovery/status output.
+Optional diagnostic storage failure must not prevent cleanup. Existing receipt
+and storage bounds apply; there is no new journal or historical backfill. The
+original phone startup exception was not retained and is not retroactively
+attributed to the reproduced reconnect defect. Phone/hearing acceptance remains
+separate from the mounted synthetic and lifecycle regressions.

@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::SessionKey;
 
+/// Keep one entry plus local destinations within the existing 128-session reader.
+pub const MAX_LOCAL_TARGETS: usize = 127;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionConfig {
@@ -39,6 +42,8 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub matrix_targets: Vec<MatrixTarget>,
     pub matrix_transport: Option<MatrixTransportConfig>,
+    /// Owner-only durable visibility publication; never a model signing API.
+    pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
     pub matrix_inbox_channel: Option<String>,
     #[serde(default = "default_active_workers")]
@@ -153,7 +158,7 @@ impl InteractionConfig {
         if self.human_id <= 0
             || self.chat_id == 0
             || self.topic_id <= 0
-            || self.targets.len() > 64
+            || self.targets.len() > MAX_LOCAL_TARGETS
             || !(1..=64).contains(&self.max_active_workers)
         {
             bail!("Invalid interaction owner, entry, target count or active worker limit");
@@ -190,6 +195,9 @@ impl InteractionConfig {
             {
                 bail!("Interaction targets require distinct topic IDs and single-token selectors");
             }
+        }
+        if let Some(publication) = &self.matrix_publication {
+            publication.validate()?;
         }
         if let Some(transport) = &self.matrix_transport {
             transport.source.validate()?;
@@ -604,6 +612,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             matrix_inbox_channel: None,
+            matrix_publication: None,
             targets: vec![
                 Target {
                     name: "Nexus".into(),

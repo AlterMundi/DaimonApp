@@ -132,7 +132,7 @@ class Native:
         self.frame(json.dumps(value).encode())
 
     def rpc(self, method, params):
-        if method not in ('initialize', 'thread/read', 'thread/goal/get', 'account/rateLimits/read'):
+        if method not in ('initialize', 'thread/read', 'thread/items/list', 'thread/goal/get', 'account/rateLimits/read'):
             raise ValueError('observer method forbidden')
         self.sequence += 1
         self.send({'id': self.sequence, 'method': method, 'params': params})

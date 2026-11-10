@@ -132,7 +132,15 @@ assert.equal(continuousBudget.mode.active,true,'The legacy five-minute timer mus
 assert.equal(continuousBudget.counts().leaves,0);
 const endContinuous=continuousBudget.timers.find(t=>!t.cancelled&&t.ms===600000);assert(endContinuous,'Continuous view still has a finite ten-minute stop path');
 endContinuous.fn();assert.equal(continuousBudget.mode.active,false);assert.equal(continuousBudget.counts().leaves,1,'Budget expiry closes through the ordinary owner once');
-console.log('Avatar view budget: continuous voice survives the legacy five-minute deadline and closes at ten minutes.');
+console.log('Avatar view budget: nonrenewing continuous voice retains ten minutes; admitted native renewal keeps the logical view until human close.');
+const renewingBudget=boot();renewingBudget.mode.configure(true,true);renewingBudget.portrait.events.click();
+renewingBudget.mode.update({continuousState:{active:true,starting:false,untilStop:true,pending:false,working:false}});
+assert(!renewingBudget.timers.some(t=>!t.cancelled&&t.ms===600000),'An admitted renewing dialogue has no separate ten-minute view cutoff');
+renewingBudget.mode.update({continuousState:{active:false,starting:true,reconnecting:true,untilStop:true}});
+renewingBudget.mode.update({continuousState:{active:true,starting:false,reconnecting:false,untilStop:true}});
+assert(renewingBudget.mode.active);assert.equal(renewingBudget.counts().leaves,0,'A physical replacement cannot close the logical Avatar view');
+renewingBudget.mode.close();assert.equal(renewingBudget.counts().leaves,1,'Human Back/Stop retains the ordinary close path');
+
 
 let pendingCount=2,reviews=0,restoreReview;
 const attentionView=boot({getAttention:()=>pendingCount,onReview:restore=>{reviews++;restoreReview=restore;}});

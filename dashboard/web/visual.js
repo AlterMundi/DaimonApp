@@ -58,8 +58,8 @@ window.VisualInput = (() => {
       if(ready){canvas.width=active.width;canvas.height=active.height;x.max=String(active.width-1);y.max=String(active.height-1);draw();}
       status.textContent=!active?'':active.state==='failed'?active.error:active.state==='loading'?'Opening image…':`${images.length} image${images.length===1?'':'s'} attached. Marking a point is optional.`;
     }
-    function reset(){generation++;for(const image of images)image.bitmap?.close();images=[];active=undefined;file.value='';if(camera)camera.value='';render();}
-    function remove(image){if(!image)return;generation++;images=images.filter(item=>item!==image);image.bitmap?.close();if(!images.length){file.value='';if(camera)camera.value='';}render();}
+    function reset(){generation++;for(const image of images){image.upload?.controller.abort();image.bitmap?.close();}images=[];active=undefined;file.value='';if(camera)camera.value='';render();}
+    function remove(image){if(!image)return;generation++;images=images.filter(item=>item!==image);image.upload?.controller.abort();image.bitmap?.close();if(!images.length){file.value='';if(camera)camera.value='';}render();}
     function move(image,delta){const from=images.indexOf(image),to=from+delta;if(from<0||to<0||to>=images.length)return;generation++;[images[from],images[to]]=[images[to],images[from]];render();}
     function select(px,py){
       if(active?.state!=='ready')return;
@@ -123,23 +123,42 @@ window.VisualInput = (() => {
     canvas.addEventListener('keydown',event=>{const delta={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];if(!delta||active?.state!=='ready')return;event.preventDefault();const p=active.point||{x:Math.floor(active.width/2),y:Math.floor(active.height/2)},step=event.shiftKey?10:1;select(Math.max(0,Math.min(active.width-1,p.x+delta[0]*step)),Math.max(0,Math.min(active.height-1,p.y+delta[1]*step)));});
     for(const field of [x,y])field.addEventListener('change',()=>select(x.value===''?NaN:Number(x.value),y.value===''?NaN:Number(y.value)));
     clear.addEventListener('click',()=>remove(active));
+    async function upload(image,binding){
+      if(image.uploaded)return;
+      if(image.upload){
+        if(image.upload.binding!==binding)throw Error('Your selected images changed. Review them before sending.');
+        return image.upload.promise;
+      }
+      const controller=new AbortController(),attempt={controller,binding};
+      image.upload=attempt;
+      // Network failure and explicit selection cancellation own this transfer;
+      // do not impose an application-clock cutoff on media upload progress.
+      const failure=message=>Error(binding!==getBinding()||!images.includes(image)||controller.signal.aborted
+        ? 'Your selected images changed. Review them before sending.' : message);
+      attempt.promise=(async()=>{
+        try{
+          let response;
+          try{response=await fetch('api/interaction/visual',{method:'POST',credentials:'same-origin',signal:controller.signal,headers:{...headers(),'Content-Type':'image/png','X-Image-Sha256':image.image_sha256},body:image.blob});}
+          catch{throw failure('Image upload not confirmed. Your image and text are kept. Check your connection before trying again.');}
+          if(!response.ok){if([401,403].includes(response.status))unauthorized({status:response.status});throw Error('Image not confirmed. Retry before sending or remove it.');}
+          let result;
+          try{result=await response.json();}catch{throw failure('Image acknowledgement unavailable. Your image and text are kept. Try again before sending.');}
+          if(result.image_sha256!==image.image_sha256||result.width!==image.width||result.height!==image.height)throw Error('Image changed before sending. Select it again.');
+          if(binding!==getBinding()||!images.includes(image))throw Error('Your selected images changed. Review them before sending.');
+          image.uploaded=true;
+        }finally{if(image.upload===attempt)image.upload=undefined;}
+      })();
+      return attempt.promise;
+    }
     async function capture(){
       if(images.some(image=>image.state==='loading'))throw Error('Wait for the selected images to open, or remove them before sending.');
       if(images.some(image=>image.state==='failed'))throw Error('A selected image is unavailable. Choose another image or remove it.');
       if(!images.length)return undefined;
       const owned=generation,binding=getBinding(),snapshot=images.map(image=>({image,reference:{source_kind:'selected_image',source_id:image.source_id,image_sha256:image.image_sha256,width:image.width,height:image.height,captured_at:image.captured_at,selected_at:image.selected_at,selected_revision:image.image_sha256,state:'selected',point:image.point?{...image.point}:null}}));
-      if(snapshot.some(({reference})=>Date.now()-Date.parse(reference.selected_at)>300000))throw Error('Select the images again to refresh your selection.');
+      // Attached files remain the user's exact selection while composing.
+      // Keep their original times; waiting or uploading does not change pixels.
       for(const {image,reference} of snapshot){
-        if(!image.uploaded){
-          const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);
-          try{
-            const response=await fetch('api/interaction/visual',{method:'POST',credentials:'same-origin',signal:controller.signal,headers:{...headers(),'Content-Type':'image/png','X-Image-Sha256':image.image_sha256},body:image.blob});
-            const result=await response.json();
-            if(!response.ok){if([401,403].includes(response.status))unauthorized({status:response.status});throw Error('Image not confirmed. Retry before sending or remove it.');}
-            if(result.image_sha256!==image.image_sha256||result.width!==reference.width||result.height!==reference.height)throw Error('Image changed before sending. Select it again.');
-            image.uploaded=true;
-          }finally{clearTimeout(timeout);}
-        }
+        await upload(image,binding);
         if(owned!==generation||binding!==getBinding())throw Error('Your selected images changed. Review them before sending.');
       }
       const references=snapshot.map(item=>item.reference);return references.length===1?references[0]:references;

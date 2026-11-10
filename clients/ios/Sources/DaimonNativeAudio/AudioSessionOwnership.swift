@@ -7,18 +7,21 @@ enum AudioSessionMode { case spokenOutput, duplexVoice }
     func deactivate() throws
 }
 
-/// One app audio session with at most two explicit speech/Beacon holders.
+/// One app audio session with at most two outputs and one optional capture holder.
 /// An unconfirmed release is retained; neither a new owner nor a stale callback
 /// can hide it by creating another activation or retrying deactivation.
 @MainActor final class AudioSessionOwnership {
     enum Refusal: Error { case unavailable, capacity }
     private let device: AudioSessionDevice
+    private let capacity: Int
     private var holders: [UUID: () -> Void] = [:]
     private var cancelling = false
     private(set) var mode: AudioSessionMode?
     private(set) var unconfirmedRelease: UUID?
     var count: Int { holders.count }
-    init(device: AudioSessionDevice) { self.device = device }
+    init(device: AudioSessionDevice, supportsCapture: Bool = false) {
+        self.device = device; capacity = supportsCapture ? 3 : 2
+    }
 
     func acquire(_ owner: UUID, mode requested: AudioSessionMode = .spokenOutput, cancelled: @escaping () -> Void) throws {
         guard !cancelling, unconfirmedRelease == nil else { throw Refusal.unavailable }
@@ -26,7 +29,7 @@ enum AudioSessionMode { case spokenOutput, duplexVoice }
             guard mode == requested else { throw Refusal.unavailable }; return
         }
         guard holders.isEmpty || mode == requested else { throw Refusal.unavailable }
-        guard holders.count < 2 else { throw Refusal.capacity }
+        guard holders.count < capacity else { throw Refusal.capacity }
         if holders.isEmpty {
             do { try device.activate(mode: requested) }
             catch {

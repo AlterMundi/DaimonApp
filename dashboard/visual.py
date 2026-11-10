@@ -119,8 +119,11 @@ def _check_reference(value, fresh=False):
     try:
         captured=datetime.fromisoformat(value['captured_at'].replace('Z','+00:00'))
         selected=datetime.fromisoformat(value['selected_at'].replace('Z','+00:00'))
+        age=(datetime.now(timezone.utc)-selected).total_seconds()
         if (not captured.tzinfo or not selected.tzinfo or selected<captured
                 or value['source_kind']=='camera_frame' and (selected-captured).total_seconds()>5
-                or fresh and not -5<=(datetime.now(timezone.utc)-selected).total_seconds()<=300):
+                or fresh and (age < -5
+                    or value['source_kind']!='selected_image'
+                    and age>300)):
             raise ValueError('Visual selection is stale. Select the image again.')
     except (TypeError,AttributeError,OverflowError):raise ValueError('Select one current visual reference') from None

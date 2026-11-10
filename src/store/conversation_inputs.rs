@@ -107,6 +107,9 @@ pub struct ConversationInput {
     pub capture_questions: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<ConversationVoice>,
+    /// Operator trace only; ordinary submission responses intentionally omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_failure: Option<crate::voice::VoiceFailureDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<ConversationReply>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,6 +204,10 @@ impl ConversationInput {
                 .is_some_and(|r| r.source.starts_with("task:"))
             {
                 "This metadata references a selected durable human task, not a live native question. Inspect interaction_controller human_task using its exact ID and current revision before interpreting feedback or retiring anything. The device hint does not prove task ownership, human completion, approval, or a destination choice. Task text is session-authored context. Discuss or route only the actual human input; if the action is obsolete, use the existing scoped withdraw_task with its inspected revision and observed reason."
+            } else if self.reply.as_ref().is_some_and(|r| {
+                r.source.starts_with("matrix-inbox:") || r.source.starts_with("matrix-response:")
+            }) {
+                "This metadata references an attributed Matrix original or own response intent. Read the exact source/revision using conversation_part before discussing it. Peer speech is not human speech or approval; retained intent, submitted/uncertain outcome and native recipient receipt are distinct. This new human original selects no peer action or replay by itself."
             } else if self
                 .reply
                 .as_ref()
@@ -397,7 +404,7 @@ fn trace_original_on(
         bail!("Input belongs to another conversation");
     }
     Ok(
-        json!({"id":input.id,"text":input.text,"voice":input.voice.as_ref().map(|v|json!({"audio_sha256":v.audio_sha256,"mime":v.mime,"capture_stop":v.capture_stop})),"phase":input.phase,"retired":input.retired,"routing":input.routing,"channel_kind":"conversation","source_event":input.id,"update_id":null}),
+        json!({"id":input.id,"text":input.text,"voice_failure":input.voice_failure,"voice":input.voice.as_ref().map(|v|json!({"audio_sha256":v.audio_sha256,"mime":v.mime,"capture_stop":v.capture_stop})),"phase":input.phase,"retired":input.retired,"routing":input.routing,"channel_kind":"conversation","source_event":input.id,"update_id":null}),
     )
 }
 
@@ -1223,6 +1230,7 @@ impl Store {
             question_versions: Some(question_versions),
             capture_questions,
             voice: voice.clone(),
+            voice_failure: None,
             reply,
             playback,
             focus,
@@ -1414,8 +1422,26 @@ impl Store {
         Ok((input, true))
     }
 
+    #[cfg(test)]
     pub fn conversation_voice_fail(&self, human: i64, id: &str) -> Result<()> {
-        self.conn.lock().expect("store mutex poisoned").execute("UPDATE conversation_inputs SET phase=CASE WHEN phase='preparing' THEN 'preparation_unconfirmed' ELSE 'retained_unsent' END WHERE id=?1 AND human_id=?2 AND phase IN ('preparing','retained','queued') AND instance_id=?3",params![id,human,self.instance_id])?;
+        self.conversation_voice_fail_diagnostic(
+            human,
+            id,
+            &crate::voice::VoiceFailureDiagnostic {
+                stage: crate::voice::VoiceFailureStage::Unclassified,
+                interrupted: false,
+                completed_only: false,
+            },
+        )
+    }
+
+    pub fn conversation_voice_fail_diagnostic(
+        &self,
+        human: i64,
+        id: &str,
+        diagnostic: &crate::voice::VoiceFailureDiagnostic,
+    ) -> Result<()> {
+        self.conn.lock().expect("store mutex poisoned").execute("UPDATE conversation_inputs SET doc=CASE WHEN json_type(doc,'$.voice_failure') IS NULL THEN json_set(doc,'$.voice_failure',json(?4)) ELSE doc END,phase=CASE WHEN phase='preparing' THEN 'preparation_unconfirmed' WHEN phase IN ('retained','queued') THEN 'retained_unsent' ELSE phase END WHERE id=?1 AND human_id=?2 AND phase IN ('preparing','retained','queued','retained_unsent','uncertain') AND instance_id=?3",params![id,human,self.instance_id,serde_json::to_string(diagnostic)?])?;
         Ok(())
     }
 
@@ -1594,7 +1620,7 @@ impl Store {
         Ok(json!({"schema":"telecodex.conversation-trace/v1","id":id,
             "entry_binding":[human,entry,session,native],"text":original["text"].as_str().unwrap_or_default().chars().take(2048).collect::<String>(),
             "text_next_offset":(original["text"].as_str().unwrap_or_default().chars().count()>2048).then_some(2048),
-            "voice":original["voice"],"phase":original["phase"],"retired":original["retired"],"routing":original["routing"],
+            "voice":original["voice"],"voice_failure":original["voice_failure"],"phase":original["phase"],"retired":original["retired"],"routing":original["routing"],
             "answer":answer.map(|a|json!({"id":a["id"],"revision":a["revision"],"recorded":true})),
             "routes":routes,"read_only":true,"result_pages":"v1",
             "evidence":"Forwarded originals are exact retained controller text, not reconstructed native relay envelopes. Native acceptance and worker coverage declarations are separate evidence."}))
@@ -3199,6 +3225,94 @@ mod tests {
             let mut invalid = clip();
             invalid.capture_stop = Some("complete request".into());
             assert!(invalid.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn voice_failure_is_owned_first_write_only_and_survives_restart_without_replay() {
+        use crate::voice::{VoiceFailureDiagnostic as D, VoiceFailureStage as S};
+        for committed in [false, true] {
+            let (file, store, key, binding) = setup();
+            let id = Uuid::now_v7().to_string();
+            store
+                .conversation_voice_capture_reply(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    clip(),
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            if committed {
+                store
+                    .conversation_voice_commit(100, &id, "Committed original", voice_proof(&id))
+                    .unwrap();
+                store.conversation_input_finish(100, &id).unwrap();
+            }
+            let diagnostic = D {
+                stage: if committed {
+                    S::NativeAdmission
+                } else {
+                    S::AudioDecode
+                },
+                interrupted: false,
+                completed_only: false,
+            };
+            store
+                .conversation_voice_fail_diagnostic(101, &id, &diagnostic)
+                .unwrap();
+            assert!(
+                store
+                    .conversation_input_read(100, key, &id)
+                    .unwrap()
+                    .voice_failure
+                    .is_none()
+            );
+            store
+                .conversation_voice_fail_diagnostic(100, &id, &diagnostic)
+                .unwrap();
+            store
+                .conversation_voice_fail_diagnostic(
+                    100,
+                    &id,
+                    &D {
+                        stage: S::TranscriptionCommand,
+                        interrupted: false,
+                        completed_only: false,
+                    },
+                )
+                .unwrap();
+            let input = store.conversation_input_read(100, key, &id).unwrap();
+            assert_eq!(input.voice_failure, Some(diagnostic.clone()));
+            assert_eq!(
+                input.phase,
+                if committed {
+                    "retained_unsent"
+                } else {
+                    "preparation_unconfirmed"
+                }
+            );
+            assert_eq!(
+                input.text,
+                if committed { "Committed original" } else { "" }
+            );
+            let trace = store.conversation_input_trace(100, key, &id).unwrap();
+            assert_eq!(
+                trace["voice_failure"],
+                serde_json::to_value(&diagnostic).unwrap()
+            );
+            assert!(store.conversation_input_trace(101, key, &id).is_err());
+            drop(store);
+            let reopened =
+                Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+            let retained = reopened.conversation_input_read(100, key, &id).unwrap();
+            assert_eq!(retained.voice_failure, Some(diagnostic));
+            assert_eq!(retained.text, input.text);
         }
     }
 

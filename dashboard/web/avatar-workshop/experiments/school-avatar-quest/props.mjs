@@ -1,12 +1,35 @@
-export const propCatalog=[{id:'magnifier',name:'Lupa'},{id:'book',name:'Libro'},{id:'flower',name:'Flor'},{id:'star',name:'Estrella'},{id:'flashlight',name:'Linterna'},{id:'paintbrush',name:'Pincel'},{id:'watering-can',name:'Regadera'},{id:'firefly-lantern',name:'Farol de luciérnagas'},{id:'question',name:'Signo ?'},{id:'exclamation',name:'Signo !'}];
+import {drawPillow} from './pillow.mjs';
+import {headwearFit,drawHeadwear} from './headwear.mjs';
+export const propCatalog=[{id:'magnifier',name:'Lupa'},{id:'book',name:'Libro'},{id:'flower',name:'Flor'},{id:'star',name:'Estrella'},{id:'flashlight',name:'Linterna'},{id:'paintbrush',name:'Pincel'},{id:'watering-can',name:'Regadera'},{id:'firefly-lantern',name:'Farol de luciérnagas'},{id:'question',name:'Signo ?'},{id:'exclamation',name:'Signo !'},{id:'pillow',name:'Almohada'},{id:'wizard-hat',name:'Sombrero de mago'},{id:'artist-beret',name:'Boina de artista'},{id:'leaf-crown',name:'Corona de hojas'}];
 export const propColors={gold:{name:'Miel',ink:'#edbc69',light:'#fff0bd'},jade:{name:'Jade',ink:'#70b4a5',light:'#d2eee0'},lilac:{name:'Lila',ink:'#ad94d3',light:'#e9dcf5'}};
+export function resolvePropColor(value){
+ if(Object.hasOwn(propColors,value))return propColors[value];
+ if(!/^#[0-9a-f]{6}$/i.test(value))throw Error('Invalid accessory color');
+ const rgb=[1,3,5].map(i=>parseInt(value.slice(i,i+2),16));
+ return {ink:value,light:'#'+rgb.map(v=>Math.round(v+(255-v)*.65).toString(16).padStart(2,'0')).join('')};
+}
 export const isFloatingProp=id=>['star','question','exclamation'].includes(id);
-export function validateProps(value){if(value===undefined)return undefined;if(!Array.isArray(value)||value.length>2||value.filter(p=>!isFloatingProp(p?.id)).length>1||value.filter(p=>isFloatingProp(p?.id)).length>1)throw Error('Elegí como máximo dos accesorios.');const ids=new Set();return value.map(p=>{if(!p||!propCatalog.some(x=>x.id===p.id)||ids.has(p.id)||!Object.hasOwn(propColors,p.color)||!['left','right'].includes(p.side)||!Number.isFinite(p.size)||p.size<.75||p.size>1.25)throw Error('Hay un accesorio inválido.');ids.add(p.id);return {id:p.id,color:p.color,side:p.side,size:p.size};});}
-export function drawProps(canvas,props=[],frame=0,{body='modular-bot',image=false,anchors=null}={}){
+export const propSlot=id=>isFloatingProp(id)?'floating':['wizard-hat','artist-beret','leaf-crown'].includes(id)?'head':'hand';
+export function validateProps(value){
+ if(value===undefined)return undefined;
+ if(!Array.isArray(value)||value.length>3)throw Error('Elegí un objeto, un sombrero y un detalle.');
+ const slots=new Set();return value.map(p=>{
+  if(!p||!propCatalog.some(x=>x.id===p.id)||slots.has(propSlot(p.id))||!(Object.hasOwn(propColors,p.color)||/^#[0-9a-f]{6}$/i.test(p.color))||!['left','right'].includes(p.side)||!Number.isFinite(p.size)||p.size<.75||p.size>1.25)throw Error('Hay un accesorio inválido.');
+  slots.add(propSlot(p.id));return {id:p.id,color:p.color,side:p.side,size:p.size};
+ });
+}
+export function drawProps(canvas,props=[],frame=0,{body='modular-bot',image=false,anchors=null,style='surface/v2',layer='all'}={}){
  if(!props.length)return;const c=canvas.getContext('2d'),t=((frame%12)+12)%12/12*Math.PI*2;
- for(const prop of props){const colors=propColors[prop.color],custom=anchors?.[prop.side==='left'?'leftHand':'rightHand'],anchor=custom?(prop.side==='left'?[576-custom[0],custom[1]]:custom):image?[465,567]:({'pocket-dragon':[378,457],'modular-bot':[395,472],'moon-visitor':[407,437],'cloud-axolotl':[386,480],'comet-fox':[379,480],'little-mushroom':[390,476]})[body]||[395,472];
+ for(const prop of props){const slot=propSlot(prop.id),colors=resolvePropColor(prop.color);
+ if(slot==='head'){
+  const fit=!image&&headwearFit(body,frame,style);if(!fit||layer==='front')continue;
+  c.save();c.translate(fit.x,fit.y);c.rotate(fit.angle);const clothScale=fit.width/128*prop.size*(prop.id==='wizard-hat'?.84:1);c.scale(clothScale,clothScale);c.lineJoin='round';c.lineCap='round';drawHeadwear(c,prop.id,colors,frame);c.restore();continue;
+ }
+ if(layer==='behind')continue;
+ const custom=anchors?.[prop.side==='left'?'leftHand':'rightHand'],anchor=custom?(prop.side==='left'?[576-custom[0],custom[1]]:custom):image?[465,567]:({'pocket-dragon':[378,457],'modular-bot':[395,472],'moon-visitor':[407,437],'cloud-axolotl':[386,480],'comet-fox':[379,480],'little-mushroom':[390,476]})[body]||[395,472];
  c.save();if(prop.side==='left'){c.translate(576,0);c.scale(-1,1);}const isPlayObject=['flashlight','paintbrush','watering-can','firefly-lantern'].includes(prop.id),x=isFloatingProp(prop.id)?448:isPlayObject?Math.min(prop.id==='flashlight'?420:445,anchor[0]+38):anchor[0],y=isFloatingProp(prop.id)?171:anchor[1];c.translate(x,y);c.rotate(Math.sin(t)*.05);c.scale(prop.size,prop.size);c.lineJoin='round';c.lineCap='round';c.strokeStyle='#354452';c.lineWidth=4;
  const ellipse=(x,y,rx,ry,fill,stroke=null)=>{c.beginPath();c.ellipse(x,y,rx,ry,0,0,Math.PI*2);c.fillStyle=fill;c.fill();if(stroke){c.strokeStyle=stroke;c.stroke();}};
+ if(prop.id==='pillow')drawPillow(c,[0,-35],1,0,colors);
  if(prop.id==='magnifier'){c.beginPath();c.moveTo(0,12);c.lineTo(20,-27);c.strokeStyle=colors.ink;c.lineWidth=13;c.stroke();ellipse(32,-51,29,29,'rgba(177,219,233,0.7)',colors.ink);c.beginPath();c.arc(32,-51,20,3.6,4.9);c.strokeStyle='#edfaff';c.lineWidth=4;c.stroke();}
  if(prop.id==='book'){c.fillStyle=colors.ink;c.beginPath();c.roundRect(-43,-43,86,62,8);c.fill();c.strokeStyle='#40505a';c.lineWidth=3;c.stroke();for(const side of [-1,1]){c.fillStyle=colors.light;c.beginPath();c.moveTo(0,-34);c.quadraticCurveTo(side*18,-43,side*34,-32);c.lineTo(side*34,10);c.quadraticCurveTo(side*17,0,0,10);c.closePath();c.fill();}c.beginPath();c.moveTo(0,-34);c.lineTo(0,12);c.strokeStyle='#ab9078';c.lineWidth=3;c.stroke();}
  if(prop.id==='flower'){c.beginPath();c.moveTo(0,18);c.quadraticCurveTo(-9,-21,8,-50);c.strokeStyle='#69a586';c.lineWidth=7;c.stroke();ellipse(-13,-5,14,6,'#88b99b');for(let i=0;i<5;i++){const a=i/5*Math.PI*2;ellipse(8+Math.cos(a)*17,-58+Math.sin(a)*17,13,13,colors.ink);}ellipse(8,-58,10,10,colors.light);}

@@ -36,7 +36,7 @@ pub use heartbeat::HeartbeatReportSource;
 pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
 pub use heartbeat::{
     HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
-    HeartbeatResources,
+    HeartbeatResources, HeartbeatReviewContract,
 };
 mod interaction;
 mod interactions;
@@ -44,11 +44,15 @@ mod live_context;
 mod live_tasks;
 pub use goal_controls::{GoalAction, GoalPlan};
 pub use goal_delegations::GoalDelegationUpdate;
-pub(crate) use live_context::LiveContextCommand;
+pub(crate) use live_context::{
+    LiveContextCommand, invalid_native_command as invalid_live_context_command,
+    rejection as live_context_rejection,
+};
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
 pub(crate) use matrix::inbox::{Page as MatrixInboxPage, Selection as MatrixInboxSelection};
+pub(crate) use matrix::publication::{PublicationConfig, PublicationRequest};
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routing;
@@ -186,6 +190,7 @@ impl Store {
         store.init_conversation_requests()?;
         store.init_native_routed_returns()?;
         store.init_matrix()?;
+        store.init_matrix_publications()?;
         store.init_goal_delegations()?;
         store.init_goal_retries()?;
         store.init_goal_controls()?;

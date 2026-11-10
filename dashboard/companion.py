@@ -8,19 +8,40 @@ import re
 import secrets
 import time
 import tomllib
+import uuid
 
 from .private_state import private_directory, read_json, write_json
 from scripts.speech_render import directory, sync_directory, lock, RenderError
 
 
+def application_identity(config, provider):
+    """Keep existing bot scopes intact; web-only receivers use an explicit ID."""
+    if 'application_id' not in config:
+        return config['bot_id']
+    ident = config['application_id']
+    human_ref = config.get('shared_auth', {}).get('human_ref')
+    if (not isinstance(ident, str) or str(uuid.UUID(ident)) != ident
+            or not isinstance(human_ref, str) or not re.fullmatch(r'human:[A-Za-z0-9:._/-]{1,240}', human_ref)
+            or any(key in config for key in ('bot_id', 'bot_username', 'miniapp_short_name'))
+            or getattr(provider, 'receiver', {}).get('telegram', {}).get('enabled') is not False
+            or config.get('alerts', {}).get('enabled') is True
+            or config.get('traffic', {}).get('enabled') is True):
+        raise ValueError('Web-only application requires disabled Telegram and no bot adapters')
+    return {'application_id': ident, 'human_ref': human_ref}
+
+
 def authority(config, provider):
-    return hashlib.sha256(json.dumps([config['bot_id'], config['origin'],
+    return hashlib.sha256(json.dumps([application_identity(config, provider), config['origin'],
         config.get('prefix', '/sessions'), provider.binding_bytes.hex()],
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False, native_decision_access=False):
+    if method=='POST' and re.fullmatch(r'/api/interaction/requests/[a-f0-9]{32}',path):
+        return scope=='interaction_only' and native_decision_access is True
     if path in ('/api/interaction/avatars/voice','/api/interaction/avatars/voice/previews'):
+        return scope=='interaction_only' and method in ('GET','POST')
+    if re.fullmatch(r'/api/interaction/avatars/missions/[a-f0-9-]{36}',path):
         return scope=='interaction_only' and method in ('GET','POST')
     if path=='/api/interaction/avatars' or path.startswith('/api/interaction/avatars/'):
         return scope=='interaction_only' and (method=='POST' and path=='/api/interaction/avatars'

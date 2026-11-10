@@ -398,6 +398,9 @@ fn sample_app() -> (App, NamedTempFile) {
     let config = sample_config(db.path().to_path_buf(), sample_workspace());
     let store = Store::open(db.path(), &[100], &sample_defaults()).unwrap();
     let shared = Arc::new(AppShared {
+        heartbeat_loop: StdMutex::new(None),
+        heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+        heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
         goal_recovery_wakeup: tokio::sync::Notify::new(),
         config,
         store,
@@ -2411,6 +2414,9 @@ fn rebinds_stale_session_to_latest_active_thread_for_same_cwd() {
     let config = sample_config(db.path().to_path_buf(), workspace.clone());
     let store = Store::open(db.path(), &[100], &sample_defaults()).unwrap();
     let shared = Arc::new(AppShared {
+        heartbeat_loop: StdMutex::new(None),
+        heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+        heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
         goal_recovery_wakeup: tokio::sync::Notify::new(),
         config,
         store,
@@ -2540,6 +2546,9 @@ fn keeps_truly_archived_session_unbound_when_no_active_replacement_exists() {
     let config = sample_config(db.path().to_path_buf(), workspace.clone());
     let store = Store::open(db.path(), &[100], &sample_defaults()).unwrap();
     let shared = Arc::new(AppShared {
+        heartbeat_loop: StdMutex::new(None),
+        heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+        heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
         goal_recovery_wakeup: tokio::sync::Notify::new(),
         config,
         store,

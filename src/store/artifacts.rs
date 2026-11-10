@@ -40,41 +40,35 @@ impl Store {
     }
 
     pub fn artifact_job_stage(&self, local: i64, human: i64, doc: &Value) -> Result<()> {
-        use sha2::{Digest, Sha256};
-        let output = &doc["output"];
-        let job = format!(
-            "{local}:{:x}",
-            Sha256::digest(serde_json::to_vec(&json!([
-                output["native"],
-                output["turn"],
-                output["item"]
-            ]))?)
-        );
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut doc = doc.clone();
-        if let Some(files) = doc
-            .get_mut("output")
-            .and_then(|v| v.get_mut("files"))
-            .and_then(Value::as_object_mut)
-        {
-            let mut previous=conn.prepare("SELECT EXISTS(SELECT 1 FROM interaction_artifact_jobs j,json_each(j.doc,'$.output.files') f WHERE j.local=?1 AND j.human=?2 AND j.job!=?3 AND f.key=?4 AND json(f.value)=json(?5))")?;
-            let mut duplicate = Vec::new();
-            for (name, metadata) in files.iter() {
-                if previous.query_row(
-                    params![local, human, job, name, metadata.to_string()],
-                    |r| r.get::<_, bool>(0),
-                )? {
-                    duplicate.push(name.clone());
-                }
-            }
-            for name in duplicate {
-                files.remove(&name);
-            }
-        }
-        conn.execute(
-            "INSERT OR IGNORE INTO interaction_artifact_jobs VALUES(?1,?2,?3,?4,'pending','')",
-            params![job, local, human, doc.to_string()],
-        )?;
+        artifact_job_stage_on(&conn, local, human, doc)
+    }
+
+    /// An explicit owner may recover selected retained bytes for an actual final
+    /// in this same logical conversation. Authority and staging share one transaction.
+    pub fn artifact_recovery_stage(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        local: i64,
+        doc: &Value,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        anyhow::ensure!(
+            super::presentation::entry_binding(&tx, human, entry, session)? == binding,
+            "Artifact recovery conversation changed"
+        );
+        let output = &doc["output"];
+        let owned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN interaction_native_messages m ON m.local_turn=t.id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.status='completed' AND m.native_thread=?4 AND m.native_turn=?5 AND m.item_id=?6 AND (m.phase='final_answer' OR m.phase IS NULL))", params![local,session,human,output["native"].as_str(),output["turn"].as_str(),output["item"].as_str()], |r|r.get(0))?;
+        anyhow::ensure!(
+            owned,
+            "Select an actual completed final from this conversation"
+        );
+        artifact_job_stage_on(&tx, local, human, doc)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -380,6 +374,44 @@ pub(super) fn status_on(
     Ok(conn.query_row("SELECT j.phase FROM interaction_artifact_jobs j JOIN interaction_native_messages m ON m.local_turn=j.local AND m.native_thread=json_extract(j.doc,'$.output.native') AND m.native_turn=json_extract(j.doc,'$.output.turn') AND m.item_id=json_extract(j.doc,'$.output.item') LEFT JOIN interaction_results r ON r.native_thread=m.native_thread AND r.native_turn=m.native_turn AND r.item_id=m.item_id WHERE r.id=?1 OR m.rowid=?2 LIMIT 1",params![result,native],|r|r.get(0)).optional()?)
 }
 
+fn artifact_job_stage_on(conn: &Connection, local: i64, human: i64, doc: &Value) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let output = &doc["output"];
+    let job = format!(
+        "{local}:{:x}",
+        Sha256::digest(serde_json::to_vec(&json!([
+            output["native"],
+            output["turn"],
+            output["item"]
+        ]))?)
+    );
+    let mut doc = doc.clone();
+    if let Some(files) = doc
+        .get_mut("output")
+        .and_then(|v| v.get_mut("files"))
+        .and_then(Value::as_object_mut)
+    {
+        let mut previous=conn.prepare("SELECT EXISTS(SELECT 1 FROM interaction_artifact_jobs j,json_each(j.doc,'$.output.files') f WHERE j.local=?1 AND j.human=?2 AND j.job!=?3 AND f.key=?4 AND json(f.value)=json(?5))")?;
+        let mut duplicate = Vec::new();
+        for (name, metadata) in files.iter() {
+            if previous.query_row(
+                params![local, human, job, name, metadata.to_string()],
+                |r| r.get::<_, bool>(0),
+            )? {
+                duplicate.push(name.clone());
+            }
+        }
+        for name in duplicate {
+            files.remove(&name);
+        }
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO interaction_artifact_jobs VALUES(?1,?2,?3,?4,'pending','')",
+        params![job, local, human, doc.to_string()],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +505,96 @@ mod tests {
             .unwrap();
         (file, store, local, entry, worker)
     }
+    #[test]
+    fn recovery_stages_only_the_frozen_owned_completed_final_and_keeps_one_job() {
+        let (_file, s, local, other, entry) = setup();
+        let binding = s.conversation_request_binding(100, entry).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let doc = json!({"out":"explicit-owned-output","device":1,"inode":2,"explicit_owner_recovery":true,"publish_files":false,"output":{"native":"old-native","turn":"physical","item":"final","files":{"image.png":[1,2,3,4,5,6,7]},"expected_sha256":{"image.png":"a".repeat(64)}}});
+        assert!(
+            s.artifact_recovery_stage(100, entry, &binding, local, &doc)
+                .is_err(),
+            "An in-flight source cannot be recovered"
+        );
+        s.record_turn_finished(local, "completed", None).unwrap();
+        assert!(
+            s.artifact_recovery_stage(100, entry, "changed-generation", local, &doc)
+                .is_err()
+        );
+        assert!(
+            s.artifact_recovery_stage(100, other, &binding, local, &doc)
+                .is_err(),
+            "Another owned conversation is not this source"
+        );
+        assert!(
+            s.artifact_recovery_stage(101, entry, &binding, local, &doc)
+                .is_err()
+        );
+        let mut wrong = doc.clone();
+        wrong["output"]["item"] = json!("unrelated-final");
+        assert!(
+            s.artifact_recovery_stage(100, entry, &binding, local, &wrong)
+                .is_err()
+        );
+        s.artifact_recovery_stage(100, entry, &binding, local, &doc)
+            .unwrap();
+        let mut later = doc.clone();
+        later["output"]["files"]["image.png"] = json!([9, 9, 9, 9, 9, 9, 9]);
+        s.artifact_recovery_stage(100, entry, &binding, local, &later)
+            .unwrap();
+        let conn = s.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_artifact_jobs", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        let retained: String = conn
+            .query_row("SELECT doc FROM interaction_artifact_jobs", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&retained).unwrap(),
+            doc,
+            "A retry cannot replace the retained recovery selection"
+        );
+    }
+
+    #[test]
+    fn recovery_revalidates_changed_owner_and_grant_before_staging() {
+        for change in [
+            "UPDATE sessions SET creator_user_id=101",
+            "UPDATE users SET allowed=0 WHERE tg_user_id=100",
+        ] {
+            let (_file, s, local, _, entry) = setup();
+            s.record_turn_finished(local, "completed", None).unwrap();
+            let binding = s.conversation_request_binding(100, entry).unwrap()["binding"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            s.conn.lock().unwrap().execute(change, []).unwrap();
+            let doc = json!({"output":{"native":"old-native","turn":"physical","item":"final"}});
+            assert!(
+                s.artifact_recovery_stage(100, entry, &binding, local, &doc)
+                    .is_err()
+            );
+            assert_eq!(
+                s.conn
+                    .lock()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM interaction_artifact_jobs", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
     fn register(store: &Store, local: i64, name: &str) -> String {
         store
             .artifact_register(

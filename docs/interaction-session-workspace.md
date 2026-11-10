@@ -6,6 +6,18 @@ current native session bindings and existing device-local Mute/Solo preferences.
 Opening a conversation or technical view performs read-only I/O; it does not
 start a native/model process, enroll a router target or acknowledge work.
 
+The integrating conversation is always visible first, ahead of active workers and
+recent sessions. Its menu label uses the existing owner-selected daimon display
+name (fallback `Daimon`). This is presentation only: native titles, IDs, history,
+audio keys and destinations remain unchanged.
+
+Human-facing language calls the integrating entry "our general conversation",
+"the general conversation" or "our conversation". Other task conversations are
+the same daimon carrying out different work. Heartbeat context is intended for
+that shared dialogue; its delivery must still be observed. Distinct daimons keep
+their own identities and paired conversations. This language does not merge
+histories, grants, destinations or pending work.
+
 ## Input and navigation
 
 - No pin sends new input to the integrating Conversation. A pin selects a current
@@ -139,9 +151,13 @@ selection, rollback and remaining acceptance live in the Shared Resources
 Interaction receiving guide and the receiving owner's local operations record.
 
 The compact session toolbar sits below the reading area, immediately above the
-input dock. Its menu opens upward within that area on desktop and mobile, without
-shifting the conversation or input. The destination remains beside the menu
-control. Compact-header mode also hides the pending/status lane; reverse scrolling
+writing field. The menu, destination and minimal notice indicator share one
+compact row across the dock, including above the left audio controls. Its menu
+opens upward within the reading area on desktop and mobile. Long destination
+labels stay on one line with their full text available to assistive technology
+and through the tooltip. The writing line spans the full composer width above
+attachment, microphone and Send controls; notices remain in the upward popover
+without expanding the input or changing its draft. Compact-header mode also hides the pending/status lane; reverse scrolling
 restores it without changing its content or pending tasks.
 
 Routing maps and saved-input routing-path disclosures remain in Under the hood,
@@ -149,7 +165,8 @@ without per-message map shortcuts or routing details in the conversation.
 
 Session rows use one compact line for the title and four borderless reply, pin,
 mute and solo controls, followed by the readable status. Each control has a
-28px target and an 18px icon, matching the small audio-control vocabulary. Long
+44px touch target in the authored HUD (28px in the inherited compact style)
+and an 18px icon. Long
 titles truncate visually while retaining their full accessible name and tooltip.
 Pressed controls and keyboard focus remain visible; the menu stays anchored
 above the composer without changing its draft or selected input target.
@@ -159,7 +176,7 @@ returns keyboard focus to the menu toggle; reply uses the existing composer
 focus without changing the frozen message reference. Mute and Solo keep the
 menu open. When any audio filter is active, Reset appears in the menu header
 aligned above the controls; clearing filters hides it again. The collapsed
-destination toolbar contains only navigation and the current input destination.
+destination toolbar shares its row with the existing notice indicator.
 
 Selected-history failures retain an explicit Retry reading action. A changed
 file gets one fresh read immediately; persistent conflicts cannot loop. Existing
@@ -183,8 +200,12 @@ unchanged record could not fix that parser failure.
 
 A failed workspace metadata refresh preserves the exact input destination and
 draft. `Retry status` reads metadata again, and opening the session menu uses the
-same refresh path. A successful refresh removes its warning/retry control; grant
-loss retains the existing access-recovery behavior. These actions never submit
+same refresh path. A transient failure gets one eight-second presentation grace:
+a successful existing read cancels it, while a persistent failure appears inside
+the composer's existing alert popover. Returning to a window does not flash a
+full-width error or resize the writing field. The grace adds no request/retry;
+binding reset and access loss cancel it. A successful refresh removes its
+warning/retry control; grant loss retains the existing access-recovery behavior. These actions never submit
 input, unpin a conversation or open a native model. The5November device warning
 was not reproduced by the owner read (44sessions, destinations available); its
 original network/server cause remains unknown. Do not equate this warning with

@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 function boot(readOnly=false,standalone=false,options={}) {
+  const artifactPayload=options.artifactBytes||"Actual fixture file",artifactMime=options.artifactMime||"application/octet-stream";
   const optionsForFixture=options;const streamedTransports=[];const budgetControlReceipts=new Map();
   const nodes = new Map(), requests = [], audioCalls=[], sourceOverrides=new Map();
   const copied=[],recoveryPosts=[],statusReads=[],mediaActions=new Map();const mediaSession={setActionHandler:(name,fn)=>mediaActions.set(name,fn)};
@@ -172,7 +173,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     location:{href:"https://fixture.invalid/?view=conversation"}, history:{replaceState() {}},
     URL, URLSearchParams, AbortController, setTimeout:timeout, clearTimeout:cancelTimeout, TextEncoder, Blob, crypto:options.immediateHash?{...require("node:crypto"),subtle:{digest:(_algorithm,bytes)=>Promise.resolve(require("node:crypto").createHash('sha256').update(new Uint8Array(bytes)).digest())}}:options.hashHold?{...require("node:crypto"),subtle:{digest:(algorithm,bytes)=>options.hashHold.active?new Promise(resolve=>options.hashHold.releases.push(()=>resolve(require("node:crypto").createHash('sha256').update(bytes).digest()))):require("node:crypto").subtle.digest(algorithm,bytes)}}:require("node:crypto"),
     fetch:(_route, options) => {
-      if(_route.startsWith('api/interaction/artifacts/'))return Promise.resolve(new Response('Actual fixture file',{headers:{'X-Artifact-Sha256':require('node:crypto').createHash('sha256').update('Actual fixture file').digest('hex')}}));
+      if(_route.startsWith('api/interaction/artifacts/'))return Promise.resolve(new Response(artifactPayload,{headers:{'Content-Type':artifactMime,'X-Artifact-Sha256':require('node:crypto').createHash('sha256').update(artifactPayload).digest('hex')}}));
       audioCalls.push(JSON.parse(options.body));
       if(audioFailures){audioFailures--;return Promise.resolve(new Response(JSON.stringify({detail:'Synthetic TTS outage'}),{status:503}));}
       if(renderAudio && JSON.parse(options.body).source.startsWith('live:')){
@@ -251,6 +252,12 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
+  if(options.replyActivity){
+    const activity=options.replyActivity;activity.levels=[];activity.clears=0;
+    context.window.AvatarWorkshopUI={mount:()=>({bind(){},reset(){},speechLevel:v=>activity.levels.push(v)})};
+    context.window.WebRtcNativeAudio={watchElement(element,hooks){activity.element=element;activity.hooks=hooks;
+      return {clear(){activity.clears++;hooks.onActivity(0);}};}};
+  }
   vm.runInContext(fs.readFileSync("dashboard/web/conversation.js", "utf8"), context);
   if(options.autoText)context.window.IntersectionObserver=class{
     constructor(callback){intersection=callback;}observe(){}unobserve(){}disconnect(){}
@@ -260,13 +267,12 @@ function boot(readOnly=false,standalone=false,options={}) {
   if(standalone){
     assert.equal(document.querySelector("#conversation-visual summary").textContent,"","Mount must preserve the authored paperclip, not overwrite it with text");
     assert.equal(document.querySelector("#conversation-message").rows,1);
-    assert(document.querySelector("#conversation-presence").children.some(track=>track.children?.includes(document.querySelector("#conversation-companion .companion-caption"))));
     assert(document.querySelector("header .header-tools").children.includes(document.querySelector("#conversation-sound-toggle")));
     assert(document.querySelector("#conversation-sound").children.includes(document.querySelector("#conversation-sound-controls")));
   }
   ui.authenticated();
   return {ui, copied,statusReads, nodes, requests, originals,replyTexts,partReads,humanTasks,streamedTransports,
-    continuous:()=>({hooks:continuousHooks,mode:continuousMode,session:continuousSession,calls:continuousCalls}),native:()=>({hooks:nativeHooks,session:nativeSession}),microphoneState:(value,detail)=>capture.onActivity(value,detail),
+    continuous:()=>({hooks:continuousHooks,mode:continuousMode,session:continuousSession,calls:continuousCalls}),native:()=>({hooks:nativeHooks,session:nativeSession}),microphoneTranscript:value=>capture.onTranscript(value),microphoneState:(value,detail)=>capture.onActivity(value,detail),
     rangeGeometry(fn){context.document.createRange=fn;},
     reducedMotion(value){context.window.matchMedia=()=>({matches:value});},
     holdReplyText(id){let release,started;const entered=new Promise(yes=>{started=yes;}),promise=new Promise(yes=>{release=yes;});replyHolds.set(id,{promise,started});return {entered,release};},
@@ -567,7 +573,9 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(order().at(-2),'input:reply-earlier','A different source revision is not silently used as the reply parent');
   threaded.ui.stop();
   const stream=single.nodes.get('#conversation-timeline');
-  assert.equal(stream.children[0].dataset.timelineKey,'voice-history','The history toolbar remains above ordered message cards');
+  const diagnosticHistoryPanel=single.nodes.get('#conversation-diagnostics .conversation-diagnostics-content').children.find(c=>c.className==='voice-history-controls');
+  assert(diagnosticHistoryPanel?.children.some(c=>c.dataset.timelineKey==='voice-history'),'Engine-specific retrieval stays available under diagnostics');
+  assert(!stream.children.some(c=>c.dataset.timelineKey?.startsWith('voice-history')),'History retrieval controls do not occupy the ordinary conversation');
   const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&!c.dataset.timelineKey.startsWith('voice-history'));
   assert.deepEqual(messageCards().map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='native:1').children[1].textContent,'Progress update.');
@@ -605,6 +613,20 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>openaiOnly.audioCalls.length===1);
   assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
   services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
+  const transcript=boot(false,true,{capture:true});await transcript.ui.refresh();
+  const transcriptInput=transcript.nodes.get('#conversation-message');
+  transcriptInput.value='Earlier typed draft';transcriptInput.selectionStart=2;transcriptInput.selectionEnd=7;
+  const restoredSelections=[];transcriptInput.setSelectionRange=(start,end)=>restoredSelections.push([start,end]);
+  const speech={id:'one-capture',binding:'fixture',active:true,text:''};
+  transcript.microphoneTranscript(speech);assert.equal(transcriptInput.value,'');assert.equal(transcriptInput.readOnly,true);
+  transcript.microphoneTranscript({...speech,text:'Live recognized words'});assert.equal(transcriptInput.value,'Live recognized words');
+  transcript.microphoneTranscript({...speech,id:'late-other-capture',active:false});assert.equal(transcriptInput.value,'Live recognized words');
+  transcript.microphoneTranscript({...speech,binding:'another-binding',text:'Wrong owner'});assert.equal(transcriptInput.value,'Live recognized words');
+  transcript.microphoneTranscript({...speech,active:false});assert.equal(transcriptInput.value,'Earlier typed draft');
+  assert.deepEqual(restoredSelections,[[2,7]]);assert(!transcriptInput.readOnly);assert.equal(transcript.nativePosts.length,0);
+  transcript.microphoneTranscript(speech);transcriptInput.value='A newer external draft';
+  transcript.microphoneTranscript({...speech,text:'Late speech'});assert.equal(transcriptInput.value,'A newer external draft');
+  transcript.microphoneTranscript({...speech,active:false});assert.equal(transcriptInput.value,'A newer external draft');
   const openaiDefault=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true,openaiCaptions:true});await openaiDefault.ui.refresh();
   assert.equal(openaiDefault.transcriptionProfile(),'openai','Selected server default applies before first capture');
   assert.equal(openaiDefault.nodes.get('#conversation-services-engine').value,'openai');
@@ -1035,7 +1057,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   await skipButton.handlers.click();await until(()=>skipping.audioCalls.some(call=>call.source==='native:10')&&!skipPlayer.paused);
   assert.equal(skipping.audioCalls.filter(call=>call.source==='native:9').length,2,'Already prepared continuation is cancelled rather than played or retried');
   assert.equal(skipButton.textContent,'Resume audio','Skip preserves the actual heard cursor for a later explicit resume');
-  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();skipping.clock.fire(450);
+  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();
+  // Refresh/ended may still be preparing the owned next source. Fire only once
+  // its silence timer exists, or continue if its next segment is already ready.
+  await until(()=>skipping.clock.pending().includes(450)||skipping.audioCalls.some(call=>call.source==='native:11'));
+  skipping.clock.fire(450);
   await until(()=>skipping.audioCalls.some(call=>call.source==='native:11'));
   assert.deepEqual([...new Set(skipping.audioCalls.map(call=>call.source))],['native:9','native:10','native:11']);
   assert.equal(skipping.nativePosts.length,0,'Skipping audio does not answer or change native work');skipping.ui.stop();
@@ -1242,6 +1268,14 @@ function boot(readOnly=false,standalone=false,options={}) {
   followed.nodes.get('#conversation-voice-replies').handlers.click();followSwitch.handlers.click();
   await listenButton(spokenCard(7)).handlers.click();
   assert.equal(scrolls.length,2,'Turning Voice off also prevents subsequent Follow movement');followed.ui.stop();
+
+  const replyActivity={},replyJaw=boot(false,true,{capture:true,playback:true,replyActivity});replyJaw.audio();await replyJaw.ui.refresh();
+  assert.equal(replyActivity.hooks.isPlaying(),false);
+  const jawCard=replyJaw.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+  await listenButton(jawCard).handlers.click();assert.equal(replyActivity.hooks.isPlaying(),true);
+  replyActivity.hooks.onActivity(.08);assert.equal(replyActivity.levels.at(-1),.5,'Existing workshop receives the live-path five-step quantization');
+  replyJaw.capture();assert.equal(replyActivity.hooks.isPlaying(),false);assert.equal(replyActivity.levels.at(-1),0,'Microphone hold retires reply jaw observation');
+  replyJaw.finishCapture();replyJaw.ui.stop();assert.equal(replyActivity.levels.at(-1),0);assert(replyActivity.clears>0);
 
   const playbackHint=boot(false,true,{capture:true,playback:true});playbackHint.audio();
   playbackHint.overrideSource(8,{revision:'a'.repeat(64)});await playbackHint.ui.refresh();
@@ -1861,6 +1895,30 @@ function boot(readOnly=false,standalone=false,options={}) {
   const uncertainPost=composerLoss.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
   assert(composerLoss.posting());await composerLoss.ui.refresh();releaseLoss();await uncertainPost;
   assert.match(composerLoss.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"A lost POST response cannot erase acceptance already observed through history");
+  // The compact composer keeps a read-only way to resolve its own lost ACK.
+  const composerRecovery=boot();await composerRecovery.ui.refresh();composerRecovery.lose();
+  const originalSet=composerRecovery.originals.set.bind(composerRecovery.originals);let inputWrites=0;
+  composerRecovery.originals.set=(...args)=>{inputWrites++;return originalSet(...args);};
+  composerRecovery.nodes.get("#conversation-message").value="Retain this original after a lost acknowledgment";
+  await composerRecovery.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
+  const composerCheck=composerRecovery.nodes.get("#conversation-send-check");
+  assert(composerCheck,"The shipped composer must expose the lost-ACK status control");
+  assert.equal(composerCheck.hidden,false,'A lost POST exposes Check status without another Send');
+  const statusHold=composerRecovery.holdStatus(),statusChecking=composerCheck.handlers.click();await statusHold.entered;
+  assert.equal(composerCheck.disabled,true);await composerCheck.handlers.click();
+  assert.equal(composerRecovery.statusReads.length,1,'Repeated clicks share the one status read');
+  statusHold.release();await statusChecking;
+  assert.equal(composerCheck.hidden,true,'Confirmed admission hides the recovery action');
+  assert.equal(inputWrites,1,'Status reads must never resubmit the frozen original');
+  assert.equal(composerRecovery.originals.size,1);assert.equal(composerRecovery.recoveryPosts.length,0);
+  assert.equal(composerRecovery.nativePosts.length,0);composerRecovery.ui.stop();
+  const revokedComposer=boot();await revokedComposer.ui.refresh();revokedComposer.lose();
+  revokedComposer.nodes.get("#conversation-message").value="A separately retained lost ACK before access revocation";
+  await revokedComposer.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
+  const revokedCheck=revokedComposer.nodes.get("#conversation-send-check");assert.equal(revokedCheck.hidden,false);
+  revokedComposer.failPage('Error',403);await revokedComposer.ui.refresh();
+  assert.equal(revokedCheck.hidden,true,'Revoking access removes the stale composer recovery target');
+  revokedComposer.ui.stop();
   const voiceHistory=boot();
   voiceHistory.originals.set("voice-original",{id:"voice-original",sequence:1,text:"",phase:"preparing",voice:{audio_sha256:"a"}});
   await voiceHistory.ui.refresh();
@@ -1966,6 +2024,24 @@ function boot(readOnly=false,standalone=false,options={}) {
   mixed.telegramOriginals.set('telegram:11',{id:'telegram:11',text:'New Telegram ingress',phase:'completed',sequence:11,capture_order:12,origin_kind:'telegram',read_only:true});
   await mixed.ui.refresh();assert.equal(mixed.nodes.get('#conversation-inputs').children[0].children[0].textContent,'New Telegram ingress');
   assert(mixed.requests.filter(r=>r.telegram||r.trace).every(r=>r.body===undefined),'All observation requests remain GET only');
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
+  const imageOptions={fileAccess:true,artifactBytes:png,artifactMime:'application/octet-stream'},imageClient=boot(false,false,imageOptions);
+  const imageFile={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(png).digest('hex'),bytes:png.length,available:true};
+  imageClient.overrideSource(8,{artifacts:[imageFile]});await imageClient.ui.refresh();
+  const imageCard=imageClient.nodes.get('#conversation-answers').children.find(card=>card.dataset.sequence==='8');
+  await imageCard.children[5].children[1].children[2].handlers.click();
+  assert.match(imageCard.children[5].children[2].src,/^blob:/);assert.equal(imageCard.children[5].children[2].alt,'drawing.png');
+  assert.equal(imageCard.children[5].children[1].children[1].textContent,'Image verified');
+  await imageCard.children[5].children[1].children[2].handlers.click();
+  assert.equal(imageCard.children[5].children.length,2,'Closing an image removes its inline preview');
+  imageOptions.fileAccess=false;await imageClient.ui.refresh();assert.equal(imageCard.children[5].hidden,true,'Revocation removes inline access');
+  const unsafeBytes=Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>bad()</script></svg>');
+  const unsafe=boot(false,false,{fileAccess:true,artifactBytes:unsafeBytes,artifactMime:'image/png'});
+  unsafe.overrideSource(8,{artifacts:[{...imageFile,bytes:unsafeBytes.length,sha256:require('node:crypto').createHash('sha256').update(unsafeBytes).digest('hex')}]});await unsafe.ui.refresh();
+  const unsafeCard=unsafe.nodes.get('#conversation-answers').children.find(card=>card.dataset.sequence==='8');
+  await unsafeCard.children[5].children[1].children[2].handlers.click();
+  assert.equal(unsafeCard.children[5].children.length,2,'A misleading image MIME/name cannot inline active content');
+  assert.match(unsafeCard.children[5].children[1].children[1].textContent,/cannot be shown/);
   const fileOptions={fileAccess:true},fileClient=boot(false,false,fileOptions);
   fileClient.overrideSource(8,{artifact_status:'running',artifacts:[]});
   await fileClient.ui.refresh();
@@ -2086,4 +2162,37 @@ function boot(readOnly=false,standalone=false,options={}) {
   workspace.valid=false;draft.value='Must not fall back to integration';const count=fixture.originals.size;
   await form.requestSubmit();assert.equal(fixture.originals.size,count);assert.match(fixture.nodes.get('#conversation-send-state').textContent,/Select your session again/);
   fixture.ui.stop();console.log('Workspace Conversation input: frozen text/voice targets across attachment preparation and stale-pin refusal passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Matrix originals and own response intents remain attributed, refreshable and contextual.
+(async()=>{
+  const f=boot(false,true);const id='matrix-inbox:11111111-1111-4111-8111-111111111111';
+  f.overrideSource(8,{id,kind:'matrix_inbox',label:'Matrix · incoming · Eko',direction:'incoming',source_author:{being_ref:'signed-eko',embodiment_id:'signed-body'},preview:'A retained peer question.',revision:'a'.repeat(64),text_characters:25});
+  f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'b'.repeat(64),handling:{phase:'uncertain'},parent_message_id:'11111111-1111-4111-8111-111111111111'});
+  const echo='matrix-inbox:22222222-2222-4222-8222-222222222222';f.overrideSource(6,{id:echo,kind:'matrix_inbox',direction:'outgoing',preview:'An own response.',revision:'d'.repeat(64)});
+  await f.ui.refresh();const cards=f.nodes.get('#conversation-timeline').children;
+  const incoming=cards.find(c=>c.dataset.sourceId===id),outgoing=cards.find(c=>c.dataset.sourceId?.startsWith('matrix-response:'));
+  assert(incoming);assert(outgoing);assert.equal(incoming.children[1].textContent,"Received");assert.equal(outgoing.children[1].textContent,"Delivery not confirmed");
+  assert.match(incoming.children.find(c=>c.children?.[0]?.textContent==='Matrix details').children[1].textContent,/signed-eko/);
+  const reply=incoming.children[3].children[2];assert.equal(reply.hidden,false);await reply.handlers.click();
+  f.nodes.get('#conversation-message').value='Let us discuss this Matrix message';await f.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});
+  const original=[...f.originals.values()].at(-1);assert.equal(original.reply.source,id);assert.equal(original.reply.context_only,true);
+  f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'c'.repeat(64),handling:{phase:'recipient_copy_proved',outcome:{message_id:'22222222-2222-4222-8222-222222222222'}}});
+  await f.ui.refresh();assert.equal(outgoing.children[1].textContent,"Delivered");assert.equal(cards.filter(c=>c.dataset.sourceId?.startsWith('matrix-response:')).length,1);
+  assert(!f.nodes.get('#conversation-timeline').children.some(c=>c.dataset.sourceId===echo),'A native own-copy and observed response receipt must not duplicate speech');
+  f.ui.stop();console.log('Matrix Conversation: attribution, delivery uncertainty refresh and context-only human discussion passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Ordinary visibility speech stays untouched; technical receipt notes are opt-in.
+(async()=>{
+  const f=boot(false,true),id='matrix-publication:33333333-3333-4333-8333-333333333333';
+  f.overrideSource(8,{id,kind:'matrix_visibility',label:'Communication record',preview:'Eko: An attributed ordinary message.',revision:'e'.repeat(64),text_characters:36,publication_id:'33333333-3333-4333-8333-333333333333',publication_resource:'selected-surface',publication_request_sha256:'f'.repeat(64),part_index:0,part_count:1,verification:'Committed owner-local visibility publication.'});
+  await f.ui.refresh();const card=f.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId===id);
+  assert(card);assert.equal(card.children[1].textContent,'Communication');
+  assert.equal(card.children[2].textContent,'Eko: An attributed ordinary message.');
+  assert.doesNotMatch(card.children[1].textContent,/Durable|confirmation|verification|receipt/);
+  const details=card.children.find(c=>c.children?.[0]?.textContent==='Matrix details');assert(details);assert(!details.open);
+  const receipt=JSON.parse(details.children[1].textContent);assert.equal(receipt.publication,id.slice('matrix-publication:'.length));assert.equal(receipt.request_sha256,'f'.repeat(64));assert.match(receipt.diagnostic,/not a human message/);
+  assert.equal(f.originals.size,0,'Rendering a publication cannot submit a new human input');
+  f.ui.stop();console.log('Matrix visibility: unchanged attributed speech and receipt; diagnostics only in collapsed details passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

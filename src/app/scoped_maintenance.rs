@@ -3,6 +3,18 @@ use super::*;
 use crate::{codex::NativeGoalSnapshot, store::MaintenancePlan};
 use serde_json::{Value, json};
 
+fn preparation_matches(current: &NativeGoalSnapshot, expected: &NativeGoalSnapshot) -> bool {
+    current.revision == expected.revision
+        && crate::codex::goal_definitions_match(current.goal.as_ref(), expected.goal.as_ref())
+        && match (&current.goal, &expected.goal) {
+            (Some(a), Some(b)) => {
+                a.tokens_used >= b.tokens_used && a.time_used_seconds >= b.time_used_seconds
+            }
+            (None, None) => true,
+            _ => false,
+        }
+}
+
 pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> {
     if let Some(raw) = args.strip_prefix("prepare ") {
         let plan: MaintenancePlan = serde_json::from_str(raw)?;
@@ -29,8 +41,8 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
                 .store
                 .validate_owned_binding(target.target, human, native)?;
             let current = app.shared.codex.get_goal_snapshot(native).await?;
-            if current != target.snapshot {
-                bail!("Native snapshot/accounting changed after observation; inspect again");
+            if !preparation_matches(&current, &target.snapshot) {
+                bail!("Native goal definition changed or accounting regressed; inspect again");
             }
         }
         return app.shared.store.maintenance_prepare(human, &plan);
@@ -388,6 +400,22 @@ pub(super) async fn restore(app: &App, human: i64, id: &str) -> Result<()> {
                 // Only startup uses this while no old command can still run.
                 // Concurrent owner calls leave an in-flight write alone.
             }
+            Some("restore_unconfirmed" | "restart_unconfirmed") => {
+                // Observation only. Expired uncertainty is never permission to
+                // resume, and a later definition must not stay blocked by it.
+                let selected: SessionKey = serde_json::from_value(target["target"].clone())?;
+                let native = target["binding"]["entry_binding"][3]
+                    .as_str()
+                    .context("Native target missing")?;
+                app.shared
+                    .store
+                    .validate_owned_binding(selected, human, native)?;
+                if let Ok(observed) = app.shared.codex.get_goal_snapshot(native).await {
+                    app.shared
+                        .store
+                        .maintenance_reconcile_observed(human, id, i, &doc, &observed)?;
+                }
+            }
             Some("paused") => {
                 let paused: NativeGoalSnapshot = serde_json::from_value(
                     target["paused_receipt"]["receipt"]["native_receipt"].clone(),
@@ -461,4 +489,45 @@ pub(super) async fn recover(app: App, pending: Vec<(i64, String)>) -> Result<()>
         bail!("Scoped restoration needs owner inspection; no uncertain write replayed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+
+    #[test]
+    fn scoped_maintenance_preparation_allows_only_monotone_usage() {
+        let value = json!({"revision":"definition:1","goal":{
+            "threadId":"native","objective":"Keep full work","status":"active",
+            "tokenBudget":1000,"tokensUsed":42,"timeUsedSeconds":17,
+            "createdAt":10,"updatedAt":11}});
+        let expected: NativeGoalSnapshot = serde_json::from_value(value.clone()).unwrap();
+        let mut advanced = value.clone();
+        advanced["goal"]["tokensUsed"] = json!(43);
+        advanced["goal"]["timeUsedSeconds"] = json!(18);
+        advanced["goal"]["updatedAt"] = json!(12);
+        assert!(preparation_matches(
+            &serde_json::from_value(advanced).unwrap(),
+            &expected
+        ));
+        for (field, changed) in [
+            ("threadId", json!("other")),
+            ("objective", json!("Other work")),
+            ("status", json!("paused")),
+            ("tokenBudget", json!(1001)),
+            ("createdAt", json!(12)),
+            ("tokensUsed", json!(41)),
+            ("timeUsedSeconds", json!(16)),
+        ] {
+            let mut current = value.clone();
+            current["goal"][field] = changed;
+            assert!(
+                !preparation_matches(&serde_json::from_value(current).unwrap(), &expected),
+                "{field}"
+            );
+        }
+        let mut revised = expected.clone();
+        revised.revision = "definition:2".into();
+        assert!(!preparation_matches(&revised, &expected));
+    }
 }

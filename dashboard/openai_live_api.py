@@ -29,8 +29,28 @@ from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
 from .openai_live_native_backend import prepare_native, return_next_native_part
 from .openai_live_native_session import PublicLiveSessionContext
+from .native_context import ResumePending
 from .provider import ProviderUnavailable
 from scripts.speech_render import private_bytes, RenderError
+
+
+def _startup_failure_code(error):
+    if isinstance(error,ResumePending):return 'context_pending'
+    if isinstance(error,TimeoutError):return 'timeout'
+    if isinstance(error,WebSocketDisconnect):return 'client_disconnected'
+    if isinstance(error,ProviderUnavailable):return 'native_unavailable'
+    if isinstance(error,LiveUnavailable):return 'unavailable'
+    if isinstance(error,ValueError):
+        return {
+            'Current integrating original changed':'context_changed',
+            'Current integrating result changed':'context_changed',
+            'Current integrating result cursor changed':'context_changed',
+            'Public Live session configuration exceeds its bound':'startup_bound',
+            'Current integrator context needs semantic preparation':'context_pending',
+            'Latest integrating source needs semantic preparation before voice':'context_pending',
+            'Latest integrator message needs semantic preparation before voice':'context_pending',
+        }.get(str(error),'invalid_state')
+    return 'transport_unavailable'
 
 
 def install(app, config, provider, authorize, origins):
@@ -40,14 +60,16 @@ def install(app, config, provider, authorize, origins):
     if backend_mode not in ('responses','native'):raise ValueError('Select an explicit public Live backend')
     native_backend=backend_mode=='native'
     if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
-            'backend_model','backend_tools','session_options','backend_options',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled'}
+            'backend_model','backend_tools','session_options','backend_options','continuous_renewal',
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
             or not 300 <= selected.get('session_seconds',600) <= 600):
         raise ValueError('Select owner-configured public GPT-Live and bounded capture')
     instructions=private_bytes(selected['identity_file'],8192).decode()
+    continuous_renewal=selected.get('continuous_renewal',False)
+    if type(continuous_renewal) is not bool:raise ValueError('Select explicit continuous native voice renewal')
     native_enabled=selected.get('native_backend_enabled',False)
     if type(native_enabled) is not bool:raise ValueError('Select an explicit native voice choice')
     native_file=selected.get('native_identity_file')
@@ -133,10 +155,9 @@ def install(app, config, provider, authorize, origins):
             async with uploads:
                 await asyncio.to_thread(history.owned,visit,session['human'],binding)
                 data=bytearray()
-                async with asyncio.timeout(30):
-                    async for part in request.stream():
-                        if len(data)+len(part)>120*32000+44:raise HTTPException(413,'Voice original exceeds bound')
-                        data.extend(part)
+                async for part in request.stream():
+                    if len(data)+len(part)>120*32000+44:raise HTTPException(413,'Voice original exceeds bound')
+                    data.extend(part)
                 fresh,current=await http_owner(request,write=True)
                 if fresh['human']!=session['human'] or current!=binding:raise HTTPException(403,'Voice audience changed')
                 receipt=await asyncio.to_thread(history.recording,visit,session['human'],binding,ordinal,bytes(data),provider,capture_stop=capture_stop)
@@ -156,14 +177,15 @@ def install(app, config, provider, authorize, origins):
         await socket.accept()
         lease=sideband=creating=read_browser=read_provider=preparing=returning=syncing=None
         native_context=None;context_operations=set();context_syncs=set()
-        owner_cleanup_finished=False
+        owner_cleanup_finished=False;renewal_requested=False;provider_closed=False;context_closed=False
         def release_owner_if_settled(_=None):
             if (owner_cleanup_finished and lease is not None and not context_operations and not context_syncs
                     and all(task is None or task.done() for task in (creating,preparing,returning,syncing))):
                 lease.release()
         result_index=0;result_poll=0
         preparation_stopped=threading.Event()
-        visit=human=binding=None;admitted=False;closing=False;close_deadline=None;native_failure=False
+        visit=human=binding=None;meta={};startup_stage=None
+        admitted=False;closing=False;close_deadline=None;native_failure=False;returns_unavailable=False
         async def message(limit):
             raw=await socket.receive_text()
             if len(raw.encode())>limit:raise ValueError('Public voice control exceeds bound')
@@ -213,7 +235,7 @@ def install(app, config, provider, authorize, origins):
         try:
             async with asyncio.timeout(seconds+60):
                 meta=await asyncio.wait_for(message(8192),5)
-                if set(meta)-{'id','binding','csrf','authorization','backend','replacement','voice_continuation','voice_start'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
+                if set(meta)-{'id','binding','csrf','authorization','backend','replacement','voice_continuation','voice_start','renewal'} or not all(isinstance(meta.get(k),str) for k in ('id','binding','csrf')):
                     raise ValueError('Select one public voice admission')
                 if 'voice_start' in meta and (meta['voice_start']!='new' or meta.get('voice_continuation') or meta.get('replacement')):
                     raise ValueError('Select a new voice conversation or its exact continuation')
@@ -221,10 +243,16 @@ def install(app, config, provider, authorize, origins):
                     if meta['backend']!='native' or not (configured_native or native_enabled):
                         raise ValueError('This public voice backend is not enabled')
                     native_backend,spec,source_seals=True,native_spec or configured_spec,True
+                if meta.get('renewal') is not None and not (continuous_renewal and native_backend):
+                    raise ValueError('Continuous native renewal is not selected')
                 visit=history._ident(meta['id']);binding=meta['binding']
                 session,recheck,actor=await bind_voice_actor(provider,authorize,socket,meta,require_voice=False)
                 if dict(session).get('scope')=='monitor_readonly':raise HTTPException(403,'Voice interaction access required')
-                human=session['human'];owner=await asyncio.to_thread(provider.public_live_binding,binding)
+                human=session['human']
+                if native_backend and callable(getattr(provider,'prepare_native_voice',None)):
+                    await asyncio.to_thread(provider.prepare_native_voice,binding)
+                    await recheck()
+                owner=await asyncio.to_thread(provider.public_live_binding,binding)
                 if native_backend:
                     caps=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                     if (caps.get('binding')!=binding or caps.get('foreground_live_window')!='journal-input/v1'
@@ -232,50 +260,61 @@ def install(app, config, provider, authorize, origins):
                             or any(caps.get(k)!='v1' for k in ('foreground_context','foreground_resume','foreground_public_live_transcripts'))
                             or not callable(getattr(provider,'conversation_foreground_delegate',None))
                             or not callable(getattr(provider,'conversation_live_context',None))
+                            or not callable(getattr(provider,'public_live_integrator_context',None))
                             or getattr(app.state,'native_history',None) is None):
                         raise LiveUnavailable('native_reader_unavailable')
                 lease=AvatarVoiceLease(app.state.voice_active,human,binding,owner['native_thread'])
                 client=OpenAILive(selected['api_key_file'])
                 # Validate this explicitly configured project file before mic
                 # permission; never discover or reinterpret Codex credentials.
-                await asyncio.to_thread(client._project_key)
+                await asyncio.to_thread(client.prepare_transport)
                 from .voice_studio import configured_profiles,choice,apply_choice
                 profiles=configured_profiles(config)
                 workshop=getattr(app.state,'avatar_workshop',None)
                 voice_choice=None
                 if profiles and workshop is not None:
                     revision=await asyncio.to_thread(workshop.voice_for_conversation,human,profiles) if meta.get('voice_start')=='new' else None
-                    voice_choice=choice(revision,profiles[0])
+                    voice_choice=choice(revision,revision['profile'] if revision is not None else profiles[0])
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
-                    voice_choice=voice_choice,voice_continuation=meta.get('voice_continuation'))
+                    voice_choice=voice_choice,voice_continuation=meta.get('voice_continuation'),renewal=meta.get('renewal'))
                 admitted=True
-                if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'])
+                startup_stage='configuration'
+                if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'],profiles)
                 if native_backend:
-                    await send({'type':'context_preparing','id':visit})
+                    startup_stage='native_context'
+                    await send({'type':'context_preparing','id':visit,
+                        **({'replacement_accepted':meta['replacement']} if meta.get('replacement') else {}),
+                        **({'voice_continuation':meta['replacement']['id']} if meta.get('replacement') and admission.get('voice_choice') else {})})
                     native_context=PublicLiveSessionContext(app.state.native_history,history,provider,human,visit,owner,context_operation)
                     async def preparing_context():await send({'type':'context_preparing','id':visit})
                     spec=await native_context.prepare(spec,notice=preparing_context,recheck=recheck)
                     current=await asyncio.to_thread(history.read,visit,human,owner)
                     history.check_capture(current)
                     admission['remaining_seconds']=max(1,int(current['admission']['expires']-time.monotonic()))
+                admission['continuous_renewal']=continuous_renewal and native_backend
+                admission['source_close_reasons']=sorted(history.source_close_reasons)
+                startup_stage='offer'
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
                     'source_coverage':'sideband_before_media_answer'})
                 offer=await asyncio.wait_for(message(66000),min(seconds,300))
                 if set(offer)!={'type','sdp'} or offer['type']!='offer':raise ValueError('Select one WebRTC offer')
                 await recheck();await current_owner()
+                startup_stage='creation'
                 creating=asyncio.create_task(asyncio.to_thread(history.create,visit,human,owner,offer['sdp'],spec,client))
                 from .voice_admission import hold_voice_task
                 hold_voice_task(socket.scope,creating)
                 call=await asyncio.shield(creating)
                 await recheck();await current_owner()
+                startup_stage='sideband'
                 sideband=await asyncio.to_thread(client.attach,call)
                 # Install trusted receive before the browser can apply the SDP
                 # answer and enable media. Sideband still has no pre-attach replay.
                 read_provider=asyncio.create_task(asyncio.to_thread(sideband.receive))
                 await send({'type':'answer','id':visit,'session':call.session_id,'sdp':call.sdp})
+                startup_stage=None
                 read_browser=asyncio.create_task(message(1024))
                 while True:
                     done,_=await asyncio.wait((read_provider,read_browser),timeout=.5,return_when=asyncio.FIRST_COMPLETED)
@@ -287,7 +326,18 @@ def install(app, config, provider, authorize, origins):
                         if event is not None:
                             if event['type']=='session.closed':
                                 result=await asyncio.to_thread(history.observe_closed,visit,human,owner,event)
+                                final=result['finalization']
+                                # A trusted duration expiry can precede our planned
+                                # close. Keep the same two-barrier handover; never
+                                # renew content/network failures or an explicit Stop.
+                                expired=(final.get('reason')=='expired'
+                                    and final.get('voice_usage_confirmed') is True
+                                    and native_backend and continuous_renewal
+                                    and not native_failure and (not closing or renewal_requested))
+                                renewal_requested=renewal_requested or expired
+                                provider_closed=final.get('reason')=='close_requested' or expired
                                 await send({'type':'closed','id':visit,'finalization':result['finalization'],
+                                    'renewal_pending':renewal_requested and provider_closed,
                                     **({'message':'Voice ended. This native request needs review; originals and work receipts are kept.'}
                                        if native_failure else {})})
                                 break
@@ -307,14 +357,36 @@ def install(app, config, provider, authorize, origins):
                             receipt=await asyncio.to_thread(accept_seal,history,visit,human,owner,action,provider)
                             await send({'type':'source_seal_recorded','visit':visit,'seal':receipt})
                         else:
-                            if action!={'type':'close'}:raise ValueError('Select a matching source acknowledgment or an explicit close')
-                            await begin_close()  # A duplicate close observes the same intent.
+                            if action.get('type')!='close' or set(action)-{'type','reason'}:
+                                raise ValueError('Select a matching source acknowledgment or an explicit close')
+                            renewal_requested=action.get('reason')=='transport_renewal'
+                            if 'reason' in action:
+                                reason=action['reason']
+                                if not isinstance(reason,str) or reason not in history.close_reasons:
+                                    raise ValueError('Select a known voice close diagnostic')
+                                if reason=='transport_renewal':
+                                    if not (continuous_renewal and native_backend):raise ValueError('Continuous native renewal is not selected')
+                                # A diagnostic is optional. Its storage failure must
+                                # not prevent explicit Stop/final usage; begin_close
+                                # still rechecks the current authorized owner.
+                                with suppress(OSError,ValueError,RenderError):
+                                    await asyncio.to_thread(history.record_close_reason,visit,human,owner,reason)
+                            # Planned renewal first lets already requested raw
+                            # source seals/preparation settle. Explicit Stop never
+                            # waits for optional work and cancels successor admission.
+                            if not renewal_requested:await begin_close()
                         read_browser=asyncio.create_task(message(1024))
                     if returning is not None and returning.done():
                         completed=returning;returning=None
                         try:completed.result()
-                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable):
-                            if not closing:native_failure=True;await begin_close()
+                        except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable) as error:
+                            # Returning older work is optional to this live transport.
+                            # Keep its exact uncertain cursor/append; do not retry it
+                            # or terminate otherwise healthy current speech. Owner
+                            # authorization is still rechecked by send/the main loop.
+                            returns_unavailable=True
+                            logging.getLogger(__name__).warning('Public voice result reading stopped: %s',type(error).__name__)
+                            if not closing:await send({'type':'notice','code':'native_results_unavailable'})
                     if syncing is not None and syncing.done():
                         completed=syncing;syncing=None
                         try:completed.result()
@@ -363,11 +435,18 @@ def install(app, config, provider, authorize, origins):
                             if (native_context is not None and syncing is None and preparing is None
                                     and native_context.sync_due()):
                                 syncing=asyncio.create_task(synchronize_context())
-                            if native_backend and returning is None and asyncio.get_running_loop().time()>=result_poll:
+                            if native_backend and not returns_unavailable and returning is None and asyncio.get_running_loop().time()>=result_poll:
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
                                     result_index,provider,sideband,stopped=preparation_stopped))
                                 result_index+=1
+                    if renewal_requested and not closing:
+                        pending_value=await asyncio.to_thread(history.read,visit,human,owner)
+                        pending_sources=any(row.get('target')=='client' and (
+                            row.get('source_seal',{}).get('state')=='requested'
+                            or 'source_seal' not in row or 'native_pipeline' not in row)
+                            for row in pending_value['delegations'].values())
+                        if not pending_sources and (preparing is None or preparing.done()):await begin_close()
                     if closing:
                         command=await asyncio.to_thread(history.close_intent,visit,human,owner)
                         if command is not None:await asyncio.to_thread(sideband.send,command)
@@ -376,26 +455,45 @@ def install(app, config, provider, authorize, origins):
                             break
         except (OSError,ValueError,RenderError,LiveUnavailable,CodexVoiceUnavailable,
                 ProviderUnavailable,HTTPException,TimeoutError,WebSocketDisconnect) as error:
+            logging.getLogger(__name__).warning('Public voice transport ended: %s',type(error).__name__)
+            failure=_startup_failure_code(error)
+            if admitted and startup_stage is not None:
+                with suppress(OSError,ValueError,RenderError):
+                    await asyncio.to_thread(history.startup_failure,visit,human,owner,startup_stage,failure)
             messages={
                 'stored_continuation_needs_review':'The previous conversation needs review before continuing. No new voice call was created.',
                 'prior_creation_needs_review':'The previous voice connection is not confirmed closed. Your recordings and work are kept for review.',
                 'creation_storage_full':'Voice history storage is full. Your recordings and work are kept; review storage before starting another call.',
                 'native_reader_unavailable':'This native voice comparison needs its prepared server update. No voice call was opened.',
+                'sideband_dependency_unavailable':'Voice needs its configured transport update. No call was opened.',
                 'project_key_unavailable':'This voice comparison needs its configured OpenAI project access. Your recordings and work are unchanged.'}
             from .voice_admission import admission_failure
             message=admission_failure(error) or (messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None)
+            if message is None and startup_stage=='native_context' and failure=='context_changed':
+                message='Your conversation changed while voice was starting. Tap Reconnect voice to try again; your work is kept.'
             replacement=None
+            accepted=meta.get('replacement') if admitted else None
+            accepted_voice=accepted['id'] if accepted and admission.get('voice_choice') else None
             # A held app lease proves this human has no other app voice owner.
             # Offer review only; the next explicit user action authorizes a new
             # known-created, ended native transport. Unknown POSTs stay held.
             if native_backend and lease is not None and not admitted:
                 with suppress(OSError,ValueError,RenderError):
+                    accepted=await asyncio.to_thread(history.accepted_replacement,human,owner,meta.get('replacement'))
+                    if accepted:
+                        prior=await asyncio.to_thread(history.read,accepted['id'],human,owner)
+                        accepted_voice=accepted['id'] if prior.get('voice_choice') else None
+                with suppress(OSError,ValueError,RenderError):
                     replacement=await asyncio.to_thread(history.replacement_offer,human,owner)
                 if replacement:
                     message='The previous voice connection ended without confirmed final usage. Tap Reconnect voice to open a replacement. Recordings and pending work are kept.'
+                elif accepted:
+                    message='Voice stopped while preparing your conversation. Tap Reconnect voice to try again; your work is kept.'
             with suppress(Exception):
                 await asyncio.wait_for(socket.send_json({'type':'unconfirmed','id':visit,
                     **({'replacement':replacement} if replacement else {}),
+                    **({'replacement_accepted':accepted} if accepted else {}),
+                    **({'voice_continuation':accepted_voice} if accepted_voice else {}),
                     'message':message or 'Voice paused. Keep your original audio; the connection and pending work need review.'}),2)
         finally:
             with CancelScope(shield=True):
@@ -420,9 +518,22 @@ def install(app, config, provider, authorize, origins):
                         settled=(preparing is None or preparing.done()) and not context_syncs and not context_operations
                         with suppress(Exception):
                             async with asyncio.timeout(25):await native_context.close(settled=settled)
+                            context_closed=settled and native_context.producer.status=='closed'
                     if admitted:
                         with suppress(Exception):await asyncio.to_thread(history.end_capture,visit,human,binding)
                     if visit:history.release_sources(visit)
+                    # Final usage is not native-context readiness. Release only
+                    # this settled owner, then publish the second barrier. An
+                    # exception or still-running operation leaves renewal held.
+                    pending=[task for task in (creating,preparing,returning,syncing,*context_operations,*context_syncs)
+                             if task is not None and not task.done()]
+                    if renewal_requested and provider_closed and context_closed and not pending and not context_operations and not context_syncs and not native_failure:
+                        with suppress(Exception):
+                            await recheck();await current_owner()
+                            owner_cleanup_finished=True;release_owner_if_settled()
+                            renewal=await asyncio.to_thread(history.ready_for_renewal,visit,human,owner,
+                                allow_expired=True)
+                            await send({'type':'successor_ready','id':visit,'renewal':renewal})
                     with suppress(Exception):await asyncio.wait_for(socket.close(),1)
                 finally:
                     if lease is not None:

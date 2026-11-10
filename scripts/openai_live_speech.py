@@ -20,6 +20,27 @@ class SpeechError(Exception):
     pass
 
 
+FAILURES=frozenset(('audition-finalization-unconfirmed','audition-start-unconfirmed',
+    'audition-connection-unconfirmed','audition-cancelled','audition-provider-error',
+    'audition-event-mismatch','audition-event-count-bound','audition-no-audio'))
+PROVIDER_CODES=frozenset(('invalid_request_error','invalid_api_key','model_not_found',
+    'rate_limit_exceeded','insufficient_quota','invalid_value','unknown_parameter',
+    'missing_required_parameter','invalid_json','permission_denied'))
+
+
+def diagnostic(value):
+    """Only fixed classifications; never provider messages, headers or payloads."""
+    if not isinstance(value,dict):return {}
+    result={}
+    if isinstance(value.get('failure_code'),str) and value['failure_code'] in FAILURES:
+        result['failure_code']=value['failure_code']
+    if isinstance(value.get('provider_error_code'),str) and value['provider_error_code'] in PROVIDER_CODES:
+        result['provider_error_code']=value['provider_error_code']
+    if value.get('mismatch_stage') in ('startup_model','startup_audio_format','startup_voice','event_validation'):
+        result['mismatch_stage']=value['mismatch_stage']
+    return result
+
+
 def connect(endpoint,model,token,timeout):
     import websocket
     return websocket.create_connection(endpoint,header={'Authorization':'Bearer '+token},
@@ -37,6 +58,7 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
     socket=(connector or connect)(config['endpoint'],config['model'],token,config['timeout_seconds'])
     pcm=bytearray();transcript='';seen={};session=None;closing=False;failure=None
     first_audio=None;last_audio=None;next_silence=None;closed=False;sent_silence=0;close_deadline=None
+    details={}
     max_pcm=min(max_audio-44,30*48000)
     def send(value):socket.send(json.dumps(value,ensure_ascii=False,separators=(',',':')))
     def report(value):
@@ -73,6 +95,17 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                 if not isinstance(raw,str) or len(raw.encode())>1024*1024:raise ValueError()
                 event=json.loads(raw)
                 if not isinstance(event,dict):raise ValueError()
+                kind=event.get('type')
+                if kind=='session.output_audio.delta':
+                    # Primary WebSocket audio has no event_id. Every chunk is
+                    # ordered media, including identical consecutive bytes;
+                    # metadata identity deduplication would lose sound here.
+                    if session is None:raise ValueError()
+                    data=base64.b64decode(event['delta'],validate=True)
+                    if not data or len(data)%2 or len(pcm)+len(data)>max_pcm:raise ValueError()
+                    if first_audio is None:first_audio=int((clock()-started)*1000)
+                    pcm.extend(data);last_audio=clock()
+                    continue
                 ident=event.get('event_id')
                 if not isinstance(ident,str) or not 1<=len(ident)<=1024:raise ValueError()
                 digest=hashlib.sha256(raw.encode()).hexdigest()
@@ -86,19 +119,17 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     session=actual.get('id')
                     if not isinstance(session,str) or not 1<=len(session)<=1024:raise ValueError()
                     next_silence=clock()
-                    if (actual.get('model')!=config['model'] or audio.get('format')!={'type':'audio/pcm','rate':24000}
-                            or audio.get('output',{}).get('voice')!=config['voice']):raise ValueError()
+                    if actual.get('model')!=config['model']:
+                        details['mismatch_stage']='startup_model';raise ValueError()
+                    if audio.get('format')!={'type':'audio/pcm','rate':24000}:
+                        details['mismatch_stage']='startup_audio_format';raise ValueError()
+                    if audio.get('output',{}).get('voice')!=config['voice']:
+                        details['mismatch_stage']='startup_voice';raise ValueError()
                     report({'stage':'session_started','model':config['model'],'session_id':session})
                     if cancel is not None and cancel.is_set():failure=failure or 'audition-cancelled'
                     if failure or clock()>=generation_end:close()
                     else:send({'type':'session.commentary.append','event_id':str(uuid.uuid4()),
                                'delegation_id':None,'content':fields['greeting']})
-                elif kind=='session.output_audio.delta':
-                    if session is None:raise ValueError()
-                    data=base64.b64decode(event['delta'],validate=True)
-                    if not data or len(data)%2 or len(pcm)+len(data)>max_pcm:raise ValueError()
-                    if first_audio is None:first_audio=int((clock()-started)*1000)
-                    pcm.extend(data);last_audio=clock()
                 elif kind=='session.output_transcript.delta':
                     text=event.get('delta')
                     if session is None or not isinstance(text,str) or len((transcript+text).encode())>16384:raise ValueError()
@@ -114,6 +145,11 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                         'audio_millis':len(pcm)*1000//48000,'transcript':transcript,
                         'passage_match':normalized(transcript)==normalized(fields['passage']),
                         'synthetic_silence_bytes':sent_silence,'hearing':'not_observed','live_conversation_latency':'not_measured'}
+                    # Preserve the fixed failure that caused our close. Closing
+                    # confirms lifecycle/accounting, not a successful audition.
+                    if failure in FAILURES:details['failure_code']=failure
+                    elif not pcm:details['failure_code']='audition-no-audio'
+                    if diagnostic(details):receipt['diagnostic']=diagnostic(details)
                     report({'stage':'session_closed',**receipt})
                     if failure:raise SpeechError(failure)
                     if not pcm:raise SpeechError('audition-no-audio')
@@ -121,10 +157,24 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     with wave.open(output,'wb') as wav:
                         wav.setnchannels(1);wav.setsampwidth(2);wav.setframerate(24000);wav.writeframes(pcm)
                     return output.getvalue(),receipt
-                elif kind in ('error','session.delegation.created'):failure=failure or 'audition-provider-error'
+                elif kind in ('error','session.delegation.created'):
+                    if kind=='error':
+                        error=event.get('error')
+                        if isinstance(error,dict) and error.get('code') in PROVIDER_CODES:
+                            details['provider_error_code']=error['code']
+                    failure=failure or 'audition-provider-error'
             except SpeechError:raise
-            except (ValueError,KeyError,TypeError):failure=failure or 'audition-event-mismatch'
+            except (ValueError,KeyError,TypeError):
+                details.setdefault('mismatch_stage','event_validation')
+                failure=failure or 'audition-event-mismatch'
         raise SpeechError('audition-event-count-bound')
+    except SpeechError as error:
+        # Prefer the observed provider/mismatch/cancellation failure to the
+        # subsequent startup/drain deadline. The attempt remains unconfirmed.
+        code=failure or str(error)
+        if code in FAILURES:details['failure_code']=code
+        raise
     finally:
-        if not closed:report({'stage':'transport_released','finalized':False,'session_id':session})
+        if not closed:report({'stage':'transport_released','finalized':False,'session_id':session,
+                              'diagnostic':diagnostic(details)})
         with suppress(Exception):socket.close(timeout=1)

@@ -754,6 +754,12 @@ print(json.dumps({'text':'Approximate recovered response.','final':True}))
             self.assertTrue((self.root/'caption-called').exists())
             first.send_json({'type':'close'})
             self.assertTrue(self.owner.context_closed.wait(2))
+            # The owner context ACK precedes audio-slot release in cleanup.
+            # Observe that actual release before submitting a successor; keep
+            # the deliberately blocked late caption running throughout.
+            deadline=time.monotonic()+2
+            while self.app.state.voice_active and time.monotonic()<deadline:time.sleep(.005)
+            self.assertFalse(self.app.state.voice_active,'Old audio ownership releases before late-caption completion')
             successor={**self.meta(),'id':str(uuid.uuid4())}
             with self.open() as second:
                 second.send_json(successor);self.assertEqual(second.receive_json()['type'],'ready')

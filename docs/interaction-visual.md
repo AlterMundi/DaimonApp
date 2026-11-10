@@ -66,9 +66,13 @@ remain distinct producer kinds; a camera frame selected more than five seconds
 after its reported capture is refused. This consumer does not install or enable
 a camera/gesture producer.
 
-A new selection must be no older than five minutes and cannot name different
+An attached `selected_image` does not expire while composing or uploading. Keep
+its original timestamps, exact pixels, optional point and source identity; do
+not refresh its times to evade validation. Camera frames and application views
+still require a selection no older than five minutes; future selections beyond
+the existing five-second allowance refuse. Any selection naming different
 selected/image revisions, an unavailable/ambiguous/disconnected view, or absent
-image bytes. The HTTP response asks for a fresh selection and
+image bytes refuses. The HTTP response asks for a fresh selection and
 admits no original. A structured `visual_reselection` response certifies that
 this attempt did not reach original submission. The composer can request a new
 selection; an explicit recording retry can then freeze the same saved clip
@@ -124,3 +128,26 @@ single-image-only executable is not a compatible rollback for that journal.
 Preserve recorded originals rather than rewriting arrays or deleting their history.
 The receiving upgrade retains active writers/goals and reattaches collectors through
 the existing supported route; no global Stop or original replay is authorized.
+
+
+## Shared pending image uploads and interruption recovery
+
+Text and voice preparation share one in-flight upload for the same immutable
+selected PNG and binding. A second caller waits for that request; it does not
+start a duplicate write. The existing20second deadline,2MiB limit, image hashes,
+source identities and frozen destination checks remain unchanged. Another binding
+cannot adopt the pending request. Removing/resetting the selection aborts only
+its request; a late acknowledgement cannot restore a removed selection.
+
+Timeout, network failure and an unreadable acknowledgement retain the selected
+image and draft with an explicit recovery message. No retry or original/work
+submission happens automatically. A later deliberate Send can retry the same
+bytes/hash; confirmed earlier images are reused. A raw PNG retention acknowledgement
+still does not admit native work. HTTP status is checked before decoding JSON,
+so an HTML service error does not become a misleading JSON-parser message.
+
+The user-action fixture covers concurrent text/voice requests, the shared timeout,
+body-read failure, explicit same-byte retry, remove/late-ack cleanup and binding
+changes, alongside existing ordered/point/paste/camera/source preservation. This
+source regression reproduces duplicate concurrent uploads; it does not establish
+that this race caused a particular earlier human network interruption.

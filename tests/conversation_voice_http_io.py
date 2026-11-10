@@ -126,6 +126,10 @@ print(json.dumps({'text':item['text'],'final':True}))
         silent=audio(silence=True);register(silent,'Never use hallucinated silence')
         silent_id,r=upload(silent);assert r.status_code==200
         j.wait(lambda:status(silent_id)['phase']=='preparation_unconfirmed');assert len(calls())==1 and len(j.packets)==2
+        assert 'voice_failure' not in status(silent_id),'Diagnostics belong in the existing technical trace only'
+        trace=client.get('/api/interaction/inputs/'+silent_id+'/trace',headers=headers)
+        assert trace.status_code==200,trace.text
+        assert trace.json()['voice_failure']=={'stage':'audio_signal','interrupted':False,'completed_only':False}
         # Failed originals recover only already completed text, preserving order/identity.
         recovery_data=audio(610);recovery_digest=register(recovery_data,'Recovered original')
         transcripts[recovery_digest]['fail']=True
@@ -493,7 +497,7 @@ print(json.dumps({'text':'Keep this exact protected requirement.','final':True})
         refused=str(uuid.uuid4())
         full=client.post('/api/interaction/voice',content=data,
             headers={**voice_headers,'x-input-id':refused})
-        assert full.status_code==503,full.text
+        assert full.status_code==507,full.text
         assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(refused,))==[(0,)]
         assert not (path.parent/refused).exists() and path.read_bytes()==data
         for filler in fillers:filler.unlink()  # Only these test-owned placeholders.

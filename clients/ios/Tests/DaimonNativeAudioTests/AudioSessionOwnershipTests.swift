@@ -80,4 +80,34 @@ final class AudioSessionOwnershipTests: XCTestCase {
         session.cancelOwned(); XCTAssertEqual(device.stops,2)
     }
 
+    @MainActor func testCaptureSpeechAndBeaconShareOneFrozenSessionWithoutDroppingCapture() async throws {
+        let device = SessionFixture(), session = AudioSessionOwnership(device:device,supportsCapture:true)
+        let capture = UUID(), speech = UUID(), beacon = UUID()
+        try session.acquire(capture,mode:.duplexVoice,cancelled:{})
+        try session.acquire(speech,mode:session.mode ?? .spokenOutput,cancelled:{})
+        try session.acquire(beacon,mode:session.mode ?? .spokenOutput,cancelled:{})
+        XCTAssertEqual(session.count,3); XCTAssertEqual(device.modes,[.duplexVoice])
+        XCTAssertThrowsError(try session.acquire(UUID(),mode:.duplexVoice,cancelled:{}))
+        session.release(speech); session.release(beacon); session.release(UUID())
+        XCTAssertEqual(session.count,1); XCTAssertEqual(device.stops,0)
+        XCTAssertEqual(session.mode,.duplexVoice)
+        device.failStop = true
+        XCTAssertFalse(session.release(capture)); XCTAssertEqual(session.unconfirmedRelease,capture)
+        XCTAssertThrowsError(try session.acquire(UUID(),mode:.duplexVoice,cancelled:{}))
+        XCTAssertEqual(device.starts,1); XCTAssertEqual(device.stops,1)
+        device.failStop = false; XCTAssertTrue(session.recoverRelease(capture))
+    }
+
+    @MainActor func testThirdHolderCapacityCannotSwitchActiveSpokenGraphToCapture() async throws {
+        let device = SessionFixture(), session = AudioSessionOwnership(device:device,supportsCapture:true)
+        let speech = UUID(), beacon = UUID(), capture = UUID()
+        try session.acquire(speech,cancelled:{}); try session.acquire(beacon,cancelled:{})
+        XCTAssertThrowsError(try session.acquire(capture,mode:.duplexVoice,cancelled:{}))
+        XCTAssertEqual(session.count,2); XCTAssertEqual(device.modes,[.spokenOutput])
+        session.release(speech)
+        XCTAssertThrowsError(try session.acquire(capture,mode:.duplexVoice,cancelled:{}))
+        session.release(beacon); try session.acquire(capture,mode:.duplexVoice,cancelled:{})
+        XCTAssertEqual(device.modes,[.spokenOutput,.duplexVoice]); session.release(capture)
+    }
+
 }
