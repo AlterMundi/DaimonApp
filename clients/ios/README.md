@@ -403,8 +403,8 @@ The combined fixture reserves capture without requesting a microphone, then play
 Beacon and PCM concurrently, checks stale/fresh Beacon controls and capture
 ownership across PCM idle, and ends its own resources. Foundation regressions
 cover three-holder coexistence, frozen mode, exact release and unknown final
-deactivation. Node capture races and local fixture syntax checks passed; the
-combined Swift/SDK/simulator result is pending. Earlier separate capture and
+deactivation. Combined Swift/SDK and Node checks passed; simulator app execution
+remains unqualified (terminal outcomes below). Earlier separate capture and
 Beacon qualification does not establish qualification of this composition, actual
 microphone input or physical device/hearing acceptance. Source delivery follows
 Nicolas's direction to integrate prepared work; no new independent review is
@@ -428,3 +428,14 @@ process exit without masking the original journey failure or retrying a signal.
 Three synthetic regressions cover unknown signal/exit, acknowledgment without
 exit and already-exited ownership. Simulator deadlines, single launch, normal
 TLS/capability policy and runtime audio code remain unchanged.
+
+PR728 source68ec4e61 integrated asb1478e10 on10November. Behavior/fixture/workflow
+bytes match08fa2267; the final source-only delta refreshes the roadmap pointer.
+Main42783379023 passed; native42783379080 passed36Swift cases, three cleanup
+cases, Node capture races and both SDK builds/helper absence. The simulator booted
+but installation90s and exact installed-app lookup15s were unconfirmed, before
+any app launch or audio receipt. Shutdown/delete and fixture server exit were
+confirmed. No install/launch was repeated or deadline expanded. Normal flags stay
+off; integration does not activate, sign, distribute or establish physical
+microphone/device/hearing acceptance. Master qualification is automatic and its
+result is tracked separately in the receiving cockpit; no manual rerun.

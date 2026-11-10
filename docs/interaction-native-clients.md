@@ -526,3 +526,11 @@ state none must be observed before holder release. Preserve permission prompts,
 600second stop request, unknown cleanup, no automatic resume and disabled native
 capabilities. Source/SDK/bridge-session simulation is not actual microphone,
 account, device or hearing acceptance. See clients/ios/README.md for exact scope.
+
+PR728 is source-integrated atb1478e10. Capture, speech and Beacon share frozen
+duplex mode with one capture and at most two outputs. Exact combined core/SDK
+checks passed; simulator installation remained unconfirmed before any app/audio
+receipt. Normal native capabilities stay off. Signing/distribution, actual
+microphone/permission/routes and physical device/hearing acceptance remain open;
+source integration is not a device rollout. Current outcomes are in the receiving
+cockpit; earlier preparation/review observations retain their dates.
