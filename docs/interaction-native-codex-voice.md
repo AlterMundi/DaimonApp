@@ -1505,3 +1505,11 @@ state and covers device removal before/after transport renewal, stale callbacks,
 listener cleanup, original retention and no automatic provider admission. This
 is device-loss handling, not evidence of the cause of previous phone cutoffs or
 physical-phone stability/hearing acceptance.
+
+Public Live exposes the existing `reconnecting` view state during same-call ICE
+disconnection and scheduled renewal. An active retained microphone does not prove
+the transport is listening. Connected recovery clears that state; terminal cleanup
+clears it so the existing explicit reconnect control can return. This is a
+presentation signal only: no ICE restart, provider call, capture permission,
+renewal authorization or original replay is added. Physical sustained voice and
+hearing acceptance remain separate.
