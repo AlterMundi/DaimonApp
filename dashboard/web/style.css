@@ -1445,6 +1445,10 @@ html[data-style-policy="authored"] .session-rail {--session-actions-width:182px;
 html[data-style-policy="authored"] .session-rail-header {grid-template-columns:minmax(0,1fr) var(--session-actions-width);}
 @media(max-width:600px) {html[data-style-policy="authored"] .session-rail {--session-actions-width:194px;}}
 /* A selected reply occupies its own row, above the full-width writing field. */
+html[data-style-policy="authored"] .standalone-conversation #conversation-focus {flex-wrap:nowrap;min-width:0;gap:8px;margin-bottom:0;padding:0 0 0 8px;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-focus-label {min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-focus-clear {flex:none;display:inline-grid;place-items:center;width:44px;min-height:44px;padding:0;font-size:0;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-focus-clear::before {content:"×";font-size:24px;line-height:1;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(>#conversation-focus:not([hidden])) #conversation-message {grid-row:3;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(>#conversation-focus:not([hidden])) :is(#conversation-visual,#conversation-voice,#conversation-send) {grid-row:4;}
 
