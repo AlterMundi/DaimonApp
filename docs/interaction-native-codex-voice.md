@@ -1488,3 +1488,20 @@ and [graceful-close sequence](https://developers.openai.com/api/docs/guides/live
 Keep the receiver alive for session.closed and its final usage. Do not weaken
 source-seal, context, authorization, single-successor or uncertain-write barriers
 and do not replay pending work to repair transport closure.
+
+### Removed microphone during public voice
+
+The public client observes `ended` on its selected audio tracks. Device removal
+closes the existing voice transport through the existing `capture_unavailable`
+path, retains the captured prefix and requests final usage; it never opens a
+replacement microphone/session automatically. This device fence spans physical
+transport renewals and is removed before Stop releases the tracks. Already-ended
+permission results cannot enter Listening, and stale device events cannot close
+a later logical visit. Temporary mute and recoverable ICE disconnection keep
+their existing behavior.
+
+The mounted synthetic lifecycle suite reproduces the previous false Listening
+state and covers device removal before/after transport renewal, stale callbacks,
+listener cleanup, original retention and no automatic provider admission. This
+is device-loss handling, not evidence of the cause of previous phone cutoffs or
+physical-phone stability/hearing acceptance.
