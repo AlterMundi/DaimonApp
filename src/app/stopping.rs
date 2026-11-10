@@ -45,6 +45,9 @@ pub(super) async fn command(
             .store
             .thread_control_notices(human, native, after);
     }
+    if let Some(selected) = args.strip_prefix("workflow ") {
+        return workflows::owner_command(app, human, selected).await;
+    }
     if let Some(selected) = args.strip_prefix("heartbeat ") {
         return heartbeat::owner(app, human, selected).await;
     }
