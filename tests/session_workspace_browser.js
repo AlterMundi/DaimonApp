@@ -111,6 +111,7 @@ const server=http.createServer(async(req,res)=>{
  let body=fs.readFileSync(file);
  if(name==='index.html')body=body.toString().replace('<html lang="en">','<html lang="en" data-shared-auth="true"'+(authoredCase?' data-style-policy="authored"':'')+'>').replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>','');
  if(name==='index.html'&&appearanceCase)body=body.toString().replace('</head>','<style>:root{--dm-background:#ffffff;--dm-surface:#ffffff;--dm-text:#111111;--dm-accent:#176241}</style></head>');
+ if(name==='index.html'&&hudCase)body=body.toString().replace('<div id="client-build" hidden></div>','<div id="client-build" aria-label="Client version fixture">ui <code>fixture-version</code></div>');
  res.writeHead(200,{'content-type':(name.endsWith('.js')||name.endsWith('.mjs'))?'application/javascript':name.endsWith('.json')?'application/json':name.endsWith('.ttf')?'font/ttf':name.endsWith('.css')?'text/css':name.endsWith('.woff2')?'font/woff2':'text/html'});res.end(body);
  }catch(error){errors.push(String(error));res.writeHead(500);res.end('Fixture error');}
 });
@@ -366,6 +367,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  }
  if(hudCase){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
+  assert.equal(await page.locator('#client-build').isVisible(),false,'Build diagnostics stay out of the ordinary conversation');
   await page.evaluate(()=>clearInterval(timer));
   await page.locator('#conversation-message').fill('Explore this idea together.');
   await page.waitForFunction(()=>typeof hudRecovery==='function');
@@ -420,7 +422,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    if(width===375&&height===812){
     const inspect=page.getByRole('button',{name:'Under the hood',exact:true});
     await inspect.click();assert(await page.getByRole('region',{name:'Under the hood',exact:true}).isVisible());
+    assert(await page.locator('#client-build').isVisible(),'Client version remains available in the explicit technical area');
     await page.screenshot({path:path.join(output,'hud-inspector.png')});await inspect.click();
+    assert.equal(await page.locator('#client-build').isVisible(),false,'Closing technical details removes build diagnostics from view');
     await page.getByRole('button',{name:/^Open alerts/}).click();
     const alerts=await page.locator('#operations').boundingBox();
     assert(alerts&&alerts.x>=0&&alerts.x+alerts.width<=width&&alerts.y+alerts.height<=height,'Alerts panel fits the phone');
