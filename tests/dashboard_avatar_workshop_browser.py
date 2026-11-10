@@ -87,6 +87,7 @@ def qualify():
         thread=threading.Thread(target=lambda:asyncio.run(server.serve(sockets=[sock])),daemon=True);thread.start()
         try:
             subprocess.run(['node',str(Path(__file__).with_suffix('.js')),origin],check=True,timeout=120)
+            subprocess.run(['node',str(Path(__file__).with_name('dashboard_avatar_import_capabilities_browser.cjs'))],check=True,timeout=120)
             if mission_host:
                 from contextlib import closing
                 with closing(Ledger(mission_host.state)) as checked:

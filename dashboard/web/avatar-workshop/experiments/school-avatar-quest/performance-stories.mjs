@@ -1,11 +1,11 @@
 import {objectPoint} from './interaction-geometry.mjs';
 // The remaining hand-object stories share the same clock, acting cues and anatomy.
-import {performanceAnatomy,ease} from './performances.mjs';
+import {performanceAnatomyFor,ease} from './performances.mjs';
 import {resolvePropColor} from './props.mjs';
 const mix=(a,b,t)=>a+(b-a)*t;
 const along=(points,p)=>{for(let i=1;i<points.length;i++)if(p<=points[i][0]){const t=ease((p-points[i-1][0])/(points[i][0]-points[i-1][0]));return [mix(points[i-1][1][0],points[i][1][0],t),mix(points[i-1][1][1],points[i][1][1],t)];}return points.at(-1)[1];};
 export function prepareStory(design,prop,state,frame){
- const a=performanceAnatomy[design.body],side=prop.side==='left'?-1:1,bob=Math.sin(frame/12*Math.PI*2)*3,hand=[side<0?576-a.hand[0]:a.hand[0],a.hand[1]],eye=[288+side*a.eye[0],a.eye[1]+bob],nose=[a.nose[0],a.nose[1]+bob],p=state.p;
+ const a=performanceAnatomyFor(design,frame,design.gestures.find(g=>g.id===design.activeGestureId)?.cue,prop.side==='left'?-1:1),side=prop.side==='left'?-1:1,bob=Math.sin(frame/12*Math.PI*2)*3,hand=[side<0?576-a.hand[0]:a.hand[0],a.hand[1]],eye=[288+side*a.eye[0],a.eye[1]+bob],nose=[a.nose[0],a.nose[1]+bob],p=state.p;
  const story={side,hand,eye,nose};
  if(prop.id==='book'){
   story.book=[mix(hand[0],288+side*17,state.open),mix(hand[1],nose[1]+84,state.open)];

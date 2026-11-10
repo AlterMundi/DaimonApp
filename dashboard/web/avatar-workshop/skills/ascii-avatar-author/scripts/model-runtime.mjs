@@ -20,14 +20,26 @@ export function validateAvatarModel(input){
  const animations={};for(const [cue,tracks] of Object.entries(input.animations||{})){if(!cues.includes(cue)||!Array.isArray(tracks)||tracks.length>128)fail();const targets=new Set();animations[cue]=tracks.map(t=>{if(!byId.has(t.node)||!channels.includes(t.channel)||!Array.isArray(t.frames)||t.frames.length!==12||targets.has(t.node+':'+t.channel))fail();targets.add(t.node+':'+t.channel);return {node:t.node,channel:t.channel,frames:t.frames.map(v=>finite(v,t.channel.startsWith('scale')?.1:t.channel==='rotate'?-.7:-60,t.channel.startsWith('scale')?2:t.channel==='rotate'?.7:60))};});}
  for(const cue of expressionIds)if(!animations[cue]?.length)fail();
  const anchors={};for(const [k,v] of Object.entries(input.anchors||{})){if(!['rightHand','leftHand','compact'].includes(k)||!Array.isArray(v)||v.length!==(k==='compact'?4:2))fail();anchors[k]=v.map(x=>finite(x,0,720));if(k==='compact'&&(v[2]<100||v[3]<100||v[0]+v[2]>576||v[1]+v[3]>720))fail();}
- return {schema:input.schema,id:input.id,name:input.name,nodes,animations,anchors,...(layered?{atlas}:{})};
+ const optional={};
+ if(input.interaction!==undefined){
+  const a=input.interaction;if(!a||typeof a!=='object')fail();const points={};
+  for(const key of ['leftEye','rightEye','nose','landing']){const v=a[key];if(!Array.isArray(v)||v.length!==2)fail();points[key]=[finite(v[0],0,576),finite(v[1],0,720)];}
+  if(!anchors.leftHand||!anchors.rightHand)fail();
+  optional.interaction={...points,headHalfWidth:finite(a.headHalfWidth,10,240)};
+ }
+ if(input.appearance!==undefined){
+  const a=input.appearance;if(!a||typeof a.primary!=='string'||!Array.isArray(a.colors)||!a.colors.length||a.colors.length>256)fail();
+  optional.appearance={primary:color(a.primary),colors:[...new Set(a.colors.map(color))]};
+  if(!optional.appearance.primary||optional.appearance.colors.some(v=>v===null)||!optional.appearance.colors.includes(optional.appearance.primary))fail();
+ }
+ return {schema:input.schema,id:input.id,name:input.name,nodes,animations,anchors,...(layered?{atlas}:{}),...optional};
 }
 // An inert node named anchor-leftHand/anchor-rightHand explicitly attaches the
 // existing rest-space anchor to its hierarchy. Models without that node retain
 // their original static anchors; no schema or saved normalization changes.
 export function resolveAvatarModelAnchors(model,frame=0,cue='calm'){
- const anchors={...model.anchors},map=new Map(model.nodes.map(n=>[n.id,n])),f=((frame%12)+12)%12,tracks=model.animations[cue]||model.animations.calm||[];
- for(const key of ['leftHand','rightHand']){
+ const anchors={...model.anchors,...(model.interaction?Object.fromEntries(Object.entries(model.interaction).filter(([k])=>k!=='headHalfWidth')):{})},map=new Map(model.nodes.map(n=>[n.id,n])),f=((frame%12)+12)%12,tracks=model.animations[cue]||model.animations.calm||[];
+ for(const key of Object.keys(anchors).filter(k=>k!=='compact')){
   let node=map.get('anchor-'+key);if(!node||!anchors[key])continue;
   let [x,y]=anchors[key];
   while(node){
@@ -39,7 +51,8 @@ export function resolveAvatarModelAnchors(model,frame=0,cue='calm'){
  }
  return anchors;
 }
-export function renderAvatarModel(model,frame=0,cue='calm',speechLevel=0){
+export function renderAvatarModel(model,frame=0,cue='calm',speechLevel=0,primary=null){
+ model=recolorAvatarModel(model,primary);
  const level=Number.isFinite(speechLevel)?Math.round(Math.min(1,Math.max(0,speechLevel))*4)/4:0;
  const canvas=document.createElement('canvas');canvas.width=576;canvas.height=720;const c=canvas.getContext('2d'),f=((frame%12)+12)%12,tracks=model.animations[cue]||model.animations.calm||[],map=new Map(model.nodes.map(n=>[n.id,n]));
  const transforms=node=>{if(node.parent)transforms(map.get(node.parent));const values={x:0,y:0,rotate:0,scaleX:1,scaleY:1};for(const t of tracks)if(t.node===node.id)values[t.channel]=t.frames[f];if(node.id==='anchor-mouth'&&node.type==='path'&&!node.fill&&!node.stroke){values.y+=12*level;values.rotate+=.035*level;}const [x,y]=node.pivot;c.translate(x+values.x,y+values.y);c.rotate(values.rotate);c.scale(values.scaleX,values.scaleY);c.translate(-x,-y);};
@@ -53,4 +66,18 @@ function rasterAtlas(model){
  const c=canvas.getContext('2d'),image=c.createImageData(a.width,a.height),palette=a.palette.map(v=>[1,3,5,7].map(i=>parseInt(v.slice(i,i+2),16)));
  for(let i=0;i<bytes.length;i++)image.data.set(palette[bytes.charCodeAt(i)],i*4);
  c.putImageData(image,0,0);atlasCache.set(model,canvas);return canvas;
+}
+
+// Recolor only explicitly authored material swatches; never tint the whole actor.
+const colorCache=new WeakMap();
+export function recolorAvatarModel(model,primary){
+ if(!model.appearance||!primary||primary.toLowerCase()===model.appearance.primary.toLowerCase())return model;
+ if(!/^#[0-9a-f]{6}$/i.test(primary))throw Error('Invalid model color');
+ let cache=colorCache.get(model);if(!cache){cache=new Map();colorCache.set(model,cache);}if(cache.has(primary))return cache.get(primary);
+ const rgb=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)),lum=h=>rgb(h).reduce((n,v,i)=>n+v*[.2126,.7152,.0722][i],0),base=lum(model.appearance.primary),chosen=new Set(model.appearance.colors.map(c=>c.toLowerCase()));
+ const color=c=>{if(typeof c!=='string'||!chosen.has(c.slice(0,7).toLowerCase()))return c;const l=lum(c),light=l>=base,amount=light?(l-base)/Math.max(1,255-base):(base-l)/Math.max(1,base);return '#'+rgb(primary).map(v=>Math.round(v+((light?255:0)-v)*amount).toString(16).padStart(2,'0')).join('')+c.slice(7);};
+ const paint=p=>p&&typeof p==='object'?{...p,stops:p.stops.map(([at,c])=>[at,color(c)])}:color(p);
+ const geometry=n=>({...n,...(n.fill!==undefined?{fill:paint(n.fill)}:{}),...(n.stroke!==undefined?{stroke:color(n.stroke)}:{})});
+ const result={...model,nodes:model.nodes.map(n=>({...geometry(n),...(n.poses?{poses:Object.fromEntries(Object.entries(n.poses).map(([cue,p])=>[cue,geometry(p)]))}:{})})),...(model.atlas?{atlas:{...model.atlas,palette:model.atlas.palette.map(color)}}:{})};
+ cache.set(primary,result);if(cache.size>8)cache.delete(cache.keys().next().value);return result;
 }

@@ -1,3 +1,4 @@
+import {resolveAvatarModelAnchors} from '../../skills/ascii-avatar-author/scripts/model-runtime.mjs';
 // Authored accessory acting vocabulary, not observed emotion or agent activity.
 export const performanceVersion='accessory/v1';
 export const interactiveProps=['magnifier','flower','firefly-lantern','book','paintbrush','watering-can','flashlight','pillow'];
@@ -21,8 +22,8 @@ export const actingMoods={
  welcome:{energy:.6,look:3,tilt:.03,hesitate:0,delay:.03,eye:.1},
 };
 export function performanceFor(design,g){
- if(g?.performance!==performanceVersion||design.image||design.avatarModel||!performanceAnatomy[design.body])return null;
- if(design.characterStyle!=='surface/v2'&&!(design.characterStyle==='surface/v1'&&['pocket-dragon','modular-bot'].includes(design.body)))return null;
+ if(g?.performance!==performanceVersion||design.image||!(design.avatarModel?.interaction||performanceAnatomy[design.body]))return null;
+ if(!design.avatarModel&&design.characterStyle!=='surface/v2'&&!(design.characterStyle==='surface/v1'&&['pocket-dragon','modular-bot'].includes(design.body)))return null;
  return (g.props||[]).find(p=>interactiveProps.includes(p.id))||(g.cue==='sleep'?{id:'sleep',color:'gold',side:'right',size:1}:null);
 }
 export function playbackSpec(design,g){return performanceFor(design,g)?{frames:48,frameMs:95/Math.pow(g.tempo||1,.35)}:{frames:12,frameMs:160/(g?.tempo||1)};}
@@ -61,4 +62,10 @@ export function performanceState(id,cue,frame=0){
   state.actor.scaleY=1+state.breathe*.006;
  }
  return state;
+}
+
+export function performanceAnatomyFor(design,frame=0,cue='calm',side=1){
+ if(!design.avatarModel)return performanceAnatomy[design.body];
+ const m=design.avatarModel,a=resolveAvatarModelAnchors(m,frame,cue),eye=a[side<0?'leftEye':'rightEye'],hand=a[side<0?'leftHand':'rightHand'];
+ return {eye:[(eye[0]-288)*side,eye[1]-Math.sin(frame/12*Math.PI*2)*3],hand:[side<0?576-hand[0]:hand[0],hand[1]],nose:[a.nose[0],a.nose[1]-Math.sin(frame/12*Math.PI*2)*3],landing:[a.landing[0],a.landing[1]-Math.sin(frame/12*Math.PI*2)*3],headHalfWidth:m.interaction.headHalfWidth};
 }
