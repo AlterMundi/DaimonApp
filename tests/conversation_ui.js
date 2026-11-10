@@ -1058,10 +1058,14 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>skipping.audioCalls.length===2&&!skipPlayer.paused&&!skipPlayer.muted);
   const skipCard=skipping.nodes.get('#conversation-timeline').children.find(card=>card.dataset.sourceId==='native:9');
   const skipButton=skipCard.children[3].children[1];assert.equal(skipButton.textContent,'Skip');
-  await skipButton.handlers.click();await until(()=>skipping.audioCalls.some(call=>call.source==='native:10')&&!skipPlayer.paused);
+  await skipButton.handlers.click();await until(()=>skipping.audioCalls.some(call=>call.source==='native:10')&&!skipPlayer.paused&&!skipPlayer.muted);
   assert.equal(skipping.audioCalls.filter(call=>call.source==='native:9').length,2,'Already prepared continuation is cancelled rather than played or retried');
   assert.equal(skipButton.textContent,'Resume audio','Skip preserves the actual heard cursor for a later explicit resume');
-  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();
+  await skipping.ui.refresh();
+  // Muted autoplay unlock can be running while the current source is verifying.
+  // Emit ended only after the selected reply has confirmed playback.
+  await until(()=>!skipPlayer.paused&&!skipPlayer.muted&&skipping.mediaSession.playbackState==='playing');
+  skipPlayer.ended=true;await skipPlayer.handlers.ended();
   // Refresh/ended may still be preparing the owned next source. Fire only once
   // its silence timer exists, or continue if its next segment is already ready.
   await until(()=>skipping.clock.pending().includes(450)||skipping.audioCalls.some(call=>call.source==='native:11'));
