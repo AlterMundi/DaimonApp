@@ -351,6 +351,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   for(const [width,height] of [[390,430],[320,450],[390,844],[1280,800]]){
    await page.setViewportSize({width,height});await draft.focus();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
    const context=await focus.boundingBox(),input=await draft.boundingBox(),send=await page.locator('#conversation-send').boundingBox();
+   assert(context.height<=48,'Reply context keeps a single touch-sized row above the writing field');
    assert(context.y+context.height<=input.y+1,'Reply context must end above the writing field');
    assert(input.y+input.height<=send.y+1,'Writing field must end above composer actions: '+JSON.stringify({context,input,send}));
    assert(input.x>=0&&input.x+input.width<=width&&send.y+send.height<=height,'Composer stays inside the keyboard-sized viewport: '+JSON.stringify({width,height,input,send}));

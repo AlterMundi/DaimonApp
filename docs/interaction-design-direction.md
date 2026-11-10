@@ -70,6 +70,11 @@ Project artifacts remain content in existing viewers, with their own revisions.
 
 ## Composition and behavior
 
+A selected reply uses one touch-sized context row above the writing field. Keep
+the destination label, an accessible Back to conversation control and the draft
+independent; the context must not consume two rows on a keyboard-sized screen.
+
+
 - Begin with the mobile conversation: compact identity/Apps header, useful central
   content and a stable reachable composer. Reflow for desktop; keep the same actions.
 - Give the current material and next useful action visual priority. Use compact
