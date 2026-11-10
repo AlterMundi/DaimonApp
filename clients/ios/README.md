@@ -315,3 +315,21 @@ concrete qualification and does not claim an independent boundary review occurre
 Normal capabilities stay OFF, and there is no signing, installation, production
 activation or device/hearing acceptance. Keep the exact origin/frame/document,
 retired owner, finite-buffer/deadline and lifecycle boundaries above.
+
+### Composed-source observation —10 November 2026
+
+NativeCI42775240916 on a305ad4 passed the Swift suite, both SDK builds and normal
+fixture-helper absence. The new simulator installed in47.05s, but its single
+launch acknowledgment timed out at90s. The additional65s observation yielded no
+terminal page/native result, no loopback page request and no application log;
+container read and termination remained unconfirmed. Shutdown and deletion were
+acknowledged and the fixture server stopped. No launch was repeated. Cause is
+unknown; this is not a new Beacon/audio pass or a diagnosed code failure.
+
+The prior successful runtime42393667849 remains the behavioral qualification of
+these exact25 executable/fixture/workflow/shared-adapter files. The canonical
+lineage alignment and this outcome record change no such bytes, so no additional
+simulator launch is requested for them. Preserve both outcomes, ordinary capability
+OFF and all physical/account/signing/distribution gaps. General checks on a305ad4
+passed scope, routing, speech, dashboard and Matrix execution; its text job was
+still running when this record was written and is not described as green.
