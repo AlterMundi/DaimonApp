@@ -4,6 +4,18 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Unconfirmed native handoff does not end current speech
+
+After original retention, source sealing and semantic-context synchronization,
+the native work adapter can retain an exact intent without confirming its reply.
+That `unconfirmed` outcome keeps the current GPT-Live conversation active and
+emits a plain-language notice. The existing pipeline receipt excludes another
+submission of that intent. Explicit Stop and confirmed physical renewal remain
+available; neither recreates the work. Source-window, context-synchronization,
+owner/capture and unexpected preparation failures retain their owned close
+protocol. This isolation does not diagnose historical phone failures, change
+native account limits or establish phone/hearing acceptance.
+
 ## Finishing a retained full checkpoint reader
 
 A closed reconnect can leave an older, partly paged full reader after its native

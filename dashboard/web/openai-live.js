@@ -275,6 +275,7 @@ window.PublicLiveConversation=(()=>{
               onItem({visit,item:value.event,public_live:true});
             }
             else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · work results need review.');
+            else if(value.type==='notice'&&value.code==='native_handoff_unconfirmed')state('Voice connected · I couldn’t confirm that task was received.');
             else if(value.type==='source_seal_requested')void sealSource(value,sourceReady).catch(error=>{
               if(owned===epoch&&!closing)void hold('Voice source could not be confirmed. Your original audio is kept.',sourceReasons.has(error?.sourceReason)?error.sourceReason:'source_unconfirmed');
             });
