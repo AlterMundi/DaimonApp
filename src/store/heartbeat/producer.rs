@@ -572,14 +572,19 @@ fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()>
         let Some(execution) = executions::load(conn, local)? else {
             continue;
         };
-        if execution["phase"] != "terminal"
-            || execution["physical"] != physical
+        if !matches!(
+            execution["phase"].as_str(),
+            Some("terminal" | "transferred")
+        ) || execution["physical"] != physical
             || execution["native"] != p.native
             || execution["source"] != r.id
             || execution["generation"].as_u64() != r.attention_generation
         {
             continue;
         }
+        // External input transfers cancellation ownership, not the original
+        // physical turn's lifetime. Its exact terminal receipt can settle this
+        // old attention without reviewing it or touching the human successor.
         let phase = match execution["terminal_status"].as_str() {
             Some("failed") => "attention_failed",
             Some("interrupted") => "attention_interrupted",
@@ -1475,7 +1480,14 @@ mod inbox_tests {
     }
     #[test]
     fn terminal_outcomes_unblock_only_new_originals_without_inventing_review() {
-        for terminal in ["failed", "interrupted", "completed"] {
+        for (ownership, terminal) in [
+            ("terminal", "failed"),
+            ("terminal", "interrupted"),
+            ("terminal", "completed"),
+            ("transferred", "failed"),
+            ("transferred", "interrupted"),
+            ("transferred", "completed"),
+        ] {
             let (_file, store, entry, source) = setup();
             let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
             let selected = selection(&store, entry, &source);
@@ -1495,7 +1507,7 @@ mod inbox_tests {
                 returned.phase = "accepted".into();
                 returned.local = Some(700);
                 returned.native_turn = Some("proved-physical".into());
-                proof = json!({"phase":"terminal","physical":"proved-physical",
+                proof = json!({"phase":ownership,"physical":"proved-physical",
                     "native":parent.native,"source":dispatch.id,
                     "generation":returned.attention_generation,"terminal_status":terminal});
                 save(&conn, &parent).unwrap();
