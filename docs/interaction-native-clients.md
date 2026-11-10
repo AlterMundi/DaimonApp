@@ -47,9 +47,10 @@ admission→explicit capture, exact ordered bytes/hash, no upload on Add, draft
 preservation and access/ACK fences. Native parser/Activity recreation tests cover
 ordered8URI references and no URI leak in the page offer; an additional actual App WebView/chooser/ContentResolver test now checks two
 ordered synthetic originals through the real injected adapter and existing
-chooser, with network blocked and no Send. Final Android build/lint/emulator
-and real phone Sharesheet/byte-read acceptance remain required.
-This source is not installed/released. No new native stream-copy/cache is needed
+chooser, with network blocked and no Send. This records initial source
+preparation; the qualified APK0.9 publication below supersedes its earlier
+build/lint/emulator and publication status. Phone installation and actual
+Sharesheet/byte-read acceptance remain unobserved. No new native stream-copy/cache is needed
 for the supported picker route. Preserve all other voice/background/Beacon/iOS
 requirements and their acceptance gaps.
 
@@ -157,10 +158,10 @@ native background closure. The separate-UID music probe also verified that
 speech completion cannot release Beacon's retained focus. These are synthetic
 score/device observations, with no microphone, provider call or hearing claim.
 
-APK0.8 now advertises the qualified native branch. Exact final-source CI, signing
-and receiving delivery remain required; until selected, served clients and
-signed APK0.7 remain unchanged. Physical phone/hearing, background voice and the
-complete original goal remain separate.
+APK0.8 introduced the qualified native branch. The later same-key APK0.9
+publication above includes it; the earlier APK0.7 serving state is historical,
+not the current download. Publication does not establish phone installation,
+physical hearing, background voice or completion of the original goal.
 
 ## Public Live native output candidate0.7 —7November2026
 
@@ -487,18 +488,21 @@ Normal device packaging/signing, real account, duplex/progressive/background,
 Beacon bridge and physical iPhone/music/hearing acceptance remain open. No iOS
 distribution is claimed.
 
-1. Build/sign/install the pilot; qualify shared login, complete text/voice input,
-   reply/source binding, copy/files, native speech and music recovery on Android.
-2. Implement progressive native speech and a single Android media service/session
-   for deliberate background playback, notification/headset controls and route
-   changes. Preserve visible audio enable, pause, Mute/Solo, heard position and
+1. Install the existing same-key Android0.9 download without clearing data, then
+   qualify shared login, text/voice input, reply/source binding, copy/files,
+   native speech and music recovery. Reuse its completed build/signing evidence.
+2. Qualify the implemented progressive native speech and single Android media
+   service/session on the phone: background playback, notification/headset controls
+   and route changes. Preserve audio enable, pause, Mute/Solo, heard position and
    prompt recovery. Do not change ownership midway through a spoken segment.
-3. Move Beacon composition/mixing into the native audio graph, retaining the
-  40.4Hz sine vocabulary and gentle envelopes. Add selected filters through an
-   explicit bounded graph; no new synthesis palette or hidden recording.
-4. Implement the equivalent client driver on iOS using its native audio session
-   and graph. Share conversation/protocol behavior, not Android APIs or assumed
-   entitlement/signing. iOS delivery is unqualified until built and received.
+3. Qualify the implemented native Beacon composition/mixing on the phone,
+   retaining the40.4Hz sine vocabulary and gentle envelopes. Any separately
+   selected filter work still needs its explicit bounded graph; do not infer a
+   new synthesis palette, couple ordinary speech filters or add hidden recording.
+4. Finish iOS packaging/signing and actual account/capture/device qualification
+   of the prepared native driver/graph. Share the conversation protocol, not
+   Android APIs or assumed entitlements. Keep normal native capabilities off;
+   simulator/source evidence is not physical receiving acceptance.
 
 Device acceptance covers music already playing, end of reply, multipart speech,
 waiting for a later result, user pause/resume/stop, error, independent music pause,
