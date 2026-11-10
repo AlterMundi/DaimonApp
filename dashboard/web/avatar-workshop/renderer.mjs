@@ -5,11 +5,11 @@ installSurfaceRenderer(surfaceFrame,surfaceScene);
 // Same articulated masters/glyph conversion as the workshop. This is an
 // authored artistic cue, never a translation of microphone or agent state.
 export function prepare(canvas,raw){
- const design=validate(raw),savedGesture=design.activeGestureId,compact=canvas.getBoundingClientRect().width<320;
- const first=drawFrame(design,0,true,compact);
+ const design=validate(raw),savedGesture=design.activeGestureId,compact=()=>canvas.getBoundingClientRect().width<320&&!canvas.closest('.voice-mode-portrait');
+ const first=drawFrame(design,0,true,compact());
  if(!first||!first.text)throw Error('Avatar drawing unavailable');
  paintAscii(canvas,first,design,0);
- const paint=frame=>paintAscii(canvas,drawFrame(design,frame,true,canvas.getBoundingClientRect().width<320),design,frame);
+ const paint=frame=>paintAscii(canvas,drawFrame(design,frame,true,compact()),design,frame);
  const cadence=()=>{const spec=animationSpec(design);Object.assign(paint,{frames:spec.frames,frameMs:spec.frames===12?180:spec.frameMs});};
  // Optional inert anchor keeps live playback motion separate from authored cues.
  // The normalized design is a transient clone; no saved model or pose is edited.

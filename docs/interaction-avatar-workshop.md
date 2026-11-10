@@ -327,6 +327,22 @@ no provider. These source changes are not receiving-deployed or human accepted
 merely because local tests pass. Preserve the dated receiving selection above.
 School/Oca evidence integration remains owned by the school's pending contract.
 
+## Full figure in narrow voice mode
+
+The saved model's compact head anchor belongs to the header and compact previews.
+Moving the same canvas into fullscreen Avatar uses the complete figure at every
+viewport width; the existing ASCII painter fits that figure to both dimensions.
+Returning to the conversation restores the compact presentation without editing
+saved poses, atlas, anchors or selection. The renderer decides from its current
+presentation container on every repaint, including resize and physical handover.
+
+The actual Canvas regression compares a model with a foot outside its compact
+anchor against the complete rendered frame at200x170, then moves that same canvas
+back. An optional retained-record input to the existing Conversation browser
+fixture verifies selected art on desktop, phone and short-height layouts without
+saving, activating or opening a real provider. Such render evidence does not
+establish physical-device, hearing or final artistic acceptance.
+
 ## Raster part authoring — prepared receiving extension
 
 The existing model import accepts `ascii-avatar-model/v2`. It retains path and
