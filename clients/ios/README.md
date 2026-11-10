@@ -1,5 +1,21 @@
 # iOS native audio preparation
 
+## Encoded-source preparation
+
+`VerifiedEncodedAudioSource` supplies the decoder-worker boundary corresponding
+to Android's `VerifiedAudioBuffer`: ordered SHA256-verified chunks of at most
+32768bytes, one flat8MiB buffer, and verified terminal length/digest before EOF.
+A missing prefix waits within the existing30second/145second decoder bounds;
+close or invalid input wakes readers and permanently retires that source.
+Those bounds govern decoder waits, not a media upload or network request.
+Caller-owned and returned data cannot alter retained bytes. Flat storage avoids
+per-chunk metadata growth for small valid chunks.
+
+This is not an encoded decoder, bridge admission, background permission or
+playback receipt. The existing iOS bridge still accepts PCM/Beacon only. Wiring
+encoded replies, actual native decoding/playback and background/media controls
+remain necessary before advertising parity; normal native capabilities stay off.
+
 The existing native-client plan selects an equivalent iOS client. This package
 prepares its audio core with the same 24 kHz mono PCM16 span contract as Android's
 `PcmPlaybackQueue`: SHA256 integrity, exact sequence/source offsets, at most
