@@ -222,6 +222,12 @@ session list must remain covered at every scroll position, including with the
 mobile keyboard open. This changes presentation only; session ownership,
 selection, actions and drafts remain with their existing controls.
 
+All authored overlays, including Alerts and Under the hood, keep an opaque
+background on the scrolling element itself. Decorative cut-corner pseudo-elements
+may draw the frame but must never supply the only fill: they can end at the
+initial scrollport while long content continues. Check the top, middle and bottom
+of long panels at mobile and desktop sizes. Keep text, focus and actions unclipped.
+
 Nicolas removed the conversational presence strip on 9 November 2026: remove
 its DOM, caption/activity track, marquee observers and background rules rather
 than leaving a hidden reserved row. Pending work remains in For You and actual
