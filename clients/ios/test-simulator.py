@@ -18,7 +18,10 @@ def serve(state):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             print(json.dumps({'fixture_get': self.path[:256]}), flush=True)
-            name = 'conversation.html' if self.path.startswith('/interaction/') else 'outside.html'
+            path = self.path.split('?',1)[0]
+            children = {'/interaction/audio-iframe/':'audio-iframe.html',
+                        '/interaction/capture-iframe/':'capture-iframe.html'}
+            name = children.get(path) or ('conversation.html' if path.startswith('/interaction/') else 'outside.html')
             body = (ROOT / 'Tests/Fixtures' / name).read_bytes()
             self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -56,6 +59,23 @@ def run(argv, *, timeout=30):
     if result.returncode:
         raise RuntimeError(f'{argv[0]} exit {result.returncode}: {(result.stdout + result.stderr)[-12000:]}')
     return result.stdout
+
+
+def stop_fixture(server, state):
+    """One owned TERM attempt; observation failure never hides the journey error."""
+    signal = 'not_needed'
+    if server.poll() is None and (state/'server.pid').exists():
+        try:
+            result = subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],
+                                    capture_output=True,timeout=10)
+            signal = 'acknowledged' if result.returncode == 0 else 'unconfirmed'
+        except (subprocess.TimeoutExpired,OSError):
+            signal = 'unconfirmed'
+    try:
+        server.wait(timeout=10)
+    except (subprocess.TimeoutExpired,OSError):
+        pass
+    return {'signal':signal,'stopped':server.poll() is not None}
 
 
 def qualify(app):
@@ -143,7 +163,10 @@ def qualify(app):
                     print(json.dumps({'native_log':'unconfirmed','error':str(error)[-512:]}),flush=True)
                 raise RuntimeError('No terminal WebView/native receipt within65seconds; no relaunch')
             result = json.loads((state/'result.json').read_text()); print(json.dumps(result),flush=True)
-            assert result.get('state')=='passed' and result.get('played_bytes')==28800, result
+            assert (result.get('state')=='passed' and result.get('played_bytes')==28800
+                    and result.get('capture_iframe')=='refused'
+                    and result.get('duplex_reservation')=='held_across_pcm_idle'
+                    and result.get('microphone_requested') is False), result
             beacon = result.get('beacon_qualification',{})
             assert (beacon.get('state')=='passed' and beacon.get('microphone_requested') is False
                     and beacon.get('played_frames',0)>0 and beacon.get('phases')==[
@@ -166,13 +189,12 @@ def qualify(app):
                         except (subprocess.TimeoutExpired,RuntimeError) as error:
                             cleanup.append({'action':command[2],'state':'unconfirmed','error':str(error)[-1000:]})
             finally:
-                if server:
-                    if server.poll() is None and (state/'server.pid').exists():
-                        subprocess.run(['sudo','-n','kill','-TERM',(state/'server.pid').read_text().strip()],capture_output=True,timeout=10)
-                    server.wait(timeout=10)
+                fixture = stop_fixture(server,state) if server else {'signal':'not_needed','stopped':True}
                 if server_log: server_log.close()
-            print(json.dumps({'cleanup':cleanup,'fixture_server_stopped':server is None or server.poll() is not None}),flush=True)
+            print(json.dumps({'cleanup':cleanup,'fixture_server_signal':fixture['signal'],
+                              'fixture_server_stopped':fixture['stopped']}),flush=True)
             if passed:
+                assert fixture['stopped'],'Fixture server exit not confirmed'
                 assert any(c['action']=='delete' and c['state']=='acknowledged' for c in cleanup),'Simulator deletion not confirmed'
     print('Owned simulator, HTTPS fixture, one-day CA and temporary state removed',flush=True)
 

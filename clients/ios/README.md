@@ -333,3 +333,98 @@ simulator launch is requested for them. Preserve both outcomes, ordinary capabil
 OFF and all physical/account/signing/distribution gaps. General checks on a305ad4
 passed scope, routing, speech, dashboard and Matrix execution; its text job was
 still running when this record was written and is not described as green.
+
+
+## Prepared foreground duplex capture
+
+The iOS-only native-capture.js hook wraps the existing shared adapter, without
+changing Android or the hosted recorder. Before getUserMedia it acquires one
+UUID-owned native session holder. WebKit and the OS still prompt; only the selected
+HTTPS main-frame microphone request can reach that prompt, never camera/iframe or
+SSO. The closed reply handler accepts only begin/end with canonical document and
+owner UUIDs, with at most128 nonreusable capture identities per controller. This is ownership, not permission or proof of recording.
+
+A duplex holder selects playAndRecord/voiceChat before microphone permission.
+PCM output joins that same mode and cannot deactivate it when becoming idle.
+Mode stays frozen while any holder remains; starting capture during existing
+spoken-only playback refuses before asking permission, instead of changing an
+active audio graph. The composed host reserves at most one capture and two output holders; output-only
+ownership retains its existing two-holder bound.
+A capture stop is requested at600seconds, route/interruption/background, explicit
+track stop or page exit. Native cancellation requests actual WebKit microphone state none;
+only its observed completion releases that exact session holder. Unknown stop or
+session-deactivation outcomes stay held, never retried by refresh. A late device
+permission closes its returned tracks after the old capture epoch has ended.
+Returning foreground never resumes an old capture or sound.
+
+Synthetic Node checks cover explicit track stop (which emits no ended event),
+concurrent requests, late native/OS grants, permission refusal and lifecycle.
+Foundation cases cover frozen mode/independent capture-output holders and the
+closed native contract. These are not real microphone, permission, WebKit duplex,
+route/interruption or phone acceptance. Native audio capabilities remain off;
+no production build, provider call, entitlement or distribution is selected.
+Apple references: [voiceChat](https://developer.apple.com/documentation/avfaudio/avaudiosession/mode-swift.struct/voicechat),
+[media permission delegate](https://developer.apple.com/documentation/webkit/wkuidelegate),
+[actual capture stop](https://developer.apple.com/documentation/webkit/wkwebview/setmicrophonecapturestate(_:completionhandler:)).
+
+The first duplex source9eacc4b passed20Swift cases, Node capture races and the
+actual iOS app build in CI42382542969. Its runtime stopped before installation
+at the fixture CA admission30second timeout; shutdown/delete/server cleanup
+passed. Two consecutive runs hit this same prerequisite. The fixture now gives
+that single certificate operation90seconds, without retrying an uncertain write
+or weakening TLS/PCM assertions. Runtime capture/permission acceptance is pending.
+
+The extended simulator fixture tests the actual with-reply capture bridge from
+its own same-origin iframe (must refuse), then reserves one main-frame duplex
+session across real PCM playback/idle/pause/flush. It never requests getUserMedia
+or changes a microphone permission. This checks session/bridge coexistence only;
+actual microphone permission, audio input, duplex processing and physical hearing
+remain unqualified. Source20tests/SDK evidence is separate from this runtime result.
+
+Extended fixturea251f42 reached the actual app in CI42383442620 but received no
+capture iframe reply. Its srcdoc frame was incompatible with the shell's
+HTTPS-only navigation contract. The probes now load distinct same-origin HTTPS
+child documents and require their own submission/reply receipts before proceeding;
+no production navigation or frame authorization policy was widened. Earlier
+srcdoc non-reservation does not prove the native handler saw a frame request.
+
+
+### Capture and Beacon composition — 2026-11-10
+
+The existing capture preparation is composed with the selected Beacon preparation.
+Both speech and Beacon join the frozen duplex mode while capture is held. Output
+idle/close cannot release capture; ending capture cannot deactivate a remaining
+output. Interruption, background and navigation request actual WebKit capture stop
+before releasing its owner, and prevent new output admission during that stop.
+The capture deadline remains600seconds and normal native capability flags remain
+off. No production configuration, permission, entitlement or provider changes.
+
+The combined fixture reserves capture without requesting a microphone, then plays
+Beacon and PCM concurrently, checks stale/fresh Beacon controls and capture
+ownership across PCM idle, and ends its own resources. Foundation regressions
+cover three-holder coexistence, frozen mode, exact release and unknown final
+deactivation. Node capture races and local fixture syntax checks passed; the
+combined Swift/SDK/simulator result is pending. Earlier separate capture and
+Beacon qualification does not establish qualification of this composition, actual
+microphone input or physical device/hearing acceptance. Source delivery follows
+Nicolas's direction to integrate prepared work; no new independent review is
+claimed.
+
+The first combined run42781912791 stopped during Foundation test compilation:
+the Beacon test device still implemented the previous activate() signature. Its
+fixture now implements activate(mode:); no runtime activation logic was changed
+by that correction. SDK/app installation and simulator were not reached. The
+corrected combined qualification remains pending; this failure is retained.
+
+Corrected combined source7f6bdefa passed36Swift cases (zero failures), Node
+capture races, both SDK apps and normal fixture-helper absence. Main CI42782144174
+passed. Native42782143985 stopped before app installation: bootstatus exhausted
+its120second observation while the simulator reported data migration/system-app
+startup. Shutdown/delete and the one server TERM/exit observations were also
+unconfirmed. No app, bridge, microphone or audio acceptance follows.
+
+The fixture cleanup now retains its one TERM result and independently observed
+process exit without masking the original journey failure or retrying a signal.
+Three synthetic regressions cover unknown signal/exit, acknowledgment without
+exit and already-exited ownership. Simulator deadlines, single launch, normal
+TLS/capability policy and runtime audio code remain unchanged.

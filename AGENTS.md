@@ -95,6 +95,14 @@ media-retiring convenience readers, expose private analysis,
 start work or enable another provider to obtain startup context. Source/transport
 qualification is not proof of useful speech or physical continuity.
 
+Prepared iOS foreground capture reserves its own duplex holder before permission.
+WebKit/OS retain the actual microphone prompt; camera/iframe/SSO requests cannot
+reserve it. Preserve canonical document/owner identity,128 nonreusable owners,
+nonrenewable600s capture and actual WebKit stop/none observation before release.
+Unknown microphone stop or session release stays held without automatic retry.
+Speech and Beacon may join that frozen duplex mode without changing it mid-audio.
+Normal iOS capabilities remain OFF pending device/account/capture qualification.
+
 Prepared iOS Beacon IPC reuses the existing Android beacon_begin/frame/level/stop
 contract under the exact main origin/frame/document fence. Strict canonical UUID
 owners stay separate from PCM; at most128 starts/controller, no accepted ID reuse.
