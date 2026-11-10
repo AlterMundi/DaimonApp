@@ -25,7 +25,7 @@ import UIKit
     private var beacon: WeakBeacon?
     private var foreground = true
     private var cancelling = false
-    private var capture: (id: UUID, deadline: DispatchWorkItem, cancel: () -> Void)?
+    private var capture: (id: UUID, deadline: DispatchWorkItem, cancel: () -> Void, transport: CaptureConnectionLease)?
     private var captureEnding = false
     public var releaseUnconfirmed: Bool { ownership.unconfirmedRelease != nil }
     public var unconfirmedReleaseID: UUID? { ownership.unconfirmedRelease }
@@ -83,14 +83,30 @@ import UIKit
         guard foreground, !cancelling, capture == nil,
               UIApplication.shared.applicationState == .active else { throw AudioSessionOwnership.Refusal.unavailable }
         try ownership.acquire(id,mode:.duplexVoice,cancelled:cancelled)
-        let deadline = DispatchWorkItem { [weak self] in
+        let deadline = captureDeadline(id,generation:0,cancelled:cancelled)
+        capture = (id,deadline,cancelled,CaptureConnectionLease())
+        DispatchQueue.main.asyncAfter(deadline:.now()+600,execute:deadline)
+    }
+    private func captureDeadline(_ id: UUID, generation: Int, cancelled: @escaping () -> Void) -> DispatchWorkItem {
+        DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                guard let self, self.capture?.id == id else { return }
+                guard let self, self.capture?.id == id,
+                      self.capture?.transport.generation == generation else { return }
                 self.captureEnding = true; cancelled()
             }
         }
-        capture = (id,deadline,cancelled)
-        DispatchQueue.main.asyncAfter(deadline:.now()+600,execute:deadline)
+    }
+    /// The existing authenticated page reports its negotiated physical visit.
+    /// This renews session ownership only, never permission, recording or quota.
+    func connectCapture(_ id: UUID, visit: UUID, predecessor: UUID?) throws {
+        guard foreground, !cancelling, !captureEnding, var selected = capture, selected.id == id,
+              UIApplication.shared.applicationState == .active else { throw AudioSessionOwnership.Refusal.unavailable }
+        if try selected.transport.connect(visit,from:predecessor) {
+            selected.deadline.cancel()
+            selected.deadline = captureDeadline(id,generation:selected.transport.generation,cancelled:selected.cancel)
+            DispatchQueue.main.asyncAfter(deadline:.now()+600,execute:selected.deadline)
+        }
+        capture = selected
     }
     public func endCapture(_ id: UUID) {
         guard capture?.id == id else { return }

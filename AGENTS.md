@@ -98,7 +98,13 @@ qualification is not proof of useful speech or physical continuity.
 Prepared iOS foreground capture reserves its own duplex holder before permission.
 WebKit/OS retain the actual microphone prompt; camera/iframe/SSO requests cannot
 reserve it. Preserve canonical document/owner identity,128 nonreusable owners,
-nonrenewable600s capture and actual WebKit stop/none observation before release.
+a600s lease per physical connection and actual WebKit stop/none before release.
+Only the current source-bound Public Live answer/SDP can bind its connection;
+a distinct current-predecessor successor may advance the existing capture lease.
+Initial/duplicate/retired links never extend time; retain at most512 physical IDs
+per capture. Stop/background/expiry and unknown native acknowledgments fence later
+links; no new microphone permission or automatic link retry. Native capture
+renewal changes no provider/context/storage/admission bound.
 Unknown microphone stop or session release stays held without automatic retry.
 Speech and Beacon may join that frozen duplex mode without changing it mid-audio.
 Normal iOS capabilities remain OFF pending device/account/capture qualification.

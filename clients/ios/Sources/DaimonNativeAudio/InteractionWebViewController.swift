@@ -124,6 +124,17 @@ import WebKit
               let url = frame.request.url, home.allowsPage(url), let current = web.url, home.allowsPage(current),
               let raw = message.body as? String, let value = try? CaptureBridgeMessage(raw),
               value.document == document else { reply(nil,"Capture owner unavailable"); return }
+        if value.command == "capture_connection" {
+            guard captureOwner == value.owner, captureStopping == nil,
+                  (value.predecessor == nil || web.microphoneCaptureState == .active), let visit = value.visit else {
+                reply(nil,"Microphone connection unavailable"); return
+            }
+            do {
+                try session.connectCapture(value.owner,visit:visit,predecessor:value.predecessor)
+                reply(true,nil)
+            } catch { reply(nil,"Microphone connection unavailable") }
+            return
+        }
         if value.command == "capture_end" {
             if captureOwner == value.owner { closeCapture() }
             reply(true,nil); return

@@ -534,3 +534,13 @@ receipt. Normal native capabilities stay off. Signing/distribution, actual
 microphone/permission/routes and physical device/hearing acceptance remain open;
 source integration is not a device rollout. Current outcomes are in the receiving
 cockpit; earlier preparation/review observations retain their dates.
+
+The prepared iOS microphone lease must span the existing logical Public Live
+conversation while each physical connection retains its600second bound. The
+source-bound creation answer/remote SDP reports a flat current-predecessor link
+inside the existing document/microphone owner. Initial/duplicate links never
+rearm; a distinct successor advances the600second lease only while capture is
+active. Stop/expiry/background and unknown acknowledgments prevent resurrection;
+no new permission, provider/context/storage budget or automatic retry follows.
+The bounded512-ID ledger and old-deadline generation fence are source preparation;
+exact Swift/SDK/runtime and physical acceptance remain separately tracked.

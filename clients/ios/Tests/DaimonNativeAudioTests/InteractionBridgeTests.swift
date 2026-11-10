@@ -62,6 +62,51 @@ final class InteractionBridgeTests: XCTestCase {
         XCTAssertThrowsError(try CaptureBridgeMessage(raw(extra)))
         XCTAssertThrowsError(try CaptureBridgeMessage(String(repeating:" ",count:513)))
     }
+    func testCaptureConnectionsUseClosedCanonicalFlatOwnerLinks() throws {
+        let owner = UUID().uuidString.lowercased(), visit = UUID().uuidString.lowercased()
+        var fields: [String:Any] = ["command":"capture_connection","document_id":document,"owner":owner,"visit":visit]
+        func parse(_ value: [String:Any]) throws -> CaptureBridgeMessage {
+            try CaptureBridgeMessage(String(data:JSONSerialization.data(withJSONObject:value),encoding:.utf8)!)
+        }
+        XCTAssertEqual(try parse(fields).visit?.uuidString.lowercased(),visit)
+        XCTAssertNil(try parse(fields).predecessor)
+        fields["predecessor"] = UUID().uuidString.lowercased()
+        XCTAssertNotNil(try parse(fields).predecessor)
+        for (key,value) in [("visit","other"),("predecessor",""),("document_id","OTHER")] {
+            var changed = fields; changed[key] = value
+            XCTAssertThrowsError(try parse(changed))
+        }
+        var extra = fields; extra["seconds"] = 601
+        XCTAssertThrowsError(try parse(extra))
+        var wrong = fields; wrong["command"] = "capture_begin"
+        XCTAssertThrowsError(try parse(wrong))
+        var nested = fields; nested["visit"] = ["id":visit]
+        XCTAssertThrowsError(try parse(nested))
+    }
+    func testOnlyCurrentDistinctPhysicalSuccessorsAdvanceCaptureLease() throws {
+        var lease = CaptureConnectionLease()
+        let first = UUID(), next = UUID(), last = UUID()
+        XCTAssertFalse(try lease.connect(first,from:nil))
+        XCTAssertEqual(lease.generation,0)
+        XCTAssertFalse(try lease.connect(first,from:nil),"Duplicate initial binding cannot extend capture")
+        XCTAssertThrowsError(try lease.connect(next,from:UUID()))
+        XCTAssertEqual(lease.visit,first)
+        XCTAssertTrue(try lease.connect(next,from:first)); XCTAssertEqual(lease.generation,1)
+        XCTAssertFalse(try lease.connect(next,from:first),"Lost acknowledgments never rearm the deadline")
+        XCTAssertEqual(lease.generation,1)
+        XCTAssertThrowsError(try lease.connect(first,from:next),"A retired physical connection cannot become current again")
+        XCTAssertThrowsError(try lease.connect(last,from:first),"A stale predecessor cannot advance capture")
+        XCTAssertTrue(try lease.connect(last,from:next)); XCTAssertEqual(lease.generation,2)
+    }
+    func testPhysicalConnectionHistoryIsBoundedWithoutExtendingDuplicateDeadline() throws {
+        var lease = CaptureConnectionLease(), previous: UUID?
+        for _ in 0..<512 {
+            let next = UUID(); _ = try lease.connect(next,from:previous); previous = next
+        }
+        XCTAssertEqual(lease.generation,511)
+        XCTAssertThrowsError(try lease.connect(UUID(),from:previous))
+        XCTAssertEqual(lease.generation,511)
+    }
     private let beaconID = "beacon_aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"
     private func beaconFields() -> [String:Any] {
         ["command":"beacon_frame","id":beaconID,"frequencies":[40.4,80.8,121.2,161.6,282.8,444.4],

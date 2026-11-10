@@ -350,7 +350,8 @@ Mode stays frozen while any holder remains; starting capture during existing
 spoken-only playback refuses before asking permission, instead of changing an
 active audio graph. The composed host reserves at most one capture and two output holders; output-only
 ownership retains its existing two-holder bound.
-A capture stop is requested at600seconds, route/interruption/background, explicit
+A capture stop is requested after600seconds without a validated physical successor,
+route/interruption/background, explicit
 track stop or page exit. Native cancellation requests actual WebKit microphone state none;
 only its observed completion releases that exact session holder. Unknown stop or
 session-deactivation outcomes stay held, never retried by refresh. A late device
@@ -439,3 +440,30 @@ confirmed. No install/launch was repeated or deadline expanded. Normal flags sta
 off; integration does not activate, sign, distribute or establish physical
 microphone/device/hearing acceptance. Master qualification is automatic and its
 result is tracked separately in the receiving cockpit; no manual rerun.
+
+### Logical capture across physical Public Live handovers
+
+The prior unconditional600second microphone deadline could end a logical voice
+conversation even when Public Live had successfully renewed its physical
+transport while retaining that microphone. The selected page now reports its
+exact physical visit after the existing source-bound creation answer and remote
+SDP installation, before entering Listening. An initial connection binds identity
+without extending time. Only a new successor of the current physical ID advances
+the native session lease by600seconds; duplicates and retired/stale predecessors
+cannot rearm it. At most512 distinct physical IDs are retained per capture.
+This is page/owner bookkeeping, not independent proof of a provider session.
+
+The existing microphone/permission/recording owner stays unchanged. A handover
+requires active WebKit capture; the initial identity-only bind does not assume
+WebKit's capture-state observation has already advanced. Stop, background, expiry,
+changed binding and unknown link outcomes fence later activity. A stale queued
+deadline cannot close a newer lease generation. A lost native acknowledgment is
+not retried. Server admission, context, physical600second, recording/storage and
+provider bounds remain unchanged; no fallback or new permission is added.
+
+Node regressions reproduce the missing link on the previous source, then pass
+initial/delayed/refused ownership, exact microphone retention across successor,
+Stop-before-ack, duplicate/stale/foreign and uncertain-result cases. Foundation
+regressions cover the closed IPC fields, predecessor CAS, duplicate generations,
+retired IDs and512-ID limit. Swift/SDK qualification for this delta is pending;
+no microphone/provider/physical hearing or runtime activation is claimed.

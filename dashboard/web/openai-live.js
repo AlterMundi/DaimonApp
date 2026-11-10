@@ -348,8 +348,8 @@ window.PublicLiveConversation=(()=>{
         }
         if(!current())throw Error('Voice activation ended');
         peer=new RTCPeerConnection();channel=peer.createDataChannel('oai-events');
-        let sessionId,started=false,connected=false;
-        const listening=()=>{if(current()&&!renewing&&started&&connected){starting=false;active=true;state('Listening');readyResolve();}};
+        let sessionId,started=false,connected=false,leaseReady=typeof window.__DaimonCaptureConnection!=='function';
+        const listening=()=>{if(current()&&!renewing&&started&&connected&&leaseReady){starting=false;active=true;state('Listening');readyResolve();}};
         channel.onmessage=event=>{
           try{const value=JSON.parse(event.data);if(value.type==='session.started'&&(value.session_id||value.session?.id)===sessionId){started=true;listening();}}catch{}
         };
@@ -419,6 +419,15 @@ window.PublicLiveConversation=(()=>{
         // WebSocket startup event on an already negotiated, connected call.
         started=true;
         await wait(peer.setRemoteDescription({type:'answer',sdp:result.sdp}),10000);
+        if(!leaseReady){
+          // The iOS microphone owner spans physical transports. Only this
+          // negotiated, source-bound successor may advance its600s session lease.
+          // Stop/current ownership still wins over a late native acknowledgment.
+          const selectedMedia=media,selectedVisit=visit;
+          await wait(window.__DaimonCaptureConnection(selectedMedia,{visit:selectedVisit,predecessor:renewal?.id}),10000);
+          if(!current()||media!==selectedMedia||visit!==selectedVisit)throw Error('Microphone connection retired');
+          leaseReady=true;listening();
+        }
         await wait(ready,15000);return true;
       }catch(error){if(owned===epoch&&!closing)await hold(error.name==='NotAllowedError'?'Microphone access was denied.':'Voice paused. Your original audio is kept.','activation_failed');return false;}
     }
