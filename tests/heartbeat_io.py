@@ -28,6 +28,15 @@ class HeartbeatJourney(WorkflowJourney):
         if message.get('method')=='thread/read':
             send({'id':message['id'],'result':{'thread':{'id':message['params']['threadId'],'model':'fixture-model','modelProvider':'fixture','canAcceptDirectInput':True,'status':{'type':'active' if getattr(self,'native_fixture_busy',False) else 'idle'}}}})
             return True
+        terminal=getattr(self,'terminal_metadata',None)
+        if (terminal and message.get('method')=='thread/turns/list'
+                and message['params']['threadId']==terminal[0] and message['params'].get('itemsView')=='notLoaded'):
+            self.terminal_reads+=1
+            send({'id':message['id'],'result':{'data':[{'id':terminal[1],'status':'completed'}],'nextCursor':None}})
+            return True
+        if terminal and message.get('method')=='thread/goal/get':
+            send({'id':message['id'],'result':{'goal':None}})
+            return True
         if message.get('method')=='thread/turns/list' and getattr(self,'native_continuation',None):
             send({'id':message['id'],'result':{'data':[{'id':self.native_continuation,'status':'inProgress'}],'nextCursor':None}})
             return True
@@ -55,7 +64,7 @@ class HeartbeatJourney(WorkflowJourney):
         return super().handle_extra_rpc(message, send)
 
 
-def qualify(binary):
+def qualify(binary, *, terminal_recovery=False):
     j = HeartbeatJourney(str(Path(binary).resolve()))
     try:
         j.start()
@@ -99,6 +108,24 @@ def qualify(binary):
         j.idle()
         j.wait(lambda: len(j.bounded) == 1, seconds=45)
         j.wait(lambda: j.row("SELECT count(*) FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.phase')='accepted'") == [(1,)])
+        if terminal_recovery:
+            before=j.read('heartbeat','status')['result']
+            execution=next(e for e in before['executions'] if e['phase']=='owned')
+            assert execution['physical']==j.web_turn
+            j.stop()  # Restart loses the live terminal callback; admitted input stays retained.
+            j.terminal_metadata=(j.web_thread,j.web_turn);j.terminal_reads=0
+            j.start();j.wait_control_socket(j.socket)
+            j.wait(lambda: j.row("SELECT json_extract(value,'$.phase') FROM bot_state WHERE key=?",('heartbeat_execution:'+str(execution['local']),))==[('terminal',)],seconds=45)
+            after=j.read('heartbeat','status')['result']
+            observed=next(e for e in after['executions'] if e['local']==execution['local'])
+            assert observed['physical']==execution['physical'] and observed['terminal_status']=='completed'
+            assert after['resources']['reserved_provider_attempts']==before['resources']['reserved_provider_attempts']==3
+            assert len(j.bounded)==1 and j.terminal_reads>0
+            assert j.row('SELECT count(*) FROM incoming_updates')==journal
+            assert j.row('SELECT count(*) FROM conversation_inputs')==[(1,)]
+            assert not j.messages and not j.telegram_methods
+            print('PASS exact metadata-only terminal recovery after restart; one original physical execution, no replay/refund/output import or provider call.')
+            return
         packet = json.loads(j.bounded[0]['turn']['toolOutput']['output'])
         assert packet['schema'] == 'daimon.heartbeat-batch/v1'
         purpose = packet['evidence']['operating_purpose']
@@ -599,4 +626,4 @@ if __name__ == '__main__':
     if '--inbox' in sys.argv[2:]:
         qualify_inbox(sys.argv[1])
     else:
-        qualify(sys.argv[1])
+        qualify(sys.argv[1],terminal_recovery='--terminal-recovery' in sys.argv[2:])

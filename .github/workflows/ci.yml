@@ -353,6 +353,7 @@ jobs:
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
       - run: python3 -B tests/heartbeat_io.py target/release/telecodex --inbox
+      - run: python3 -B tests/heartbeat_io.py target/release/telecodex --terminal-recovery
         env:
           PYTHONPATH: .matrix-sdk/src:.matrix-sdk
       - run: python3 -B tests/fixture_native_idle_io.py target/release/telecodex

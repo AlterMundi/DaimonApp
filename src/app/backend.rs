@@ -39,6 +39,11 @@ impl Maintenance for App {
                 }
             }
             Recovery::CanonicalAttention => {
+                if heartbeat::recover_terminals(self).await.is_err() {
+                    tracing::warn!(
+                        "Heartbeat physical closure remains unconfirmed; no input replayed"
+                    );
+                }
                 if heartbeat::recover_unsent(self).await.is_err() {
                     tracing::warn!("Known-unsent heartbeat return remains pending");
                 }

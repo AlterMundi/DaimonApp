@@ -488,3 +488,21 @@ the original source identity, attempts, resource reservations and history; the
 existing worker makes the next bounded admission attempt. A mismatched,
 physically admitted or uncertain execution remains ineligible. Do not edit the
 live database or manufacture a new message to get past a pending batch.
+
+### Missed physical terminal callbacks
+
+The existing serial maintenance pass observes at most one exact retained owned,
+stopping or transferred physical execution with no terminal receipt. It reuses
+the eight-second metadata-only native lifecycle reader; full output remains in
+its existing collection journal. There is no new scheduler, input, goal mutation,
+provider request, replay or inferred result/review. A complete native closure is
+committed only while the whole original execution record still matches under
+the owning store lock. A later pause/transfer/physical selection wins; missing,
+active or uncertain native evidence stays retained. Transferred cancellation
+ownership remains transferred after its original physical turn is observed.
+
+This covers boundary-only routed/workflow collections after a lost terminal
+callback or listener replacement. Their output is deliberately excluded from
+ordinary full-history collection, so output recovery cannot be the only way to
+release completed heartbeat execution ownership. Ordinary new attention still
+requires current lane, source, native admission and resource checks.

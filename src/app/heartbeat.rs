@@ -363,6 +363,58 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     Ok(())
 }
 
+/// Recover only lifecycle metadata for already admitted exact physical turns.
+/// Boundary-only collections deliberately do not import output; losing their
+/// terminal event must not leave their cancellation ownership busy forever.
+pub(super) async fn recover_terminals(app: &App) -> Result<()> {
+    let Some(cfg) = app.shared.config.interaction.as_ref() else {
+        return Ok(());
+    };
+    if app.shared.shutdown.is_cancelled() || !app.shared.config.codex.shared_app_server {
+        return Ok(());
+    }
+    let records = app
+        .shared
+        .store
+        .heartbeat_executions(cfg.human_id, cfg.entry(), false)?;
+    for record in records
+        .iter()
+        .filter(|r| {
+            matches!(
+                r["phase"].as_str(),
+                Some("owned" | "stopping" | "transferred")
+            ) && r["terminal_status"].is_null()
+                && r["physical"].as_str().is_some()
+        })
+        .take(1)
+    {
+        let native = record["native"]
+            .as_str()
+            .context("Heartbeat native identity missing")?;
+        let physical = record["physical"]
+            .as_str()
+            .context("Heartbeat physical identity missing")?;
+        let observed = app
+            .shared
+            .codex
+            .terminal_observation(native, physical)
+            .await?;
+        if app.shared.shutdown.is_cancelled() {
+            return Ok(());
+        }
+        if let Some(observed) = observed {
+            app.shared.store.heartbeat_observed_terminal(
+                cfg.human_id,
+                cfg.entry(),
+                record,
+                &observed.turn_id,
+                &observed.status,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn recover_unsent(app: &App) -> Result<()> {
     let Some(cfg) = app.shared.config.interaction.as_ref() else {
         return Ok(());
