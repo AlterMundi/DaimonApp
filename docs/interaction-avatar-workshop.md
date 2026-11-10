@@ -49,6 +49,13 @@ Models without the explicit invisible node remain unchanged. The saved design,
 atlas, nine artistic cues and body/head/hand/finger tracks are never rewritten
 by playback. The actor still saves and uses an immutable version explicitly.
 
+Both public GPT-Live and Codex WebRTC pass their decoded output level through
+the mounted Conversation callback to the selected avatar. Leaving Avatar resets
+that level immediately; late callbacks from the retired voice view cannot reopen
+the jaw. The mounted browser regression uses a synthetic remote tone and the
+retained selected artwork, including actual Canvas repaints, silence, pause and
+exit; physical hearing and phoneme alignment remain unproved.
+
 The public GPT-Live frontend observes decoded remote output, not input audio,
 transcript deltas or completion guesses. Browser playback keeps its existing
 HTML audio owner; an outputless local worklet emits only100ms RMS observations

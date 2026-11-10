@@ -165,7 +165,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse_codex:options.webRtcDriver?.engine==='codex',can_converse_public_live:options.webRtcDriver?.engine==='gpt-live',can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -252,6 +252,10 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
+  if(options.webRtcDriver){
+    const driver=options.webRtcDriver,name=driver.engine==='codex'?'CodexConversation':'PublicLiveConversation';
+    context.window[name]={supported:()=>true,create(hooks){driver.hooks=hooks;return driver.session={active:false,originals:[],start(){this.active=true;hooks.onState({active:true,starting:false,playback:'idle',outputLevel:0});},hold(){this.active=false;},setEnabled(){},restoreHistory:async()=>{},resetHistory(){}};}};
+  }
   if(options.replyActivity){
     const activity=options.replyActivity;activity.levels=[];activity.clears=0;
     context.window.AvatarWorkshopUI={mount:()=>({bind(){},reset(){},speechLevel:v=>activity.levels.push(v)})};
@@ -1636,6 +1640,16 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(autoQuestion.nativePosts.length,0,'Speaking a question never approves or answers it');
   autoQuestion.advanceNativeRequest();await autoQuestion.ui.refresh();await until(()=>autoQuestion.audioCalls.length===2);assert.equal(autoQuestion.audioCalls[1].revision,'native-revision-2','The next question in one native request must still be spoken');
   autoQuestion.ui.stop();
+  for(const engine of ['codex','gpt-live']){
+    const driver={engine},activity={},voiceAvatar=boot(false,true,{capture:true,continuous:true,webRtcDriver:driver,replyActivity:activity});
+    voiceAvatar.audio();await voiceAvatar.ui.refresh();const selector=voiceAvatar.nodes.get('#conversation-voice-engine');selector.value=engine;selector.handlers.change();voiceAvatar.continuous().mode.open();
+    assert(driver.session.active,'Selected engine starts in the existing Avatar owner');
+    driver.hooks.onState({active:true,starting:false,playback:'playing',outputLevel:.75});assert.equal(activity.levels.at(-1),.75,'Decoded output level reaches the mounted avatar');
+    driver.hooks.onState({active:true,starting:false,playback:'idle',outputLevel:0});assert.equal(activity.levels.at(-1),0,'Silence clears the avatar activity');
+    driver.hooks.onState({active:true,starting:false,playback:'playing',outputLevel:.5});
+    voiceAvatar.continuous().mode.close();assert.equal(activity.levels.at(-1),0,'Leaving clears the mouth before any late engine closure');
+    driver.hooks.onState({active:false,starting:false,playback:'idle',outputLevel:1});assert.equal(activity.levels.at(-1),0,'Retired voice callbacks cannot reopen the mouth');voiceAvatar.ui.stop();
+  }
   // Real native engine mounted through the Conversation callbacks: a caption
   // and local energy must not leave its queued output muted by another owner.
   const nativeDriver={},joined=boot(false,true,{capture:true,continuous:true,nativeVoice:true,nativeDriver,clock:true});
