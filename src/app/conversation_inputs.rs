@@ -1234,7 +1234,9 @@ async fn voice_submit(
     // A deferred acoustic reservation starts no recognizer and therefore does
     // not require an unused completed-transcript command. Ordinary foreground
     // recovery still selects only its configured completed reader.
-    if recover || (request.foreground_dialogue.is_some() && !request.defer_foreground) {
+    let completed_only =
+        recover || (request.foreground_dialogue.is_some() && !request.defer_foreground);
+    if completed_only {
         config.transcription_command = config
             .completed_transcription_command
             .clone()
@@ -1351,7 +1353,8 @@ async fn voice_submit(
                 worker
                     .shared
                     .store
-                    .conversation_voice_validate(human, &captured.id)?;
+                    .conversation_voice_validate(human, &captured.id)
+                    .context(crate::voice::VoiceFailureStage::SourceValidation)?;
                 let expected = &captured
                     .voice
                     .as_ref()
@@ -1366,12 +1369,11 @@ async fn voice_submit(
                 )
                 .await?;
                 let _ingress = worker.shared.conversation_ingress.lock().await;
-                let ready = worker.shared.store.conversation_voice_commit(
-                    human,
-                    &captured.id,
-                    &text,
-                    proof,
-                )?;
+                let ready = worker
+                    .shared
+                    .store
+                    .conversation_voice_commit(human, &captured.id, &text, proof)
+                    .context(crate::voice::VoiceFailureStage::TranscriptCommit)?;
                 // The persisted capture, not a later retry's policy argument,
                 // owns this hold. Python may retire it only after exact archive
                 // handoff. Process restart/ASR completion cannot drop that fence.
@@ -1392,19 +1394,27 @@ async fn voice_submit(
                         .shared
                         .store
                         .conversation_input_finish(human, &captured.id)?;
-                    return Err(error);
+                    return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
                 }
                 Ok::<_, anyhow::Error>(())
             });
-            let result = tokio::select! {biased;_ = worker.shared.voice_shutdown.cancelled()=>Err(anyhow!("Voice preparation ended for listener restart")),result=preparation=>result};
+            let result = tokio::select! {biased;_ = worker.shared.voice_shutdown.cancelled()=>Err(anyhow!(crate::voice::VoiceFailureStage::ListenerShutdown)),result=preparation=>result};
             if let Err(error) = result {
-                let _ = worker
+                let mut diagnostic = crate::voice::VoiceFailureDiagnostic::from_error(
+                    &error,
+                    crate::voice::VoiceFailureStage::Unclassified,
+                );
+                diagnostic.completed_only = completed_only;
+                if worker
                     .shared
                     .store
-                    .conversation_voice_fail(human, &captured.id);
-                tracing::warn!(
-                    error = %error, "Committed conversation voice preparation unconfirmed; no automatic retry"
-                );
+                    .conversation_voice_fail_diagnostic(human, &captured.id, &diagnostic)
+                    .is_err()
+                {
+                    tracing::warn!("Voice failure diagnostic could not be retained");
+                }
+                tracing::warn!(stage=?diagnostic.stage, interrupted=diagnostic.interrupted,
+                    "Committed conversation voice preparation unconfirmed; no automatic retry");
             }
         });
     }

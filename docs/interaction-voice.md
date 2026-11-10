@@ -156,3 +156,30 @@ with a fresh bounded `QUALIFICATION_OUTPUT` directory to verify narrow,
 keyboard-sized and desktop layouts, preserved drafts and exact reply references.
 These checks open no provider or native session and do not establish physical
 phone stability or hearing acceptance.
+
+## Retained ordinary Conversation failure diagnostics
+
+Ordinary file-backed voice preparation retains one fixed `voice_failure` in the
+existing original input document. It records the earliest observed stage, whether
+listener shutdown interrupted preparation, and whether the command was restricted
+to reading an already-completed transcript. The vocabulary distinguishes source
+read/validation, decode/signal checks, the configured transcriber command, final
+transcript validation/commit and native admission. A command-stage failure is not
+proof that a provider accepted a request; existing provider intent/result receipts
+remain authoritative.
+
+The first diagnostic is retained across restart and completed-result recovery.
+It never overwrites the original bytes, digest, transcript, native outcome, owner
+or phase uncertainty. Its size is bounded by fixed enums and two booleans in one
+existing row; no separate log, queue or growing error history is introduced. No
+database migration is needed. Older input documents omit it, and older ordinary
+input readers ignore the additional root field. Keep the current native reader
+with a web rollback; do not restore databases.
+
+Only the existing authorized input trace exposes the diagnostic. Normal input
+responses continue to show useful product states; arbitrary errors, stderr,
+provider payloads, paths and transcript text are not copied into diagnostics.
+No failure starts ASR, resends an original or retries native work. Historical
+failures without this observation stay unexplained. Telegram normalization and
+forwarded-speaker provenance in #817 remain separate unfinished work; this change
+does not retroactively diagnose the reported phone or forwarded-audio failures.
