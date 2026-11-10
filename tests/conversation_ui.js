@@ -165,7 +165,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse_codex:options.webRtcDriver?.engine==='codex',can_converse_public_live:options.webRtcDriver?.engine==='gpt-live',can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -196,7 +196,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   });
   vm.runInContext(fs.readFileSync("dashboard/web/requests.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
-  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
+  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
     context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);},release:id=>continuousCalls.push(['release',id])};}};
     if(options.continuousDriver){
@@ -252,6 +252,10 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
   if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
+  if(options.webRtcDriver){
+    const driver=options.webRtcDriver,name=driver.engine==='codex'?'CodexConversation':'PublicLiveConversation';
+    context.window[name]={supported:()=>true,create(hooks){driver.hooks=hooks;return driver.session={active:false,originals:[],start(){this.active=true;hooks.onState({active:true,starting:false,playback:'idle',outputLevel:0});},hold(){this.active=false;},setEnabled(){},restoreHistory:async()=>{},resetHistory(){}};}};
+  }
   if(options.replyActivity){
     const activity=options.replyActivity;activity.levels=[];activity.clears=0;
     context.window.AvatarWorkshopUI={mount:()=>({bind(){},reset(){},speechLevel:v=>activity.levels.push(v)})};
@@ -1059,7 +1063,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   await skipButton.handlers.click();await until(()=>skipping.audioCalls.some(call=>call.source==='native:10')&&!skipPlayer.paused&&!skipPlayer.muted);
   assert.equal(skipping.audioCalls.filter(call=>call.source==='native:9').length,2,'Already prepared continuation is cancelled rather than played or retried');
   assert.equal(skipButton.textContent,'Resume audio','Skip preserves the actual heard cursor for a later explicit resume');
-  await skipping.ui.refresh();skipPlayer.ended=true;await skipPlayer.handlers.ended();
+  await skipping.ui.refresh();
+  // Muted autoplay unlock can be running while the current source is verifying.
+  // Emit ended only after the selected reply has confirmed playback.
+  await until(()=>!skipPlayer.paused&&!skipPlayer.muted&&skipping.mediaSession.playbackState==='playing');
+  skipPlayer.ended=true;await skipPlayer.handlers.ended();
   // Refresh/ended may still be preparing the owned next source. Fire only once
   // its silence timer exists, or continue if its next segment is already ready.
   await until(()=>skipping.clock.pending().includes(450)||skipping.audioCalls.some(call=>call.source==='native:11'));
@@ -1638,6 +1646,16 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(autoQuestion.nativePosts.length,0,'Speaking a question never approves or answers it');
   autoQuestion.advanceNativeRequest();await autoQuestion.ui.refresh();await until(()=>autoQuestion.audioCalls.length===2);assert.equal(autoQuestion.audioCalls[1].revision,'native-revision-2','The next question in one native request must still be spoken');
   autoQuestion.ui.stop();
+  for(const engine of ['codex','gpt-live']){
+    const driver={engine},activity={},voiceAvatar=boot(false,true,{capture:true,continuous:true,webRtcDriver:driver,replyActivity:activity});
+    voiceAvatar.audio();await voiceAvatar.ui.refresh();const selector=voiceAvatar.nodes.get('#conversation-voice-engine');selector.value=engine;selector.handlers.change();voiceAvatar.continuous().mode.open();
+    assert(driver.session.active,'Selected engine starts in the existing Avatar owner');
+    driver.hooks.onState({active:true,starting:false,playback:'playing',outputLevel:.75});assert.equal(activity.levels.at(-1),.75,'Decoded output level reaches the mounted avatar');
+    driver.hooks.onState({active:true,starting:false,playback:'idle',outputLevel:0});assert.equal(activity.levels.at(-1),0,'Silence clears the avatar activity');
+    driver.hooks.onState({active:true,starting:false,playback:'playing',outputLevel:.5});
+    voiceAvatar.continuous().mode.close();assert.equal(activity.levels.at(-1),0,'Leaving clears the mouth before any late engine closure');
+    driver.hooks.onState({active:false,starting:false,playback:'idle',outputLevel:1});assert.equal(activity.levels.at(-1),0,'Retired voice callbacks cannot reopen the mouth');voiceAvatar.ui.stop();
+  }
   // Real native engine mounted through the Conversation callbacks: a caption
   // and local energy must not leave its queued output muted by another owner.
   const nativeDriver={},joined=boot(false,true,{capture:true,continuous:true,nativeVoice:true,nativeDriver,clock:true});

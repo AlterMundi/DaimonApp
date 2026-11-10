@@ -19,7 +19,8 @@ const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRej
 const publicDefaultCase=process.env.QUALIFICATION_PUBLIC_DEFAULT==='1';
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=publicDefaultCase||process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
 const nativeDecisionCase=process.env.QUALIFICATION_HOME_DECISIONS;let nativeDecisionGranted=nativeDecisionCase==='allowed';const nativeDecisionPosts=[];
-const codexActivityCase=process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
+const avatarSpeechCase=process.env.QUALIFICATION_AVATAR_SPEECH==='1';
+const codexActivityCase=avatarSpeechCase||process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
 const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=unifiedAttentionCase||hudCase||!!nativeDecisionCase,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
@@ -151,7 +152,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  if(codexCase||publicCase)await context.addInitScript(({publicCase,codexActivityCase})=>{
   const actualSocket=window.WebSocket,ActualContext=window.AudioContext;
   const fixture=window.codexFixture={opens:0,contexts:[],peers:[],captureBytes:0,audioRequests:0,audioRequestedWhileNativeOpen:false};
-  if(codexActivityCase){let actualCodex;Object.defineProperty(window,'CodexConversation',{configurable:true,get:()=>actualCodex,set(value){actualCodex={...value,create(options){const engine=value.create({...options,onState:state=>{(fixture.outputLevels??=[]).push(state.outputLevel);options.onState?.(state);}});fixture.engine=engine;return engine;}};}});}
+  if(codexActivityCase)for(const name of [publicCase?'PublicLiveConversation':'CodexConversation']){let original;Object.defineProperty(window,name,{configurable:true,get:()=>original,set(value){original={...value,create(options){const engine=value.create({...options,onState:state=>{(fixture.outputLevels??=[]).push(state.outputLevel);options.onState?.(state);}});fixture.engine=engine;return engine;}};}});}
 
   let captureModule;Object.defineProperty(window,'StreamingVoice',{configurable:true,get:()=>captureModule,set(value){captureModule={...value,async openCapture(...args){const c=await value.openCapture(...args);c.subscribe(e=>{if(e.pcm)fixture.captureBytes+=e.pcm.byteLength;});return c;}};}});
   const actualFetch=window.fetch.bind(window);window.fetch=(url,...args)=>{if(String(url).endsWith('api/interaction/audio')){fixture.audioRequests++;fixture.audioRequestedWhileNativeOpen ||= fixture.peers.some(peer=>peer.connectionState!=='closed')||fixture.contexts.some(ctx=>ctx.state!=='closed');}return actualFetch(url,...args);};
@@ -189,6 +190,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    close(){this.readyState=3;queueMicrotask(()=>this.onclose?.());}
   };
  },{publicCase,codexActivityCase});
+ if(avatarSpeechCase)await context.addInitScript(()=>{
+  let original;window.avatarSpeechLevels=[];Object.defineProperty(window,'AvatarWorkshopUI',{configurable:true,get:()=>original,set(value){original={...value,mount(options){const ui=value.mount(options);return {...ui,speechLevel(level){const canvas=document.querySelector('.avatar-surface canvas'),before=canvas?.toDataURL();ui.speechLevel(level);avatarSpeechLevels.push({level,changed:!!canvas&&before!==canvas.toDataURL()});if(avatarSpeechLevels.length>32)avatarSpeechLevels.shift();}};}};}});
+ });
  if(hudCase)await context.addInitScript(()=>{
   let module;Object.defineProperty(window,'PublicLiveConversation',{configurable:true,get:()=>module,set(value){module={...value,create(options){window.hudRecovery=options.onRecovery;return value.create(options);}};}});
  });
@@ -497,6 +501,27 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   await page.locator('#conversation-voice-engine').selectOption(value);
   await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+ }
+
+ if(avatarSpeechCase){
+  assert(avatarRecord?.design?.avatarModel?.nodes.some(n=>n.id==='anchor-mouth'),'Use the retained selected mouth-enabled artwork');
+  await page.setViewportSize({width:390,height:844});
+  await page.locator('#conversation-message').fill('Keep this draft while the avatar speaks.');
+  await selectEngine(publicCase?'gpt-live':'codex');await page.locator(avatarEntrySelector).click();
+  await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');
+  await page.waitForFunction(()=>codexFixture.outputLevels?.at(-1)>0);
+  assert(await page.evaluate(()=>avatarSpeechLevels.some(v=>v.level>0&&v.changed)),'Decoded playback must reach and repaint the selected mouth-enabled avatar');
+  await page.evaluate(()=>{codexFixture.remoteOutput.gain.gain.value=0;});await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)===0);
+  assert.equal(await page.evaluate(()=>avatarSpeechLevels.at(-1)?.level),0,'Remote silence restores the selected jaw');
+  await page.evaluate(()=>{codexFixture.remoteOutput.gain.gain.value=.12;});await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)>0);
+  await page.evaluate(()=>codexFixture.engine.pause());assert.equal(await page.evaluate(()=>avatarSpeechLevels.at(-1)?.level),0,'Paused output cannot move the jaw');
+  await page.evaluate(()=>codexFixture.engine.resume());await page.waitForFunction(()=>codexFixture.outputLevels.at(-1)>0);
+  await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
+  await page.waitForFunction(()=>!codexFixture.engine.active&&codexFixture.contexts.every(c=>c.state==='closed'));
+  assert.equal(await page.evaluate(()=>avatarSpeechLevels.at(-1)?.level),0,'Leaving Avatar clears live mouth activity');
+  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while the avatar speaks.');
+  assert.equal(await page.evaluate(()=>codexFixture.opens),1);assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-decoded-output-to-selected-avatar';report.engine=publicCase?'gpt-live':'codex';report.output='Synthetic660Hz remote track through actual decoded-output worklet, engine state, mounted Conversation and same selected Canvas; silence/pause/exit restore zero. Amplitude animation only, no phoneme or physical hearing proof.';return;
  }
 
  if(publicCase){

@@ -2373,7 +2373,7 @@ window.Conversation = (() => {
         }
       },
       onState:value=>{if(voiceChoice!=='codex')return;if(voiceEngine)voiceEngine.disabled=!!codexVoiceSession?.active||!!voiceMode?.active;
-        if(!voiceModePrevious?.continuous)return;captureBusy=false;voiceMode?.update({continuousState:value});presentState({capture:value.starting?'permission':'idle',playback:value.playback},false);}
+        if(!voiceModePrevious?.continuous)return;captureBusy=false;voiceMode?.update({continuousState:value});presentState({capture:value.starting?'permission':'idle',playback:value.playback,outputLevel:value.outputLevel},false);}
     });
     if(standalone&&!readOnly&&microphone&&window.PublicLiveConversation?.supported()){
       const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
@@ -2420,7 +2420,7 @@ window.Conversation = (() => {
         onState:value=>{
           for(let i=retained.length-1;i>=0;i--)if(retained[i].binding!==binding){retained[i].box.remove();retained.splice(i,1);speech=undefined;}
           if(!isPublicLive())return;if(voiceEngine)voiceEngine.disabled=!!publicLiveSession?.active||!!voiceMode?.active;
-          if(!voiceModePrevious?.continuous)return;captureBusy=false;voiceMode?.update({continuousState:value});presentState({capture:value.starting?'permission':'idle',playback:value.playback},false);
+          if(!voiceModePrevious?.continuous)return;captureBusy=false;voiceMode?.update({continuousState:value});presentState({capture:value.starting?'permission':'idle',playback:value.playback,outputLevel:value.outputLevel},false);
         }
       });
     }
@@ -2445,7 +2445,7 @@ window.Conversation = (() => {
         else held=microphone?.hold();conversationOnly=false;sound?.update({conversationOnly:false});
         if(voiceModePrevious?.enabled){voiceSuspended=voiceModePrevious.suspended;voiceStatus();}
         else disableVoice();
-        voiceModePrevious=undefined;audioFilterChanged();companion?.update({});
+        voiceModePrevious=undefined;presentState({outputLevel:0},false);audioFilterChanged();companion?.update({});
         if(voiceEngine)voiceEngine.disabled=!!voiceSession?.active;
         return held;
       }
