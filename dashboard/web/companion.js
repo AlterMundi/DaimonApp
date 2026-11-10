@@ -203,7 +203,7 @@ window.ConversationCompanion = (() => {
       box.dataset.question=String(!!state.question);
       const caption=!state.connected?(state.connected===false?"Let’s reconnect.":"Ready when you are."):state.question?"Your turn, whenever you’re ready.":
         state.capture==="recording"?"I’m listening.":rows.length?"You can keep talking or writing.":"Where shall we go next?";
-      if(title.textContent!==caption)title.textContent=caption;
+      if(title && title.textContent!==caption)title.textContent=caption;
       const signature=JSON.stringify(rows);
       if(signature!==lastPhases){
         const chips=rows.map(({icon,label})=>{
@@ -211,7 +211,7 @@ window.ConversationCompanion = (() => {
           symbol.textContent=icon;symbol.setAttribute("aria-hidden","true");
           chip.append(symbol,document.createTextNode(label));return chip;
         });
-        phases.replaceChildren(...chips);lastPhases=signature;
+        phases?.replaceChildren(...chips);lastPhases=signature;
       }
       box.dataset.fresh=String(!!fresh);
     }

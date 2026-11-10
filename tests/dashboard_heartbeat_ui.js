@@ -60,3 +60,15 @@ assert.equal(state(continuous,now+15000),'unavailable');
 assert.equal(state({...continuous,resources:{...continuous.resources,state:'rate_limited'}},now),'inference_rate_limited');
 assert.equal(state({...continuous,producer:{...continuous.producer,mode:'finite'}},now),'unavailable');
 console.log('Heartbeat: continuous operation keeps fresh proof and rate limits without a pilot expiry.');
+
+const presentation=window.InteractionHeartbeat.presentation;
+const waiting={...continuous,operational:false,operational_evidence:{...continuous.operational_evidence,operational:false,reason:'attention_pending'}};
+assert.equal(presentation(waiting,now).label,'Waiting');
+assert.equal(presentation(waiting,now).detail,'Earlier heartbeat work is still pending.');
+assert.equal(state(waiting,now),'unavailable','Waiting must never pulse as ready');
+assert.equal(presentation(waiting,now+15000).label,'Status unavailable','Stale reasons must not masquerade as current status');
+assert.equal(presentation({...waiting,admission_paused:true},now).label,'Paused');
+assert.equal(presentation({...waiting,operational_evidence:{...waiting.operational_evidence,generation:2}},now).label,'Status unavailable');
+assert.equal(presentation({...waiting,operational_evidence:{...waiting.operational_evidence,reason:'native_busy'}},now).label,'Waiting');
+for(const input of [null,base,waiting,continuous,failed])assert.doesNotMatch(JSON.stringify(presentation(input,now)),/Generation|generation|source check|admission|allocation|lane|2023-|arbitrary private/i);
+console.log('Heartbeat: plain product states preserve fresh evidence and hide operator diagnostics.');

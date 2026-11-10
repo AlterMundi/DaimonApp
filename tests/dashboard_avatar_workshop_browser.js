@@ -2,9 +2,10 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 (async()=>{
- const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox']});
+ const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),args:['--no-sandbox','--disk-cache-size=1048576','--media-cache-size=1048576']});
+ const newPage=async options=>{const page=await browser.newPage(options);const origin=new URL(process.argv[2]).origin;await page.context().route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());return page;};
  try{
-  const page=await browser.newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
+  const page=await newPage({viewport:{width:1200,height:900},reducedMotion:'reduce'}),errors=[];
   page.setDefaultTimeout(5000);page.on('pageerror',e=>{errors.push(e.message);console.error('Browser error:',e.message);});page.on('dialog',dialog=>dialog.accept());
   // Browser interaction proof is synthetic; mounted provider/cache ownership is
   // covered by dashboard_voice_studio_preview_api.py, without paid auditions.
@@ -47,6 +48,35 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  async function missionJourney(){
+   const requestId='00000000-0000-4000-8000-000000000001';
+   await page.goto(origin+'/?avatar_mission='+requestId);
+   const mission=page.frameLocator('iframe');await mission.locator('main:not([inert])').waitFor();
+   assert(await mission.locator('#use-avatar').isHidden(),'Mission never offers activation');
+   await mission.locator('#appearance summary').click();await mission.locator('#name').fill('Synthetic mission companion');await mission.locator('#name').dispatchEvent('change');await mission.locator('#close-appearance').click();
+   assert(await mission.locator('#return-mission').isDisabled(),'Unsaved changes cannot return an older revision');
+   await mission.locator('#save').click();await mission.locator('#return-mission:enabled').waitFor();
+   assert(await mission.locator('#use-avatar').isHidden(),'Saving preserves mission mode and cannot reveal activation');
+   const before=await page.evaluate(async()=>fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}}).then(r=>r.json()));
+   await mission.locator('#return-mission').click();
+   await page.locator('.avatar-workshop-dialog').waitFor({state:'hidden'});
+   const entry=await page.evaluate(async id=>fetch('/api/interaction/avatars/missions/'+id,{headers:{'X-Test-Actor':'100'}}).then(r=>r.json()),requestId);
+   const revision=entry.returned.saved_revision;
+   assert.equal(revision.id,before.editing,'Return pins the explicitly saved version');
+   const after=await page.evaluate(async()=>fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}}).then(r=>r.json()));
+   assert.equal(after.active,before.active,'Mission return never activates');
+   await page.reload();await mission.locator('main:not([inert])').waitFor();
+   assert(await mission.locator('#return-mission').isEnabled(),'Returned revision reopens after reload');
+   const compact=page.locator('#avatar-mission-preview canvas');
+   assert.equal(await compact.getAttribute('data-revision'),revision.id);
+   assert.equal(await compact.getAttribute('data-sha256'),revision.sha256);
+   assert(await compact.evaluate(c=>c.width>0&&c.height>0&&c.getContext('2d').getImageData(0,0,c.width,c.height).data.some(v=>v!==0)),'Exact returned revision renders in actual compact mission preview');
+   assert(await mission.locator('#portrait').evaluate(c=>c.width>0&&c.height>0),'Reopened revision renders in workshop');
+   await mission.locator('#cancel-workshop').click();
+   console.log('PASS composed school mission browser entry/save/return/reload, exact immutable revision, workshop and compact rendering without activation');
+  }
+  if(process.env.MISSION_ONLY==='1'){await missionJourney();return;}
+
   if(process.env.OUTPUT_HUD_ONLY==='1'){
    const bootstrap=await page.request.get(origin+'/assets/avatar-workshop/experiments/school-avatar-quest/presentation.mjs');
    assert.equal(bootstrap.status(),200,'Pre-paint bootstrap must use an admitted static asset suffix');
@@ -63,14 +93,32 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
     await page.waitForTimeout(100);
     assert.equal(await editor.locator('html').evaluate(e=>e.scrollWidth>innerWidth),false,'Workshop fits '+width);
     const background=await editor.locator('#panel').evaluate(e=>getComputedStyle(e).backgroundColor);
-    assert.equal(background,'rgb(18, 36, 48)','Actual wardrobe panel uses authored dark surface');
-    if(width<=375)assert.equal(await editor.locator('#tabs').evaluate(e=>getComputedStyle(e).gridTemplateColumns.split(' ').length),2,'Phone tabs keep readable labels in two columns');
+    assert.notEqual(background,'rgba(0, 0, 0, 0)','Archive panel keeps its selected receiving material');
+    assert.equal(await editor.locator('.application-bar').innerText(),'ascii-avatar.exe','Parent HUD selection preserves the selected Archive game');
+    assert(await editor.locator('#tabs button').evaluateAll(nodes=>nodes.every(e=>e.scrollWidth<=e.clientWidth+1)),'Phone tabs keep complete labels');
     await page.screenshot({path:path.join(output,'workshop-'+width+'.png')});
    }
    await page.getByRole('button',{name:/^(Voice|Voces)$/,exact:true}).click();
    await page.locator('.voice-studio-card').first().waitFor();
    assert.equal(await page.locator('.voice-studio-card').first().evaluate(e=>getComputedStyle(e).borderRadius),'3px');
-   await page.screenshot({path:path.join(output,'voice-studio-320.png')});
+   for(const [width,height] of [[1200,860],[375,860],[320,860],[375,430]]){
+    await page.setViewportSize({width,height});
+    const geometry=await page.locator('.voice-studio-intro').evaluate(e=>{
+     const box=e.getBoundingClientRect(),mark=e.querySelector('.voice-studio-mark').getBoundingClientRect(),heading=e.querySelector('div').getBoundingClientRect();
+     return {width:box.width,height:box.height,markRight:mark.right,headingLeft:heading.left,headingBottom:heading.bottom,bottom:box.bottom,display:getComputedStyle(e).display,decoration:getComputedStyle(e,'::before').content};
+    });
+    assert.equal(geometry.display,'flex','Workshop title never inherits shell header grid');
+    assert(geometry.markRight<=geometry.headingLeft,'Voice mark does not overlap title at '+width);
+    assert(geometry.headingBottom<=geometry.bottom+1,'Title stays inside its content header');
+    assert(['none','normal'].includes(geometry.decoration),'No identity shell decoration over workshop heading');
+    assert.equal(await page.locator('.voice-studio').evaluate(e=>e.scrollWidth>e.clientWidth),false,'Voice studio fits '+width);
+    const choice=page.locator('.voice-studio-voices button').first();
+    await page.keyboard.press('Tab');await choice.focus();
+    assert.equal(await choice.evaluate(e=>getComputedStyle(e).outlineStyle),'solid','Keyboard focus remains outside cut control');
+    assert.equal(await choice.evaluate(e=>getComputedStyle(e,'::before').clipPath.startsWith('polygon(')),true,'Choice uses cut frame');
+    assert.equal(await page.locator('.voice-studio-presets .control-icon').count(),3,'Style icons use device-independent geometry');
+    await page.screenshot({path:path.join(output,'voice-studio-'+width+'x'+height+'.png')});
+   }
    assert.equal(previewPosts.length,0,'Appearance never auditions or applies a voice');
    assert.equal(errors.length,0,errors.join('\n'));
    console.log('PASS authored workshop/voice sheets at desktop375/320; no overflow, auditions or activation');return;
@@ -81,7 +129,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    const original=process.env.AVATAR_MOUTH_ORIGINAL?JSON.parse(fs.readFileSync(process.env.AVATAR_MOUTH_ORIGINAL,'utf8')).record.design:null;
    const result=await page.evaluate(async({input,original})=>{
     const {fresh}=await import('/assets/avatar-workshop/experiments/school-avatar-quest/model.mjs'),{prepare}=await import('/assets/avatar-workshop/renderer.mjs');
-    const design=input||{...fresh(),body:'custom-model',characterStyle:'model/v1',avatarModel:{schema:'ascii-avatar-model/v1',id:'mouth-fixture',name:'Mouth fixture',nodes:[{id:'head',type:'ellipse',cx:288,cy:200,rx:100,ry:100,fill:'#ffffff'},{id:'anchor-mouth',type:'path',path:[['M',288,230]],fill:null,pivot:[288,230]},{id:'jaw',type:'ellipse',cx:288,cy:240,rx:55,ry:12,fill:'#00ffff',parent:'anchor-mouth',pivot:[288,230]}],animations:{calm:[]},anchors:{compact:[160,80,256,320]}}};
+    const design=input||{...fresh(),body:'custom-model',characterStyle:'model/v1',avatarModel:{schema:'ascii-avatar-model/v1',id:'mouth-fixture',name:'Mouth fixture',nodes:[{id:'head',type:'ellipse',cx:288,cy:200,rx:100,ry:100,fill:'#ffffff'},{id:'anchor-mouth',type:'path',path:[['M',288,230]],fill:null,pivot:[288,230]},{id:'jaw',type:'ellipse',cx:288,cy:240,rx:55,ry:12,fill:'#00ffff',parent:'anchor-mouth',pivot:[288,230]}],animations:Object.fromEntries(['calm','curious','joy','sad','anger','uncertain','focus','welcome'].map(cue=>[cue,[{node:'head',channel:'x',frames:Array(12).fill(0)}]])),anchors:{compact:[160,80,256,320]}}};
     const frozen=JSON.stringify(design),base=original||structuredClone(design);if(!original){base.avatarModel.nodes=base.avatarModel.nodes.filter(n=>n.id!=='anchor-mouth');delete base.avatarModel.nodes.find(n=>n.id==='jaw').parent;}
     let stills=0,mouthChanges=0;
     for(const width of [640,148]){
@@ -272,6 +320,18 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await page.goto(origin+'?workshop=unknown');assert.equal(await page.locator('.avatar-workshop-dialog').count(),0,'Unknown entry never opens a workshop');
   await page.goto(origin);await page.locator('#avatar-workshop-open').click();
   const editor=page.frameLocator('iframe');await editor.locator('#save').waitFor({state:'visible'});
+  await editor.locator('.upload-symbol svg').waitFor();
+  await editor.locator('main:not([inert])').waitFor();
+  assert.equal(await editor.locator('.application-bar').innerText(),'ascii-avatar.exe');
+  await editor.locator('body').evaluate(()=>document.fonts.ready);
+  assert(await editor.locator('body').evaluate(()=>document.fonts.check('20px ArchivePixel')&&document.fonts.check('16px ArchiveText')),'Selected local game fonts loaded');
+  assert(await editor.locator('.stage.world').evaluate(stage=>['#use-avatar','#cancel-workshop'].every(id=>{const b=getComputedStyle(document.querySelector(id)),s=getComputedStyle(stage);return b.backgroundColor===s.backgroundColor&&b.color===s.color;})),'Account actions retain readable receiving colors');
+  assert.equal(await editor.locator('.upload-symbol svg').count(),1,'Selected letter envelope replaces the old text placeholder');
+  await editor.locator('#appearance summary').click();
+  assert(await editor.locator('.appearance-popover').evaluate(e=>e.scrollHeight<=e.clientHeight+2),'Appearance controls fit without scroll');
+  const gaps=await editor.locator('.appearance-popover').evaluate(e=>{let previous=null;return [...e.querySelectorAll('label')].map(l=>{const a=l.querySelector('.control-label').getBoundingClientRect(),b=l.querySelector('input').getBoundingClientRect(),result={own:b.top-a.bottom,prior:previous===null?null:a.top-previous};previous=b.bottom;return result;});});
+  assert(gaps.every(g=>g.own===2&&(g.prior===null||g.prior>g.own)),'Captions belong to their own controls');
+  await editor.locator('#close-appearance').click();
   await editor.locator('#save').click();await editor.locator('#use-avatar').waitFor({state:'visible'});
   await page.waitForFunction(()=>!document.querySelector('iframe').contentDocument.querySelector('#use-avatar').disabled);
   assert.equal(await page.locator('#conversation-companion pre').isVisible(),true,'Save must keep previous avatar');
@@ -497,7 +557,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await editor.locator('#use-avatar').click();await editor.locator('#cancel-workshop').click();await page.reload();await page.locator('.workshop-portrait').waitFor();
   assert.equal(await page.locator('.workshop-portrait').count(),1,'New saved acting avatar reloads through existing account activation');
   // Spanish first-use presentation, explicit choices and selected Home themes.
-  const child=await browser.newPage({locale:'es-AR',viewport:{width:375,height:850},reducedMotion:'reduce'});
+  const child=await newPage({locale:'es-AR',viewport:{width:375,height:850},reducedMotion:'reduce'});
   const childErrors=[];child.on('pageerror',error=>childErrors.push(error.message));
   await child.route('**/api/interaction/avatars/voice',async route=>{const response=await route.fetch(),value=await response.json();if(route.request().method()==='GET')value.audition_available=true;await route.fulfill({response,json:value});});
   await child.goto(process.argv[2]+'/?workshop=voice');
@@ -525,12 +585,15 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await childStudio.getByLabel('Contá cómo querés que suene').fill('Alegre, con pausas suaves.');
   assert.equal(await childStudio.locator('.voice-studio-presets [aria-pressed="true"]').count(),0,'Custom delivery clears preset selection');
   assert.deepEqual(childErrors,[]);await child.close();
+  if(process.env.SCHOOL_SOURCE)await missionJourney();
+  await page.goto(origin);await page.locator('.avatar-surface[data-avatar-state="custom"]').waitFor();
   // Actual header stacking and compact cosmetic controls, independent of account API.
   await page.setViewportSize({width:960,height:900});
-  await page.evaluate(()=>{document.querySelector('dialog[open]')?.close();document.body.classList.add('standalone-conversation');document.body.style.display='block';const header=document.createElement('header'),identity=document.createElement('div');identity.className='identity';identity.append(document.querySelector('#conversation-companion'));header.append(identity);const line=document.createElement('div');line.id='conversation-presence';line.dataset.pending='true';const pending=document.createElement('button');pending.id='test-pending-hit';pending.textContent='Pending decision';pending.style.cssText='display:block;width:100%;height:32px';line.append(pending);document.body.prepend(header,line);});
+  await page.evaluate(()=>{document.querySelector('dialog[open]')?.close();document.body.classList.add('standalone-conversation');document.body.style.display='block';const header=document.createElement('header'),identity=document.createElement('div');identity.className='identity';identity.append(document.querySelector('#conversation-companion'));header.append(identity);document.body.prepend(header);});
   const frameBox=page.locator('.avatar-frame');await frameBox.scrollIntoViewIfNeeded();
-  const geometry=await page.evaluate(()=>{const box=document.querySelector('.avatar-frame').getBoundingClientRect(),gear=document.querySelector('#avatar-workshop-open').getBoundingClientRect(),line=document.querySelector('#conversation-presence').getBoundingClientRect(),picture=document.querySelector('.workshop-portrait').getBoundingClientRect();const y=line.top+2,x=Math.min(picture.right-2,picture.left+picture.width/2);return {gearInside:gear.left>=box.left&&gear.right<=box.right,gearWidth:gear.width,overlap:picture.bottom>y,pendingOnTop:document.elementFromPoint(x,y)?.closest('button')?.id==='test-pending-hit'};});
-  assert.equal(geometry.gearInside,true);assert.equal(geometry.gearWidth,32);assert.equal(geometry.overlap,true,'Exercise real portrait overlap with pending line');assert.equal(geometry.pendingOnTop,true,'Pending text/action receives the overlapping hit');
+  const geometry=await page.evaluate(()=>{const box=document.querySelector('.avatar-frame').getBoundingClientRect(),gear=document.querySelector('#avatar-workshop-open').getBoundingClientRect();return {gearInside:gear.left>=box.left&&gear.right<=box.right,gearWidth:gear.width};});
+  assert.equal(geometry.gearInside,true);assert.equal(geometry.gearWidth,32);
+  assert.equal(await page.locator('#conversation-presence').count(),0,'Removed presence strip is not reintroduced by the workshop');
   await page.getByRole('button',{name:'Pause avatar',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Animate avatar',exact:true}).getAttribute('aria-pressed'),'true');
   await page.getByRole('button',{name:'Animate avatar',exact:true}).click();

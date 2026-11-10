@@ -74,6 +74,16 @@ consuming-process acceptance. Keep a required body-local PATH entry in the
 existing service configuration and its retained preimage; do not introduce a new
 login, change providers or activate an avatar during software delivery. See
 [workshop receiving](interaction-avatar-workshop.md#receiving-selection-6november2026).
+Before selecting a composed workshop, verify its complete adapted bytes with
+`python3 -B -m dashboard.avatar_workshop_provenance --root STAGED_WORKSHOP`.
+A stripped receiving package can omit the development checker; run the maintained
+checkout's checker against that root instead of installing it into the service.
+Checking only the newly changed files or copying `PROVENANCE.json` is insufficient:
+a prior incomplete copy can omit the pre-paint presentation script or its cosmetic
+appearance bridge while constructors and changed-asset hashes still pass. Inspect
+any retained difference, preserve actor data and restore only the selected source;
+do not replay an earlier selection to correct a preparation/verifier error.
+
 
 ## Voice admission during web maintenance
 
@@ -228,3 +238,79 @@ arguments proves no transport invocation; retain that failed intent and continue
 only the known-unattempted remote action with a separate recovery receipt. A
 transport timeout is different: inspect the original remote process/receipt and
 never use this local-preflight recovery rule to replay an uncertain launch.
+
+### Completing a basic child receiver's native voice configuration
+
+A basic text/Avatar receiver can have current client assets while retaining an
+older Python native-voice backend. Before enabling continuous native voice,
+qualify the composed backend rather than accepting assets/constructor health as
+proof of renewal. The current contract includes `openai_live_api`,
+`openai_live_visits`, `openai_live_native_session`, `integrator_startup` and the
+owner-bound `Provider.public_live_integrator_context` reader plus its existing
+`scripts/activity_indicator.Native` observer allowing `thread/items/list`. Verify
+the real same-owner paginated read before microphone or paid creation; importing
+the reader and exercising it with a fake transport misses a stale observer fence. Reuse published
+qualified components and preserve unrelated local Provider behavior. The API
+requires that reader before paid creation; continuous renewal also needs the
+finalization/context-readiness methods on the retained visit store.
+
+Use the existing selected child account custody and private brief/ASR bindings;
+never substitute Codex OAuth for its API key. Both raw file-only and completed
+Live-only profiles retain their distinct existing routes. Include the declared
+`websocket-client` dependency in the consuming interpreter's actual search path.
+For fixture imports of command-line `scripts/interaction_asr.py`, include its
+scripts directory as the CLI does; a package-style import failure is not evidence
+that the actual command lacks a dependency. Mounted qualification must preserve
+the serving dependency prefix in PYTHONPATH as well as the candidate source.
+
+Retain one private preimage/proposal pair. Under the existing voice fence, check
+all selected native work idle, preserve actual goals/revisions and native binary,
+and apply only the required configuration and coherent web delta. Preserve Codex
+and Matrix processes, identity/grants, journals, original media and later owner
+changes. A listener restart is distinct from restarting its native Codex backend.
+Verify consuming-user constructors, loaded capabilities, own Home entry, anonymous
+and foreign refusal, selected assets and unchanged goal/accounting. A first-sound
+probe is separately bounded to one new provider session per selected actor; an
+existing equivalent attempt must be inspected instead. Stop explicitly, retain
+unconfirmed final usage without refund/retry, and distinguish decoded technical
+audio from sustained family/device/hearing acceptance.
+
+The browser `openai-live.js` is also part of that coherent closure: current HUD
+assets and a renewal-capable server do not prove the selected client renews its
+physical visit. Qualify the actual served client with the lifecycle/source/
+recording-recovery suite; keep the same microphone, per-visit upload locks,
+confirmed-close/context-readiness barriers and unchanged bounds. A short first
+answer demonstrates audio, not continuous renewal.
+
+Sideband source requests can precede WebRTC's connected callback during healthy
+activation. Reserve the same bounded source request and wait for that owned
+activation's readiness; confirm raw bytes only afterward. Stop or failed/retired
+activation rejects that wait. Duplicate requests reuse one prefix/upload; they
+never create another voice call or bypass binding, capture or source checks.
+
+### Adding the portable Conversation descriptor
+
+Select the already-qualified App publisher with the existing collector-preserving
+native handoff. Resolve each real Home pairing and registered Interaction route;
+configure only that pair's publication surface/audience and private owner signer.
+A descriptor is public verification metadata, never proof of a message delivery or
+permission to replace an older ambiguous publication. Matrix selects its signed
+policy through its separate existing writer; this App update does not reload it.
+
+Adding interaction.matrix_publication changes the current Provider authority
+fingerprint. Reuse same-scope companion requalification, preserving attempts,
+menu/Traffic state and unexpired devices through their supported reauthorize
+operation. Qualify all selected constructors before stopping, then use the voice
+admission fence while selecting configuration and compatible code. Preserve
+Core, native threads, goals/accounting and exact current collectors; inspect a
+failed final verifier instead of repeating a completed binary/config selection.
+
+Inspect the actual serving Provider presentation_list publications argument and
+the mounted HTTP reader, not only the repository ancestry or browser assets.
+The10November original-three check found matching Conversation JavaScript but
+older Provider/API functions. Composing just those two qualified814 reader deltas
+preserved the current artwork, voice/storage fixes and other receiver code. The
+exact staged reader plus full-audio binary passed the real owner socket/SQLite/
+authenticated HTTP publication fixture with the installed compatible Matrix SDK.
+Source publication, actual native status, current reader and the later Matrix
+publication/receiving journey remain separate observations.

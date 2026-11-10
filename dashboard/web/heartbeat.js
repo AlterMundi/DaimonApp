@@ -36,9 +36,21 @@
     if(check.outcome==='failed')text+=' Last successful source check: '+(success || 'not observed')+'.';
     return text;
   }
-  function readiness(value) {
-    const reasons={attention_pending:'Heartbeat work is still being reconciled.',native_busy:'Waiting for the general conversation to become idle.',native_support_unavailable:'Native heartbeat support is not observed.',native_admission_unavailable:'Native admission is unavailable.',native_observation_unavailable:'Current native readiness could not be verified.',source_check_stale:'A fresh source check is required.',source_check_unavailable:'A successful source check at the current generation is required.',loop_unavailable:'The heartbeat loop is unavailable.',controls_changed:'Controls changed during the readiness check; refresh status.',native_binding_changed:'The native conversation changed; refresh status.'};
-    return value?.operational_evidence?.schema==='telecodex.heartbeat-operational/v1'?(reasons[value.operational_evidence.reason] || ''):'';
+  // Product copy is separate from the operational proof used by the pulse.
+  function presentation(value,now=Date.now()) {
+    const selected=state(value,now);
+    const labels={paused:'Paused',unconfigured:'Not set up',unavailable:'Status unavailable',error:'Needs attention',operational:'Ready',observation_expired:'Checks stopped',observation_stopped:'Checks stopped',inference_expired:'Work paused',inference_exhausted:'Usage limit reached',inference_rate_limited:'Waiting for the hourly limit to reset'};
+    const details={paused:'Automatic work is paused.',unconfigured:'Heartbeat setup is incomplete.',unavailable:'Refresh to check heartbeat.',error:'Heartbeat could not run. Refresh to check again.',operational:'Heartbeat is ready for automatic work.',observation_expired:'Automatic checks have ended.',observation_stopped:'Automatic checks have stopped.',inference_expired:'The time allowed for automatic work has ended.',inference_exhausted:'The allowance for automatic work has been used.',inference_rate_limited:'Automatic checks continue. New work will wait.'};
+    const result={label:labels[selected],detail:details[selected]};
+    const e=value?.operational_evidence;
+    const fresh=e?.schema==='telecodex.heartbeat-operational/v1' && e.generation===value.generation && Number.isSafeInteger(e.observed_at_unix_ms) && e.observed_at_unix_ms<=now && e.valid_for_seconds>=1 && e.valid_for_seconds<=15 && now<e.observed_at_unix_ms+e.valid_for_seconds*1000;
+    if(selected==='unavailable' && fresh){
+      if(e.reason==='attention_pending')return {label:'Waiting',detail:'Earlier heartbeat work is still pending.'};
+      if(e.reason==='native_busy')return {label:'Waiting',detail:'Automatic work waits while our conversation is busy.'};
+      if(['source_check_stale','source_check_unavailable','controls_changed','native_binding_changed'].includes(e.reason))return {label:'Checking',detail:'Checking whether heartbeat is ready.'};
+      if(['loop_unavailable','native_support_unavailable','native_admission_unavailable','native_observation_unavailable'].includes(e.reason))return {label:'Needs attention',detail:'Heartbeat is enabled but cannot start automatic work.'};
+    }
+    return result;
   }
   function action(value,id) {
     const caps=value?.controls,global=Number.isSafeInteger(value?.generation)&&value.generation>=0;
@@ -52,35 +64,53 @@
     const button=root.querySelector('#heartbeat-toggle'),menu=root.querySelector('#heartbeat-menu');
     if(!button || !menu)return;
     const status=root.querySelector('#heartbeat-status'),generation=root.querySelector('#heartbeat-generation'),lanes=root.querySelector('#heartbeat-lanes');
-    const labels={paused:'Paused',unconfigured:'Not configured',unavailable:'Status unavailable',error:'Error',operational:'Operational',observation_expired:'Observation window expired',observation_stopped:'Source observation stopped',inference_expired:'Inference window expired',inference_exhausted:'Inference allocation exhausted',inference_rate_limited:'Hourly inference limit; observation continues'};
     let last=-Infinity,pending=false,hold,held=false,epoch=0,expiry,writing=false,current=null,notice="";
     function render(value){
       current=value;clearTimeout(expiry);
-      const selected=state(value,clock());button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+labels[selected]);button.title='Heartbeat · '+labels[selected];
+      const selected=state(value,clock()),copy=presentation(value,clock());button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+copy.label);button.title='Heartbeat · '+copy.label;
       if(selected==='operational')expiry=setTimeout(()=>render(null),Math.max(0,evidenceExpiry(value,clock())-clock()));
-      status.textContent='Heartbeat · '+labels[selected];
-      generation.textContent=[Number.isSafeInteger(value?.generation)?'Generation '+value.generation:'',notice,readiness(value),observation(value)].filter(Boolean).join(' · ');
+      status.textContent='Heartbeat · '+copy.label;
+      generation.textContent=notice || copy.detail;
       lanes.replaceChildren();
-      for(const [id,name] of [['global','All heartbeat lanes'],['messaging','Messaging'],['issues','Issues'],['sensory','Sensory'],['tasks','Tasks'],['bitacora','Bitácora']]){
-        const row=root.createElement('div'),control=root.createElement('button'),reason=root.createElement('span');
+      for(const [id,name] of [['global','Heartbeat'],['messaging','Messages'],['reports','Scheduled reviews']]){
+        if(id!=='global' && value?.lanes?.[id]?.supported!==true)continue;
+        if(id==='global' && value?.schema!=='telecodex.heartbeat-control/v1')continue;
+        const row=root.createElement('div'),label=root.createElement('span');
         const command=canControl()?action(value,id):null;
-        control.type='button';control.disabled=writing || !command;control.textContent=command?(command.paused?'Pause ':'Enable ')+name:name;
-        if(command)control.addEventListener('click',()=>write(command));
-        reason.textContent=id==='global'?'Shared generation-aware app controls are not available.':id==='messaging'?'Messaging lane control is not available in the selected backend.':'Not supported yet; no resources activated.';
-        if(command)reason.textContent=id==='global'?(value.admission_paused?'Globally paused. Enabling preserves each lane selection.':'Admission enabled; operational readiness is separate.'):(value.admission_paused?'Global pause still applies.':'Lane selection does not configure resources or prove operation.');
-        if(!canControl())reason.textContent='This monitor is read-only.';
-        const reasonId='heartbeat-'+id+'-reason';reason.id=reasonId;control.setAttribute('aria-describedby',reasonId);row.append(control,reason);lanes.append(row);
+        const paused=id==='global'?value.admission_paused:value.lanes[id].paused;
+        label.textContent=name;row.append(label);
+        if(command){
+          const control=root.createElement('button');control.type='button';control.disabled=writing;
+          control.textContent=command.paused?'Pause':'Enable';control.setAttribute('aria-label',control.textContent+' '+name.toLowerCase());
+          control.addEventListener('click',()=>write(command));row.append(control);
+        }else{
+          const status=root.createElement('span');status.textContent=paused?'Paused':'Enabled';row.append(status);
+        }
+        lanes.append(row);
       }
-      if(selected==='paused' && (value?.producer?.state==='not_configured' || value?.resources?.state==='not_configured'))status.textContent+=' · producer/resources not configured';
+      position();
     }
+    function position(){
+      if(menu.hidden)return;
+      const viewport=window.visualViewport,x=viewport?.offsetLeft || 0,y=viewport?.offsetTop || 0;
+      const width=viewport?.width || window.innerWidth,height=viewport?.height || window.innerHeight;
+      const anchor=button.getBoundingClientRect(),gap=8,edge=8;
+      menu.style.maxWidth=Math.max(0,width-edge*2)+'px';menu.style.maxHeight=Math.max(0,height-edge*2)+'px';
+      const box=menu.getBoundingClientRect();
+      const left=Math.max(x+edge,Math.min(anchor.left,x+width-edge-box.width));
+      const below=anchor.bottom+gap;
+      const top=below+box.height<=y+height-edge?below:Math.max(y+edge,anchor.top-gap-box.height);
+      menu.style.left=left+'px';menu.style.top=top+'px';
+    }
+
     async function write(command){
       if(writing || !authenticated() || !canControl())return;
       writing=true;notice='';const selected=++epoch;render(current);
-      try{await api('interaction/heartbeat',command);if(selected===epoch)notice='Action acknowledged. Status refreshed.';}
-      catch{if(selected===epoch)notice='Action refused or unconfirmed. Check status before choosing again.';}
+      try{await api('interaction/heartbeat',command);if(selected===epoch)notice='Updated.';}
+      catch{if(selected===epoch)notice='Could not confirm the change. Refresh before trying again.';}
       finally{writing=false;if(selected===epoch){render(null);await refresh(true);if(!menu.hidden)root.querySelector('#heartbeat-refresh').focus();}}
     }
-    function open(){menu.hidden=false;button.setAttribute('aria-expanded','true');void refresh(true);root.querySelector('#heartbeat-refresh').focus();}
+    function open(){menu.hidden=false;button.setAttribute('aria-expanded','true');position();void refresh(true);root.querySelector('#heartbeat-refresh').focus();}
     function close(){menu.hidden=true;button.setAttribute('aria-expanded','false');button.focus();}
     async function refresh(force=false){
       if(!authenticated() || document.hidden){epoch++;render(null);return;}
@@ -99,7 +129,9 @@
     root.querySelector('#heartbeat-refresh').addEventListener('click',()=>refresh(true));root.querySelector('#heartbeat-close').addEventListener('click',close);
     document.addEventListener('visibilitychange',()=>{if(document.hidden){epoch++;render(null);}});
     function reset(){epoch++;notice="";render(null);menu.hidden=true;button.setAttribute('aria-expanded','false');}
+    window.addEventListener('resize',position);window.addEventListener('scroll',position,true);
+    window.visualViewport?.addEventListener('resize',position);window.visualViewport?.addEventListener('scroll',position);
     render(null);return {refresh,reset};
   }
-  window.InteractionHeartbeat={mount,state,action,observation};
+  window.InteractionHeartbeat={mount,state,action,observation,presentation};
 })();

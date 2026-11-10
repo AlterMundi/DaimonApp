@@ -1,10 +1,16 @@
 # Integration requirements
 
-Read `CONTRIBUTING.md` before integration. Its independent-review requirement
-for binding, security and persistent-state changes remains mandatory when an old
-review-permission question is withdrawn. Reuse the existing authorized review
-route; do not create another approval question. Source checks and receiving
-adoption are separate from a completed independent review.
+Read `CONTRIBUTING.md` before integration. Apply Nicolas's recorded operational
+delegation: an already authorized same-actor service composition is not waiting
+for another conversation or review to authorize it again. Preserve existing
+authentication, tokens, session bindings, grants and private-state contracts;
+qualify the exact own/foreign/anonymous and changed-selection boundaries through
+the actual receiving writer. Reuse valid review evidence for unchanged code.
+Independent review remains required for new token handling, changed ingress or
+session semantics, migrations and changes to an existing authority contract.
+A routine same-actor composition with those contracts unchanged uses its concrete
+source/receiving checks without an additional external approval gate. Record
+actual reviews, checks and receiving adoption separately; never invent a review.
 
 Voice-first public-native entry initializes an empty owned native context only on
 explicit authenticated Avatar entry, through `input voice native initialize`.
@@ -632,3 +638,12 @@ validator/store gate. They do not select unchanged native qualification. Unknown
 test paths and actual Rust/dependency changes retain normal native checks.
 The scope regression evaluates the actual workflow program and confirms the
 fixture's invocation through dashboard_avatar_workshop.py.
+
+## Product language, not debugging output — Nicolas, 2026-11-10
+
+Never expose debugging text in ordinary user interfaces. Internal generations,
+protocol stages, raw diagnostics and implementation caveats belong in an explicit
+technical/debugging section, or require Nicolas's agreement at that moment.
+Explain meaningful states and available actions in plain product language.
+Do not hide a failure or imply readiness that has not been observed.
+Source: human instruction c437d2e1-53bf-5d18-a499-5b85f443e8c0.

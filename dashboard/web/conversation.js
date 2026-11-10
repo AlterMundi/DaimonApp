@@ -159,25 +159,6 @@ window.Conversation = (() => {
     }
     const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
     const companion=standalone?window.ConversationCompanion?.mount({onArtisticRest:rest=>avatarWorkshop?.artisticRest(rest)}):undefined;
-    if(standalone){
-      const line=$("#conversation-presence"),caption=$("#conversation-companion .companion-caption"),phases=$("#conversation-companion .companion-phases");
-      if(line && caption){
-        const track=document.createElement("div");track.className="companion-status-track";
-        if(phases){phases.setAttribute("role","presentation");phases.removeAttribute?.("aria-live");track.append(phases);}track.append(caption);line.append(track);line.hidden=false;
-        let motion;const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)");
-        const fit=()=>{
-          motion?.cancel();motion=undefined;track.title=track.textContent;
-          const distance=track.scrollWidth-line.clientWidth;
-          if(distance>1 && !reduced?.matches){
-            const travel=distance/18*1000,duration=travel+2000;
-            motion=track.animate?.([{transform:"translateX(0)",offset:0},{transform:"translateX(0)",offset:1000/duration},{transform:`translateX(${-distance}px)`,offset:(1000+travel)/duration},{transform:`translateX(${-distance}px)`,offset:1}],{duration,iterations:Infinity,direction:"alternate",easing:"linear"});
-          }
-        };
-        if(window.ResizeObserver)new window.ResizeObserver(fit).observe(line);
-        if(window.MutationObserver)new window.MutationObserver(fit).observe(track,{childList:true,characterData:true,subtree:true});
-        reduced?.addEventListener?.("change",fit);fit();
-      }
-    }
     const sound=window.ConversationSound?.mount({api,unauthorized:failed,getAuthority:fileCredential,onState:value=>companion?.sonic?.(value)});
     const presentState=(patch,updateVoice=true)=>{if(Object.hasOwn(patch,'outputLevel'))avatarWorkshop?.speechLevel?.(patch.outputLevel);companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
     let inspectorReturnFocus;
@@ -300,7 +281,7 @@ window.Conversation = (() => {
     const liveSpeech=window.LiveSpeech?.mount(standalone?{
       read:key=>window.localStorage?.getItem(key),write:(key,value)=>window.localStorage?.setItem(key,value)
     }:undefined);let canSpeakLive=false;
-    let pendingNavigation,internalNavigation,internalControls;
+    let pendingNavigation,internalControls,internalAttentionItems=()=>[];
     async function listenFromAttention(source){
       try{await voiceMode?.close();}
       catch{audioState('Voice could not finish closing. Return to the conversation before listening.');return;}
@@ -316,10 +297,6 @@ window.Conversation = (() => {
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();clearFocus();voiceContext=undefined;draft.value=message;draft.focus?.();compose.scrollIntoView?.({block:"nearest"});return true;
     }});
-    if(standalone && !readOnly)pendingNavigation=window.AttentionCarousel?.mount({
-      line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
-      getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[])]
-    });
     if(standalone && !readOnly){
       const inflight=new Map();
       const scopedApi=async(path,body)=>{
@@ -336,9 +313,14 @@ window.Conversation = (() => {
       const requests=window.RequestControls.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal",allowCancel:()=>canDecideRequests,getCanDecide:view=>canDecideRequests||view?.kind==="question"});
       const tasks=window.HumanTaskControls?.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal"});
       const panel=$("#internal-attention");panel.hidden=false;
-      internalNavigation=window.AttentionCarousel?.mount({line:$("#conversation-presence"),panel,getItems:()=>[...requests.attentionItems(),...(tasks?.attentionItems()||[])]});
-      internalControls={refresh:()=>Promise.all([requests.refresh(),tasks?.refresh()]),reset:()=>{internalNavigation?.close(false);requests.reset();tasks?.reset();}};
+      $("#conversation-attention").append(panel);
+      internalAttentionItems=()=>[...requests.attentionItems(),...(tasks?.attentionItems()||[])].map(item=>({...item,id:`internal:${item.id}`}));
+      internalControls={refresh:()=>Promise.all([requests.refresh(),tasks?.refresh()]),reset:()=>{pendingNavigation?.close(false);requests.reset();tasks?.reset();}};
     }
+    if(standalone && !readOnly)pendingNavigation=window.AttentionCarousel?.mount({
+      line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
+      getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[]),...internalAttentionItems()]
+    });
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     let transcriptPreview;

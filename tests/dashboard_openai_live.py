@@ -110,6 +110,14 @@ class Creation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 session_spec('Owner', client_delegation=True, session_options={field: 'override'})
 
+    def test_missing_sideband_dependency_is_fixed_preflight_failure_without_http(self):
+        client=self.client(self.success())
+        with patch.dict(sys.modules,{'websocket':None}):
+            with self.assertRaises(LiveUnavailable) as failure:client.prepare_transport()
+        self.assertEqual(failure.exception.outcome,'sideband_dependency_unavailable')
+        self.assertEqual(self.calls,[])
+        self.assertFalse(client._attempted)
+
     def test_no_codex_json_or_login_token_is_used_as_api_key(self):
         for value in ['{"tokens":{"access_token":"synthetic"}}', 'ey-synthetic-login-token']:
             self.key.write_text(value)

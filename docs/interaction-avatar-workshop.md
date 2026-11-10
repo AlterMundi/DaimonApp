@@ -3,11 +3,12 @@
 ## Original source and adapted-byte verification
 
 The selected author source is ASCII-Interfaces
-`4acdb30f85848933d2c50c9557bbc2fc7d51ec9d`, following the earlier `e1ef54b`
-wardrobe sync and its pillow/sleep refinement. All32 declared original file
-hashes were checked against that exact upstream Git object. Later App adaptations
-have their own36-file receiving inventory; they never replace original hashes,
-authorship, license or handoff evidence.
+`5967ee3c0295bd60cc04297a5030da653651f766` (Enchanted Archive), following
+`4acdb30f85848933d2c50c9557bbc2fc7d51ec9d`. All39 original hashes and the
+separate44-file App receiving inventory retain Ani/Oliva attribution.
+The authenticated account adapter and saved artwork remain App-owned.
+Automatic publication/consumer delivery, compatibility, retention and recovery
+are documented in [shared application updates](shared-application-updates.md).
 
 After changing vendored workshop files, refresh only that adapted inventory in
 the development checkout, then run its existing validator/store tests:
@@ -508,3 +509,72 @@ read follows the same path. The client labels the sample Audio expired, removes
 its Play action and explains the race without claiming playback or generating a
 replacement. Unknown attempts and normal explicit retirement retain their
 existing rules; expiry does not refill the four-batch allowance.
+
+## Archive Enchanted receiving presentation
+
+The wardrobe keeps Ani/Oliva's selected game composition: local Pixelify Sans and
+Nunito fonts, shared SVG controls, the selected letter import tile, upright name
+sticker, centered ascii-avatar.exe title and folder check, grouped retro sliders,
+face-focused expression thumbnails and bounded desktop trays. The former slogan
+is removed. Receiving material/text roles still follow the existing appearance
+bridge; artwork retains its authored palette. Parent navigator-hud selection no
+longer replaces this selected wardrobe with the superseded HUD skin. Its pre-paint
+presentation script remains a valid served .mjs asset; the surrounding Conversation
+and Voice workshop keep their independent current presentation.
+
+This source update is independent of School mission integration. Save, compact
+saved preview and explicit Use keep the current account bridge. Store, validator,
+canonical revision identity, attached hands, output mouth activity and reactions
+are unchanged. Only the two declared local font paths extend public asset serving;
+private/arbitrary fonts and provenance stay refused. Font and icon license texts
+remain bundled with the source. Receiving adoption and actual human visual/device
+acceptance need separate evidence.
+
+The Archive UI/header/artwork handoff objects retain their original snapshot
+hashes. The complete `receiving_hashes` inventory is authoritative for current
+bytes. PR771 is reused for the original Archive drawings and local fonts; the
+receiving appearance CSS is separated from upstream archive.css so normal
+maintainer stylesheet additions do not require another manual theme merge.
+
+
+## Compose the existing School mission host
+
+The PR776 bridge uses the existing actor API and `AsciiMissionHost` from the
+School's PR2. `dashboard.school_mission_host.compose` now supplies the missing
+product selection resolver to the existing App installer. It does not replace
+the workshop/store/ledger or add a login, credential or grant store.
+
+An optional private `school_mission` configuration selects `selection`, its exact
+`selection_sha256`, and `source` with `root`, `state`, `manifest_sha256`. The source
+is the maintained School agent-plan package: verify every manifest source byte,
+closed Python inventory and required host/mapper/engine/curriculum files, within
+64files/2MiB and a256KiB manifest. The existing ledger must already exist. No
+second ledger is created. An App without this optional composition keeps its
+ordinary wardrobe and reports the original unavailable host for mission calls.
+
+The own host/configuration writer retains one private descriptor with schema
+`school-creativity.app-selection/v1`, `active`, the existing numeric App `actor`,
+shared `human_ref`, registered `application_id`, own `tool_bindings` file and the
+original `request` from `school-creativity.ascii-workshop-request/v1`. This is an
+operator selection under the recorded human task, not another admission or a
+claim that a child chose or completed the mission. The source kit and selection
+contain no credentials. Keep installation-specific values out of shared source.
+
+On every entry/return the resolver checks the descriptor's selected digest,
+active state, current authorized provider actor, exact shared human/application,
+request ID and ASCII mission. `request.space_ref` is that existing application ID;
+its learner/companion must match the own tool binding. The existing School host
+resolves the existing ledger profile and paths. Changed/retired selections,
+foreign actors/requests and mismatched learner/companion refuse while preserving
+previous artifacts. A URL request ID only selects that retained entry. Retiring
+the configured selection revokes this route; it does not erase its work.
+
+The existing entry URL uses `avatar_mission=ORIGINAL_REQUEST_UUID`; the wardrobe
+bridge restores its returned immutable revision and compact preview. Browser
+input cannot supply the learner, private destination, observations or review.
+Technical entry/return leaves pending participation agreements unchanged and
+records no learning event, fabricated display review, achievement or activation.
+The School's existing `record_review` retains its agreement/attribution checks.
+The bounded source/browser qualification uses fictional descriptors and the
+actual resolver/host/ledger, not an injected accepting resolver. Receiving and
+family/device acceptance remain distinct and are not claimed by source tests.

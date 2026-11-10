@@ -246,7 +246,7 @@ def install(app, config, provider, authorize, origins):
                 client=OpenAILive(selected['api_key_file'])
                 # Validate this explicitly configured project file before mic
                 # permission; never discover or reinterpret Codex credentials.
-                await asyncio.to_thread(client._project_key)
+                await asyncio.to_thread(client.prepare_transport)
                 from .voice_studio import configured_profiles,choice,apply_choice
                 profiles=configured_profiles(config)
                 workshop=getattr(app.state,'avatar_workshop',None)
@@ -432,6 +432,7 @@ def install(app, config, provider, authorize, origins):
                 'prior_creation_needs_review':'The previous voice connection is not confirmed closed. Your recordings and work are kept for review.',
                 'creation_storage_full':'Voice history storage is full. Your recordings and work are kept; review storage before starting another call.',
                 'native_reader_unavailable':'This native voice comparison needs its prepared server update. No voice call was opened.',
+                'sideband_dependency_unavailable':'Voice needs its configured transport update. No call was opened.',
                 'project_key_unavailable':'This voice comparison needs its configured OpenAI project access. Your recordings and work are unchanged.'}
             from .voice_admission import admission_failure
             message=admission_failure(error) or (messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None)

@@ -182,3 +182,43 @@ This is a source correction until delivered and compared with the reference on
 actual screens. Workshop content and other application's owning appearance
 contracts remain part of the complete design acceptance, not presumed finished
 by a shell screenshot. Keep the same full design goal and functional contracts.
+
+The authored wardrobe tabs, version/name controls, editing tools and Keep/Use
+actions now use the same cut frame, with separate background layers so keyboard
+focus stays outside the silhouette. Undo, Redo, Surprise and appearance controls
+use inline geometric SVG instead of platform-dependent font symbols. Circular
+playback/portrait utilities and the reference composer remain intentionally round.
+Inherited appearances keep their existing geometry. This closes a specific
+secondary-surface mismatch; full phone/reference acceptance remains open.
+
+Voice workshop fidelity now uses geometric waveform/style icons and cut-framed
+voice choices, presets, samples and Save/Use/navigation actions. Conversation's
+fixed identity-header rules exclude the workshop content header: its title and
+mark remain separate at desktop, narrow phone and keyboard heights. Focus rings
+stay outside decorative backgrounds; inherited Homemaker geometry remains intact.
+This addresses the observed overlapping title and residual generic controls;
+full rendered reference/device acceptance remains open.
+
+Nicolas905ef77b removes the rotating pending line. All current conversation
+questions/actions/goal choices and routed-session questions/actions now share
+one For you panel and count, including Avatar review. The existing scoped card
+readers and decision endpoints remain their writers; opening the panel submits
+nothing. Keep namespaces separate, preserve drafts/focus and observe both card
+sections through the same metadata observer without another poller or store.
+The unified For you stream orders pending cards by retained creation time,
+newest first across conversation and routed sources. Missing dates keep stable
+source order. Card readers retain ownership, drafts, paging and decision state;
+terminal cards return to their retained section and account reset removes moved
+cards as well. Opening or sorting never acknowledges or answers a request.
+
+Session menu background correction (Nicolas, 9 November 2026): keep the authored
+cut frame on the stationary outer menu and scroll its inner contents. A long
+session list must remain covered at every scroll position, including with the
+mobile keyboard open. This changes presentation only; session ownership,
+selection, actions and drafts remain with their existing controls.
+
+Nicolas removed the conversational presence strip on 9 November 2026: remove
+its DOM, caption/activity track, marquee observers and background rules rather
+than leaving a hidden reserved row. Pending work remains in For You and actual
+voice controls retain their own state. The authored avatar starts at the header's
+upper edge with no reserved 44px band; short-height keyboard compaction remains.

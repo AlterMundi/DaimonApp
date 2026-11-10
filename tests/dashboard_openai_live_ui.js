@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -40,7 +40,8 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   async setLocalDescription(value){this.localDescription=value;}
   addEventListener(name,run){this.listeners.set(name,run);}removeEventListener(name){this.listeners.delete(name);}
   ice(){this.iceGatheringState='complete';this.localDescription.sdp='v=0 gathered ICE';order.push('ice-complete');this.listeners.get('icegatheringstatechange')?.();}
-  async setRemoteDescription(value){assert.equal(value.sdp,'v=0 answer');this.connectionState='connected';this.onconnectionstatechange();}
+  async setRemoteDescription(value){assert.equal(value.sdp,'v=0 answer');this.connectionState='connecting';if(!deferConnection)this.connect();}
+  connect(){this.connectionState='connected';this.onconnectionstatechange();}
   started(){this.channel.onmessage({data:JSON.stringify({type:'session.started',session:{id:'live/provider:42'}})});}
   close(){this.connectionState='closed';this.onconnectionstatechange?.();}
  }
@@ -95,6 +96,31 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ // The sideband can request a source after SDP creation but before WebRTC's
+ // connection-state event. Preserve the same request and microphone while
+ // readiness is pending; source confirmation still waits for real uploads.
+ for(const stopEarly of [false,true]){
+  const early=fixture({nativeChoice:true,deferConnection:true}),starting=early.engine.start();
+  try{
+   await until(()=>early.peers[0]?.listeners.has('icegatheringstatechange'));early.peers[0].ice();
+   await until(()=>early.peers[0].connectionState==='connecting');early.pcm();
+   const socket=early.sockets[0],request=crypto.randomUUID(),event={data:JSON.stringify({type:'source_seal_requested',visit:socket.id,binding:'a'.repeat(64),request})};
+   socket.onmessage(event);socket.onmessage(event);await sleep(5);
+   assert(early.states.at(-1)?.starting,'A valid source request cannot terminate healthy WebRTC activation');
+   assert.equal(early.stops(),0);assert(!socket.sent.some(x=>x.type==='close'||x.type==='source_sealed'));
+   if(stopEarly){
+    await early.engine.hold();assert.equal(await starting,false);early.peers[0].connect();await sleep(5);
+    assert(!socket.sent.some(x=>x.type==='source_sealed'),'Stop retires the waiting source without an ACK');
+    assert.equal(early.stops(),1);assert.equal(socket.sent.filter(x=>x.type==='close').length,1);
+   }else{
+    early.peers[0].connect();assert.equal(await starting,true);
+    await until(()=>socket.sent.filter(x=>x.type==='source_sealed').length===2);
+    assert.equal(early.requests.length,1,'Repeated same source request reuses its single confirmed prefix');
+    for(const receipt of socket.sent.filter(x=>x.type==='source_sealed'))assert.deepEqual(receipt,{type:'source_sealed',request,through_ordinal:1,capture_bytes:32000});
+    assert(early.engine.active);assert.equal(early.stops(),0);assert.equal(early.permission(),1);assert.equal(early.sockets.length,1);
+   }
+  }finally{await early.engine.hold();await starting;}
+ }
  // A presentation callback must not strand the transport in closing: it would
  // leave Avatar's Reconnect disabled while retaining a microphone owner.
  const failedPresentation=fixture({throwClosingState:true});await failedPresentation.start();

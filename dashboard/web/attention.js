@@ -19,6 +19,9 @@ window.AttentionCarousel = (() => {
     dialog.className="pending-panel";dialog.setAttribute("aria-label",localOnly?"For you":"Pending requests");
     closeButton.type="button";scope.className="note";
     dialog.append(heading,closeButton,scope,panel);document.body.append(dialog);
+    const stream=localOnly?el("div"):undefined,homes=new Map();
+    if(stream){stream.className="for-you-items";stream.setAttribute("aria-label","Pending work, newest first");panel.prepend(stream);}
+
     let items=[],selected,position=0,timer,returnFocus,hover=false,focused=false,drag,dragged=false;
     const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)");
     function schedule(){
@@ -42,7 +45,19 @@ window.AttentionCarousel = (() => {
     }
     function step(delta){if(!items.length)return;position=(position+delta+items.length)%items.length;render();}
     function refresh(){
-      const values=getItems(),index=values.findIndex(v=>v.id===selected);
+      const values=getItems();
+      if(localOnly){
+        const date=item=>{const value=Date.parse(item.created_at||"");return Number.isFinite(value)?value:0;};
+        values.sort((a,b)=>date(b)-date(a));
+        const present=new Set(values.map(item=>item.box));
+        for(const [box,home] of homes)if(!present.has(box)){
+          if(box.parentNode===stream&&home.isConnected)home.append(box);
+          homes.delete(box);
+        }
+        for(const item of values)if(!homes.has(item.box))homes.set(item.box,item.box.parentNode);
+        values.forEach((item,index)=>{if(stream.children[index]!==item.box)stream.insertBefore(item.box,stream.children[index]||null);});
+      }
+      const index=values.findIndex(v=>v.id===selected);
       items=values;position=index>=0?index:Math.min(position,Math.max(0,items.length-1));render();onChange(items.length);
     }
     function close(restore=true){

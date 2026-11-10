@@ -614,9 +614,9 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 
 .standalone-conversation { background:radial-gradient(ellipse at 50% 0%,color-mix(in srgb,var(--accent) 7%,var(--bg)),var(--bg) 65%); background-color:var(--bg); }
 .standalone-conversation main { max-width:960px; gap:8px; padding-inline:24px; }
-.standalone-conversation header { border:0; padding:8px 0; margin:0; }
+.standalone-conversation header:not(.voice-studio-intro) { border:0; padding:8px 0; margin:0; }
 .standalone-conversation .identity h1 { font-size:16px; font-weight:500; letter-spacing:.02em; }
-.standalone-conversation header .resonance { width:24px; height:24px; }
+.standalone-conversation header:not(.voice-studio-intro) .resonance { width:24px; height:24px; }
 .standalone-conversation .apps-return { border-color:transparent; color:var(--muted); }
 .standalone-conversation #feedback { font-size:14px; color:var(--muted); margin:0; }
 .standalone-conversation #feedback > span { display:block; padding:0 0 4px; }
@@ -775,17 +775,17 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 #conversation-compose #conversation-voice-discard:hover { background:color-mix(in srgb,var(--danger) 16%,var(--panel)); }
 
 /* Compact fixed presence above the large, independently scrolling conversation. */
-.standalone-conversation header { position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; min-height:88px; height:88px; padding:4px 0; }
-.standalone-conversation header .identity { min-width:0; }
-.standalone-conversation header .identity > .resonance,.standalone-conversation header .identity > h1,.standalone-conversation header #provider { display:none; }
-.standalone-conversation header #conversation-companion { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:10px; width:100%; min-width:0; padding:0; border:0; border-radius:0; background:none; }
-.standalone-conversation header #conversation-companion pre { font-size:7px; line-height:9.5px; white-space:pre; }
-.standalone-conversation header #conversation-companion > div { min-width:0; }
-.standalone-conversation header .companion-name { font-size:14px; line-height:20px; letter-spacing:0; }
-.standalone-conversation header .companion-caption { font-size:14px; line-height:1.2; margin:4px 0; }
-.standalone-conversation header .companion-phases { gap:3px 8px; max-height:32px; overflow:auto; }
-.standalone-conversation header .companion-phases > span { font-size:12px; }
-.standalone-conversation header .header-tools { align-self:start; padding-top:4px; }
+.standalone-conversation header:not(.voice-studio-intro) { position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; min-height:88px; height:88px; padding:4px 0; }
+.standalone-conversation header:not(.voice-studio-intro) .identity { min-width:0; }
+.standalone-conversation header:not(.voice-studio-intro) .identity > .resonance,.standalone-conversation header:not(.voice-studio-intro) .identity > h1,.standalone-conversation header:not(.voice-studio-intro) #provider { display:none; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-companion { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:10px; width:100%; min-width:0; padding:0; border:0; border-radius:0; background:none; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-companion pre { font-size:7px; line-height:9.5px; white-space:pre; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-companion > div { min-width:0; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-name { font-size:14px; line-height:20px; letter-spacing:0; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-caption { font-size:14px; line-height:1.2; margin:4px 0; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-phases { gap:3px 8px; max-height:32px; overflow:auto; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-phases > span { font-size:12px; }
+.standalone-conversation header:not(.voice-studio-intro) .header-tools { align-self:start; padding-top:4px; }
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto 72px 44px; }
 .standalone-conversation #conversation-attention { grid-row:1; }
 .standalone-conversation #conversation-timeline { grid-row:2; }
@@ -794,13 +794,13 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-diagnostics { grid-row:5; }
 .standalone-conversation #conversation:has(#conversation-diagnostics[open]) { grid-template-rows:auto minmax(220px,50dvh) auto auto auto; }
 @media(max-height:650px) {
- .standalone-conversation header { height:76px; min-height:76px; }
- .standalone-conversation header #conversation-companion pre { font-size:6px; }
+ .standalone-conversation header:not(.voice-studio-intro) { height:76px; min-height:76px; }
+ .standalone-conversation header:not(.voice-studio-intro) #conversation-companion pre { font-size:6px; }
  .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto 56px 44px; }
  .standalone-conversation #conversation-audio-tools { height:56px; }
 }
 
-.standalone-conversation header .identity > h1 { display:block; position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.standalone-conversation header:not(.voice-studio-intro) .identity > h1 { display:block; position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 
 /* Familiar two-row chat composer. Routine phases belong to the header presence. */
 .standalone-conversation #conversation-compose { padding:8px; border-radius:20px; }
@@ -836,40 +836,30 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation:has(#conversation-visual[open]):not(:has(#conversation-diagnostics[open])) { overflow:visible; }
 
 /* Beacon belongs to the fixed presence; its detailed controls stay under the hood. */
-.standalone-conversation header #conversation-sound-toggle { width:44px; height:44px; min-width:44px; padding:6px; font-size:0; }
-.standalone-conversation header #conversation-sound-toggle::before { content:"≈"; font-size:24px; }
-.standalone-conversation header #conversation-sound-toggle[aria-pressed="true"] { color:var(--bg); background:var(--accent); }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle { width:44px; height:44px; min-width:44px; padding:6px; font-size:0; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before { content:"≈"; font-size:24px; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"] { color:var(--bg); background:var(--accent); }
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto auto 44px; }
 .standalone-conversation #conversation-audio-tools { height:auto; }
 .standalone-conversation #conversation-audio-tools:has(#conversation-player[hidden]) { display:none; }
 
-.standalone-conversation header .companion-name { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.standalone-conversation header .companion-caption { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
-.standalone-conversation header .companion-phases { max-height:16px; overflow:hidden; flex-wrap:nowrap; }
-.standalone-conversation header .companion-phases > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-name { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-caption { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-phases { max-height:16px; overflow:hidden; flex-wrap:nowrap; }
+.standalone-conversation header:not(.voice-studio-intro) .companion-phases > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-/* The conversational caption has the full row formerly occupied by the login label. */
 .standalone-conversation #feedback:empty { display:none; }
-.standalone-conversation #conversation-presence { flex-shrink:0; height:24px; min-height:24px; overflow:hidden; }
-.standalone-conversation #conversation-presence > .companion-caption { margin:0; font-size:16px; line-height:24px; white-space:nowrap; width:max-content; max-width:none; }
-.standalone-conversation header .header-tools { flex-wrap:wrap; justify-content:flex-end; max-width:150px; }
+.standalone-conversation header:not(.voice-studio-intro) .header-tools { flex-wrap:wrap; justify-content:flex-end; max-width:150px; }
 .standalone-conversation #conversation-account { display:block; text-align:left; color:var(--muted); font-size:14px; line-height:20px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 #conversation-compose #conversation-voice-discard { position:relative; display:grid; place-items:center; font-size:0; border-radius:14px; border-width:1px; background:color-mix(in srgb,var(--danger) 12%,var(--panel)); color:var(--danger); }
 #conversation-compose #conversation-voice-discard::before,#conversation-compose #conversation-voice-discard::after { content:""; position:absolute; left:50%; top:50%; width:16px; height:2px; border-radius:2px; background:currentColor; transform:translate(-50%,-50%) rotate(45deg); }
 #conversation-compose #conversation-voice-discard::after { transform:translate(-50%,-50%) rotate(-45deg); }
 
-/* One full-width status lane below all header tools; keep a generous touch target. */
-.standalone-conversation #conversation-presence { margin-top:6px; }
-.standalone-conversation .companion-status-track { display:flex; align-items:center; width:max-content; min-width:100%; height:24px; white-space:nowrap; }
-.standalone-conversation #conversation-presence .companion-phases { margin:0; padding:0; display:flex; flex-wrap:nowrap; gap:12px; overflow:visible; max-height:none; line-height:24px; }
-.standalone-conversation #conversation-presence .companion-phases > span { flex:none; white-space:nowrap; font-size:14px; }
-.standalone-conversation .companion-status-track > .companion-caption { margin:0; font-size:16px; line-height:24px; white-space:nowrap; }
-.standalone-conversation .companion-status-track:has(.companion-phases > span) > .companion-caption { display:none; }
-.standalone-conversation header #conversation-sound-toggle { display:grid; place-items:center; padding:0; border:0; background:transparent; }
-.standalone-conversation header #conversation-sound-toggle::before { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--line); border-radius:50%; font-size:17px; }
-.standalone-conversation header #conversation-sound-toggle[aria-pressed="true"] { background:transparent; color:var(--bg); }
-.standalone-conversation header #conversation-sound-toggle[aria-pressed="true"]::before { background:var(--accent); }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle { display:grid; place-items:center; padding:0; border:0; background:transparent; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--line); border-radius:50%; font-size:17px; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"] { background:transparent; color:var(--bg); }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"]::before { background:var(--accent); }
 
 /* Reply playback sits beside the composer; its controls never create a bottom row. */
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto 44px; }
@@ -914,24 +904,24 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-diagnostics[open] > summary { position:sticky; top:-12px; z-index:1; background:var(--bg); min-height:44px; }
 .standalone-conversation #conversation-diagnostics[open] > summary > span { font-size:0; }
 .standalone-conversation #conversation-diagnostics[open] > summary > span::after { content:"×"; font-size:24px; }
-.standalone-conversation header #conversation-inspect { display:grid; place-items:center; width:44px; height:44px; padding:8px; }
-.standalone-conversation header #conversation-inspect[hidden] { display:none; }
-.standalone-conversation header #conversation-inspect[aria-expanded="true"] { color:var(--accent); border-color:var(--accent); }
-.standalone-conversation header .header-tools { gap:4px; }
-.standalone-conversation header .apps-return { display:grid; place-items:center; width:44px; height:44px; padding:4px; font-size:0; }
-.standalone-conversation header .apps-return::before { content:none; }
-.standalone-conversation header .apps-return>span {display:none;}
+.standalone-conversation header:not(.voice-studio-intro) #conversation-inspect { display:grid; place-items:center; width:44px; height:44px; padding:8px; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-inspect[hidden] { display:none; }
+.standalone-conversation header:not(.voice-studio-intro) #conversation-inspect[aria-expanded="true"] { color:var(--accent); border-color:var(--accent); }
+.standalone-conversation header:not(.voice-studio-intro) .header-tools { gap:4px; }
+.standalone-conversation header:not(.voice-studio-intro) .apps-return { display:grid; place-items:center; width:44px; height:44px; padding:4px; font-size:0; }
+.standalone-conversation header:not(.voice-studio-intro) .apps-return::before { content:none; }
+.standalone-conversation header:not(.voice-studio-intro) .apps-return>span {display:none;}
 .apps-return {display:inline-flex;align-items:center;gap:8px;}
 
 @media(max-width:480px) {
- .standalone-conversation header { gap:6px; padding-block:0; height:88px; min-height:88px; }
- .standalone-conversation header #conversation-companion { gap:6px; }
- .standalone-conversation header #conversation-companion pre { font-size:6px; }
- .standalone-conversation header .header-tools { display:grid; grid-template-columns:44px 44px; width:88px; max-width:88px; gap:0; padding-top:0; }
+ .standalone-conversation header:not(.voice-studio-intro) { gap:6px; padding-block:0; height:88px; min-height:88px; }
+ .standalone-conversation header:not(.voice-studio-intro) #conversation-companion { gap:6px; }
+ .standalone-conversation header:not(.voice-studio-intro) #conversation-companion pre { font-size:6px; }
+ .standalone-conversation header:not(.voice-studio-intro) .header-tools { display:grid; grid-template-columns:44px 44px; width:88px; max-width:88px; gap:0; padding-top:0; }
 }
 
 @media(max-width:380px) {
- .standalone-conversation header #conversation-companion pre { font-size:5px; }
+ .standalone-conversation header:not(.voice-studio-intro) #conversation-companion pre { font-size:5px; }
 }
 
 .image-attachments { display:flex; gap:8px; overflow-x:auto; padding:8px 0; max-width:100%; }
@@ -981,8 +971,6 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .pending-current { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left; touch-action:pan-y; }
 .pending-all { flex:none; }
 .pending-carousel .pending-all { padding-inline:6px; font-variant-numeric:tabular-nums; color:var(--muted); }
-#conversation-presence[data-pending="true"] { height:auto; min-height:32px; overflow:visible; }
-#conversation-presence[data-pending="true"] > .companion-status-track { display:none; }
 .pending-panel { width:min(760px,calc(100vw - 24px)); max-height:calc(100dvh - 32px); padding:20px; overflow:auto; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:var(--radius,12px); }
 .pending-panel::backdrop { background:rgba(0,0,0,.65); }
 .pending-panel > h2 { display:inline-block; margin:0 12px 12px 0; }
@@ -994,7 +982,7 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .for-you-navigation button { display:inline-flex; align-items:center; justify-content:center; gap:2px; width:44px; height:44px; margin:0; padding:4px; }
 .pending-count { font-size:14px; }
 @media(min-width:481px) {
- .standalone-conversation header .header-tools.has-for-you { max-width:200px; flex-wrap:nowrap; }
+ .standalone-conversation header:not(.voice-studio-intro) .header-tools.has-for-you { max-width:200px; flex-wrap:nowrap; }
 }
 
 #conversation-files-list>div{display:flex;align-items:center;gap:12px;padding:6px 0}#conversation-files-list span{overflow-wrap:anywhere;flex:1}#conversation-files-list button{min-width:44px;min-height:44px}#conversation-files-state{font-size:14px}.input-files{display:flex;flex-direction:column;gap:8px;padding:8px 0}.input-files a{overflow-wrap:anywhere}
@@ -1075,17 +1063,16 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .coordination-accounts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));gap:1rem;padding:0;list-style:none}.coordination-accounts li{min-width:0;overflow-wrap:anywhere}.coordination-accounts p{margin:.4rem 0}
 
 /* Scroll-driven compact presence, retaining the identity and header actions. */
-.standalone-conversation header { transition:height 140ms ease,min-height 140ms ease; }
-.standalone-conversation.conversation-header-compact header { height:44px;min-height:44px;overflow:hidden; }
-.standalone-conversation.conversation-header-compact header #conversation-companion { display:block;align-self:center; }
-.standalone-conversation.conversation-header-compact header .header-tools { display:flex;flex-wrap:nowrap;width:auto;max-width:none;align-self:center;padding:0; }
-.standalone-conversation.conversation-header-compact header #conversation-companion pre,
-.standalone-conversation.conversation-header-compact header .companion-caption,
-.standalone-conversation.conversation-header-compact header .companion-phases,
-.standalone-conversation.conversation-header-compact #conversation-presence,
-.standalone-conversation.conversation-header-compact header #conversation-account { display:none!important; }
-.standalone-conversation.conversation-header-compact header .companion-name { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-@media(prefers-reduced-motion:reduce) { .standalone-conversation header { transition:none; } }
+.standalone-conversation header:not(.voice-studio-intro) { transition:height 140ms ease,min-height 140ms ease; }
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) { height:44px;min-height:44px;overflow:hidden; }
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion { display:block;align-self:center; }
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .header-tools { display:flex;flex-wrap:nowrap;width:auto;max-width:none;align-self:center;padding:0; }
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion pre,
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-caption,
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-phases,
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-account { display:none!important; }
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-name { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+@media(prefers-reduced-motion:reduce) { .standalone-conversation header:not(.voice-studio-intro) { transition:none; } }
 
 /* The workspace owns the reading area; the original draft/audio dock stays put. */
 .standalone-conversation #conversation > .session-workspace { grid-row:2; min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto auto;overflow:hidden; }
@@ -1101,7 +1088,8 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .session-workspace-body { position:relative;display:flex;min-height:0;min-width:0;overflow:hidden; }
 .session-workspace-content { flex:1;min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr); }
 .standalone-conversation .session-workspace-content #conversation-timeline { grid-row:1;min-height:0;min-width:0;overflow:auto; }
-.session-rail { position:absolute;z-index:4;bottom:0;left:0;width:min(100%,360px);max-height:100%;min-height:0;overflow:auto;overscroll-behavior:contain;box-sizing:border-box;padding:8px 12px;border:1px solid var(--line);border-radius:var(--radius,12px) var(--radius,12px) 0 0;background:var(--bg);box-shadow:0 -8px 24px color-mix(in srgb,var(--bg) 80%,transparent); }
+.session-rail { position:absolute;z-index:4;bottom:0;left:0;width:min(100%,360px);max-height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;box-sizing:border-box;padding:8px 12px;border:1px solid var(--line);border-radius:var(--radius,12px) var(--radius,12px) 0 0;background:var(--bg);box-shadow:0 -8px 24px color-mix(in srgb,var(--bg) 80%,transparent); }
+.session-rail-scroll { min-height:0;overflow:auto;overscroll-behavior:contain; }
 .session-rail-header { display:grid;grid-template-columns:minmax(0,1fr) 118px;align-items:center;gap:6px;min-height:28px;margin-bottom:2px; }
 .session-rail h3 { margin:0;font-size:14px;font-weight:600;color:var(--muted); }
 .session-workspace .session-workspace-reset { width:100%;height:28px;margin:0;min-width:0;min-height:28px;padding:2px 4px;border:0;border-radius:6px;background:transparent;font-size:14px;line-height:1.4; }
@@ -1144,10 +1132,10 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .heartbeat-heart[data-state="operational"] {color:var(--accent,#85d4e7);animation:heartbeat-pulse 1.4s ease-in-out infinite;}
 .heartbeat-heart[data-state="error"] {color:var(--danger,#f29b9b);}
 #conversation-companion {position:relative;}
-.heartbeat-menu {position:absolute;right:0;top:100%;z-index:20;max-width:min(360px,calc(100vw - 32px));padding:12px;border:1px solid var(--muted,#777);border-radius:12px;background:var(--panel,#101923);font-size:14px;box-shadow:0 8px 24px #0006;}
+.heartbeat-menu {position:fixed;right:auto;top:0;left:0;z-index:100;box-sizing:border-box;width:320px;overflow:auto;max-width:min(360px,calc(100vw - 32px));padding:12px;border:1px solid var(--muted,#777);border-radius:12px;background:var(--panel,#101923);font-size:14px;box-shadow:0 8px 24px #0006;}
 .heartbeat-menu[hidden] {display:none;}
 .heartbeat-menu p {margin:0 0 8px;}
-#heartbeat-lanes>div {display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;margin:6px 0;}
+#heartbeat-lanes>div {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;margin:10px 0;}
 #heartbeat-lanes button {padding:4px;min-height:32px;font-size:14px;}
 #heartbeat-lanes span {font-size:14px;line-height:1.35;}
 @keyframes heartbeat-pulse {50% {opacity:.35;}}
@@ -1224,7 +1212,7 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .voice-studio input {box-sizing:border-box;width:100%;font:inherit;font-size:16px;min-height:44px;padding:.7rem;color:var(--dm-text,#eee);background:var(--dm-background,#0b1018);border:1px solid color-mix(in srgb,currentColor 40%,transparent);border-radius:var(--dm-radius,12px)}
 .voice-studio-phrase {display:flex;gap:.2rem}.voice-studio-phrase button:first-child{border-radius:var(--dm-radius,12px) 0 0 var(--dm-radius,12px)}.voice-studio-phrase button:last-child{border-radius:0 var(--dm-radius,12px) var(--dm-radius,12px) 0;min-width:44px}
 
-/* Keep avatar artwork behind the readable pending line; tools live in its frame. */
+/* Avatar tools remain in the portrait frame. */
 #conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame {position:relative;z-index:0;flex:none;min-width:0;width:180px;height:120px;}
 .avatar-frame .workshop-portrait {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
 .avatar-surface {position:absolute;inset:0 0 auto auto;width:148px;height:120px;}
@@ -1241,12 +1229,11 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .avatar-frame-controls button::after {content:"";position:absolute;inset:-5px;}
 .avatar-frame-controls button svg {width:20px;height:20px;}
 .avatar-frame-controls button:hover,.avatar-frame-controls button:focus-visible {color:var(--accent);background:var(--panel);}
-.standalone-conversation header #conversation-companion > .avatar-frame {height:80px;}
-.standalone-conversation header .avatar-frame .workshop-portrait {top:0;transform:none;}
-.standalone-conversation header:has(#conversation-companion[data-pose="listening"]),
-.standalone-conversation header:has(#conversation-companion[data-pose="speaking"]) {background:radial-gradient(ellipse at 85% 0%,color-mix(in srgb,var(--accent) 22%,var(--bg)),var(--bg) 80%);}
-.standalone-conversation #conversation-presence {position:relative;z-index:1;background:var(--bg);}
-.standalone-conversation.conversation-header-compact header #conversation-companion > .avatar-frame {display:none;}
+.standalone-conversation header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {height:80px;}
+.standalone-conversation header:not(.voice-studio-intro) .avatar-frame .workshop-portrait {top:0;transform:none;}
+.standalone-conversation header:not(.voice-studio-intro):has(#conversation-companion[data-pose="listening"]),
+.standalone-conversation header:not(.voice-studio-intro):has(#conversation-companion[data-pose="speaking"]) {background:radial-gradient(ellipse at 85% 0%,color-mix(in srgb,var(--accent) 22%,var(--bg)),var(--bg) 80%);}
+.standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {display:none;}
 @media(max-width:480px){#conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame{width:126px;height:90px}.avatar-frame .workshop-portrait,.avatar-frame .avatar-surface{width:94px;height:90px}}
 
 /* Selected HUD reference, stage1: authored standalone Conversation only.
@@ -1277,32 +1264,28 @@ html[data-style-policy="authored"] .standalone-conversation main::after {
  clip-path:polygon(12px 0,calc(100% - 12px) 0,100% 12px,100% calc(100% - 12px),calc(100% - 12px) 100%,12px 100%,0 calc(100% - 12px),0 12px);
  background:transparent;
 }
-html[data-style-policy="authored"] .standalone-conversation header {height:136px;min-height:136px;align-items:start;padding:0;}
-html[data-style-policy="authored"] .standalone-conversation header::before {
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) {height:120px;min-height:120px;align-items:start;padding:0;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro)::before {
  content:"";position:absolute;inset:0 0 auto;height:44px;z-index:-1;pointer-events:none;
  border-bottom:1px solid var(--hud-copper-soft);background:linear-gradient(120deg,#18263099,#081019cc);
  clip-path:polygon(0 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%);
 }
-html[data-style-policy="authored"] .standalone-conversation header .identity {display:contents;}
-html[data-style-policy="authored"] .standalone-conversation header #conversation-companion {position:static;grid-column:1/-1;grid-row:1;align-items:start;grid-template-columns:148px minmax(0,1fr);padding-top:44px;}
-html[data-style-policy="authored"] .standalone-conversation header #conversation-companion > .avatar-frame {width:148px;height:92px;}
-html[data-style-policy="authored"] .standalone-conversation header .companion-name {position:absolute;top:5px;left:174px;transform:none;max-width:58%;height:34px;display:flex;align-items:center;justify-content:center;font-size:0;line-height:30px;text-align:center;}
-html[data-style-policy="authored"] .standalone-conversation header #conversation-daimon {font:600 23px/30px ui-serif,Georgia,serif;color:var(--ink);}
-html[data-style-policy="authored"] .standalone-conversation header .header-tools {position:absolute;right:0;top:46px;display:flex;gap:4px;width:auto;max-width:148px;padding:0;z-index:1;align-self:start;flex-wrap:wrap;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .identity {display:contents;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion {position:static;grid-column:1/-1;grid-row:1;align-items:start;grid-template-columns:148px minmax(0,1fr);padding-top:0;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {width:148px;height:92px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .companion-name {position:absolute;top:5px;left:174px;transform:none;max-width:58%;height:34px;display:flex;align-items:center;justify-content:center;font-size:0;line-height:30px;text-align:center;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-daimon {font:600 23px/30px ui-serif,Georgia,serif;color:var(--ink);}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools {position:absolute;right:0;top:46px;display:flex;gap:4px;width:auto;max-width:148px;padding:0;z-index:1;align-self:start;flex-wrap:wrap;}
 html[data-style-policy="authored"] .standalone-conversation .apps-return {color:var(--ink);min-height:44px;display:grid;place-items:center;border:0;border-radius:0;font-size:0;}
-html[data-style-policy="authored"] .standalone-conversation header .apps-launcher {position:absolute;right:0;top:-46px;}
-html[data-style-policy="authored"] .standalone-conversation header :is(#conversation-inspect,#conversation-sound-toggle,.pending-local-all) {border-color:transparent;background:transparent;width:44px;min-width:44px;height:44px;padding:8px;}
-html[data-style-policy="authored"] .standalone-conversation header #conversation-account {position:absolute;right:0;bottom:4px;max-width:calc(100% - 158px);font-size:14px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .apps-launcher {position:absolute;right:0;top:-46px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) :is(#conversation-inspect,#conversation-sound-toggle,.pending-local-all) {border-color:transparent;background:transparent;width:44px;min-width:44px;height:44px;padding:8px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-account {position:absolute;right:0;bottom:4px;max-width:calc(100% - 158px);font-size:14px;}
 html[data-style-policy="authored"] .standalone-conversation .heartbeat-heart {font-size:16px;min-width:28px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-dock:has(#conversation-player:not([hidden])) {grid-template-columns:36px minmax(0,1fr);gap:4px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-dock #conversation-audio-tools {width:36px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-audio-tools #conversation-player:not([hidden]) {grid-template-columns:36px;}
 html[data-style-policy="authored"] .standalone-conversation .avatar-frame-controls {gap:8px;}
 html[data-style-policy="authored"] .standalone-conversation .avatar-frame-controls button {border:1px solid var(--hud-copper-soft);background:#0c1822e8;color:var(--ink);}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence {margin:0;min-height:32px;border-bottom:1px solid #bf906738;background:var(--bg);color:var(--ink);}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence[data-pending="true"] {position:relative;padding:1px 13px 1px 20px;border:0;background:linear-gradient(105deg,#65452377,#111b24 72%);}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence[data-pending="true"]::before {content:"";position:absolute;inset:0;pointer-events:none;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 40' preserveAspectRatio='none'%3E%3Cpath d='M22 1H378L399 20L378 39H1Z' fill='none' stroke='%23bf9067' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E") center/100% 100% no-repeat;}
-html[data-style-policy="authored"] .standalone-conversation #conversation-presence[data-pending="true"]::after {content:"";position:absolute;left:6px;top:0;bottom:0;width:2px;background:var(--hud-copper);transform:skewX(-37deg);pointer-events:none;}
 html[data-style-policy="authored"] .standalone-conversation .pending-carousel button {color:var(--ink);font-size:14px;min-height:32px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-timeline {padding:10px 8px 10px 16px;border-left:1px solid #78d7e088;margin:6px 0 4px 6px;scrollbar-color:#70959977 transparent;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-timeline .reply {padding:12px 8px;margin-block:8px;border-radius:0;background:transparent;}
@@ -1340,29 +1323,26 @@ html[data-style-policy="authored"] .standalone-conversation #conversation-attach
  html[data-style-policy="authored"] .standalone-conversation #conversation-compose {grid-template-columns:40px minmax(0,1fr) 44px 44px;padding:8px;gap:3px;border-radius:24px;}
  html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-send {width:44px;min-width:44px;font-size:0;border-radius:50%;}
  html[data-style-policy="authored"] .standalone-conversation #conversation-send::after {content:"";display:block;width:22px;height:22px;margin:auto;background:currentColor;clip-path:polygon(7% 8%,97% 50%,7% 92%,24% 56%,62% 50%,24% 44%);}
- html[data-style-policy="authored"] .standalone-conversation header #conversation-daimon {font-size:21px;}
- html[data-style-policy="authored"] .standalone-conversation header .companion-name {left:50%;transform:translateX(-50%);}
- html[data-style-policy="authored"] .standalone-conversation header .header-tools .apps-return {font-size:0;padding-inline:6px;}
+ html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-daimon {font-size:21px;}
+ html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .companion-name {left:50%;transform:translateX(-50%);}
+ html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools .apps-return {font-size:0;padding-inline:6px;}
 }
 @media(max-height:560px) {
- html[data-style-policy="authored"] .standalone-conversation header {height:48px;min-height:48px;}
- html[data-style-policy="authored"] .standalone-conversation header #conversation-companion {padding-top:0;}
- html[data-style-policy="authored"] .standalone-conversation header #conversation-companion > .avatar-frame {display:none;}
+ html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) {height:48px;min-height:48px;}
+ html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion {padding-top:0;}
+ html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {display:none;}
 }
-html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header {height:44px;min-height:44px;}
-html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header #conversation-companion {padding-top:0;}
-html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header .companion-name {left:0;transform:none;}
+html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) {height:44px;min-height:44px;}
+html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion {padding-top:0;}
+html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .companion-name {left:0;transform:none;}
 
-html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header .header-tools {top:0;right:44px;flex-wrap:nowrap;}
-html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header .apps-launcher {position:static;}
-@media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header .header-tools{top:0;right:0;flex-wrap:nowrap;}html[data-style-policy="authored"] .standalone-conversation header .apps-launcher{position:static;}html[data-style-policy="authored"] .standalone-conversation header .companion-name{left:0;transform:none;max-width:45%;}}
+html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .header-tools {top:0;right:44px;flex-wrap:nowrap;}
+html[data-style-policy="authored"] .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) .apps-launcher {position:static;}
+@media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools{top:0;right:0;flex-wrap:nowrap;}html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .apps-launcher{position:static;}html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .companion-name{left:0;transform:none;max-width:45%;}}
 
-html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence {position:relative;padding:1px 13px 1px 20px;border:0;background:linear-gradient(105deg,#65452377,#111b24 72%);}
-html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence::before {content:"";position:absolute;inset:0;pointer-events:none;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 40' preserveAspectRatio='none'%3E%3Cpath d='M22 1H378L399 20L378 39H1Z' fill='none' stroke='%23bf9067' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E") center/100% 100% no-repeat;}
-html[data-style-policy="authored"] .standalone-conversation:has(#conversation-companion[data-question="true"]) #conversation-presence::after {content:"";position:absolute;left:6px;top:0;bottom:0;width:2px;background:var(--hud-copper);transform:skewX(-37deg);pointer-events:none;}
 html[data-style-policy="authored"] .standalone-conversation :is(.for-you-navigation,.pending-carousel) button {border:0;border-radius:0;background:transparent;box-shadow:none;}
 html[data-style-policy="authored"] .standalone-conversation .pending-carousel .pending-current {text-align:left;padding-inline:8px;}
-@media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header #conversation-account {display:none;}}
+@media(max-height:560px){html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-account {display:none;}}
 
 .avatar-workshop-compact-preview {flex:none;border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:var(--dm-radius,12px);padding:.5rem;background:var(--dm-surface,#17212b)}
 .avatar-workshop-compact-preview p {margin:0 0 .25rem}
@@ -1439,12 +1419,12 @@ html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbea
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::before {background:#bf906799;}
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {inset:1px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 5px #0a141d66,inset 0 0 0 6px #77d4e019;}
 html[data-style-policy="authored"] .control-icon {stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;fill:none;}
-html[data-style-policy="authored"] .standalone-conversation header #conversation-sound-toggle::before {
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before {
  content:"";border:0;border-radius:0;width:24px;height:24px;background:currentColor;
  mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M3 8c3-8 6 8 9 0s6 8 9 0M3 16c3-8 6 8 9 0s6 8 9 0'/%3E%3C/g%3E%3C/svg%3E") center/contain no-repeat;
 }
-html[data-style-policy="authored"] .standalone-conversation header #conversation-sound-toggle[aria-pressed="true"]::before {background:var(--accent);}
-html[data-style-policy="authored"] .standalone-conversation header .header-tools .pending-count {font-size:14px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"]::before {background:var(--accent);}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools .pending-count {font-size:14px;}
 
 /* One destination/notice row above a full-width writing line. */
 .standalone-conversation #conversation-compose-bar {grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:4px;min-width:0;position:relative;z-index:12;}
@@ -1480,3 +1460,33 @@ html[data-style-policy="authored"] .standalone-conversation .apps-alerts[data-le
 html[data-style-policy="authored"] .standalone-conversation .apps-alerts[data-level="warning"] {color:var(--warn);}
 html[data-style-policy="authored"] .standalone-conversation .apps-alerts[data-level="info"] {color:var(--accent);}
 html[data-style-policy="authored"] .standalone-conversation .apps-alerts:is([data-level="warning"],[data-level="error"])::before {content:"!";width:auto;height:auto;border:0;transform:none;font-size:14px;font-weight:700;}
+
+/* Workshop headings are content, never the fixed-height Conversation identity.
+   Cut controls keep independent background layers for unclipped focus rings. */
+html[data-style-policy="authored"] .voice-studio-intro {align-items:center;gap:16px;}
+html[data-style-policy="authored"] .voice-studio-intro > div {min-width:0;}
+html[data-style-policy="authored"] .voice-studio-mark .control-icon {width:30px;height:30px;}
+html[data-style-policy="authored"] .voice-studio-presets {padding:0;border:0;background:none;}
+html[data-style-policy="authored"] :is(.voice-studio,.avatar-workshop-toolbar) button {
+ --voice-control-edge:#78d7e077;--voice-control-fill:#142635;
+ position:relative;isolation:isolate;border:0;border-radius:0;background:none;
+ min-height:44px;color:var(--accent);box-shadow:none;
+}
+html[data-style-policy="authored"] :is(.voice-studio,.avatar-workshop-toolbar) button::before,
+html[data-style-policy="authored"] :is(.voice-studio,.avatar-workshop-toolbar) button::after {
+ content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+ clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px);
+ background:var(--voice-control-edge);
+}
+html[data-style-policy="authored"] :is(.voice-studio,.avatar-workshop-toolbar) button::after {inset:1px;background:var(--voice-control-fill);}
+html[data-style-policy="authored"] .voice-studio button[aria-pressed="true"] {--voice-control-edge:var(--accent);--voice-control-fill:#254956;box-shadow:none;}
+html[data-style-policy="authored"] .voice-studio .voice-studio-primary {--voice-control-edge:var(--accent);font-weight:700;}
+html[data-style-policy="authored"] .voice-studio-presets button > span {display:grid;place-items:center;}
+html[data-style-policy="authored"] .voice-studio-presets .control-icon {width:26px;height:26px;}
+@media(max-width:400px) {
+ html[data-style-policy="authored"] .voice-studio-intro {gap:12px;}
+ html[data-style-policy="authored"] .voice-studio-mark {width:40px;height:40px;}
+}
+
+.pending-panel .for-you-items {display:grid;gap:12px;}
+.pending-panel :is(#conversation-requests,#conversation-tasks,#conversation-goals,#internal-requests,#internal-tasks)>h2 {display:none;}

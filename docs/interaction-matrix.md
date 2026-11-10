@@ -1,11 +1,15 @@
 # Selected Matrix execution adapter
 
-## Prepared portable Conversation publication
+## Portable Conversation publication
 
 The optional `interaction.matrix_publication` configuration adds a typed,
 owner-local publication writer to the existing Conversation store. This is the
 App portion of [Matrix #496](https://github.com/AlterMundi/daimon-matrix/issues/496),
-not a selected production installation or a messaging-delivery claim. It needs
+not a messaging-delivery claim. On10November the existing original three App
+receivers adopted the qualified full-audio native publisher and the matching
+current web reader. Each actual owner status returns its paired-human general
+Conversation descriptor; this does not install Matrix signed publication policy
+or discharge an older ambiguous obligation. It needs
 no Telegram account, bot token, browser or model turn.
 
 The selected descriptor contains `surface_ref`, a sorted unique `audience`
@@ -61,10 +65,10 @@ cursors. Native histories and ordinary inbox/response records are unchanged.
 Pending/ambiguous copies are never deleted for capacity. If they fill the journal,
 publication refuses rather than losing work. No new timer or model turn is used.
 
-**Production selection remains unfinished:** the native installation/transport
-must supply the real deadline and confirm only after its committed proof, and
-the seven-body journey must be qualified. App retirement tests alone do not
-establish that live connection.
+**End-to-end receiving remains distinct:** the selected native installation/transport
+must supply the real deadline and confirm only after its committed proof. Matrix
+owns the signed publication policy and seven-body useful messaging journey. App
+owner/reader readiness and retirement tests alone do not establish that connection.
 
 `tests/matrix_publication_http_io.py` drives the actual Matrix native journal
 and `ConversationJournalTransport` through the real owner socket and SQLite,
@@ -721,3 +725,15 @@ frontier. Only a genuine new native event advances it to that event's sequence.
 A nonzero consumer cursor below the selected frontier refuses: this cannot rebase
 an existing reader or hide its pending originals. Keep the selected window frozen
 for the operation; it is not a model-supplied request argument or a reset control.
+
+## Heartbeat user menu
+
+The heart opens a viewport-clamped menu next to its actual button on desktop
+and mobile. The normal menu presents a brief useful state and supported controls;
+it omits internal generations, source-check timestamps, implementation caveats
+and unsupported feature placeholders. Messages and scheduled reviews are shown
+only when supported. Pausing/enabling keeps the existing generation-fenced owner
+commands; status reads never change settings or start work. Only fresh explicit
+operational evidence animates the heart. Pending work is described as waiting,
+not as proof of readiness or a disabled heartbeat. Operator diagnostics remain
+available through the existing owner status API.
