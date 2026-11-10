@@ -4,6 +4,7 @@ No ASR, microphone, work submission, model client or independent transcript stor
 The public journal owns original deltas; native context owns idempotent source
 receipts/checkpoints. A constant cursor joins them without a copied archive.
 """
+from copy import copy
 import hashlib
 import json
 import math
@@ -25,6 +26,53 @@ class PublicLiveContextHistory:
 
     def __getattr__(self,name):
         return getattr(self.canonical,name)
+
+    def _canonical_for(self,record):
+        if record['scope']==self.canonical.scope:return self.canonical
+        # App/Alerts receiving fingerprints can change without changing the
+        # selected human/native conversation. Never alias an entire old scope:
+        # only this exact retained public visit can prove its producer identity.
+        value=self._public(record)
+        marker=value.get('native_context_seed') if value is not None else None
+        if (value is None or not self.visits.return_origin_eligible(value)
+                or not isinstance(marker,dict) or set(marker)!={'generation','resume'}
+                or marker['generation']!=record['generation']
+                or record.get('rollover') is not None):
+            raise ValueError('Retained public context ownership needs review')
+        selected=copy(self.canonical);selected.scope=record['scope']
+        # Preserve the canonical human/binding/generation fence, including a
+        # changed row after selection. No row, receipt or scope is rewritten.
+        with selected.database() as db:selected._context_owned(db,record)
+        return selected
+
+    def context_register(self,human,dialogue,binding):
+        try:record=self.context_resume_record(human,binding,dialogue)
+        except ValueError:return self.canonical.context_register(human,dialogue,binding)
+        return self._canonical_for(record).context_register(human,dialogue,binding)
+
+    def context_resume_record(self,human,binding,dialogue):
+        try:return self.canonical.context_resume_record(human,binding,dialogue)
+        except ValueError:
+            if human!=self.human or binding!=self.owner['binding']:raise
+            self.canonical.ident(dialogue)
+            with self.canonical.database() as db:
+                row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=? AND human=? AND binding=?',
+                    (dialogue,human,binding)).fetchone()
+            if row is None:raise
+            record=dict(row)
+            return self._canonical_for(record).context_resume_record(human,binding,dialogue)
+
+    def context_phase(self,record,phase):
+        return self._canonical_for(record).context_phase(record,phase)
+
+    def context_seal(self,record):
+        return self._canonical_for(record).context_seal(record)
+
+    def context_rollover_intent(self,record,next_generation,revision):
+        return self._canonical_for(record).context_rollover_intent(record,next_generation,revision)
+
+    def context_rollover_settle(self,record,intent,*,committed):
+        return self._canonical_for(record).context_rollover_settle(record,intent,committed=committed)
 
     def _public(self,record):
         if record['human']!=self.human or record['binding']!=self.owner['binding']:
@@ -58,7 +106,7 @@ class PublicLiveContextHistory:
             self.visits._write(value)
 
     def context_pending(self,record):
-        canonical=self.canonical.context_pending(record)
+        canonical=self._canonical_for(record).context_pending(record)
         if canonical:return canonical
         value=self._public(record)
         if value is None or value['state'] not in ('created','closed'):return []
@@ -128,7 +176,7 @@ class PublicLiveContextHistory:
 
     def context_retained(self,record,sources,receipts):
         public=[source for source in sources if '_public_cursor' in source]
-        if not public:return self.canonical.context_retained(record,sources,receipts)
+        if not public:return self._canonical_for(record).context_retained(record,sources,receipts)
         if (len(public)!=len(sources) or {s['source'] for s in sources}!={r.get('source') for r in receipts}
                 or len(receipts)!=len(sources)
                 or any(type(r.get('sequence')) is not int or r['sequence']<=0

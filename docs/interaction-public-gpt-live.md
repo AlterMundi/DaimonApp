@@ -1205,3 +1205,25 @@ and storage bounds apply; there is no new journal or historical backfill. The
 original phone startup exception was not retained and is not retroactively
 attributed to the reproduced reconnect defect. Phone/hearing acceptance remains
 separate from the mounted synthetic and lifecycle regressions.
+
+### Retained public context after receiving-profile updates
+
+A receiving/Alerts fingerprint can change while the exact paired human and
+native conversation remain selected. Public Live continuity resolves only its
+explicit retained visit through the existing owned journal, exact frozen owner,
+native backend, eligible retired transport and persisted native seed generation.
+It then uses that producer's original canonical scope for context operations.
+Canonical ownership/generation checks still run on every operation; unfinished
+rollover or missing/changed seed evidence refuses recovery. Other scopes and
+ordinary foreground-history readers have no alias. New producers use the current
+scope. No historical row, source receipt, transcript, uncertain outcome or
+provider request is rewritten or replayed.
+
+The retained Root Preparing→Paused visit reproduces an ownership conflict with
+the currently selected scope in a write-denied startup probe. The corrected probe
+resumes that exact native predecessor and validates the real startup envelope,
+stopping before new registration/open or provider creation. This establishes a
+present startup incompatibility and its correction; the historical exception
+was not retained, and it is not retrospective proof of every earlier cutoff or
+phone/hearing acceptance. A prior read-only probe omitted the scope predicate
+and is superseded for this boundary.

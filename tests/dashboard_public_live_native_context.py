@@ -165,6 +165,83 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.visits.read(current,100,self.frozen)['native_context_seed']['resume'],opens[0]['resume'])
         await context.close()
 
+    async def retained_scope_fixture(self):
+        context,_=await self.active_context();self.event('Exact retained correction: Friday.')
+        self.history.retain(100,self.dialogue,self.binding,str(uuid.uuid4()),'Retained canonical reply.',
+            'b'*64,640)
+        await context.close()
+        self.visits.observe_closed(self.dialogue,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'close_requested','session':{'id':'live:synthetic'}})
+        from dashboard.native_history import NativeHistory
+        current=NativeHistory(self.database,'changed-app-alerts-fingerprint')
+        return current,PublicLiveContextHistory(current,self.visits,100,self.frozen)
+
+    async def test_app_scope_change_resumes_exact_public_producer_without_rewriting_history(self):
+        current,adapter=await self.retained_scope_fixture()
+        with self.database() as db:
+            before=[tuple(row) for row in db.execute('SELECT * FROM foreground_context_producers')]
+            originals=[tuple(row) for row in db.execute('SELECT * FROM foreground_utterances')]
+            outbox=[tuple(row) for row in db.execute('SELECT * FROM foreground_context_outbox')]
+        with self.assertRaises(ValueError):current.context_resume_record(100,self.binding,self.dialogue)
+        record=adapter.context_resume_record(100,self.binding,self.dialogue)
+        self.assertEqual(record['scope'],self.history.scope)
+        self.assertEqual(adapter.context_pending(record),[])
+        new=str(uuid.uuid4());self.visits.prepare(new,100,self.frozen,backend_mode='native')
+        context=PublicLiveSessionContext(current,self.visits,self.provider,100,new,self.frozen,self.owner)
+        calls=len(self.provider.calls)
+        seeded=await context.prepare({'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'}})
+        self.assertIn('Exact retained correction: Friday.',seeded['input'][-2]['content'][0]['text'])
+        old_calls=[c['action'] for c in self.provider.calls[calls:] if c['dialogue']==self.dialogue]
+        self.assertEqual(old_calls,['resume_read'])
+        with self.database() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(self.dialogue,))],before)
+        with self.database() as db:
+            self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM foreground_utterances')],originals)
+            self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM foreground_context_outbox')],outbox)
+        self.assertEqual(current.page(100)['items'],[])
+        self.assertEqual(current.context_resume_record(100,self.binding,new)['scope'],current.scope)
+        self.assertEqual(self.visits.read(new,100,self.frozen)['state'],'prepared')
+        await context.close()
+
+    async def test_retained_scope_unfinished_tail_keeps_original_source_receipts(self):
+        context,_=await self.active_context();self.event('Pending correction: Saturday.')
+        await context.close(settled=False)
+        self.visits.observe_closed(self.dialogue,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'close_requested','session':{'id':'live:synthetic'}})
+        original=self.history.context_resume_record(100,self.binding,self.dialogue)
+        from dashboard.native_history import NativeHistory
+        current=NativeHistory(self.database,'changed-app-alerts-fingerprint')
+        new=str(uuid.uuid4());self.visits.prepare(new,100,self.frozen,backend_mode='native')
+        context=PublicLiveSessionContext(current,self.visits,self.provider,100,new,self.frozen,self.owner)
+        seeded=await context.prepare({'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'}})
+        self.assertIn('Pending correction: Saturday.',seeded['input'][-2]['content'][0]['text'])
+        record=self.history.context_resume_record(100,self.binding,self.dialogue)
+        self.assertEqual(record['generation'],original['generation']);self.assertEqual(record['phase'],'closed')
+        self.assertEqual(len(self.provider.fresh),1)
+        await context.close()
+
+    async def test_retained_scope_requires_exact_human_binding_visit_and_generation(self):
+        current,adapter=await self.retained_scope_fixture()
+        for human,binding in ((101,self.binding),(100,'b'*64)):
+            with self.subTest(human=human,binding=binding),self.assertRaises(ValueError):
+                adapter.context_resume_record(human,binding,self.dialogue)
+        path=self.visits._path(self.dialogue);original=path.read_bytes()
+        value=json.loads(original)
+        changes=[{'native_context_seed':None},
+            {'native_context_seed':{'generation':str(uuid.uuid4()),'resume':None}},
+            {'backend_mode':'other'},
+            {'owner':{**value['owner'],'frozen':{**self.frozen,'entry_binding':[100,{'chat_id':100,'thread_id':2},1,'native']}}}]
+        for change in changes:
+            with self.subTest(change=next(iter(change))):
+                path.write_text(json.dumps({**value,**change}))
+                with self.assertRaises(ValueError):adapter.context_resume_record(100,self.binding,self.dialogue)
+        path.write_bytes(original)
+        record=adapter.context_resume_record(100,self.binding,self.dialogue)
+        with self.database() as db:db.execute('UPDATE foreground_context_producers SET generation=? WHERE dialogue=?',(str(uuid.uuid4()),self.dialogue))
+        with self.assertRaises(ValueError):adapter.context_pending(record)
+        # Ordinary canonical history has no scope alias, even with the same actor.
+        with self.assertRaises(ValueError):current.context_resume_record(100,self.binding,self.dialogue)
+
     async def test_inflight_interpretation_keeps_projection_open_for_the_next_explicit_owner(self):
         self.prepare();self.event()
         context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,self.dialogue,self.frozen,self.owner)
