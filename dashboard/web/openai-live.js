@@ -218,6 +218,15 @@ window.PublicLiveConversation=(()=>{
       const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
       usage({});
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
+      function acceptReplacement(value){
+        const prior=replacementReview,receipt=value.replacement_accepted;
+        if(!current()||backend!=='native'||value.id!==visit||prior?.binding!==binding||prior.backend!==backend
+            ||!receipt||Object.keys(receipt).length!==2||receipt.id!==prior.value.id||receipt.revision!==prior.value.revision)return;
+        // Admission consumed this review, even if context preparation later
+        // fails before permission. Keep its voice/context owner for the next
+        // explicit start; never resubmit the consumed replacement descriptor.
+        voiceContinuation=value.voice_continuation===receipt.id?{id:receipt.id,binding}:undefined;replacementReview=undefined;
+      }
       const activity=rms=>{if(!current())return;const level=audible&&!paused?Math.round(Math.min(1,Math.max(0,Number.isFinite(rms)?rms:0)*6)*4)/4:0;if(level!==outputLevel){outputLevel=level;state();}};
       bytes=total=ordinal=fragmentBytes=0;parts=[];fragmentParts=[];
       confirmed.clear();seals.clear();
@@ -256,7 +265,9 @@ window.PublicLiveConversation=(()=>{
               continuity=backend==='native'&&value.admission?.continuous_renewal===true;
               for(const reason of value.admission?.source_close_reasons||[])if(typeof reason==='string'&&/^source_[a-z_]{1,40}$/.test(reason))sourceReasons.add(reason);
               voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
-            else if(value.type==='context_preparing')state('Preparing previous conversation');
+            else if(value.type==='context_preparing'){
+              acceptReplacement(value);state('Preparing previous conversation');
+            }
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event'){
               if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
@@ -269,6 +280,7 @@ window.PublicLiveConversation=(()=>{
             else if(value.type==='finishing'){if(!closing&&!renewing)void hold(value.message||'Finishing voice; checking pending work.','server_finishing');}
             else if(value.type==='successor_ready'){if(renewing&&value.id===visit)renewalReadyAck?.(value.renewal);}
             else if(value.type==='closed'||value.type==='finalization_unconfirmed'||value.type==='unconfirmed'){
+              acceptReplacement(value);
               if(value.finalization)usage({finalization:value.finalization,closed:true});
               if(backend==='native'&&value.replacement&&/^[a-f0-9-]{36}$/.test(value.replacement.id||'')
                   &&/^[a-f0-9]{64}$/.test(value.replacement.revision||''))

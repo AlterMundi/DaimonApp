@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -25,6 +25,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
    if(value.binding){this.id=value.id;order.push('admission');
     if(reviewFirst&&sockets.length===1){emit({type:'unconfirmed',id:this.id,message:'Tap Reconnect voice. Final usage unconfirmed.',
       replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
+    if(failReviewedPreparation&&sockets.length===2){emit({type:'context_preparing',id:this.id,replacement_accepted:value.replacement,voice_continuation:value.replacement.id});emit({type:'unconfirmed',id:this.id,message:'Synthetic context preparation failed.'});return;}
     emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous,...(sourceDiagnostics?{source_close_reasons:['source_boundary_changed']}:{})}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
    if(value.type==='close'&&!deferClose){
@@ -341,6 +342,14 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,deferC
  await reconnect.start();
  assert.deepEqual(reconnect.sockets[1].sent[0].replacement,{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)});
  await reconnect.engine.hold();
+ const preparation=fixture({nativeChoice:true,reviewFirst:true,failReviewedPreparation:true});
+ assert.equal(await preparation.engine.start(),false);assert.equal(await preparation.engine.reconnect(),false);
+ assert.equal(preparation.permission(),0,'Failed context preparation never acquires a microphone');
+ const resumed=preparation.engine.reconnect();await until(()=>preparation.sockets.length===3);
+ assert.equal(preparation.sockets[2].sent[0].replacement,undefined,'A consumed review must not be submitted again after preparation fails');
+ assert.equal(preparation.sockets[2].sent[0].voice_continuation,'12345678-1234-4234-8234-123456789abc','Keep the reviewed voice/context owner');
+ await until(()=>preparation.peers[0]?.listeners.has('icegatheringstatechange'));preparation.peers[0].ice();await until(()=>preparation.peers[0].connectionState==='connected');preparation.peers[0].started();assert.equal(await resumed,true);await preparation.engine.hold();
+
  const native=fixture({nativeChoice:true}),nativeStart=native.engine.start();native.backend(undefined);
  await until(()=>native.peers[0]?.listeners.has('icegatheringstatechange'));
  assert.equal(native.sockets[0].sent[0].backend,'native','The native choice freezes before admission/permission');

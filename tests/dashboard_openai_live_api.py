@@ -417,6 +417,66 @@ class Mounted(unittest.TestCase):
             self.assertEqual(before['replacement_review']['target'],self.ident)
             self.assertEqual(sum(c.creations for c in Client.instances),2)
 
+    def test_replacement_preparation_failure_retains_receipt_without_reusing_consumed_review(self):
+        from dashboard.avatar_workshop import AvatarWorkshop
+        self.config['openai_live']['session_options']={'audio':{'output':{'voice':'cedar'}}}
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        with self.choice_client() as client:
+            client.app.state.avatar_workshop=AvatarWorkshop(self.state)
+            socket=lambda:client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
+            self.meta={**self.meta,'backend':'native'}
+            with socket() as ws:self.start(ws)
+            old=self.ident;owner=self.owner.public_live_binding(self.owner.binding)
+            self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+            with socket() as ws:
+                ws.send_json(self.meta);review=ws.receive_json()['replacement']
+            self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident,'replacement':review}
+            async def failed_prepare(*args,**kwargs):raise ValueError('Current integrating result changed')
+            with patch('dashboard.openai_live_api.PublicLiveSessionContext.prepare',failed_prepare):
+                with socket() as ws:
+                    ws.send_json(self.meta);ack=ws.receive_json();failure=ws.receive_json()
+                    self.assertEqual(ack['type'],'context_preparing');self.assertEqual(ack['replacement_accepted'],review)
+                    self.assertEqual(ack['voice_continuation'],old)
+                    self.assertEqual(failure['type'],'unconfirmed');self.assertEqual(failure['replacement_accepted'],review)
+            failed=self.read();self.assertEqual(failed['state'],'not_created');self.assertNotIn('request_sha256',failed)
+            self.assertEqual(failed['startup_failure'],{'stage':'native_context','code':'context_changed'})
+            public=client.get('/api/interaction/voice/gpt-live/visits/'+self.ident,headers=self.headers)
+            self.assertEqual(public.status_code,200);self.assertNotIn('startup_failure',public.json())
+            self.assertEqual(sum(c.creations for c in Client.instances),1,'Preparation failure never creates a provider call')
+            history=LiveCreations(self.state/'public-live-visits')
+            history.startup_failure(self.ident,100,owner,'offer','timeout')
+            self.assertEqual(self.read()['startup_failure'],failed['startup_failure'],'Keep the first fixed observation')
+            with self.assertRaises(ValueError):history.startup_failure(self.ident,101,owner,'offer','timeout')
+            with self.assertRaises(ValueError):history.startup_failure(self.ident,100,owner,'private detail','timeout')
+            self.assertEqual(history.accepted_replacement(100,owner,review),review)
+            with self.assertRaises(ValueError):history.accepted_replacement(101,owner,review)
+            # An uncertain provider attempt is never evidence for clearing review.
+            uncertain={**failed,'state':'creation_unconfirmed','request_sha256':'f'*64}
+            history._write(uncertain);self.assertIsNone(history.accepted_replacement(100,owner,review));history._write(failed)
+            # A lost admission ACK is recovered by observation, not another call.
+            self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+            with socket() as ws:
+                ws.send_json(self.meta);again=ws.receive_json()
+                self.assertEqual(again['type'],'unconfirmed');self.assertEqual(again['replacement_accepted'],review)
+                self.assertEqual(again['voice_continuation'],old)
+            self.assertFalse((history.root/(self.ident+'.json')).exists())
+            self.assertEqual(sum(c.creations for c in Client.instances),1)
+            self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':self.owner.binding,'csrf':'fresh','backend':'native','voice_continuation':old}
+            with socket() as ws:self.start(ws);self.close(ws)
+            self.assertEqual(sum(c.creations for c in Client.instances),2)
+            original=history.read(old,100,owner);self.assertEqual(original['state'],'created');self.assertNotIn('finalization',original)
+
+    def test_optional_startup_diagnostic_failure_does_not_break_cleanup_or_leak_details(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def failed_prepare(*args,**kwargs):raise ValueError('Current integrating result changed')
+        with self.choice_client() as client,patch('dashboard.openai_live_api.PublicLiveSessionContext.prepare',failed_prepare),patch.object(LiveCreations,'startup_failure',side_effect=OSError('private diagnostic storage detail')):
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta,'backend':'native'})
+                self.assertEqual(ws.receive_json()['type'],'context_preparing');failure=ws.receive_json()
+                self.assertEqual(failure['type'],'unconfirmed');self.assertNotIn('private',json.dumps(failure))
+        self.assertEqual(self.read()['state'],'not_created');self.assertNotIn('startup_failure',self.read())
+        self.assertEqual(sum(c.creations for c in Client.instances),0)
+
     def test_explicit_native_choice_does_not_replace_the_existing_responses_mode(self):
         self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
         with self.choice_client() as client:
