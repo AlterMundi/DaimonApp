@@ -130,7 +130,11 @@ Before stopping the web, run the candidate imports and application-constructor
 qualification with the interpreter and locked environment from the actual service
 ExecStart, as its consuming user. The maintenance wrapper's interpreter does not
 select the interpreter of the command after `--`; use the explicit serving Python
-there too. Complete dependency/constructor checks before the stop. If a new owner
+there too. For `python -m uvicorn`, the selected working directory can provide
+the App while PYTHONPATH keeps stable dependencies and an older fallback source.
+Do not require the working directory to appear there: preserve those prefixes,
+prove the candidate module import as the consuming UID, and CAS-edit the current
+selector before exact served-asset readback. Complete dependency/constructor checks before the stop. If a new owner
 binding requires a post-migration constructor check, preflight the unchanged
 imports before stopping and retain the exact migration phase separately.
 
