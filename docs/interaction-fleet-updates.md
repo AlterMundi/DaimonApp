@@ -11,7 +11,9 @@ Reuse the existing immutable release directories, local maintenance/unit writers
 source qualification and current owner journal. Prepare one qualified release,
 compare each selected source/reader/locked environment, reconcile owner changes
 into common code or explicit existing receiver configuration, and apply at that
-receiver's safe boundary. Native changes use the supported collector-preserving
+receiver's safe boundary. For logical voice changes, qualify the view lifetime as
+well as the transport: a current renewal engine alone does not establish that its
+receiving view honors the admitted untilStop lifetime. Native changes use the supported collector-preserving
 handoff; a web-only change does not restart native work. Preserve paused/blocked
 goals and uncertain inputs. Never clear journals or replay a command to manufacture
 convergence. Reuse actual outcomes after a failed verifier.

@@ -192,5 +192,6 @@ the existing technical timing inspector instead of appearing as warning prose in
 the ordinary voice view. The Reconnect control does not describe diagnostic
 storage; its existing connection/recovery action still runs unchanged. Keep
 transcripts, stale-phrase fences, actual recovery warnings, Stop, For You and
-reconnect readiness intact. This presentation correction does not establish a
+reconnect readiness intact. Detector progress alone must not claim that the
+microphone is active; that readiness comes from the current engine state. This presentation correction does not establish a
 phone startup diagnosis or sustained voice/hearing acceptance.
