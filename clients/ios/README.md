@@ -11,10 +11,26 @@ Those bounds govern decoder waits, not a media upload or network request.
 Caller-owned and returned data cannot alter retained bytes. Flat storage avoids
 per-chunk metadata growth for small valid chunks.
 
-This is not an encoded decoder, bridge admission, background permission or
-playback receipt. The existing iOS bridge still accepts PCM/Beacon only. Wiring
-encoded replies, actual native decoding/playback and background/media controls
-remain necessary before advertising parity; normal native capabilities stay off.
+`EncodedSpeechDecoder` consumes that verified source using Apple's sequential
+MP3 stream parser and converter. It emits at most8192bytes of24kHz mono PCM16
+per callback, within the existing default300/explicit600second PCM bound. Packet
+sizes/counts, format and conversion/drain work are bounded; bad input, consumer
+failure or source close retires the single-use decoder. Whole-stream EOF still
+requires the terminal digest. Prefix PCM is provisional decoded preparation,
+not a completed source or played/heard receipt. Tests reuse the existing Android
+MP3 fixture, including actual packet splits and decode before terminal bytes.
+
+The parser/converter acquires no audio device/session. The existing iOS bridge
+still accepts PCM/Beacon only. Native decoder/playback wiring, encoded admission
+and background/media controls remain necessary before advertising parity;
+normal native capabilities stay off. A completed-buffer player is not a
+replacement for progressive decoding. Future loading/muted validation must not
+call `AVAudioPlayer.prepareToPlay()` before explicit source-qualified playback:
+[Apple documents its session activation](https://developer.apple.com/documentation/avfaudio/avaudioplayer/preparetoplay()).
+The [stream parser contract](https://developer.apple.com/documentation/audiotoolbox/audio-file-stream-services)
+requires ordered file bytes and parser cleanup, not a second network transport.
+
+## Existing PCM and app preparation
 
 The existing native-client plan selects an equivalent iOS client. This package
 prepares its audio core with the same 24 kHz mono PCM16 span contract as Android's

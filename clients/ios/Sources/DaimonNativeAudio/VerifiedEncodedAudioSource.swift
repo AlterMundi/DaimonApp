@@ -46,6 +46,10 @@ final class VerifiedEncodedAudioSource: @unchecked Sendable {
         }
         terminal = true; condition.broadcast()
     }
+    var isClosed: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return closed
+    }
     var size: Int? {
         condition.lock(); defer { condition.unlock() }
         return terminal && !closed ? bytes.count : nil
