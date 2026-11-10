@@ -238,3 +238,26 @@ Client bundle identification belongs inside the existing **Under the hood** pane
 Keep its exact hash available for support, but never show the `ui` version strip
 above the ordinary conversation header. Closing technical details hides it again
 without changing authentication, asset versioning or the selected conversation.
+
+
+## Screenshot identity and Avatar audio envelope
+
+Nicolas explicitly requested the existing short client-bundle hash beneath the
+Conversation identity for screenshots. Keep its full-bundle tooltip; this is the
+selected exception to hiding ordinary debugging text. Do not expose other raw
+status or identifiers. The compact header and keyboard layout keep it legible.
+Lift the portrait surface by six pixels without modifying the saved artwork.
+
+In full-screen Avatar, preserve the existing background and place a translucent
+measured sound envelope across the full background behind the character. Human
+microphone activity uses quiet copper; decoded daimon output uses cyan. Smooth
+between measured levels rather than synthesizing a decorative oscillation. Reuse
+existing input PCM and output activity: no second microphone, AudioContext,
+player, provider, network route or saved audio. The meter reads at most32000byte
+PCM chunks at10Hz; each of two cosmetic tracks retains at most40 scalar levels.
+Clear on silence, view exit and hidden pages; respect reduced motion. Cosmetic
+failure must never interrupt capture, Stop, output or authority checks. The
+full-screen Canvas omits its flat fill so the original background/envelope stays
+visible between glyphs; the editor and compact portrait retain their fill.
+This is a low-resolution amplitude envelope, not a waveform archive or proof
+that a provider has heard, interpreted or acted on the microphone input.

@@ -669,3 +669,6 @@ technical/debugging section, or require Nicolas's agreement at that moment.
 Explain meaningful states and available actions in plain product language.
 Do not hide a failure or imply readiness that has not been observed.
 Source: human instruction c437d2e1-53bf-5d18-a499-5b85f443e8c0.
+Nicolas explicitly restores the short client-bundle hash beside the Conversation
+identity for screenshots (af339ebd). Preserve that selected exception; keep other
+diagnostics in their technical area.

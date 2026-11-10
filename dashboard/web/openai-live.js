@@ -13,14 +13,15 @@ window.PublicLiveConversation=(()=>{
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let captureLocks,releaseMicrophone;
     let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
-    let replacementReview,voiceContinuation,outputLevel=0;
+    let replacementReview,voiceContinuation,outputLevel=0,inputLevel=0;
+    const inputMeter=window.ConversationVoiceMode?.meter?.(value=>{inputLevel=value;state();});
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     // View updates have no transport/capture authority. In particular a failed
     // Avatar/notice renderer cannot interrupt Stop before closing is cleared.
     const present=(callback,value)=>{try{callback(value);}catch{/* Keep owned audio cleanup running. */}};
     const state=message=>present(onState,{active,starting,working:closing,untilStop:continuity,pending:originals.size>0,floor:false,
       reconnecting:!closing&&(renewing||peer?.connectionState==='disconnected'),
-      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,...(message?{message}:{})});
+      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,inputLevel:active&&!closing?inputLevel:0,...(message?{message}:{})});
     const notify=()=>present(onRecovery,[...originals.values()]);
     const usage=value=>{try{onUsage({visit,binding,...value});}catch{/* Diagnostics never fail voice cleanup. */}};
     async function request(value,path,options={}){
@@ -396,6 +397,7 @@ window.PublicLiveConversation=(()=>{
           if(!value.pcm)return;
           const pcm=value.pcm;
           if(!(pcm instanceof ArrayBuffer)||!pcm.byteLength||pcm.byteLength%2||pcm.byteLength>32000||total+pcm.byteLength>admission.max_input_pcm_bytes){void hold('Voice recording reached its bound.','capture_bound');return;}
+          inputMeter?.(pcm);
           parts.push(pcm);fragmentParts.push(pcm);bytes+=pcm.byteLength;fragmentBytes+=pcm.byteLength;total+=pcm.byteLength;checkpoint();
           if(bytes>=30*32000)flush();
           if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.','binding_changed');
