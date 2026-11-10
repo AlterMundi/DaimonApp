@@ -287,3 +287,30 @@ activation. Reserve the same bounded source request and wait for that owned
 activation's readiness; confirm raw bytes only afterward. Stop or failed/retired
 activation rejects that wait. Duplicate requests reuse one prefix/upload; they
 never create another voice call or bypass binding, capture or source checks.
+
+### Adding the portable Conversation descriptor
+
+Select the already-qualified App publisher with the existing collector-preserving
+native handoff. Resolve each real Home pairing and registered Interaction route;
+configure only that pair's publication surface/audience and private owner signer.
+A descriptor is public verification metadata, never proof of a message delivery or
+permission to replace an older ambiguous publication. Matrix selects its signed
+policy through its separate existing writer; this App update does not reload it.
+
+Adding interaction.matrix_publication changes the current Provider authority
+fingerprint. Reuse same-scope companion requalification, preserving attempts,
+menu/Traffic state and unexpired devices through their supported reauthorize
+operation. Qualify all selected constructors before stopping, then use the voice
+admission fence while selecting configuration and compatible code. Preserve
+Core, native threads, goals/accounting and exact current collectors; inspect a
+failed final verifier instead of repeating a completed binary/config selection.
+
+Inspect the actual serving Provider presentation_list publications argument and
+the mounted HTTP reader, not only the repository ancestry or browser assets.
+The10November original-three check found matching Conversation JavaScript but
+older Provider/API functions. Composing just those two qualified814 reader deltas
+preserved the current artwork, voice/storage fixes and other receiver code. The
+exact staged reader plus full-audio binary passed the real owner socket/SQLite/
+authenticated HTTP publication fixture with the installed compatible Matrix SDK.
+Source publication, actual native status, current reader and the later Matrix
+publication/receiving journey remain separate observations.
