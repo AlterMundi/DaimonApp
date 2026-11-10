@@ -179,6 +179,40 @@ class DurableCreation(unittest.TestCase):
         return self.visits.create(ident or self.ident, human, owner or self.owner,
                                  'v=0 offer', self.spec, client or self.client(self.success()))
 
+    def test_native_close_preserves_pending_application_work_and_is_once_only(self):
+        self.spec=session_spec('Native voice',client_delegation=True)
+        self.visits.prepare(self.ident,100,self.owner,backend_mode='native')
+        self.create()
+        self.visits.event(self.ident,100,self.owner,{'type':'session.delegation.created','event_id':'pending-native',
+            'delegation':{'id':'application-work','target':'client'}})
+        before=json.loads(json.dumps(self.visits.read(self.ident,100,self.owner)))
+        command=self.visits.close_intent(self.ident,100,self.owner)
+        self.assertIsNotNone(command,'Independent native work must not hold the voice close command')
+        self.assertEqual(command['type'],'session.close')
+        after=self.visits.read(self.ident,100,self.owner)
+        self.assertEqual(after,{**before,'close_intent':command},'Closing voice never completes/cancels or rewrites native work')
+        restarted=LiveCreations(self.root)
+        self.assertIsNone(restarted.close_intent(self.ident,100,self.owner),'Never resend an uncertain close after restart')
+        self.closed(usage=12)
+        final=self.visits.read(self.ident,100,self.owner)
+        self.assertEqual(final['delegations'],before['delegations'])
+        self.assertEqual(final['finalization']['usage_seconds'],12)
+        self.assertEqual(len(self.calls),1)
+
+    def test_pending_responses_still_hold_native_close(self):
+        self.visits.prepare(self.ident,100,self.owner,backend_mode='native')
+        self.create()
+        self.visits.event(self.ident,100,self.owner,{'type':'session.delegation.created','event_id':'response-work',
+            'delegation':{'id':'required-response','target':'responses','response_id':'response'}})
+        self.assertIsNone(self.visits.close_intent(self.ident,100,self.owner))
+
+    def test_client_work_in_responses_mode_still_holds_close(self):
+        self.visits.prepare(self.ident,100,self.owner)
+        self.create()
+        self.visits.event(self.ident,100,self.owner,{'type':'session.delegation.created','event_id':'client-work',
+            'delegation':{'id':'required-client','target':'client'}})
+        self.assertIsNone(self.visits.close_intent(self.ident,100,self.owner))
+
     def disconnected_native(self):
         self.visits.prepare(self.ident,100,self.owner,backend_mode='native')
         self.create()
