@@ -22,6 +22,7 @@ public final class PCMPlaybackQueue {
         }
     }
     public static let maximumQueuedBytes = 30 * 48000
+    private static let maximumSpans = 512
     private let maximumSessionBytes: Int
     private var writes: [Span] = []
     private var spans: [Span] = []
@@ -35,6 +36,15 @@ public final class PCMPlaybackQueue {
     public private(set) var playedBytes = 0
     public var queuedBytes: Int { appendedBytes - playedBytes }
 
+    /// Decoder backpressure only. Lifetime exhaustion cannot become available
+    /// by waiting; transient byte/span capacity can. Actual append rechecks all
+    /// sequence, source, integrity and capacity preconditions independently.
+    func hasRoom(for byteCount: Int) throws -> Bool {
+        guard (2...32768).contains(byteCount), byteCount.isMultiple(of: 2),
+              lifetimeBytes <= maximumSessionBytes - byteCount else { throw Refusal.invalidSpan }
+        return spans.count < Self.maximumSpans && queuedBytes <= Self.maximumQueuedBytes - byteCount
+    }
+
     public init(seconds: Int = 300) throws {
         guard (300...600).contains(seconds) else { throw Refusal.invalidDuration }
         maximumSessionBytes = seconds * 48000
@@ -45,7 +55,7 @@ public final class PCMPlaybackQueue {
               next == sequence, (2...32768).contains(data.count), data.count.isMultiple(of: 2),
               sha256 == Self.digest(data), !retired.contains(utterance),
               received[utterance] != nil || received.count < 128,
-              spans.count < 512, lifetimeBytes <= maximumSessionBytes - data.count,
+              spans.count < Self.maximumSpans, lifetimeBytes <= maximumSessionBytes - data.count,
               queuedBytes <= Self.maximumQueuedBytes - data.count,
               end == (received[utterance] ?? 0) + data.count else { throw Refusal.invalidSpan }
         let span = Span(utterance: utterance, begin: appendedBytes,
