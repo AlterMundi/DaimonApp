@@ -1495,3 +1495,10 @@ html[data-style-policy="authored"] .voice-studio-presets .control-icon {width:26
 
 .pending-panel .for-you-items {display:grid;gap:12px;}
 .pending-panel :is(#conversation-requests,#conversation-tasks,#conversation-goals,#internal-requests,#internal-tasks)>h2 {display:none;}
+
+/* The touch wardrobe uses its horizontal game viewport; keep an exit reachable. */
+@media(any-pointer:coarse) and (orientation:landscape){
+ .avatar-workshop-dialog,html[data-style-policy="authored"] .avatar-workshop-dialog{width:100vw;max-width:none;height:100dvh;max-height:100dvh;margin:0;padding:0;border:0;border-radius:0}
+ .avatar-workshop-toolbar{min-height:32px;padding:0 6px;gap:6px}
+ .avatar-workshop-toolbar button{min-height:30px;padding:2px 8px;font-size:16px}
+}
