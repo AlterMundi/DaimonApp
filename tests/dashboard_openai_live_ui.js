@@ -282,6 +282,15 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
  assert(optional.engine.active,'Earlier work failure cannot end the current voice');
  optional.pcm();await optional.engine.hold();
  assert.equal(optional.sockets[0].sent.find(v=>v.type==='close').reason,'explicit_stop');
+ const uncertain=fixture();await uncertain.start();
+ uncertain.sockets[0].onmessage({data:JSON.stringify({type:'notice',code:'native_handoff_unconfirmed'})});
+ assert(uncertain.engine.active,'An unconfirmed delegated task must not end current speech');
+ assert.match(uncertain.states.at(-1).message,/couldn’t confirm/);
+ assert(!uncertain.sockets[0].sent.some(v=>v.type==='close'));
+ uncertain.pcm();await uncertain.engine.hold();
+ assert.equal(uncertain.sockets.length,1,'Uncertain work does not open another voice call');
+ assert.equal(uncertain.permission(),1,'Uncertain work does not reacquire the microphone');
+ assert.equal(uncertain.sockets[0].sent.find(v=>v.type==='close').reason,'explicit_stop');
  const transient=fixture();await transient.start();
  try{
   transient.peers[0].connectionState='disconnected';transient.peers[0].onconnectionstatechange();

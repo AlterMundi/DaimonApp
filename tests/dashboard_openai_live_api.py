@@ -678,7 +678,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False):
+    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False):
         app=self.app_with_history();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
@@ -704,6 +704,7 @@ class Mounted(unittest.TestCase):
             self.assertIn('native semantic producer',body['formulation'])
             self.assertIn(self.ident,body['formulation'])
             self.assertIn(self.ident,owner.journal.producers,'Context must be retained before native work')
+            if unconfirmed_work:raise ProviderUnavailable('Synthetic lost native acknowledgment')
             row.update(phase='accepted',native_acceptance='observed',local_turn=42,foreground_delegation={
                 'intent_id':body['intent_id'],'dialogue_id':self.ident,'formulation':body['formulation'],'live_window':body['live_window']['proof'],
                 'sources':[{'id':ident,'capture_order':index+1,'text':saved[ident]['text'],
@@ -715,7 +716,7 @@ class Mounted(unittest.TestCase):
         owner.presentation_list=lambda delivery,native,direction:{'binding':owner.binding,
             'newest':{'native':77 if calls['work'] and not automatic else 0},'items':[{'id':'native:77',
                 'revision':'d'*64,'kind':'integrator_answer','local_turn':42}] if calls['work'] and native<77 and not automatic else [],
-            'more':False,'cursor':{'delivery':0,'native':77}}
+            'more':False,'cursor':{'delivery':0,'native':77 if calls['work'] and not automatic else 0}}
         owner.presentation_part=lambda source,revision,offset:{'id':source,'revision':revision,'offset':offset,
             'next_offset':None,'text':'Soy CompAII. Este resultado viene del integrador nativo.',
             'entry_binding':frozen['entry_binding'][:3]+[owner.binding],
@@ -751,7 +752,24 @@ class Mounted(unittest.TestCase):
                     socket.send_json({'type':'source_sealed','request':request['request'],
                         'through_ordinal':1,'capture_bytes':len(audio)-44})
                     self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
-                    if automatic:
+                    if unconfirmed_work:
+                        notice=socket.receive_json()
+                        self.assertEqual(notice,{'type':'notice','code':'native_handoff_unconfirmed'})
+                        self.assertEqual(native.sent,[],'An uncertain work acknowledgment must not close current speech')
+                        pending=self.read()['delegations']['native-task']
+                        self.assertEqual(pending['native_pipeline']['state'],'unconfirmed')
+                        self.assertEqual(pending['native_work']['state'],'intent')
+                        native.events.put({'type':'session.input_transcript.delta','event_id':'still-listening',
+                            'delta':'We can still talk.','start_ms':60,'end_ms':90})
+                        self.assertEqual(socket.receive_json()['event']['event_id'],'still-listening')
+                        if automatic:
+                            socket.send_json({'type':'close','reason':'transport_renewal'})
+                            self.assertEqual(socket.receive_json()['type'],'finishing')
+                            final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                            self.assertTrue(final['renewal_pending'])
+                            self.assertEqual(socket.receive_json()['type'],'successor_ready')
+                        else:self.close(socket)
+                    elif automatic:
                         # Keep the sealed, admitted native work running with no result yet.
                         socket.send_json({'type':'close','reason':'transport_renewal'})
                         self.assertEqual(socket.receive_json()['type'],'finishing')
@@ -805,16 +823,23 @@ class Mounted(unittest.TestCase):
                         self.assertEqual(len(renewed['native_result_updates']),1)
                         self.assertEqual(len([r for r in continued.sent if r['type']=='session.commentary.append']),1)
         self.assertEqual(first_value['state'],'closed')
-        self.assertEqual(first_value['delegations']['native-task']['native_pipeline']['state'],'admitted')
+        self.assertEqual(first_value['delegations']['native-task']['native_pipeline']['state'],
+            'unconfirmed' if unconfirmed_work else 'admitted')
         updates=list(first_value.get('native_result_updates',{}).values())
-        self.assertEqual(len(updates),0 if slow_result or automatic else 1)
-        if not slow_result and not automatic:
+        self.assertEqual(len(updates),0 if slow_result or automatic or unconfirmed_work else 1)
+        if not slow_result and not automatic and not unconfirmed_work:
             self.assertEqual(updates[0]['state'],'context_injected');self.assertNotIn('heard',updates[0])
         else:self.assertEqual([row['type'] for row in native.sent],['session.close'])
         self.assertFalse(first_value['delegations']['native-task']['native_pipeline']['work_completed'])
 
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
         self._native_backend_flow()
+
+    def test_uncertain_native_handoff_keeps_current_speech_until_explicit_stop_without_replay(self):
+        self._native_backend_flow(unconfirmed_work=True)
+
+    def test_uncertain_native_handoff_keeps_confirmed_transport_renewal_without_replay(self):
+        self._native_backend_flow(unconfirmed_work=True,automatic=True)
 
     def test_closed_native_work_returns_to_fresh_voice_without_new_original_or_dispatch(self):
         self._native_backend_flow(renew=True)

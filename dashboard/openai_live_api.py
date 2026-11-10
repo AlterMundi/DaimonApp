@@ -407,7 +407,13 @@ def install(app, config, provider, authorize, origins):
                                 'Public native preparation failed: %s',type(error).__name__)
                             if not closing:native_failure=True;await begin_close()
                         else:
-                            if outcome['state']!='admitted' and not closing:
+                            if outcome['state']=='unconfirmed' and not closing:
+                                # The exact work intent and synchronized source
+                                # context are retained. A lost delegation ACK is
+                                # not a failure of current speech. Never resubmit
+                                # it: its native_pipeline already fences replay.
+                                await send({'type':'notice','code':'native_handoff_unconfirmed'})
+                            elif outcome['state']!='admitted' and not closing:
                                 native_failure=True;await begin_close()
                     if not closing:
                         value=await asyncio.to_thread(history.read,visit,human,owner)
