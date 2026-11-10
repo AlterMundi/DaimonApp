@@ -280,6 +280,7 @@ pub(super) fn tool_call(
                 "goal_decide" => "interaction_goal_decide",
                 "goal_status" => "interaction_goal_status",
                 "goal_execute" => "interaction_goal_execute",
+                "publish_tasks" => "interaction_publish_tasks",
                 "human_tasks" => "interaction_human_tasks",
                 "human_task" => "interaction_human_task",
                 "withdraw_task" => "interaction_withdraw_task",
@@ -406,7 +407,7 @@ pub(super) fn tool_call(
                 }
                 return Ok(json!({"kind":"original_integrating_inputs","bounded":true,"inputs":inputs}));
             }
-            if matches!(request.tool.as_str(),"interaction_human_tasks"|"interaction_human_task"|"interaction_withdraw_task") {
+            if matches!(request.tool.as_str(),"interaction_publish_tasks"|"interaction_human_tasks"|"interaction_human_task"|"interaction_withdraw_task") {
                 let operation=request.tool.strip_prefix("interaction_").expect("matched task operation");
                 return super::interactions::live_task_tool(&app,key,human,&request,operation,request.arguments.clone(),&closed).await;
             }
