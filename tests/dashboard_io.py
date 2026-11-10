@@ -754,6 +754,17 @@ class DashboardAppearance(unittest.TestCase):
                 response=client.get('/')
                 self.assertRegex(response.text, r'id="client-build" title="Client bundle [a-f0-9]{64}" aria-label="Client version [a-f0-9]{12}"')
                 self.assertNotIn('id="client-build" hidden', response.text)
+                from html.parser import HTMLParser
+                class BuildLocation(HTMLParser):
+                    def __init__(self):super().__init__();self.ids=[];self.technical=False
+                    def handle_starttag(self, tag, attrs):
+                        ident=dict(attrs).get('id')
+                        if ident=='client-build':self.technical='conversation-diagnostics' in self.ids
+                        if tag not in ('area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr'):self.ids.append(ident)
+                    def handle_endtag(self, tag):
+                        if self.ids:self.ids.pop()
+                location=BuildLocation();location.feed(response.text)
+                self.assertTrue(location.technical,'Build identity belongs in explicit technical details, never the ordinary shell')
                 self.assertIn('data-home-style',response.text)
                 self.assertIn('https://home.example.test/style.css?surface=sessions',response.text)
                 self.assertIn('https://home.example.test/home-style.js',response.text)

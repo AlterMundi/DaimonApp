@@ -40,7 +40,6 @@
   </head>
   <body>
     <main>
-      <div id="client-build" hidden></div>
       <header>
         <div class="identity">
           <svg class="resonance" viewBox="0 0 32 32" aria-hidden="true">
@@ -150,6 +149,7 @@
         <details id="conversation-diagnostics">
         <summary>Under the hood <span aria-hidden="true">+</span></summary>
         <div class="conversation-diagnostics-content">
+          <div id="client-build" hidden></div>
           <div id="conversation-voice-choice" class="conversation-tools" hidden><label for="conversation-voice-engine">Avatar</label><select id="conversation-voice-engine" aria-label="Avatar voice provider"><option value="provider">Current voice</option><option value="codex">OpenAI · Codex voice</option><option value="gpt-live">OpenAI · GPT-Live comparison</option><option value="gpt-live-native" disabled>OpenAI · GPT-Live + CompAII</option></select></div>
           <div id="conversation-services-choice" class="conversation-tools" hidden><label for="conversation-services-engine">Conversation services</label><select id="conversation-services-engine"><option value="current">Current voice</option><option value="openai">OpenAI only · hear and speak</option></select><span class="note">OpenAI uses the API credit balance. Avatar uses GPT-Live + CompAII.</span></div>
           <details id="conversation-live-usage" hidden><summary>OpenAI voice usage · this page</summary><ol></ol><p class="note">GPT-Live 1 voice estimate at USD 0.05/minute, checked November 7, 2026. Billed per second, including silence and backend waiting. Excludes backend models/tools, transcription and separate TTS. This is not an invoice or a credit-balance check. Muting does not close the session. Reload or changing conversation clears these eight most recent observations. <a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener noreferrer">Official pricing</a></p></details>

@@ -222,3 +222,8 @@ its DOM, caption/activity track, marquee observers and background rules rather
 than leaving a hidden reserved row. Pending work remains in For You and actual
 voice controls retain their own state. The authored avatar starts at the header's
 upper edge with no reserved 44px band; short-height keyboard compaction remains.
+
+Client bundle identification belongs inside the existing **Under the hood** panel.
+Keep its exact hash available for support, but never show the `ui` version strip
+above the ordinary conversation header. Closing technical details hides it again
+without changing authentication, asset versioning or the selected conversation.
