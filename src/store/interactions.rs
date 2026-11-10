@@ -1086,10 +1086,11 @@ mod lifecycle_tests {
             .ensure_session(entry, 100, &super::super::tests::defaults())
             .unwrap();
         store.record_turn_native_thread(turn, "source").unwrap();
+        // Historical ledgers may exceed the new declaration bound; pagination must retain them.
         for index in 0..23 {
             let id = format!("worker-{index}");
             store
-                .save_human_tasks(worker, &[(id.clone(), task(&id, turn))])
+                .save_interaction(worker, &task(&id, turn), Some(&id))
                 .unwrap();
         }
         store
@@ -1117,10 +1118,11 @@ mod lifecycle_tests {
     #[test]
     fn pages_have_topic_totals_and_separate_terminal_history() {
         let (_root, store, key, turn) = fixture();
+        // Populate retained historical rows without using the bounded new-declaration writer.
         for n in 0..60 {
             let id = format!("task-{n:03}");
             store
-                .save_human_tasks(key, &[(id.clone(), task(&id, turn))])
+                .save_interaction(key, &task(&id, turn), Some(&id))
                 .unwrap();
         }
         store
