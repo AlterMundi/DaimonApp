@@ -137,16 +137,43 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
     def emit(source,revision,offset):
         return return_native_part(history,ident,human,owner,delegation,source,revision,
                                   offset,provider,sideband,stopped=stopped,source_visit=source_visit)
+    trace=None
+    def checked_trace(view):
+        current()
+        if (not isinstance(view,dict) or view.get('id')!=work['native_work']['root']
+                or view.get('entry_binding')!=owner['entry_binding']):
+            raise ProviderUnavailable('Worker result original binding changed')
+        routes=view.get('routes',[])
+        if not isinstance(routes,list) or len(routes)>5:raise ValueError('Native result route bound exceeded')
+        if any(not isinstance(r.get('results',[]),list) or len(r.get('results',[]))>8 for r in routes):
+            raise ValueError('Native result trace bound exceeded')
+        return view
+    def current_trace():
+        nonlocal trace
+        if trace is None:trace=checked_trace(provider.conversation_input_trace(work['native_work']['root']))
+        return trace
+    def superseded_worker(row):
+        if not row['source'].startswith('delivery:'):return False
+        def selected(view):
+            return [r for route in view.get('routes',[]) if route.get('target_available') is True
+                    for r in route.get('results',[]) if r.get('source')==row['source']]
+        view=current_trace();matches=selected(view)
+        if not matches and view.get('result_pages')=='v1':
+            exact=checked_trace(provider.conversation_input_trace_result(work['native_work']['root'],row['source']))
+            if exact.get('result_pages')!='v1':raise ValueError('Worker result page capability changed')
+            matches=selected(exact)
+        # Relevance changes the canonical revision too. Keep the acknowledged
+        # old cursor, but never let its now-ineligible tail starve the correction.
+        # Missing/unavailable/foreign sources are not evidence of supersession.
+        return any(isinstance(r.get('revision'),str) and re.fullmatch('[a-f0-9]{64}',r['revision'])
+                   and (r.get('current') is False or r.get('correction_pending') is True) for r in matches)
+    if any(row['state']!='context_injected' for row in updates):return None
     for row in updates:
-        if row['state']!='context_injected': return None
         if row['next_offset'] is not None and not any(other['source']==row['source']
                 and other['revision']==row['revision'] and other['offset']==row['next_offset'] for other in updates):
+            if superseded_worker(row):continue
             return emit(row['source'],row['revision'],row['next_offset'])
-    trace=provider.conversation_input_trace(work['native_work']['root'])
-    current()
-    if (trace.get('id')!=work['native_work']['root']
-            or trace.get('entry_binding')!=owner['entry_binding']):
-        raise ProviderUnavailable('Worker result original binding changed')
+    trace=current_trace()
     routes=trace.get('routes',[])
     if not isinstance(routes,list) or len(routes)>5:raise ValueError('Native result route bound exceeded')
     for route in routes:

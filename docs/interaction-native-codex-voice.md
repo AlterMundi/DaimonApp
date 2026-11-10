@@ -4,6 +4,73 @@ This opt-in Avatar engine uses the existing native Codex App Server and its
 ChatGPT sign-in. It is separate from the Qwen/Gemini engine. Application tests
 are not production or physical-hearing acceptance.
 
+## Finishing a retained full checkpoint reader
+
+A closed reconnect can leave an older, partly paged full reader after its native
+worker has finished. That frozen reader must remain available with its original
+revision, exact body and page offsets. Refusing every dispatch while a full reader
+exists prevents a fresh explicit reconnect request from reaching the native
+checkpoint writer at all.
+
+The existing foreground-context dispatcher can reserve one distinct control
+notice for the new reconnect request when the entry is idle and every retained
+context submission has an acknowledged, incorporated, owner-bound physical turn
+with a completed canonical observation. A boundary marker, failed-only local
+turn, uncollected ACK or uncertain submission is insufficient. Active readers and
+unchanged requests remain fenced. The notice uses the existing native dispatcher,
+not another router, source append or replay of an old submission.
+
+The notice carries the fresh `recovery_request_revision` alongside the unchanged
+frozen reader identity. Finish that exact reader and acknowledge it first; this
+cannot acknowledge the newer checkpoint request. Then read and acknowledge the
+current complete checkpoint plus tail and use its exact checkpoint-writer CAS.
+Reservation is durable and deduplicated across restart; changed owner/native/Stop
+bindings still refuse admission. No source is retired by the notice itself.
+
+Foreground known-unsent recovery uses the existing maintenance runner even when
+workflow and routed-return switches are both off. Those switches still control
+their own journals; they are not a prerequisite for finishing an already admitted
+voice-context intent. Return identity, finite attempt limits and uncertainty
+fences remain unchanged. No new source event or retry loop is introduced.
+
+`after_incorporation` names a supplied call template, not an action. Copy its
+operation and arguments exactly (`action: incorporate`) after reading every
+page. A malformed native command now returns a fixed protocol diagnostic rather
+than raw parser details. Requesting another read mode while a frozen range is
+pending returns its existing read-mode template. Neither refusal changes the
+range, its offsets, incorporation or checkpoint. Binding/authority failures keep
+the generic refusal and cannot disclose an old reader. This assists the native
+writer; it does not acknowledge language or manufacture a semantic checkpoint.
+
+Before these diagnostics, one distinct Luna-low trial on31,819bytes of synthetic
+sources completed without incorporation or a checkpoint. Its first call used
+`action: after_incorporation`; its second requested a full read while the original
+non-full reader remained. Both received the generic routing refusal. Retained
+state agrees with the selected-range guard, but the generic reply does not reveal
+which internal branch rejected the second call. The negative outcome remains;
+no model call was repeated to qualify the diagnostic correction. Socket/SQLite
+tests establish exact protocol recovery, not semantic model comprehension.
+
+In an actual-native qualification, archive the task-owned thread only after its
+owned continuations have settled. An idle observation before a new physical ACK
+is a preparation state, not proof that the new worker already completed. Keep
+the bridge alive through the exact pending admission/terminal outcome; preserve
+an uncertain submission rather than restarting it to repair the verifier.
+
+This is a persistent native-reader change: retain a compatible reader for pending
+recovery notices on rollback. An older reader can retain the document but cannot
+admit this new notice. Unit tests establish the reader/CAS and admission behavior;
+device/hearing acceptance remains a separate receiving qualification. A later
+actual Sol-low case completed a semantic checkpoint, persisted it through receiver
+restart and prepared a bounded successor seed. That case used a test-only policy
+which always requested a full reader, so it does not prove ordinary production
+notification uptake. Production guidance instead checks `checkpoint_request` in
+each notification and each read/part/incorporate response: a request can arrive
+after the notification was frozen. A newly observed request requires the full
+checkpoint procedure; an incorporation ACK alone is insufficient. Without a
+pending request, ordinary deltas do not require a full-history read. Do not replay
+an uncertain native input or manually supply a fabricated checkpoint to satisfy those qualifications.
+
 ## Startup with a long idle integrating history
 
 The receiving owner reproduced `Native active turn selection incomplete` during
@@ -192,6 +259,54 @@ sources and preserve revision guards for continued pages. Count navigation,
 rejections and actual reads separately. These are existing reader paths, not a
 new app memory bridge. This qualification changes no runtime code/configuration,
 provider/default, owner brief, native/Core, source/capture/storage bounds or grants.
+
+## Public Live memory handoff —9November2026
+
+The selected public Live/native route on App811 with compatible native809 now
+has one actual read-only memory-return observation. The synthetic spoken request
+asked the general conversation for Nexus's earlier name and the shared-world
+HUD direction. Its acknowledged acoustic window reached the existing native
+owner, using the configured Sol/medium and Cedar choices. Three real owner-bound
+DMK operations performed a search and read two relevant records. The linked
+canonical native answer identified Sobremesa and distinguished the HUD design
+horizon from an implemented virtual world. The existing result pipeline injected
+that answer into voice, which produced the corresponding transcript and nonzero
+decoded audio. Three original recordings,2091824bytes, match their retained
+hashes. Stop closed the single provider session with63seconds confirmed usage;
+the native context closed with4/4events incorporated and the native thread idle.
+This is machine-observed speech delivery, not physical hearing.
+
+The initial verifier exited1 after reading historical `doc.phase` and requiring
+`answered`. Its raw failure remains. `Store::conversation_inputs::read_on`
+overlays that JSON with the authoritative `phase`, `local_turn` and `retired`
+columns. Use `Provider.conversation_input_status()` or the existing typed owner
+projection when assessing an original. `accepted` establishes native admission;
+`answered` belongs to a different decision flow. Neither establishes completed
+work alone. The read-only adjudication checked admission against the linked
+completed native turn, retained canonical answer/current return, exact result
+injection, provider finalization and browser audio. It repeated no input,
+provider call, model work or source mutation. Future qualifiers use that typed
+projection rather than treating a stored JSON snapshot as current state.
+
+An earlier, distinct memory question remains partial. Its source seal succeeded
+and the actual native model performed seven DMK operations, including four
+revision-guarded pages of a long historical record. A temporary metadata reader
+had replaced the qualification bridge's persistent tool sender; the native
+controller replies failed. The native private-context answer was retained, but
+its canonical input and provider finalization remain uncertain and no spoken
+return is credited. A zero-provider interleaving reproduction failed before
+writer-selection correction and passed afterward. Keep metadata read/list
+connections separate from the actual subscribed writer. The successful case
+above used a new question; it did not replay or promote the uncertain operation.
+These were qualification repairs, not production changes or a diagnosis of the
+older phone failure.
+
+The earlier owner-memory pagination and one dated durable curation are separate
+observations. Voice-requested memory mutation, cold spoken continuity after that
+work, two automatic replacements in one actual-native/audio encounter, long or
+concurrent work, and physical phone/background/hearing remain incomplete under
+the unchanged full goal. No runtime/default/account/voice choice, context or
+storage bound, original receipt, goal control or old uncertain attempt changed.
 
 ## Identity clarification and ordinary speech
 
@@ -819,11 +934,14 @@ The separate `codex_voice` recovery key shares the existing combined20MiB and
 128record browser budget with ordinary capture, enforced transactionally.
 Chunks are normally30seconds; server limits are32chunks,120seconds per chunk,
 and600seconds cumulatively per visit. Two uploads can be admitted concurrently,
-with30second and3,840,044byte streaming limits each. Metadata limits are512visits,
+with3,840,044byte streaming limits each. Original uploads have no application
+wall-clock abort on client or server; network failure retains the same original.
+Read/control deadlines, fresh actor/CSRF checks and slot/byte bounds remain.
+Metadata limits are512visits,
 32MiB overall,64KiB and256transcripts per visit. Existing protected-original and
 selected-archive bounds are unchanged. No automatic original retirement.
 
-`Retry saving` verifies and saves the same visit/ordinal/bytes. It never performs
+`Try saving audio` verifies and saves the same visit/ordinal/bytes. It never performs
 ASR, submits ordinary input, opens voice or repeats a handoff. `Save audio`
 exports the local copy. `Discard local copy` removes only that browser copy and
 does not cancel server work. Failed persistence retains a local recovery action.
@@ -896,14 +1014,16 @@ minutes, even when its engine had a600second visit. The sustained540second
 qualification above mounted the native engine, not that fullscreen controller;
 it could not prove that the complete view stayed open. Retain that distinction.
 
-The continuous fullscreen guard now permits at most ten minutes; the legacy
-alternating mode retains its five-minute opt-in. The selected engine still owns
-its configured capture limit, including any shorter limit. Expiry closes through
-the existing onLeave/hold/flush path exactly once; it does not cancel accepted
-backend work or reopen a microphone. Only explicit reconnect rearms the view
-guard. No provider, context, storage or complete-microphone-visit budget changes.
-This qualifies the deterministic view boundary, not an actual ten-minute phone
-visit or the cause of a particular historical recording-review error.
+Nonrenewing continuous engines keep the ten-minute view guard; legacy alternating
+mode keeps its five-minute opt-in. An explicitly admitted native dialogue with
+`continuous_renewal: true` instead reports `untilStop` to the fullscreen view.
+That view stays open through physical replacements until the human closes it;
+it must not terminate a healthy dialogue with an independent ten-minute timer.
+Each physical connection retains its server/engine capture limit (300–600 seconds),
+source fences, storage and accounting. Back, Stop, background and authority loss
+still use their existing owner paths. View continuity grants no replacement or
+microphone permission. Deterministic view tests do not prove physical hearing or
+the cause of a historical recording-review error.
 
 Before qualifying native human questions, inspect the selected mode and effective
 tool availability. The inspected Core request_user_input handler is root-only
@@ -1258,3 +1378,130 @@ source chooses `gpt-live-1-codex` forV3 without an override; actual serving-mode
 identity remains unavailable. Do not activate the tested alias or claim public
 GPT-Live lifecycle parity from connection success. No runtime, default, API key,
 endpoint, native configuration or ordinary backing model changed in these probes.
+
+## Confirmed duration expiry during pending work —9November2026
+
+A new bounded public Live/native encounter held the exact response to one
+read-only controller capabilities call for174.625seconds. The original request
+was not repeated. Voice answered a separate fictional colour question while the
+read was pending, and one automatic replacement entered Listening before the
+response was released. The native task then completed with its canonical answer.
+The successor unexpectedly finalized with `reason:expired` and15seconds of
+confirmed usage, before the application's planned replacement. Its final-result
+append remained `sent`, without an ACK; preserve that uncertain receipt.
+The provider's documented reason identifies a duration expiry, not its underlying
+cause or the cause of the earlier phone incident. See
+[GPT-Live finalization](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close).
+
+The original browser verifier also failed independently: it required the noun
+“farol” after the correct answer “Es verde”. Its failure remains retained and is
+not the explanation for provider expiry. One explicitly bounded readback
+continuation used the already completed canonical answer in actual startup
+history; it spoke the two selected operations with decoded nonzero audio and
+closed through Stop. It performed no second capabilities call, memory lookup or
+uncertain append replay. Total three calls finalized177/15/31seconds, including
+the original two; no counter was reset or refunded. This proves pending-read
+survival and cold spoken retrieval, not spontaneous late speech on the expired
+connection, arbitrary long computation, two native workers or phone/hearing.
+
+Continuous public native voice now also handles a trusted `expired` finalization
+with confirmed usage. It waits for the existing native-context/owner-release
+barrier and one same-epoch successor token, retaining the microphone, locks,
+originals and work. It does not send another close command to an already closed
+provider. Explicit Stop, revocation, unfinished source admission and unsettled
+context still prevent successor opening. Content/network failures and unknown
+POSTs are not automatic renewal authority. Noncontinuous modes keep their current
+behaviour. A second consecutive expiry below60seconds pauses for explicit review
+rather than making a rapid chain of paid calls; normal-length expiries and
+planned replacements retain continuous operation. Existing300–600second physical,
+64k/48k context, storage and accounting bounds are unchanged.
+
+Separately, the retained two-replacement actual-audio encounter produced a real
+native semantic checkpoint through source3:2226UTF-8bytes, preserving memory
+source revisions, the corrected seven-flower/blue-cup facts and the
+incomplete pending question. The exact uncheckpointed source4 remained alongside
+all four native source receipts. Both subsequent seeds inherited that language
+once and appended only their own flat event window, without nesting a previous
+serialized envelope. Spoken readback after both replacements agreed. This is
+natural semantic checkpoint evidence, not a forced64k-pressure test.
+
+
+### Voice-first native conversation entry
+
+An authenticated explicit public-native Avatar start can initialize an owned empty
+conversation with one metadata-only `thread/start` through the existing shared
+Codex server. This sends no human text, `turn/start`, goal update or inference.
+History GETs and ordinary page loading do not initialize a context. Existing
+native contexts and later explicit mode choices are preserved.
+
+The owner control is `input voice native initialize '{"binding":"CURRENT_BINDING"}'`.
+It requires the configured voice route, shared App Server and current allowed
+conversation owner. The existing ingress mutex and transactional receipt fence
+concurrent creation. Stop, maintenance, busy work, changed ownership or a changed
+logical generation refuse binding. Any observed native ID remains in the same
+receipt even when a later control wins. A lost creation response is retained as
+uncertain: do not create a replacement, reset the receipt or invent a seed message.
+The warm operation returns the current binding without another native request.
+First binding uses the existing context-carry transaction, preserving originals.
+
+After an explicit logical reset, a fully observed prior creation may precede a
+fresh initialization for the new binding. Preserve its original receipt in a
+flat history inside the same document; do not overwrite it or nest another
+history envelope. An unchanged binding or an unknown in-flight creation still
+refuses another creation, including after Reset. Known observed-unbound outcomes
+keep their original phase and native ID instead of pretending they were bound.
+The document holds at most64receipts and64KiB, reserving room for the returned
+native ID before creation. Capacity refusal preserves every receipt and starts
+nothing; it never discards history or refunds provider/accounting state.
+
+`openai_live.default_native = true` optionally selects this configured native
+Avatar route at page initialization. It defaults to false and requires an enabled
+native public Live route. It neither enables another speech provider nor changes
+`voice_services_default`; a later manual page selection survives refresh. Existing
+model, account, voice and physical-session/resource bounds remain unchanged.
+
+`tests/native_voice_first_entry_io.py` exercises the actual owner socket, native
+proxy and SQLite restart with a synthetic backend: exactly one `thread/start`,
+zero `turn/start` or invented originals. Provider audio and device/hearing
+acceptance remain separate from this metadata qualification.
+
+## Graceful Stop with an unsealed native client request
+
+A retained GPT-Live client delegation can still be waiting for its capture seal
+when the human presses Stop. The old close guard treated that pending native
+request like session-owned Responses work and withheld session.close until the
+finalization deadline. Native client work belongs to the existing application
+owner: close the voice transport without completing, cancelling or rewriting
+that request. Keep Responses draining in its existing modes.
+
+The mounted regression closes an unsealed request on explicit Stop, confirms
+usage, preserves the exact delegation and sends one close command. The durable
+regression also checks restart: an uncertain prior close is never resent. The
+scheduled-renewal regression carries a sealed, admitted job through close, native
+context readiness and one successor, then delivers its late result exactly once
+without another original, transcription or dispatch. That admitted-job renewal
+already worked in the deployed baseline; it is not the cause established here.
+Older phone cutoffs remain undiagnosed.
+
+This follows the official [client-delegation lifecycle](https://developers.openai.com/api/docs/guides/live-conversations#close-idle-sessions-and-resume)
+and [graceful-close sequence](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close).
+Keep the receiver alive for session.closed and its final usage. Do not weaken
+source-seal, context, authorization, single-successor or uncertain-write barriers
+and do not replay pending work to repair transport closure.
+
+### Removed microphone during public voice
+
+The public client observes `ended` on its selected audio tracks. Device removal
+closes the existing voice transport through the existing `capture_unavailable`
+path, retains the captured prefix and requests final usage; it never opens a
+replacement microphone/session automatically. This device fence spans physical
+transport renewals and is removed before Stop releases the tracks. Already-ended
+permission results cannot enter Listening, and stale device events cannot close
+a later logical visit. Temporary mute and recoverable ICE disconnection keep
+their existing behavior.
+
+The mounted synthetic lifecycle suite reproduces the previous false Listening
+state and covers device removal before/after transport renewal, stale callbacks,
+listener cleanup, original retention and no automatic provider admission. This
+is device-loss handling, not evidence of the cause of previous phone cutoffs or
+physical-phone stability/hearing acceptance.

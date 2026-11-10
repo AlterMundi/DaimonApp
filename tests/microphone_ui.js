@@ -54,15 +54,15 @@ function boot(live=false,recovery,status404=false,cues=false){
   if(mode==='after'){mode=undefined;throw Error('Lost acknowledgement');}
   return {ok:true,json:async()=>result};
  }
- const timing=[];
+ const timing=[],transcripts=[];
  let preparation;
  if(live)window.StreamingVoice={supported:()=>true,async create(stream,meta){preparation=meta;const recorder=new Recorder(stream);recorder.discard=()=>recorder.stop();return recorder;}};
  const context=vm.createContext({Date:{now:()=>now},window,document,Blob,Uint8Array,fetch,AbortController,
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
- return {profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},preparation:()=>preparation,
+ return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
   confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
@@ -70,6 +70,10 @@ function boot(live=false,recovery,status404=false,cues=false){
  };
 }
 (async()=>{
+ const slow=boot();await slow.click();const slowHold=slow.holdUpload();slow.click();await until(()=>slow.uploads.length===1);
+ for(const timer of slow.timers.filter(t=>!t.closed))timer.fn();
+ assert.equal(slow.uploads[0].signal.aborted,false,'No application timer may abort the recording transfer');
+ slowHold.resolve();await until(()=>slow.received.length===1);assert.equal(slow.uploads.length,1);
  const openaiRecovery=memoryRecovery(),openai=boot(true,openaiRecovery);await until(()=>!openai.button().disabled);openai.profile('openai');
  const openaiPermission=openai.permission(),openaiStarting=openai.click();openai.profile(undefined);openaiPermission.resolve(openai.media());await openaiStarting;
  assert.equal(openai.preparation(),undefined,'OpenAI must never open a legacy Qwen/Gemini preview');
@@ -79,6 +83,16 @@ function boot(live=false,recovery,status404=false,cues=false){
  assert.equal(stored.items[0].transcriptionProfile,'openai','Rollback reader must refuse unknown envelope rather than silently use legacy ASR');
  await openai.click();await until(()=>openai.received.length===1);
  assert.equal(openai.uploads[1].route,'api/interaction/voice/openai','Retry retains the same provider despite changed UI choice');
+ const preview=boot(true);await preview.click();
+ const previewStream=preview.preparation();
+ assert.equal(preview.transcripts.length,1);assert.equal(preview.transcripts[0].text,'');
+ previewStream.onPartial('Texto de la misma captura');
+ assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura');
+ assert.equal(preview.transcripts.at(-1).id,previewStream.id);
+ previewStream.onUnavailable();assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura','Status is never inserted as recognized speech');
+ await preview.cancel();assert.equal(preview.transcripts.at(-1).active,false);
+ const closedPreviewCount=preview.transcripts.length;previewStream.onPartial('Late words');
+ assert.equal(preview.transcripts.length,closedPreviewCount);assert.equal(preview.uploads.length,0);
  const openaiCaptions=boot(true);openaiCaptions.profile('openai');openaiCaptions.ui.configure(true,false,'prepared',true);await openaiCaptions.click();
  assert.equal(openaiCaptions.preparation().transcriptionProvider,'openai','The selected capture must use the dedicated OpenAI caption socket');
  assert.equal(openaiCaptions.preparation().canonicalRecorder.mimeType,'audio/webm;codecs=opus','Live captions cannot replace the original recorder');
@@ -295,6 +309,22 @@ function boot(live=false,recovery,status404=false,cues=false){
  const offline=boot();offline.mode('before');await offline.click();offline.click();await until(()=>offline.state().startsWith('Recording unconfirmed'));
  assert.equal(offline.originals.size,0);await offline.click();await until(()=>offline.received.length===1);
  assert.equal(offline.uploads.length,2);assert.deepEqual(offline.uploads[0].headers,offline.uploads[1].headers);assert.equal(offline.uploads[0].body,offline.uploads[1].body,'Explicit retry preserves the exact original bytes');
+ // Switching browser tabs must not discard an explicitly started voice message.
+ for(const live of [false,true]){
+  const tabs=boot(live);await tabs.click();const recording=tabs.devices.at(-1);
+  tabs.visibility(true);assert.equal(recording.state,'recording','An ordinary message keeps recording in another tab');
+  assert.equal(recording.stream.stopped,0);assert.equal(tabs.uploads.length,0);
+  tabs.visibility(false);await tabs.click();await until(()=>tabs.received.length===1);
+  assert.equal(tabs.uploads.length,1,'Returning and Send submit one original only');
+ }
+ const backgroundSend=boot();await backgroundSend.click();const transfer=backgroundSend.holdUpload();backgroundSend.click();await until(()=>backgroundSend.uploads.length===1);
+ backgroundSend.visibility(true);assert.equal(backgroundSend.uploads[0].signal.aborted,false,'Switching tabs must not abort an in-flight original');
+ transfer.resolve();await until(()=>backgroundSend.received.length===1);assert.equal(backgroundSend.uploads.length,1);
+ const hiddenPermission=boot(),pendingPermission=hiddenPermission.permission(),pendingStart=hiddenPermission.click();
+ hiddenPermission.visibility(true);const hiddenMedia=hiddenPermission.media();pendingPermission.resolve(hiddenMedia);await pendingStart;
+ assert.equal(hiddenMedia.stopped,1,'A late permission result cannot start capture in a hidden tab');assert.equal(hiddenPermission.devices.length,0);
+ const directTabs=boot(true);await directTabs.ui.startConversation();directTabs.visibility(true);
+ await until(()=>directTabs.devices.at(-1).state==='inactive');assert.equal(directTabs.uploads.length,0,'Avatar/alternating voice still holds rather than capturing in background');
  const hidden=boot();await hidden.click();hidden.events.pagehide();await until(()=>hidden.devices[0].state==='inactive');assert.equal(hidden.uploads.length,0);assert.equal(hidden.devices[0].stream.stopped,1);
  const delayed=boot(),permission=delayed.permission();const starting=delayed.click();delayed.cancel();const lateMedia=delayed.media();permission.resolve(lateMedia);await starting;assert.equal(lateMedia.stopped,1);assert.equal(delayed.devices.length,0);
  for(const live of [false,true]){

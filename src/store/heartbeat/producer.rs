@@ -29,7 +29,7 @@ pub struct HeartbeatPurpose {
     pub input_ref: crate::interaction::InputReference,
     pub channel: String,
 }
-fn purpose_source(
+pub(super) fn purpose_source(
     conn: &Connection,
     human: i64,
     entry: SessionKey,
@@ -105,10 +105,24 @@ pub(in crate::store) struct Offer {
     pub evidence: Value,
 }
 
+/// One replaceable observation, not a readiness lease or execution receipt.
+#[derive(Clone, Serialize, Deserialize)]
+struct CheckObservation {
+    sequence: u32,
+    generation: u64,
+    activation: lanes::Activation,
+    started_at_unix_ms: i64,
+    completed_at_unix_ms: Option<i64>,
+    outcome: String,
+    error: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::store) struct Parent {
     #[serde(default)]
     pub purpose_revision: Option<String>,
+    #[serde(default)]
+    pub(super) review: Option<super::review::Review>,
     pub human: i64,
     pub entry: SessionKey,
     pub session: i64,
@@ -129,6 +143,12 @@ pub(in crate::store) struct Parent {
     pub stopped_reason: Option<String>,
     #[serde(default)]
     pub inbox_state: Option<String>,
+    #[serde(default)]
+    last_check: Option<CheckObservation>,
+    #[serde(default)]
+    last_success_at_unix_ms: Option<i64>,
+    #[serde(default)]
+    observation_renewal: Option<Value>,
     pub seen: BTreeMap<String, String>,
     pub native_returns: Vec<WorkflowReturn>,
 }
@@ -175,7 +195,7 @@ fn select_batch(p: &mut Parent, lanes: &[Vec<Offer>; 5], progress_next: Option<i
 fn key(human: i64, session: i64) -> String {
     format!("heartbeat_producer:{human}:{session}")
 }
-fn load(conn: &Connection, human: i64, session: i64) -> Result<Option<Parent>> {
+pub(super) fn load(conn: &Connection, human: i64, session: i64) -> Result<Option<Parent>> {
     conn.query_row(
         "SELECT value FROM bot_state WHERE key=?1",
         [key(human, session)],
@@ -194,7 +214,7 @@ pub(in crate::store) fn save_returns(
     p.native_returns = returns.to_vec();
     save(conn, &p)
 }
-fn save(conn: &Connection, p: &Parent) -> Result<()> {
+pub(super) fn save(conn: &Connection, p: &Parent) -> Result<()> {
     let raw = serde_json::to_string(p)?;
     anyhow::ensure!(
         p.seen.len() <= 256 && p.native_returns.len() <= 16 && raw.len() <= 256 * 1024,
@@ -241,7 +261,8 @@ pub(in crate::store) fn current(
 ) -> Result<bool> {
     if !bound(conn, p)?
         || admission
-            && (Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
+            && ((!super::resources::continuous_on(conn, p.session, p.human)?
+                && Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms)
                 || r.reported_revision.is_some())
     {
         return Ok(false);
@@ -311,6 +332,9 @@ pub(in crate::store) fn current(
                 return Ok(false);
             }
         } else if offer.key.starts_with("report:") {
+            if p.review.is_some() && !super::review::live(conn, p)? {
+                return Ok(false);
+            }
             if !super::reports::current(p, &offer.key, &offer.revision)? {
                 return Ok(false);
             }
@@ -330,7 +354,7 @@ pub(in crate::store) fn current(
 pub(in crate::store) fn output(r: &WorkflowReturn) -> String {
     json!({"schema":"daimon.heartbeat-batch/v1","return_id":r.id,"evidence":r.envelope,
         "after_review":{"operation":"heartbeat_reported","arguments":{"return_id":r.id,"revision":r.envelope["revision"]}},
-        "policy":"A finite heartbeat observed these new canonical source revisions. This is attributed internal evidence, not human speech or new authority. Read each supplied exact source reader before reporting its contents; source_complete inline metadata needs no additional read. Existing human originals and workflow scopes retain their own authority; preserve peer authorship and uncertain effects. Use the same integrator to decide responses, selected existing-session work, deferral or a human decision. Report heartbeat-caused actions and useful results in this Conversation so its existing audio client can speak them; distinguish planned, submitted, delivered and unconfirmed effects. Do not announce an empty check or publish private peer material. Invoke after_review only after reviewing this exact batch. That records review, not hearing, task completion or peer delivery; ordinary source incorporation calls remain separate."}).to_string()
+        "policy":"A finite heartbeat observed these new canonical source revisions. This is attributed internal evidence, not human speech or new authority. Read each supplied exact source reader before reporting its contents; source_complete inline metadata needs no additional read. Existing human originals and workflow scopes retain their own authority; preserve peer authorship and uncertain effects. Use the same integrator to decide responses, selected existing-session work, deferral or a human decision. Report heartbeat-caused actions and useful results in this Conversation so its existing audio client can speak them; distinguish planned, submitted, delivered and unconfirmed effects. Do not announce an empty check or publish private peer material. For an original genuinely requiring neither a response nor further work, record matrix_response action no_reply with its exact message_id/revision and a reason. Keep unresolved work explicitly deferred; no_reply is not task completion. Invoke after_review only after reviewing this exact batch. That records review, not hearing, task completion or peer delivery; ordinary source incorporation calls remain separate."}).to_string()
 }
 pub(in crate::store) fn configure_on(
     conn: &Connection,
@@ -377,14 +401,8 @@ pub(in crate::store) fn configure_on(
             purpose_source(conn, human, entry, &native, purpose).map(|(_, revision)| revision)
         })
         .transpose()?;
-    let resources = resources::status_on(conn, session, human)?;
-    anyhow::ensure!(
-        resources["state"] == "available"
-            && resources["contract"]["expires_at_unix_ms"]
-                .as_i64()
-                .is_some_and(|expiry| contract.expires_at_unix_ms <= expiry),
-        "Producer must fit the existing resource contract"
-    );
+    // Source observation has its own finite policy. Configuring it does not
+    // require, create or extend permission for a native/model execution.
     anyhow::ensure!(
         load(conn, human, session)?.is_none(),
         "Heartbeat producer already configured; counters and cursors were not reset"
@@ -398,6 +416,7 @@ pub(in crate::store) fn configure_on(
         conn,
         &Parent {
             purpose_revision,
+            review: None,
             human,
             entry,
             session,
@@ -414,6 +433,9 @@ pub(in crate::store) fn configure_on(
             next_activation: 0,
             stopped_reason: None,
             inbox_state: None,
+            last_check: None,
+            last_success_at_unix_ms: None,
+            observation_renewal: None,
             seen: BTreeMap::new(),
             native_returns: vec![],
         },
@@ -429,9 +451,13 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "binding_retired"
     } else if purpose_on(conn, &p).is_err() {
         "purpose_retired"
-    } else if Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms {
+    } else if !super::resources::continuous_on(conn, p.session, p.human)?
+        && Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
+    {
         "expired"
-    } else if p.checks >= p.contract.max_checks {
+    } else if !super::resources::continuous_on(conn, p.session, p.human)?
+        && p.checks >= p.contract.max_checks
+    {
         "check_capacity"
     } else if p.seen.len() >= 256 {
         "cursor_capacity"
@@ -440,8 +466,52 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
     } else {
         "configured"
     };
+    // Already-retained fresh originals are canonical work even before a busy
+    // entry can allocate a native return. This is local metadata, no inbox I/O.
+    let unoffered_inbox =
+        state == "configured"
+            && p.contract.matrix_inbox.as_ref().is_some_and(|source| {
+                super::super::matrix::inbox::offers_on(conn, human, p.entry, source, &p.seen)
+                    .is_ok_and(|offers| {
+                        offers.iter().any(|offer| {
+                            !p.native_returns.iter().any(|r| {
+                                r.envelope["offers"].as_array().into_iter().flatten().any(
+                                    |allocated| {
+                                        allocated["key"] == offer.key
+                                            && allocated["revision"] == offer.revision
+                                    },
+                                )
+                            })
+                        })
+                    })
+            });
+    let last_attention_failure = p
+        .native_returns
+        .iter()
+        .rev()
+        .find(|r| {
+            matches!(
+                r.phase.as_str(),
+                "attention_failed" | "attention_interrupted"
+            )
+        })
+        .map(|r| {
+            json!({"return_id":r.id,"native_turn":r.native_turn,"state":r.phase,
+            "review_reported":false,"response_or_task_completion":false,
+            "originals":"retained; admitted attempt is not automatically replayed"})
+        });
+    let completed_without_review = p
+        .native_returns
+        .iter()
+        .rev()
+        .find(|r| r.phase == "accepted_terminal_unreviewed" && r.reported_revision.is_none())
+        .map(|r| {
+            json!({"return_id":r.id,"native_turn":r.native_turn,"state":r.phase,
+            "review_reported":false,"response_or_task_completion":false,
+            "originals":"retained; exact attempted revisions are not automatically replayed"})
+        });
     Ok(
-        json!({"state":state,"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"inbox_observation":p.inbox_state,"sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -450,7 +520,13 @@ pub(in crate::store) fn retained(
     entry: SessionKey,
 ) -> Result<Option<Parent>> {
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
-    Ok(load(conn, human, session)?.filter(|p| {
+    let parent = load(conn, human, session)?;
+    if parent.as_ref().is_some_and(|p| p.review.is_some())
+        && !resources::status_on(conn, session, human).is_ok_and(|s| s["state"] == "available")
+    {
+        return Ok(None);
+    }
+    Ok(parent.filter(|p| {
         p.native_returns
             .iter()
             .any(|r| r.phase == "retained_unsent")
@@ -469,9 +545,56 @@ fn unsubmitted_on(conn: &Connection, r: &WorkflowReturn) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM bot_state WHERE key='heartbeat_execution:'||?1 AND json_extract(value,'$.source')=?2 AND json_extract(value,'$.physical') IS NULL AND json_extract(value,'$.terminal_status')='not_submitted')",params![local,r.id],|row|row.get::<_,bool>(0))?)
 }
 fn pending(p: &Parent) -> bool {
-    p.native_returns
-        .iter()
-        .any(|r| r.reported_revision.is_none() && r.phase != "retired_unsent")
+    p.native_returns.iter().any(|r| {
+        r.reported_revision.is_none()
+            && !matches!(
+                r.phase.as_str(),
+                "retired_unsent"
+                    | "attention_failed"
+                    | "attention_interrupted"
+                    | "accepted_terminal_unreviewed"
+            )
+    })
+}
+
+/// A proved terminal physical execution is not proof of semantic review.
+/// Keep its actual outcome and every original, but do not deadlock new work or
+/// replay the already admitted batch. `seen` fences attempted source revisions; it is
+/// not review, response delivery or task completion.
+fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()> {
+    for r in &mut p.native_returns {
+        if r.reported_revision.is_some() || r.phase != "accepted" {
+            continue;
+        }
+        let (Some(local), Some(physical)) = (r.local, r.native_turn.as_deref()) else {
+            continue;
+        };
+        let Some(execution) = executions::load(conn, local)? else {
+            continue;
+        };
+        if execution["phase"] != "terminal"
+            || execution["physical"] != physical
+            || execution["native"] != p.native
+            || execution["source"] != r.id
+            || execution["generation"].as_u64() != r.attention_generation
+        {
+            continue;
+        }
+        let phase = match execution["terminal_status"].as_str() {
+            Some("failed") => "attention_failed",
+            Some("interrupted") => "attention_interrupted",
+            Some("completed") => "accepted_terminal_unreviewed",
+            _ => continue,
+        };
+        let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
+        for offer in offers {
+            p.seen.insert(offer.key, offer.revision);
+        }
+        r.phase = phase.into();
+        // No reported_revision, retry, refund, response or completion is invented.
+    }
+    anyhow::ensure!(p.seen.len() <= 256, "Heartbeat attempted-source capacity");
+    Ok(())
 }
 pub(super) fn resume_on(
     conn: &Connection,
@@ -485,7 +608,33 @@ pub(super) fn resume_on(
     };
     if bound(conn, &p)? {
         for r in &mut p.native_returns {
+            // Explicit owner resume may recover a refusal before native input.
+            // Keep the same source, attempts and reservation; a physical or
+            // uncertain execution is never eligible for this transition.
+            if r.phase == "rejected"
+                && r.reported_revision.is_none()
+                && r.native_turn.is_none()
+                && r.collection_local.is_none()
+            {
+                if let Some(local) = r.local {
+                    if super::executions::load(conn, local)?.is_some_and(|e| {
+                        e["source"] == r.id
+                            && e["native"] == p.native
+                            && e["phase"] == "terminal"
+                            && e["physical"].is_null()
+                            && e["terminal_status"] == "not_submitted"
+                    }) {
+                        r.phase = "retained_unsent".into();
+                    }
+                }
+            }
             if unsubmitted_on(conn, r)? {
+                if r.phase == "retained_unsent"
+                    && r.retry_after.is_none()
+                    && !r.automatic_retry_exhausted()
+                {
+                    r.retry_after = Some(Utc::now().timestamp());
+                }
                 r.attention_generation = Some(generation);
                 if let Some(activation) = &mut r.attention_activation {
                     let raw: String = conn.query_row(
@@ -501,6 +650,262 @@ pub(super) fn resume_on(
             }
         }
         save(conn, &p)?;
+    }
+    Ok(())
+}
+
+pub(super) fn renew_window_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    expected_expiry: i64,
+    expiry: i64,
+) -> Result<Option<Value>> {
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let mut p = load(conn, human, session)?.context("Heartbeat producer not configured")?;
+    anyhow::ensure!(
+        p.contract.expires_at_unix_ms == expected_expiry || p.contract.expires_at_unix_ms >= expiry,
+        "Producer window changed; select a sufficient independent observation window before renewal"
+    );
+    anyhow::ensure!(
+        bound(conn, &p)? && purpose_on(conn, &p).is_ok(),
+        "Heartbeat source binding changed"
+    );
+    anyhow::ensure!(
+        p.stopped_reason.is_none()
+            && p.checks < p.contract.max_checks
+            && p.seen.len() < 256
+            && p.native_returns.len() < 16,
+        "Producer capacity exhausted; renewal cannot reset counters or evidence"
+    );
+    let mut retry = None;
+    for r in p
+        .native_returns
+        .iter()
+        .filter(|r| r.reported_revision.is_none() && r.phase != "retired_unsent")
+    {
+        anyhow::ensure!(
+            unsubmitted_on(conn, r)?,
+            "Pending native return is not proven unsent; renewal refused"
+        );
+        if r.automatic_retry_exhausted() {
+            anyhow::ensure!(
+                retry.is_none(),
+                "Multiple exhausted pending returns require selected recovery"
+            );
+            let attempt = r
+                .attempts
+                .checked_add(1)
+                .context("Native attempt counter exhausted")?;
+            retry = Some(json!({"source":r.id,"attempt":attempt}));
+        }
+    }
+    // Preserve every cursor, pending identity, retry count and next-check time.
+    // Explicit resume separately reconciles only proven-unsent generations.
+    if p.contract.expires_at_unix_ms == expected_expiry {
+        p.contract.expires_at_unix_ms = expiry;
+    }
+    save(conn, &p)?;
+    Ok(retry)
+}
+
+pub(super) fn renew_observation_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    generation: u64,
+    expected_expiry: i64,
+    expiry: i64,
+    max_checks: Option<u32>,
+) -> Result<()> {
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let mut p = load(conn, human, session)?.context("Heartbeat producer not configured")?;
+    anyhow::ensure!(
+        bound(conn, &p)? && purpose_on(conn, &p).is_ok(),
+        "Heartbeat source binding changed"
+    );
+    let mut receipt = json!({"generation":generation,"previous_expires_at_unix_ms":expected_expiry,
+        "expires_at_unix_ms":expiry,"execution_permission_changed":false,"activated":false});
+    if p.observation_renewal.as_ref().is_some_and(|prior| {
+        prior["generation"] == generation
+            && prior["previous_expires_at_unix_ms"] == expected_expiry
+            && prior["expires_at_unix_ms"] == expiry
+            && prior["execution_permission_changed"] == false
+            && prior["activated"] == false
+            && p.contract.expires_at_unix_ms == expiry
+            && match max_checks {
+                Some(max) => prior["max_checks"] == max && p.contract.max_checks == max,
+                None => prior.get("max_checks").is_none(),
+            }
+    }) {
+        return Ok(());
+    }
+    let now = Utc::now().timestamp_millis();
+    anyhow::ensure!(
+        p.contract.expires_at_unix_ms == expected_expiry
+            && (expected_expiry <= now || p.checks == p.contract.max_checks)
+            && expiry > now
+            && expiry <= now + 7 * 86400 * 1000,
+        "Select an expired or check-exhausted observation predecessor and a finite window within seven days"
+    );
+    let ceiling = max_checks.unwrap_or(p.contract.max_checks);
+    anyhow::ensure!(
+        p.stopped_reason.is_none()
+            && p.contract.max_checks > 0
+            && p.checks <= p.contract.max_checks
+            && ceiling >= p.contract.max_checks
+            && ceiling > p.checks
+            && ceiling
+                .checked_sub(p.checks)
+                .is_some_and(|remaining| remaining <= 1024)
+            && p.seen.len() < 256
+            && p.native_returns.len() < 16,
+        "Select a nondecreasing cumulative observation ceiling with1–1024 remaining checks; evidence capacity and counters cannot reset"
+    );
+    if max_checks.is_some() {
+        receipt["previous_max_checks"] = json!(p.contract.max_checks);
+        receipt["max_checks"] = json!(ceiling);
+    }
+    p.contract.expires_at_unix_ms = expiry;
+    p.contract.max_checks = ceiling;
+    p.observation_renewal = Some(receipt);
+    save(conn, &p)
+}
+
+/// One extra admission of a proven-unsent original, explicitly selected by the
+/// owner renewal. The lifetime attempt counter advances; no automatic reset.
+// One retained permission per explicit production selection. It never resets a
+// return counter and cannot grant retries of an admitted or uncertain execution.
+pub(super) fn production_recovery_on(
+    conn: &Connection,
+    session: i64,
+    human: i64,
+    source: &str,
+) -> Result<()> {
+    let key = format!("heartbeat_production_recovery:{human}:{session}");
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bot_state WHERE key=?1)",
+        [&key],
+        |r| r.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+    let mut retry = None;
+    if let Some(p) = load(conn, human, session)? {
+        for r in p
+            .native_returns
+            .iter()
+            .filter(|r| r.reported_revision.is_none() && r.automatic_retry_exhausted())
+        {
+            if unsubmitted_on(conn, r)? {
+                anyhow::ensure!(
+                    retry.is_none(),
+                    "Select exact recovery when multiple exhausted originals exist"
+                );
+                retry = Some(
+                    json!({"source":r.id,"attempt":r.attempts.checked_add(1).context("Native attempt counter exhausted")?}),
+                );
+            }
+        }
+    }
+    let receipt =
+        json!({"source":source,"retry":retry,"counters_reset":false,"expires_changed":false});
+    conn.execute(
+        "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+        params![key, receipt.to_string()],
+    )?;
+    Ok(())
+}
+
+pub(in crate::store) fn owner_window_retry_on(
+    conn: &Connection,
+    r: &WorkflowReturn,
+) -> Result<bool> {
+    let Some((p, _)) = load_return(conn, &r.id)? else {
+        return Ok(false);
+    };
+    if !unsubmitted_on(conn, r)? {
+        return Ok(false);
+    }
+    for key in [
+        format!("heartbeat_window_renewal:{}:{}", p.human, p.session),
+        format!("heartbeat_production_recovery:{}:{}", p.human, p.session),
+    ] {
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM bot_state WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(raw) = raw {
+            let receipt: Value = serde_json::from_str(&raw)?;
+            if receipt["retry"]["source"] == r.id
+                && r.attempts
+                    .checked_add(1)
+                    .is_some_and(|a| receipt["retry"]["attempt"] == a)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Retire only resolved cache detail during continuous operation. Signed
+/// originals, authoring/delivery receipts and native turns stay in their owning
+/// journals. The persistent inbox frontier prevents replay after retirement.
+fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
+    if !super::resources::continuous_on(conn, p.session, p.human)?
+        || super::executions::unresolved_on(conn, p.human, p.entry)?
+        || pending(p)
+    {
+        return Ok(());
+    }
+    let mut completed = Vec::new();
+    for (i, r) in p.native_returns.iter().enumerate() {
+        if r.reported_revision.as_deref() != r.envelope["revision"].as_str() {
+            continue;
+        }
+        if let Some(local) = r.local {
+            if super::executions::load(conn, local)?
+                .is_some_and(|e| matches!(e["phase"].as_str(), Some("terminal" | "transferred")))
+            {
+                completed.push(i);
+            }
+        }
+    }
+    // Keep eight complete/reviewed batches and every unresolved receipt.
+    for i in completed.into_iter().rev().skip(8) {
+        p.native_returns.remove(i);
+    }
+    // Preserve pending/deferred/submitted/uncertain originals. Only a proved
+    // recipient copy resolves a reply; transport acceptance alone never does.
+    conn.execute(
+        "DELETE FROM interaction_matrix_inbox WHERE rowid IN (
+        SELECT rowid FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2
+        AND json_extract(handling,'$.phase') IN ('recipient_copy_proved','no_reply')
+        ORDER BY rowid DESC LIMIT -1 OFFSET 8)",
+        params![p.session, p.human],
+    )?;
+    conn.execute(
+        "DELETE FROM interaction_matrix_inbox WHERE rowid IN (
+        SELECT rowid FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2
+        AND json_extract(doc,'$.author.being_ref')=json_extract(owner,'$.being_ref')
+        AND json_extract(doc,'$.author.embodiment_id')=json_extract(owner,'$.embodiment_id')
+        AND handling IS NULL ORDER BY rowid DESC LIMIT -1 OFFSET 64)",
+        params![p.session, p.human],
+    )?;
+    let mut remove = Vec::new();
+    for key in p.seen.keys() {
+        if let Some(id) = key.strip_prefix("matrix-inbox:") {
+            let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2 AND message_id=?3)",params![p.session,p.human,id], |r|r.get(0))?;
+            if !exists {
+                remove.push(key.clone());
+            }
+        }
+    }
+    for key in remove {
+        p.seen.remove(&key);
     }
     Ok(())
 }
@@ -521,8 +926,8 @@ fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
         || purpose_on(conn, &p).is_err()
         || !generation_current_on(conn, c.human, c.entry, c.generation)?
         || !lanes::current_on(conn, c.human, c.entry, &c.activation)?
-        || Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms
-        || resources::status_on(conn, c.session, c.human)?["state"] != "available"
+        || (!super::resources::continuous_on(conn, p.session, p.human)?
+            && Utc::now().timestamp_millis() >= p.contract.expires_at_unix_ms)
     {
         return Ok(None);
     }
@@ -562,13 +967,19 @@ impl Store {
         if control.paused || !bound(&tx, &p)? || purpose_on(&tx, &p).is_err() {
             return Ok(None);
         }
+        settle_terminal_attention_on(&tx, &mut p)?;
+        compact_resolved_on(&tx, &mut p)?;
         let available = [
             (
                 HeartbeatLane::Messaging,
                 p.contract.matrix_replies || p.contract.matrix_inbox.is_some(),
             ),
             (HeartbeatLane::WorkflowReturns, p.contract.workflows),
-            (HeartbeatLane::Reports, !p.contract.reports.is_empty()),
+            (
+                HeartbeatLane::Reports,
+                !p.contract.reports.is_empty()
+                    && (p.review.is_none() || super::review::due(&tx, &p)?),
+            ),
             (HeartbeatLane::SessionProgress, p.contract.session_progress),
         ];
         let activation = (0..available.len()).find_map(|offset| {
@@ -597,19 +1008,36 @@ impl Store {
         if p.stopped_reason.is_some()
             || executions::unresolved_on(&tx, human, entry)?
             || now < p.next_check_ms
-            || now >= p.contract.expires_at_unix_ms
-            || p.checks >= p.contract.max_checks
+            || (!super::resources::continuous_on(&tx, p.session, p.human)?
+                && (now >= p.contract.expires_at_unix_ms || p.checks >= p.contract.max_checks))
             || p.seen.len() >= 256
             || p.native_returns.len() >= 16
-            || resources::status_on(&tx, session, human)?["state"] != "available"
         {
             save(&tx, &p)?;
             tx.commit()?;
             return Ok(None);
         }
+        if activation.lane == HeartbeatLane::Reports {
+            if let Some(review) = &mut p.review {
+                review.checks = review.checks.saturating_add(1);
+                review.next_check_ms = now + i64::from(review.contract.interval_seconds) * 1000;
+            }
+        }
         p.next_activation = (index + 1) % available.len();
-        p.checks += 1;
+        p.checks = p
+            .checks
+            .checked_add(1)
+            .context("Heartbeat observation counter capacity")?;
         p.next_check_ms = now + i64::from(p.contract.interval_seconds) * 1000;
+        p.last_check = Some(CheckObservation {
+            sequence: p.checks,
+            generation: control.generation,
+            activation: activation.clone(),
+            started_at_unix_ms: now,
+            completed_at_unix_ms: None,
+            outcome: "in_progress".into(),
+            error: None,
+        });
         // A failed source read still consumes this finite observation. It must
         // not roll back the cadence/counter and spin on the same failure.
         save(&tx, &p)?;
@@ -635,6 +1063,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(check_on(&conn, c)?.is_some())
     }
+    #[cfg(test)]
     pub(crate) fn heartbeat_finish_check(
         &self,
         c: &Check,
@@ -644,6 +1073,21 @@ impl Store {
                 crate::store::MatrixInboxPage,
             )>,
         >,
+    ) -> Result<Option<ReturnDispatch>> {
+        self.heartbeat_finish_observation(c, read, true)
+    }
+    /// Retain model-free source observations while ordinary native work is busy.
+    /// A busy entry cannot reserve attention, advance offer selection or spend attempts.
+    pub(crate) fn heartbeat_finish_observation(
+        &self,
+        c: &Check,
+        read: Option<
+            Result<(
+                crate::store::MatrixInboxSelection,
+                crate::store::MatrixInboxPage,
+            )>,
+        >,
+        allow_attention: bool,
     ) -> Result<Option<ReturnDispatch>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let mut tx = conn.transaction()?;
@@ -668,6 +1112,49 @@ impl Store {
                 _ => false,
             };
             p.inbox_state = Some(if retained { "available" } else { "unavailable" }.into());
+        }
+        // Reports are observed even while native work is busy. Retain one
+        // known-unsent metadata batch; the existing idle recovery owns dispatch.
+        let report_offers =
+            super::reports::offers(if c.activation.lane == HeartbeatLane::Reports {
+                &p.contract.reports
+            } else {
+                &[]
+            })?;
+        let retaining_review =
+            !allow_attention && c.activation.lane == HeartbeatLane::Reports && p.review.is_some();
+        let now = Utc::now().timestamp_millis();
+        let error = (c.matrix_inbox.is_some() && p.inbox_state.as_deref() != Some("available"))
+            .then(|| "matrix_inbox_unavailable".to_owned())
+            .or_else(|| {
+                report_offers
+                    .iter()
+                    .any(|o| o.evidence["state"] == "unavailable")
+                    .then(|| "selected_report_unavailable".to_owned())
+            });
+        if let Some(observation) = &mut p.last_check {
+            observation.completed_at_unix_ms = Some(now);
+            observation.outcome = if error.is_some() {
+                "failed"
+            } else {
+                "succeeded"
+            }
+            .into();
+            observation.error = error.clone();
+        }
+        if error.is_none() {
+            p.last_success_at_unix_ms = Some(now);
+        }
+        if (!allow_attention && !retaining_review)
+            || !resources::status_on(&tx, session, human)
+                .is_ok_and(|status| status["state"] == "available")
+        {
+            // Keep the authenticated page/cursor and check outcome, but do not
+            // advance offer cursors, reserve a native return or spend attempts.
+            // Later authorized execution reads the original retained sources.
+            save(&tx, &p)?;
+            tx.commit()?;
+            return Ok(None);
         }
         let mut retire = vec![];
         for (index, r) in p.native_returns.iter().enumerate() {
@@ -712,14 +1199,10 @@ impl Store {
                 .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
                 .collect();
         }
-        lanes[2] = super::reports::offers(if c.activation.lane == HeartbeatLane::Reports {
-            &p.contract.reports
-        } else {
-            &[]
-        })?
-        .into_iter()
-        .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
-        .collect();
+        lanes[2] = report_offers
+            .into_iter()
+            .filter(|offer| p.seen.get(&offer.key) != Some(&offer.revision))
+            .collect();
         let mut progress_next = None;
         if c.activation.lane == HeartbeatLane::SessionProgress && p.contract.session_progress {
             let (after, offers) = super::super::presentation::heartbeat_progress_on(
@@ -740,15 +1223,9 @@ impl Store {
                 lanes[3] =
                     super::super::matrix::inbox::offers_on(&tx, human, entry, source, &p.seen)?;
             }
-            if let Some(state) = &p.inbox_state {
-                let revision = format!("inbox-{state}");
-                let health = "matrix-inbox-status";
-                if (state == "unavailable" || p.seen.contains_key(health))
-                    && p.seen.get(health) != Some(&revision)
-                {
-                    lanes[3].insert(0,Offer {key:health.into(),revision:revision.clone(),evidence:json!({"source":health,"revision":revision,"reason":"matrix_inbox_observation","state":state,"source_complete":true,"meaning":"Retained source-read health, not a peer message or execution authority"})});
-                }
-            }
+            // Source health belongs to the bounded observation/status plane.
+            // Failure/recovery alone is not new work and must not reserve a
+            // model turn. Keep historical health returns/cursors unchanged.
         }
         let selected = select_batch(&mut p, &lanes, progress_next);
         if selected.is_empty() {
@@ -758,8 +1235,19 @@ impl Store {
         }
         let id = format!("heartbeat:{human}:{session}:{}", Uuid::now_v7());
         let mut envelope = json!({"schema":"daimon.heartbeat-offer/v1","lane":c.activation.lane,"offers":selected,"internal_evidence":true,"publication_grant":false});
-        if let Some((source, revision)) = purpose_on(&tx, &p)? {
-            envelope["operating_purpose"] = json!({"input_ref":p.contract.purpose.as_ref().unwrap().input_ref,"human_id":human,"channel":source.channel,"event_id":source.event_id,"revision":revision,"reader":{"operation":"heartbeat_source","arguments":{"return_id":id,"source":"purpose:human","revision":revision,"offset":0}},"meaning":"Actual retained human operating-purpose original, not new speech or peer authority. Read before selecting an ordinary workflow under this same original and preserve peer source attribution."});
+        let finite_review = c.activation.lane == HeartbeatLane::Reports && p.review.is_some();
+        let purpose = if finite_review {
+            super::review::purpose_on(&tx, &p)?
+        } else {
+            purpose_on(&tx, &p)?
+        };
+        let purpose_ref = if finite_review {
+            Some(&p.review.as_ref().unwrap().contract.purpose)
+        } else {
+            p.contract.purpose.as_ref()
+        };
+        if let Some((source, revision)) = purpose {
+            envelope["operating_purpose"] = json!({"input_ref":purpose_ref.unwrap().input_ref,"human_id":human,"channel":source.channel,"event_id":source.event_id,"revision":revision,"reader":{"operation":"heartbeat_source","arguments":{"return_id":id,"source":"purpose:human","revision":revision,"offset":0}},"meaning":"Actual retained human operating-purpose original, not new speech or peer authority. Read before selecting an ordinary workflow under this same original and preserve peer source attribution."});
         }
         envelope["revision"] = json!(format!(
             "{:x}",
@@ -778,13 +1266,18 @@ impl Store {
             attention_activation: Some(c.activation.clone()),
             reported_revision: None,
             envelope,
-            phase: "reserved".into(),
+            phase: if retaining_review {
+                "retained_unsent"
+            } else {
+                "reserved"
+            }
+            .into(),
             local: None,
             collection_local: None,
             native_turn: None,
             instance: self.instance_id.clone(),
             attempts: 1,
-            retry_after: None,
+            retry_after: retaining_review.then(|| Utc::now().timestamp()),
         };
         let result = ReturnDispatch {
             name: "heartbeat_attention",
@@ -808,7 +1301,7 @@ impl Store {
         }
         save(&tx, &p)?;
         tx.commit()?;
-        Ok(Some(result))
+        Ok(if retaining_review { None } else { Some(result) })
     }
     pub(crate) fn heartbeat_reported(
         &self,
@@ -854,6 +1347,16 @@ mod inbox_tests {
         SessionKey,
         HeartbeatInboxSource,
     ) {
+        setup_with_resources(true)
+    }
+    fn setup_with_resources(
+        configure_resources: bool,
+    ) -> (
+        tempfile::NamedTempFile,
+        Store,
+        SessionKey,
+        HeartbeatInboxSource,
+    ) {
         let f = tempfile::NamedTempFile::new().unwrap();
         let s = Store::open(f.path(), &[100], &crate::store::tests::defaults()).unwrap();
         let e = SessionKey::new(100, Some(1));
@@ -870,15 +1373,17 @@ mod inbox_tests {
         s.heartbeat_control(100, e, H::Pause).unwrap();
         let resources = test_contract();
         let expiry = resources.expires_at_unix_ms;
-        s.heartbeat_control(
-            100,
-            e,
-            H::ConfigureResources {
-                generation: 1,
-                contract: resources,
-            },
-        )
-        .unwrap();
+        if configure_resources {
+            s.heartbeat_control(
+                100,
+                e,
+                H::ConfigureResources {
+                    generation: 1,
+                    contract: resources,
+                },
+            )
+            .unwrap();
+        }
         s.heartbeat_control(
             100,
             e,
@@ -903,6 +1408,837 @@ mod inbox_tests {
             .unwrap();
         (f, s, e, source)
     }
+    #[test]
+    fn owner_resume_recovers_only_exact_proved_unsubmitted_refusals() {
+        for invalid in [
+            None,
+            Some("physical"),
+            Some("source"),
+            Some("native"),
+            Some("uncertain"),
+        ] {
+            let (_file, store, entry, source) = setup();
+            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+            let selected = selection(&store, entry, &source);
+            let dispatch = store
+                .heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+                )
+                .unwrap()
+                .unwrap();
+            let session = store.get_session(entry).unwrap().unwrap().id;
+            {
+                let conn = store.conn.lock().unwrap();
+                let mut parent = load(&conn, 100, session).unwrap().unwrap();
+                parent.native_returns[0].phase = "rejected".into();
+                parent.native_returns[0].local = Some(700);
+                let mut proof = json!({"phase":"terminal","physical":null,
+                    "source":dispatch.id,"native":parent.native,"terminal_status":"not_submitted"});
+                match invalid {
+                    Some("physical") => proof["physical"] = json!("accepted-turn"),
+                    Some("source") => proof["source"] = json!("another-source"),
+                    Some("native") => proof["native"] = json!("another-thread"),
+                    Some("uncertain") => proof["terminal_status"] = json!("unknown"),
+                    _ => {}
+                }
+                save(&conn, &parent).unwrap();
+                super::super::executions::save(&conn, 700, &proof).unwrap();
+            }
+            let paused = store.heartbeat_control(100, entry, H::Pause).unwrap();
+            let generation = paused["generation"].as_u64().unwrap();
+            store
+                .heartbeat_control(100, entry, H::Resume { generation })
+                .unwrap();
+            let conn = store.conn.lock().unwrap();
+            let parent = load(&conn, 100, session).unwrap().unwrap();
+            let returned = &parent.native_returns[0];
+            assert_eq!(
+                returned.phase,
+                if invalid.is_none() {
+                    "retained_unsent"
+                } else {
+                    "rejected"
+                }
+            );
+            assert_eq!(returned.id, dispatch.id);
+            assert_eq!(returned.attempts, 1);
+            assert!(returned.reported_revision.is_none());
+            drop(conn);
+            let recovered = store.heartbeat_returns_recover_unsent(100, entry).unwrap();
+            assert_eq!(recovered.len(), usize::from(invalid.is_none()));
+            if let Some(recovered) = recovered.first() {
+                assert_eq!(recovered.id, dispatch.id);
+                assert_eq!(recovered.attempts, 2);
+            }
+        }
+    }
+    #[test]
+    fn terminal_outcomes_unblock_only_new_originals_without_inventing_review() {
+        for terminal in ["failed", "interrupted", "completed"] {
+            let (_file, store, entry, source) = setup();
+            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+            let selected = selection(&store, entry, &source);
+            let dispatch = store
+                .heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+                )
+                .unwrap()
+                .unwrap();
+            let session = store.get_session(entry).unwrap().unwrap().id;
+            let proof;
+            {
+                let conn = store.conn.lock().unwrap();
+                let mut parent = load(&conn, 100, session).unwrap().unwrap();
+                let returned = &mut parent.native_returns[0];
+                returned.phase = "accepted".into();
+                returned.local = Some(700);
+                returned.native_turn = Some("proved-physical".into());
+                proof = json!({"phase":"terminal","physical":"proved-physical",
+                    "native":parent.native,"source":dispatch.id,
+                    "generation":returned.attention_generation,"terminal_status":terminal});
+                save(&conn, &parent).unwrap();
+            }
+            let resources_before =
+                store.heartbeat_control(100, entry, H::Status).unwrap()["resources"].clone();
+            let second_original = item(2);
+            // A nonterminal or mismatched physical receipt cannot open
+            // admission or fabricate semantic review.
+            for (status, physical) in [
+                ("running", "proved-physical"),
+                (terminal, "different-physical"),
+            ] {
+                {
+                    let conn = store.conn.lock().unwrap();
+                    let mut wrong = proof.clone();
+                    wrong["terminal_status"] = json!(status);
+                    wrong["physical"] = json!(physical);
+                    super::super::executions::save(&conn, 700, &wrong).unwrap();
+                }
+                due(&store, entry);
+                let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+                let selected = selection(&store, entry, &source);
+                let page_items = if selected.after == 1 {
+                    vec![second_original.clone()]
+                } else {
+                    vec![]
+                };
+                assert!(
+                    store
+                        .heartbeat_finish_check(
+                            &check,
+                            Some(Ok((selected.clone(), page(&selected, page_items))))
+                        )
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(
+                    store.heartbeat_control(100, entry, H::Status).unwrap()["producer"]["pending"],
+                    true
+                );
+            }
+            {
+                let conn = store.conn.lock().unwrap();
+                super::super::executions::save(&conn, 700, &proof).unwrap();
+            }
+            due(&store, entry);
+            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+            let selected = selection(&store, entry, &source);
+            let next = store
+                .heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![])))),
+                )
+                .unwrap()
+                .unwrap();
+            assert_ne!(next.id, dispatch.id);
+            let conn = store.conn.lock().unwrap();
+            let parent = load(&conn, 100, session).unwrap().unwrap();
+            let failed = &parent.native_returns[0];
+            assert_eq!(
+                failed.phase,
+                if terminal == "failed" {
+                    "attention_failed"
+                } else if terminal == "interrupted" {
+                    "attention_interrupted"
+                } else {
+                    "accepted_terminal_unreviewed"
+                }
+            );
+            assert!(
+                failed.reported_revision.is_none(),
+                "A terminal turn alone is not semantic review"
+            );
+            let offered: Vec<Offer> =
+                serde_json::from_value(parent.native_returns[1].envelope["offers"].clone())
+                    .unwrap();
+            assert_eq!(offered.len(), 1);
+            assert_eq!(
+                offered[0].key,
+                format!(
+                    "matrix-inbox:{}",
+                    second_original["message_id"].as_str().unwrap()
+                )
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM interaction_matrix_inbox WHERE handling IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                2
+            );
+            drop(conn);
+            let after = store.heartbeat_control(100, entry, H::Status).unwrap();
+            assert_eq!(
+                after["resources"], resources_before,
+                "No refund or inference reservation from observation"
+            );
+            assert_eq!(
+                after["producer"][if terminal == "completed" {
+                    "last_completed_without_review"
+                } else {
+                    "last_attention_failure"
+                }]["review_reported"],
+                false
+            );
+        }
+    }
+
+    #[test]
+    fn continuous_retirement_keeps_unresolved_originals_and_rejects_old_page_replay() {
+        let (_f, s, e, source) = setup();
+        let generation = s.heartbeat_control(100, e, H::Pause).unwrap()["generation"]
+            .as_u64()
+            .unwrap();
+        s.heartbeat_enable_continuous(100, e, generation, 48)
+            .unwrap();
+        let session = s.get_session(e).unwrap().unwrap().id;
+        let first_selection = selection(&s, e, &source);
+        let originals: Vec<Value> = (1..=14).map(item).collect();
+        for original in &originals {
+            let selected = selection(&s, e, &source);
+            s.matrix_inbox_retain(&selected, page(&selected, vec![original.clone()]))
+                .unwrap();
+        }
+        let conn = s.conn.lock().unwrap();
+        let mut p = load(&conn, 100, session).unwrap().unwrap();
+        for i in 1..=14 {
+            let id = originals[(i - 1) as usize]["message_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            p.seen
+                .insert(format!("matrix-inbox:{id}"), "reviewed".into());
+            let phase = if i <= 12 {
+                "no_reply"
+            } else if i == 13 {
+                "uncertain"
+            } else {
+                "deferred"
+            };
+            conn.execute(
+                "UPDATE interaction_matrix_inbox SET handling=?1 WHERE message_id=?2",
+                params![json!({"phase":phase}).to_string(), id],
+            )
+            .unwrap();
+        }
+        for i in 0..16 {
+            let local = 1000 + i;
+            super::super::executions::save(&conn, local, &json!({"phase":"terminal"})).unwrap();
+            p.native_returns.push(WorkflowReturn {
+                id: format!("completed:{i}"),
+                workflow: String::new(),
+                attention_generation: Some(generation),
+                attention_activation: None,
+                reported_revision: Some("reviewed".into()),
+                envelope: json!({"revision":"reviewed","offers":[]}),
+                phase: "accepted".into(),
+                local: Some(local),
+                collection_local: None,
+                native_turn: None,
+                instance: s.instance_id.clone(),
+                attempts: 1,
+                retry_after: None,
+            });
+        }
+        p.native_returns[15].reported_revision = None;
+        compact_resolved_on(&conn, &mut p).unwrap();
+        assert_eq!(
+            p.native_returns.len(),
+            16,
+            "Unreported work must block retirement"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_matrix_inbox", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            14
+        );
+        p.native_returns[15].reported_revision = Some("reviewed".into());
+        compact_resolved_on(&conn, &mut p).unwrap();
+        assert_eq!(p.native_returns.len(), 8);
+        assert_eq!(p.native_returns[0].id, "completed:8");
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM interaction_matrix_inbox", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            10
+        );
+        for i in [13, 14] {
+            assert!(p.seen.contains_key(&format!(
+                "matrix-inbox:{}",
+                originals[(i - 1) as usize]["message_id"].as_str().unwrap()
+            )));
+        }
+        for i in 1..=4 {
+            assert!(!p.seen.contains_key(&format!(
+                "matrix-inbox:{}",
+                originals[(i - 1) as usize]["message_id"].as_str().unwrap()
+            )));
+        }
+        save(&conn, &p).unwrap();
+        drop(conn);
+        assert_eq!(selection(&s, e, &source).after, 14);
+        assert!(
+            s.matrix_inbox_retain(
+                &first_selection,
+                page(&first_selection, vec![originals[0].clone()])
+            )
+            .is_err()
+        );
+        assert_eq!(selection(&s, e, &source).after, 14);
+        assert_eq!(
+            s.heartbeat_control(100, e, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            0
+        );
+    }
+    #[test]
+    fn continuous_observation_survives_old_pilot_limits_without_restarting_counters() {
+        let (_f, s, e, source) = setup();
+        let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        let session = s.get_session(e).unwrap().unwrap().id;
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.checks = p.contract.max_checks;
+            p.contract.expires_at_unix_ms = Utc::now().timestamp_millis() - 1;
+            save(&conn, &p).unwrap();
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_resources:100:{session}"),p.contract.expires_at_unix_ms]).unwrap();
+        }
+        assert!(
+            s.heartbeat_enable_continuous(100, e, generation - 1, 6)
+                .is_err()
+        );
+        s.heartbeat_enable_continuous(100, e, generation, 6)
+            .unwrap();
+        assert!(s.heartbeat_begin_check(100, e).unwrap().is_none());
+        let before = s.heartbeat_control(100, e, H::Status).unwrap();
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        for _ in 0..8 {
+            due(&s, e);
+            let check = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+            let selected = selection(&s, e, &source);
+            assert!(
+                s.heartbeat_finish_check(
+                    &check,
+                    Some(Ok((selected.clone(), page(&selected, vec![]))))
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(after["producer"]["mode"], "continuous");
+        assert_eq!(after["producer"]["state"], "configured");
+        assert_eq!(
+            after["producer"]["checks"].as_u64().unwrap(),
+            before["producer"]["checks"].as_u64().unwrap() + 8
+        );
+        assert_eq!(after["resources"], before["resources"]);
+        assert_eq!(
+            after["producer"]["contract"],
+            before["producer"]["contract"]
+        );
+        assert_eq!(after["producer"]["retained_returns"], 0);
+        assert_eq!(
+            after["resources"]["continuous"]["reserved_provider_attempts"],
+            0
+        );
+        assert!(
+            serde_json::from_value::<H>(
+                json!({"action":"continuous","generation":generation,"attempts_per_hour":6})
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn observation_without_execution_permission_retains_the_original_for_later_admission() {
+        let (f, s, e, source) = setup_with_resources(false);
+        let selected = selection(&s, e, &source);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        assert!(
+            s.heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)]))))
+            )
+            .unwrap()
+            .is_none()
+        );
+        let observed = s.heartbeat_control(100, e, H::Status).unwrap();
+        drop(s);
+        let s = Store::open(f.path(), &[100], &crate::store::tests::defaults()).unwrap();
+        let restarted = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(restarted["producer"], observed["producer"]);
+        let before = s.heartbeat_control(100, e, H::Pause).unwrap();
+        assert_eq!(before["resources"]["state"], "not_configured");
+        assert_eq!(before["producer"]["last_check"]["outcome"], "succeeded");
+        assert_eq!(before["producer"]["retained_returns"], 0);
+        assert_eq!(selection(&s, e, &source).after, 1);
+        let generation = before["generation"].as_u64().unwrap();
+        s.heartbeat_control(
+            100,
+            e,
+            H::ConfigureResources {
+                generation,
+                contract: test_contract(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let r = s
+            .heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
+            .unwrap()
+            .unwrap();
+        assert!(r.output.contains("matrix_original_available"));
+        assert_eq!(selection(&s, e, &source).after, 1);
+        assert_eq!(
+            s.heartbeat_control(100, e, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            0
+        );
+    }
+    #[test]
+    fn unavailable_execution_resources_do_not_erase_a_successful_source_observation() {
+        for state in ["expired", "exhausted", "unavailable"] {
+            let (_f, s, e, source) = setup();
+            let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+            {
+                let conn = s.conn.lock().unwrap();
+                let account = format!("heartbeat_resources:100:{}", c.session);
+                match state {
+                    "expired" => {
+                        conn.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",params![account,Utc::now().timestamp_millis()-1]).unwrap();
+                    }
+                    "exhausted" => {
+                        conn.execute("UPDATE bot_state SET value=json_set(value,'$.reserved_provider_attempts',json_extract(value,'$.contract.max_provider_attempts')) WHERE key=?1",[account]).unwrap();
+                    }
+                    _ => {
+                        conn.execute(
+                            "UPDATE bot_state SET value='invalid' WHERE key=?1",
+                            [account],
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            let before = s.heartbeat_control(100, e, H::Status).unwrap()["resources"].clone();
+            assert_eq!(before["state"], state);
+            assert!(s.heartbeat_check_current(&c).unwrap());
+            let selected = selection(&s, e, &source);
+            assert!(
+                s.heartbeat_finish_check(
+                    &c,
+                    Some(Ok((selected.clone(), page(&selected, vec![item(1)]))))
+                )
+                .unwrap()
+                .is_none()
+            );
+            let after = s.heartbeat_control(100, e, H::Status).unwrap();
+            assert_eq!(after["resources"], before);
+            assert_eq!(after["producer"]["last_check"]["outcome"], "succeeded");
+            assert_eq!(after["producer"]["retained_returns"], 0);
+            assert_eq!(selection(&s, e, &source).after, 1);
+            due(&s, e);
+            assert!(s.heartbeat_begin_check(100, e).unwrap().is_some());
+            if state == "expired" {
+                let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+                let generation = paused["generation"].as_u64().unwrap();
+                let previous = before["contract"]["expires_at_unix_ms"].as_i64().unwrap();
+                s.heartbeat_renew_window(
+                    100,
+                    e,
+                    generation,
+                    previous,
+                    Utc::now().timestamp_millis() + 60_000,
+                )
+                .unwrap();
+                let renewed = s.heartbeat_control(100, e, H::Status).unwrap();
+                assert_eq!(
+                    renewed["producer"]["contract"],
+                    after["producer"]["contract"]
+                );
+                assert_eq!(
+                    renewed["resources"]["reserved_provider_attempts"],
+                    before["reserved_provider_attempts"]
+                );
+                s.heartbeat_control(100, e, H::Resume { generation })
+                    .unwrap();
+                due(&s, e);
+                let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+                let selected = selection(&s, e, &source);
+                let r = s
+                    .heartbeat_finish_check(
+                        &c,
+                        Some(Ok((selected.clone(), page(&selected, vec![])))),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert!(r.output.contains("matrix_original_available"));
+                assert_eq!(selection(&s, e, &source).after, 1);
+            }
+        }
+    }
+    #[test]
+    fn observation_successor_conserves_pending_uncertainty_and_never_renews_execution() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        s.heartbeat_finish_check(
+            &c,
+            Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+        )
+        .unwrap()
+        .unwrap();
+        let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        let expired = Utc::now().timestamp_millis() - 1000;
+        let expiry = Utc::now().timestamp_millis() + 3_600_000;
+        let before = {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, c.session).unwrap().unwrap();
+            p.contract.expires_at_unix_ms = expired;
+            p.native_returns[0].phase = "uncertain".into();
+            save(&conn, &p).unwrap();
+            serde_json::to_value(p).unwrap()
+        };
+        assert!(
+            s.heartbeat_renew_observation(100, e, generation + 1, expired, expiry)
+                .is_err()
+        );
+        s.heartbeat_renew_observation(100, e, generation, expired, expiry)
+            .unwrap();
+        s.heartbeat_renew_observation(100, e, generation, expired, expiry)
+            .unwrap();
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(after["admission_paused"], true);
+        assert_eq!(after["generation"], generation);
+        assert_eq!(after["resources"], paused["resources"]);
+        let conn = s.conn.lock().unwrap();
+        let mut actual =
+            serde_json::to_value(load(&conn, 100, c.session).unwrap().unwrap()).unwrap();
+        actual["contract"]["expires_at_unix_ms"] = json!(expired);
+        actual["observation_renewal"] = Value::Null;
+        assert_eq!(actual, before);
+        drop(conn);
+        assert!(
+            serde_json::from_value::<H>(
+                json!({"action":"renew_observation","generation":generation})
+            )
+            .is_err()
+        );
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, c.session).unwrap().unwrap();
+            p.contract.expires_at_unix_ms = expired;
+            p.checks = p.contract.max_checks;
+            save(&conn, &p).unwrap();
+        }
+        assert!(
+            s.heartbeat_renew_observation(100, e, generation, expired, expiry + 1)
+                .is_err()
+        );
+    }
+    #[test]
+    fn observation_period_capacity_is_explicit_cumulative_and_does_not_refill_inference() {
+        let (f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        s.heartbeat_finish_check(
+            &c,
+            Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+        )
+        .unwrap()
+        .unwrap();
+        let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        let before = {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, c.session).unwrap().unwrap();
+            p.checks = p.contract.max_checks;
+            p.native_returns[0].phase = "uncertain".into();
+            save(&conn, &p).unwrap();
+            serde_json::to_value(p).unwrap()
+        };
+        let old_expiry = before["contract"]["expires_at_unix_ms"].as_i64().unwrap();
+        let expiry = old_expiry + 60_000;
+        let checks = before["checks"].as_u64().unwrap() as u32;
+        let ceiling = checks + 120;
+        // A check-exhausted period can be succeeded even before its wall-clock
+        // deadline, but a deadline-only renewal cannot mint another check.
+        assert!(
+            s.heartbeat_renew_observation(100, e, generation, old_expiry, expiry)
+                .is_err()
+        );
+        for (g, max) in [
+            (generation + 1, ceiling),
+            (generation, checks),
+            (generation, checks + 1025),
+        ] {
+            assert!(
+                s.heartbeat_renew_observation_capacity(100, e, g, old_expiry, expiry, max)
+                    .is_err()
+            );
+            let conn = s.conn.lock().unwrap();
+            assert_eq!(
+                serde_json::to_value(load(&conn, 100, c.session).unwrap().unwrap()).unwrap(),
+                before
+            );
+        }
+        s.heartbeat_renew_observation_capacity(100, e, generation, old_expiry, expiry, ceiling)
+            .unwrap();
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        s.heartbeat_renew_observation_capacity(100, e, generation, old_expiry, expiry, ceiling)
+            .unwrap();
+        assert_eq!(s.heartbeat_control(100, e, H::Status).unwrap(), after);
+        assert!(
+            s.heartbeat_renew_observation_capacity(
+                100,
+                e,
+                generation,
+                old_expiry,
+                expiry,
+                ceiling + 1
+            )
+            .is_err()
+        );
+        assert_eq!(after["resources"], paused["resources"]);
+        assert_eq!(after["admission_paused"], true);
+        assert_eq!(after["generation"], generation);
+        assert_eq!(after["producer"]["checks"], checks);
+        assert_eq!(after["producer"]["contract"]["max_checks"], ceiling);
+        assert_eq!(
+            after["producer"]["observation_window_renewal"]["previous_max_checks"],
+            checks
+        );
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut actual =
+                serde_json::to_value(load(&conn, 100, c.session).unwrap().unwrap()).unwrap();
+            actual["contract"]["expires_at_unix_ms"] = json!(old_expiry);
+            actual["contract"]["max_checks"] = before["contract"]["max_checks"].clone();
+            actual["observation_renewal"] = Value::Null;
+            assert_eq!(actual, before);
+        }
+        drop(s);
+        let restarted = Store::open(f.path(), &[100], &crate::store::tests::defaults()).unwrap();
+        assert_eq!(
+            restarted.heartbeat_control(100, e, H::Status).unwrap(),
+            after
+        );
+        assert!(serde_json::from_value::<H>(json!({"action":"renew_observation_capacity","generation":generation,"max_checks":ceiling})).is_err());
+    }
+
+    #[test]
+    fn owner_window_renewal_preserves_pending_source_and_all_counters() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let original = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+            )
+            .unwrap()
+            .unwrap();
+        let status = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = status["generation"].as_u64().unwrap();
+        let expired = Utc::now().timestamp_millis() - 1000;
+        let renewed = Utc::now().timestamp_millis() + 3_600_000;
+        let before = {
+            let mut conn = s.conn.lock().unwrap();
+            let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+            let tx = conn.transaction().unwrap();
+            resources::reserve_on(&tx, session, 100).unwrap();
+            let mut p = load(&tx, 100, session).unwrap().unwrap();
+            p.contract.expires_at_unix_ms = expired;
+            p.native_returns[0].phase = "retained_unsent".into();
+            p.native_returns[0].attempts = 3;
+            p.native_returns[0].retry_after = None;
+            save(&tx, &p).unwrap();
+            tx.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_resources:100:{session}"),expired]).unwrap();
+            tx.commit().unwrap();
+            serde_json::to_value(p).unwrap()
+        };
+        assert!(
+            s.heartbeat_renew_window(100, e, generation + 1, expired, renewed)
+                .is_err()
+        );
+        s.heartbeat_renew_window(100, e, generation, expired, renewed)
+            .unwrap();
+        // An exact lost-ACK observation cannot renew a second time or refill.
+        s.heartbeat_renew_window(100, e, generation, expired, renewed)
+            .unwrap();
+        let after = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(after["admission_paused"], true);
+        assert_eq!(after["generation"], generation);
+        assert_eq!(after["resources"]["reserved_provider_attempts"], 3);
+        assert_eq!(after["producer"]["checks"], 1);
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+        let mut expected = before;
+        expected["contract"]["expires_at_unix_ms"] = json!(renewed);
+        let actual = serde_json::to_value(load(&conn, 100, session).unwrap().unwrap()).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual["native_returns"][0]["id"], original.id);
+        drop(conn);
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        let retry = s.heartbeat_returns_recover_unsent(100, e).unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].id, original.id);
+        assert_eq!(retry[0].attempts, 4);
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, e)
+                .unwrap()
+                .is_empty()
+        );
+        s.workflow_native_outcome_attempt(&original.id, 4, "retained_unsent", None)
+            .unwrap();
+        // A failed fourth admission cannot consume the same owner permit again.
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, e)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn production_recovery_is_single_use_for_proved_unsent_original() {
+        let (_f, s, e, source) = setup();
+        let check = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let original = s
+            .heartbeat_finish_check(
+                &check,
+                Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+            )
+            .unwrap()
+            .unwrap();
+        let status = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = status["generation"].as_u64().unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.native_returns[0].phase = "retained_unsent".into();
+            p.native_returns[0].attempts = 3;
+            p.native_returns[0].retry_after = None;
+            save(&conn, &p).unwrap();
+            production_recovery_on(&conn, session, 100, "Explicit normal production direction")
+                .unwrap();
+            production_recovery_on(&conn, session, 100, "Explicit normal production direction")
+                .unwrap();
+        }
+        s.heartbeat_control(100, e, H::Resume { generation })
+            .unwrap();
+        let selected = s.heartbeat_returns_recover_unsent(100, e).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, original.id);
+        assert_eq!(selected[0].attempts, 4);
+        s.workflow_native_outcome_attempt(&original.id, 4, "retained_unsent", None)
+            .unwrap();
+        assert!(
+            s.heartbeat_returns_recover_unsent(100, e)
+                .unwrap()
+                .is_empty()
+        );
+        let conn = s.conn.lock().unwrap();
+        let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+        production_recovery_on(&conn, session, 100, "Explicit normal production direction")
+            .unwrap();
+        let p = load(&conn, 100, session).unwrap().unwrap();
+        assert_eq!(p.native_returns[0].attempts, 4);
+        assert!(!owner_window_retry_on(&conn, &p.native_returns[0]).unwrap());
+    }
+
+    #[test]
+    fn owner_window_renewal_rolls_back_when_producer_is_exhausted_or_uncertain() {
+        let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        s.heartbeat_finish_check(
+            &c,
+            Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+        )
+        .unwrap()
+        .unwrap();
+        let status = s.heartbeat_control(100, e, H::Pause).unwrap();
+        let generation = status["generation"].as_u64().unwrap();
+        let expired = Utc::now().timestamp_millis() - 1000;
+        let renewed = Utc::now().timestamp_millis() + 3_600_000;
+        let session = {
+            let conn = s.conn.lock().unwrap();
+            let (session, _) = super::super::super::presentation::entry_on(&conn, 100, e).unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.contract.expires_at_unix_ms = expired;
+            p.native_returns[0].phase = "uncertain".into();
+            save(&conn, &p).unwrap();
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.contract.expires_at_unix_ms',?2) WHERE key=?1",
+                params![format!("heartbeat_resources:100:{session}"),expired]).unwrap();
+            session
+        };
+        let before = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert!(
+            s.heartbeat_renew_window(100, e, generation, expired, renewed)
+                .is_err()
+        );
+        assert_eq!(s.heartbeat_control(100, e, H::Status).unwrap(), before);
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut p = load(&conn, 100, session).unwrap().unwrap();
+            p.native_returns[0].phase = "retained_unsent".into();
+            p.checks = p.contract.max_checks;
+            save(&conn, &p).unwrap();
+        }
+        assert!(
+            s.heartbeat_renew_window(100, e, generation, expired, renewed)
+                .is_err()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, e, H::Status).unwrap()["resources"],
+            before["resources"]
+        );
+        // Renewal is deliberately absent from the model-accessible command enum.
+        assert!(
+            serde_json::from_value::<H>(json!({"action":"renew_window","generation":generation}))
+                .is_err()
+        );
+    }
+
     #[test]
     fn heartbeat_lane_pause_fences_a_late_sdk_page_without_affecting_other_lane_changes() {
         let (_f, s, e, source) = setup();
@@ -1020,19 +2356,6 @@ mod inbox_tests {
         p.next_check_ms = 0;
         save(&conn, &p).unwrap();
     }
-    fn reviewed(s: &Store, e: SessionKey) {
-        let conn = s.conn.lock().unwrap();
-        let (session, _) = crate::store::presentation::entry_on(&conn, 100, e).unwrap();
-        let mut p = load(&conn, 100, session).unwrap().unwrap();
-        let r = p.native_returns.last_mut().unwrap();
-        r.phase = "accepted".into();
-        let id = r.id.clone();
-        let revision = r.envelope["revision"].as_str().unwrap().to_owned();
-        save(&conn, &p).unwrap();
-        drop(conn);
-        s.heartbeat_reported(100, e, "entry-native", &id, &revision)
-            .unwrap();
-    }
     #[test]
     fn inbox_check_pause_and_resume_fence_a_late_page_without_refilling() {
         let (_f, s, e, source) = setup();
@@ -1040,6 +2363,7 @@ mod inbox_tests {
         assert!(s.heartbeat_begin_check(100, e).unwrap().is_none());
         let selected = selection(&s, e, &source);
         let paused = s.heartbeat_control(100, e, H::Pause).unwrap();
+        assert_eq!(paused["producer"]["last_check"]["outcome"], "in_progress");
         assert!(!s.heartbeat_check_current(&c).unwrap());
         assert!(
             s.heartbeat_finish_check(
@@ -1066,6 +2390,9 @@ mod inbox_tests {
             .is_none()
         );
         assert_eq!(selection(&s, e, &source).after, 0);
+        let fenced = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert!(fenced["producer"]["last_check"]["completed_at_unix_ms"].is_null());
+        assert!(fenced["producer"]["last_success_at_unix_ms"].is_null());
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         let r = s
@@ -1094,12 +2421,76 @@ mod inbox_tests {
         );
         let status = s.heartbeat_control(100, e, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 2);
+        assert_eq!(status["producer"]["last_check"]["sequence"], 2);
+        assert_eq!(
+            status["producer"]["last_check"]["generation"],
+            status["generation"]
+        );
+        assert_eq!(
+            status["producer"]["last_check"]["activation"]["lane"],
+            "messaging"
+        );
+        assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
         assert_eq!(selection(&s, e, &source).after, 1);
     }
     #[test]
-    fn inbox_no_news_is_quiet_and_failed_reads_consume_checks_without_repeated_attention() {
+    fn busy_observation_keeps_original_visible_without_attention_reservation_or_source_loss() {
         let (_f, s, e, source) = setup();
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let selected = selection(&s, e, &source);
+        let original = item(1);
+        let id = original["message_id"].as_str().unwrap().to_owned();
+        assert!(
+            s.heartbeat_finish_observation(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![original])))),
+                false
+            )
+            .unwrap()
+            .is_none()
+        );
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(status["producer"]["checks"], 1);
+        assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(status["producer"]["retained_returns"], 0);
+        assert_eq!(
+            status["producer"]["unoffered_inbox"], true,
+            "A completed goal collector must see unallocated real work"
+        );
+        let visible = s
+            .interaction_presentation_page_messages(100, e, 0, 0, None, Some(0), None, false)
+            .unwrap();
+        assert_eq!(visible["items"][0]["id"], format!("matrix-inbox:{id}"));
+        let selected = selection(&s, e, &source);
+        assert_eq!(selected.after, 1);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let attention = s
+            .heartbeat_finish_observation(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![])))),
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            attention.output.contains(&id),
+            "Observation must leave the original eligible for actual later attention"
+        );
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(
+            status["producer"]["unoffered_inbox"], false,
+            "Already attempted revisions must not trigger a second handoff"
+        );
+    }
+    #[test]
+    fn inbox_failure_and_recovery_are_model_free_until_a_genuine_original_arrives() {
+        let (_f, s, e, source) = setup();
+        let initial = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert!(initial["producer"]["last_check"].is_null());
+        assert!(initial["producer"]["last_success_at_unix_ms"].is_null());
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         let selected = selection(&s, e, &source);
         assert!(
@@ -1107,17 +2498,31 @@ mod inbox_tests {
                 .unwrap()
                 .is_none()
         );
+        let success = s.heartbeat_control(100, e, H::Status).unwrap();
+        let last_success = &success["producer"]["last_success_at_unix_ms"];
+        assert!(last_success.as_i64().is_some());
+        assert_eq!(
+            last_success,
+            &success["producer"]["last_check"]["completed_at_unix_ms"]
+        );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
-        let r = s
-            .heartbeat_finish_check(
+        assert!(
+            s.heartbeat_finish_check(
                 &c,
                 Some(Err(anyhow::anyhow!("synthetic source unavailable"))),
             )
             .unwrap()
-            .unwrap();
-        assert!(r.output.contains("matrix-inbox-status"));
-        reviewed(&s, e);
+            .is_none()
+        );
+        let failed = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(failed["producer"]["last_check"]["outcome"], "failed");
+        assert_eq!(
+            failed["producer"]["last_check"]["error"],
+            "matrix_inbox_unavailable"
+        );
+        assert_eq!(&failed["producer"]["last_success_at_unix_ms"], last_success);
+        assert!(!failed.to_string().contains("synthetic source unavailable"));
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         assert!(
@@ -1127,12 +2532,11 @@ mod inbox_tests {
         );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
-        let recovered = s
-            .heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
-            .unwrap()
-            .unwrap();
-        assert!(recovered.output.contains("inbox-available"));
-        reviewed(&s, e);
+        assert!(
+            s.heartbeat_finish_check(&c, Some(Ok((selected.clone(), page(&selected, vec![])))))
+                .unwrap()
+                .is_none()
+        );
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         assert!(
@@ -1142,7 +2546,29 @@ mod inbox_tests {
         );
         let status = s.heartbeat_control(100, e, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 5);
+        assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
+        assert!(status["producer"]["last_check"]["error"].is_null());
+        assert!(
+            status["producer"]["last_success_at_unix_ms"]
+                .as_i64()
+                .unwrap()
+                >= last_success.as_i64().unwrap()
+        );
         assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
+        assert_eq!(status["producer"]["retained_returns"], 0);
+        due(&s, e);
+        let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
+        let original = item(1);
+        let key = format!("matrix-inbox:{}", original["message_id"].as_str().unwrap());
+        let real = s
+            .heartbeat_finish_check(
+                &c,
+                Some(Ok((selected.clone(), page(&selected, vec![original])))),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(real.output.contains(&key));
+        assert!(!real.output.contains("matrix-inbox-status"));
     }
     #[test]
     fn inbox_failed_page_rolls_back_its_savepoint_but_retains_finite_observation() {
@@ -1166,10 +2592,11 @@ mod inbox_tests {
                     page(&selected, vec![item(256), item(257)]),
                 ))),
             )
-            .unwrap()
             .unwrap();
-        assert!(r.output.contains("inbox-unavailable"));
-        assert!(!r.output.contains("matrix_original_available"));
+        assert!(r.is_none());
+        let status = s.heartbeat_control(100, e, H::Status).unwrap();
+        assert_eq!(status["producer"]["last_check"]["outcome"], "failed");
+        assert_eq!(status["resources"]["reserved_provider_attempts"], 0);
         assert_eq!(selection(&s, e, &source).after, 255);
         assert_eq!(
             s.conn

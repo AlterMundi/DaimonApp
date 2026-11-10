@@ -36,7 +36,39 @@ class ContextReturning(Returning):
                         'action': 'open', 'dialogue': str(uuid.uuid4()),
                         'generation': str(uuid.uuid4()), 'binding': self.binding}})
             else:
-                self.controller(send, turn, 'route-live-ack-' + turn, output['after_incorporation'])
+                self.protocol_before = self.protocol_state()
+                self.controller(send, turn, 'route-live-invalid-' + turn, {
+                    'operation': 'live_context', 'arguments': {
+                        'action': 'after_incorporation', 'dialogue': self.dialogue,
+                        'revision': output['after_incorporation']['arguments']['revision']}})
+            return True
+        if method is None and str(ident).startswith('route-live-invalid-'):
+            assert message['result']['success'] is False, message
+            value = json.loads(message['result']['contentItems'][0]['text'])
+            assert value['code'] == 'live_context_invalid_command' and value['mutated'] is False
+            assert self.protocol_before == self.protocol_state()
+            turn = str(ident).removeprefix('route-live-invalid-')
+            self.controller(send, turn, 'route-live-switch-' + turn, {
+                'operation': 'live_context', 'arguments': {
+                    'action': 'read', 'dialogue': self.dialogue, 'full': True}})
+            return True
+        if method is None and str(ident).startswith('route-live-switch-'):
+            assert message['result']['success'] is False, message
+            value = json.loads(message['result']['contentItems'][0]['text'])
+            assert value['code'] == 'live_context_selected_range_pending' and value['mutated'] is False
+            assert self.protocol_before == self.protocol_state()
+            turn = str(ident).removeprefix('route-live-switch-')
+            self.controller(send, turn, 'route-live-recover-' + turn, value['recovery']['reader'])
+            return True
+        if method is None and str(ident).startswith('route-live-recover-'):
+            assert message['result']['success'], message
+            value = json.loads(message['result']['contentItems'][0]['text'])
+            turn = str(ident).removeprefix('route-live-recover-')
+            _, output = self.internal[turn]
+            assert value['after_incorporation'] == output['after_incorporation']
+            assert value['range']['complete'] is True
+            assert self.protocol_before == self.protocol_state()
+            self.controller(send, turn, 'route-live-ack-' + turn, value['after_incorporation'])
             return True
         if method is None and str(ident).startswith('route-live-deny-'):
             assert message['result']['success'] is False, message
@@ -69,6 +101,12 @@ class ContextReturning(Returning):
         send({'id': ident, 'method': 'item/tool/call', 'params': {
             'threadId': self.web_thread, 'turnId': turn, 'callId': ident,
             'tool': 'interaction_controller', 'arguments': arguments}})
+
+    def protocol_state(self):
+        doc = json.loads(self.row('SELECT doc FROM live_context WHERE dialogue=?', (self.dialogue,))[0][0])
+        # Transport ACK bookkeeping may settle independently of a controller
+        # response; language, checkpoint and exact reader state must not change.
+        return {key: doc[key] for key in ('high', 'incorporated', 'checkpoint', 'range', 'events', 'sources')}
 
     def context(self, action, **extra):
         return self.read('input', 'foreground', 'context', json.dumps({
@@ -133,5 +171,66 @@ def qualify(binary):
         j.close()
 
 
+class RetryContext(ContextReturning):
+    def __init__(self, binary):
+        self.refuse_resume = False
+        super().__init__(binary)
+
+    def handle_extra_rpc(self, message, send):
+        if (self.refuse_resume and message.get('method') == 'thread/resume'
+                and message.get('params', {}).get('threadId') == self.web_thread):
+            self.refuse_resume = False
+            # Explicitly fail before any native turn/start or possible inference.
+            send({'id': message['id'], 'error': {
+                'code': -32001, 'message': 'Synthetic metadata resume unavailable'}})
+            return True
+        return super().handle_extra_rpc(message, send)
+
+
+def qualify_foreground_retry_without_workflow_flags(binary):
+    j = RetryContext(binary)
+    try:
+        j.start(); j.admit('Seed synthetic foreground retry ownership.', topic=1)
+        j.wait(lambda: j.has('Initial goal turn delivered.', 1)); j.idle()
+        j.stop()
+        # Foreground voice context does not require enabling routed work or
+        # workflow attention. Their independent switches remain explicitly off.
+        j.config.write_text(j.config.read_text().replace('[interaction]\n',
+            '[interaction]\nnative_workflow_returns=false\nnative_routed_returns=false\n'))
+        j.web_thread = j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1')[0][0]
+        j.web_turn = 'synthetic-context-retry'
+        j.refuse_resume = True; j.messages.clear()
+        j.start(); j.wait_control_socket(j.socket)
+        j.binding = j.read('presentation', 'list', '0', '0')['result']['binding']
+        j.dialogue = str(uuid.uuid4()); j.generation = str(uuid.uuid4())
+        j.context('open', generation=j.generation, binding=j.binding)
+        j.context('sync', generation=j.generation, assistant=[{
+            'source': str(uuid.uuid4()), 'text': 'Fresh synthetic voice context only.',
+            'interrupted': True}])
+        def receipts():
+            return json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',
+                (j.dialogue,))[0][0])['native_returns']
+        j.wait(lambda: receipts() and receipts()[0]['phase'] == 'retained_unsent')
+        first = receipts()[0]
+        assert first['attempts'] == 1 and first['native_turn'] is None
+        assert not j.internal_packets, 'No model input preceded explicit known-unsent recovery'
+        # The existing maintenance runner owns this retry, not a new event or
+        # duplicate source notification. Its normal tick can take 30 seconds.
+        j.wait(lambda: j.row("SELECT json_extract(doc,'$.incorporated') FROM live_context WHERE dialogue=?",
+            (j.dialogue,)) == [(1,)], seconds=40)
+        j.wait(lambda: receipts()[0]['phase'] == 'accepted')
+        last = receipts()
+        assert len(last) == 1 and last[0]['id'] == first['id']
+        assert last[0]['attempts'] == 2 and last[0]['reported_revision']
+        j.wait(lambda: j.row('SELECT busy FROM sessions WHERE thread_id=1') == [(0,)])
+        assert len(j.internal_packets) == 1 and not j.errors
+        assert not j.messages, 'Pure foreground retry cannot create a human publication'
+        assert j.row('SELECT count(*) FROM interaction_workflows') == [(0,)]
+        print('PASS foreground known-unsent retry preserves original return ID and bounds with workflow/routed switches off; zero models')
+    finally:
+        j.close()
+
+
 if __name__ == '__main__':
     qualify(str(Path(sys.argv[1]).resolve()))
+    qualify_foreground_retry_without_workflow_flags(str(Path(sys.argv[1]).resolve()))

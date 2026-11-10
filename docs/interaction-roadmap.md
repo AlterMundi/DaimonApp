@@ -5,15 +5,43 @@ implemented. Human selection, 2026-10-26: move from the accepted single-chat bas
 to genuinely continuous voice, responsive foreground dialogue and the necessary
 parallel-work attention coordination as one coherent delivery.
 
-## Current comparison receiving —7November2026
+## Current receiving —8November2026
+
+Shared Resources `interaction-current.md` selects the actual receiving record;
+all earlier component checkpoints below retain their dates and limits. Original
+three receivers now include the existing wardrobe's saved compact preview and
+public GPT-Live output-level presentation/optional mechanical jaw. The selected
+own WHITE45 version retains all previous dark/white versions. Its rest poses,
+local motion, saved/reopened/Use and synthetic audio ownership checks passed;
+this does not establish physical phone, artistic fit, phoneme alignment or hearing.
+Other engine output-level integration remains separate, and voice choices stay
+unchanged. Retained source/result continuity corrections have their exact
+receiving evidence; full in-voice memory and repeated physical renewal remain open.
+
+All four existing own basic Conversation entries have authenticated technical
+qualification; family first-device/message acceptance and social admission are
+distinct. School still needs actual retained mission/workspace/return authority.
+No workshop/Drive/voice gate, reenrollment or fabricated child input is introduced.
+The [current reading-return qualification](interaction-qualification.md#session-reading-position-across-detail-and-back-8november2026)
+adds desktop/phone-width evidence for reading position, draft and prior pin,
+including the selected Root composition. It changes no runtime. The full
+original objective and all remaining stages stay active.
+
+## Retained comparison receiving —7November2026
 
 Shared Resources `interaction-current.md` and its named current record own the
-actual selected composition. App726 now serves the mounted public GPT-Live routes
+actual selected composition. App732 retains the mounted public GPT-Live routes
 on all three living receivers, preserving each pair's provider/Avatar choices;
 software availability does not activate the disabled peer comparisons. Root's
-real71second native-backend visit has confirmed terminal voice usage. This does
-not prove real memory lookup, repeated physical renewal, useful speech latency
-or phone/hearing acceptance. Android0.8 adds native Beacon and has passed eight
+real71second native-backend visit has confirmed terminal voice usage. Read-only
+qualification now also matches two accepted native work roots to their three exact
+acoustic sources, one provider-acknowledged canonical progress return, and a current
+canonical final available after the voice visit closed. The existing episodic
+curation/readback separately matches its genuine voice original. That historical
+clip-input visit does not qualify the current live-window input path. These are
+partial handoff/work-continuity facts, not in-voice memory lookup, audible final return,
+repeated physical renewal, useful speech latency or phone/hearing acceptance.
+See [the exact qualification scope](interaction-qualification.md#retained-real-voice-native-handoff--7november2026). Android0.8 adds native Beacon and has passed eight
 actual API35 WebView/bridge/service/AudioTrack/focus instrumentation cases plus
 private same-key publication;
 human download/install remains unobserved. The full original goal remains open.
@@ -666,6 +694,7 @@ and useful-latency acceptance remain distinct and unfinished.
 Human selection, 2026-10-29: the next delivery focus also includes an independent
 Android APK with native audio ownership, usable as the sole client of a hosted
 daimon. Reuse the web conversation and shared login; Telegram stays optional.
+Nicolas8November also selects Android system Share into the existing composer: text/links, images/multiple images and files, explicit review before Send, bounded private staging and preserved capture/drafts. Full Share receiving and phone acceptance remain unfinished.
 The [native client plan](interaction-native-clients.md) defines the foreground
 pilot, native audio/focus, progressive/background follow-up, future Beacon
 mixing/filters and iOS equivalent. This explicitly selects the necessary part
@@ -1178,10 +1207,23 @@ successor ownership and physical device acceptance remain unfinished.
 The existing transport-neutral maintenance cycle observes only while holding its
 instance lease. `heartbeat configure-producer GENERATION CONTRACT_JSON` selects
 `interval_seconds` (30–3600), `max_checks` (1–1024), `expires_at_unix_ms` (at most
-seven days and within the existing resource contract), and `matrix_replies` and/or
+seven days, independent of inference-account expiry), and `matrix_replies` and/or
 `workflows`. Configuration requires paused exact-generation ownership, no unresolved
-execution and an existing finite resource account. It cannot replace/refill an
-existing producer contract. Default remains unconfigured and paused.
+execution. It cannot replace/refill an
+existing producer contract. Observation can retain authenticated sources while
+execution resources are absent/expired/exhausted; it cannot reserve native work
+or advance offer cursors until execution resources are available. Default remains
+unconfigured and paused. An explicitly
+owner-selected successor window can use the owner-only `heartbeat renew-window`
+command described in [heartbeat controls](interaction-heartbeat.md#explicit-owner-renewal-of-an-expired-window).
+It changes only the expired deadlines, conserves every lifetime counter/cursor,
+and leaves admission paused. The owner-only `heartbeat renew-observation` changes
+only a finite expired observation deadline by default. Its optional cumulative
+`MAX_CHECKS` selects a finite successor after expiry/check exhaustion, conserving
+the lifetime check count and pending uncertainty, with at most1024 remaining
+checks and no inference-account change. Neither is a model action or
+automatic renewal. Producer status retains one bounded last-check observation
+and last successful source-check timestamp; neither proves execution/delivery.
 
 One existing `bot_state` parent retains cadence, counters, source-review cursors
 and the existing native-return journal. A check consumes its finite counter even

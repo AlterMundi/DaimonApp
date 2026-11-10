@@ -1,7 +1,7 @@
 // Exercise finite, evidence-driven presentation without native sessions/models.
 const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
 function boot(){
-  let clock=100,animations=0,cancellations=0,next=0,lastFrames;
+  let clock=100,animations=0,cancellations=0,next=0,lastFrames;const artistic=[];
   const timers=new Map(),handlers={},motion={matches:false,addEventListener(_name,fn){this.change=fn;}};
   const node=()=>({dataset:{},children:[],textContent:"",setAttribute(){},append(...v){this.children.push(...v);},replaceChildren(...v){this.children=v;}});
   const box=node(),face=node(),caption=node(),phases=node();
@@ -11,8 +11,8 @@ function boot(){
   const context=vm.createContext({window:{matchMedia:()=>motion},document,Date,Number,Object,
     setTimeout(fn,ms){const id=++next;timers.set(id,{fn,at:clock+ms});return id;},clearTimeout:id=>timers.delete(id)});
   vm.runInContext(fs.readFileSync("dashboard/web/companion.js","utf8"),context);
-  const companion=context.window.ConversationCompanion.mount({now:()=>clock});
-  return {companion,box,face,caption,motion,timers,document,handlers,
+  const companion=context.window.ConversationCompanion.mount({now:()=>clock,onArtisticRest:value=>artistic.push(value)});
+  return {companion,box,face,caption,motion,timers,document,handlers,artistic,
     phaseNodes:()=>phases.children,
     labels:()=>phases.children.map(chip=>chip.children.at(-1).textContent),
     animations:()=>animations,cancellations:()=>cancellations,lastFrames:()=>lastFrames,
@@ -26,6 +26,7 @@ const firstChips=f.phaseNodes();
 f.companion.observe({schema:"telecodex.interaction-activity/v1",integrator_busy:true,sources:[{known:true,busy:true,observer_synthesizing:1},{known:true,busy:true,observer_synthesizing:0},{known:false,busy:true,observer_synthesizing:99}]});
 assert.equal(f.phaseNodes(),firstChips,"unchanged polling must not rebuild the screen reader live region");
 f.companion.update({capture:"recording",transcribing:true,routing:true,question:true,playback:"playing"});
+assert.equal(f.box.dataset.question,"true");
 assert.deepEqual(f.labels(),["Listening","Transcribing","Conversation active","Observer · 1","2 sessions active","Some session activity unconfirmed","Routing pending","A question for you","Speaking"]);
 assert.equal(f.box.dataset.pose,"listening");
 f.elapse(20000);
@@ -34,6 +35,7 @@ assert(f.labels().includes("Session activity unconfirmed"));
 assert(!f.labels().includes("Transcribing"),"a retained preparing phase is no longer proof of live transcription once the receiver is stale");
 assert(f.labels().includes("Listening"),"local capture does not depend on receiver freshness");
 f.companion.reset();
+assert.equal(f.box.dataset.question,"false");
 f.companion.observe({schema:"telecodex.interaction-activity/v1",sources:[]});
 assert.equal(f.box.dataset.pose,"calm");
 const answer={id:"native:1",revision:"rev-1",kind:"integrator_answer",observed_at:"2026-10-20T00:00:00Z",companion_hint:{rest:"delighted"}};
@@ -128,3 +130,58 @@ assert.equal(speech.box.dataset.cycle,'269');
 speech.elapse(20001);assert.equal(speech.box.dataset.cycle,'1200','Stale state cannot keep the error/work rhythm');
 assert(speech.timers.size<=2,'Changing rhythm must not leave an old recurring timer behind');
 speech.document.hidden=true;speech.handlers.visibilitychange();assert.equal(speech.timers.size,0);
+
+const cues=boot();
+cues.companion.update({capture:'recording',playback:'playing',question:true});
+assert.deepEqual(cues.artistic,['curious'],'An actual question supplies a temporary reaction');
+cues.companion.update({question:false});cues.artistic.length=0;
+const cueSource={id:'art:1',revision:'one',kind:'integrator_answer',observed_at:'2026-11-08T00:00:00Z',companion_hint:{rest:'focused',gesture:'none'}};
+cues.companion.reply(cueSource);assert.deepEqual(cues.artistic,['focused']);
+cues.companion.reply(cueSource);cues.companion.reply({...cueSource,id:'older',observed_at:'2026-11-07T00:00:00Z'});
+assert.equal(cues.artistic.length,1,'Repeated/older originals cannot replay a cue');
+cues.companion.reply({...cueSource,id:'next',observed_at:'2026-11-08T00:00:01Z',companion_hint:undefined});
+assert.equal(cues.artistic.at(-1),undefined,'No authored hint restores the saved custom gesture');
+cues.companion.configure(pack,'a'.repeat(64));
+cues.companion.reply({...cueSource,id:'wrong-pack',observed_at:'2026-11-08T00:00:02Z'});
+assert.equal(cues.artistic.at(-1),undefined,'Unmatched pack authority cannot select custom art');
+cues.companion.reply({...cueSource,id:'right-pack',observed_at:'2026-11-08T00:00:03Z',companion_hint:{catalog:'a'.repeat(64),pack:pack.id,revision:pack.revision,rest:'inquiry'}});
+assert.equal(cues.artistic.at(-1),'inquiry','Only this selected pack vocabulary passes the observer');
+cues.companion.reset();assert.equal(cues.artistic.at(-1),undefined);
+console.log('Authored cue admission: order/dedup, reset and selected pack binding passed.');
+
+// Exercise real observer transitions, not a goal's mere existence or guessed quota.
+const reactions=boot();
+const stateSource=(extra={})=>({id:'session:one',fresh:true,observed_at:.1,execution:'idle',goal_state:'active',waiting_for_human:false,...extra});
+const observeSources=sources=>reactions.companion.sonic({schema:'telecodex.sonic-state/v1',connected:true,observed_at:.1,sources});
+reactions.companion.observe({schema:'telecodex.interaction-activity/v1',sources:[]});
+observeSources([stateSource()]);assert.equal(reactions.artistic.at(-1),undefined,'Idle active goal is not work');
+observeSources([stateSource({execution:'working'})]);assert.equal(reactions.artistic.at(-1),'focused');
+reactions.companion.reply({...cueSource,companion_hint:{rest:'curious',gesture:'none'}});
+assert.equal(reactions.artistic.at(-1),'focused','A reply does not overwrite ongoing work');
+observeSources([stateSource()]);assert.equal(reactions.artistic.at(-1),'curious','Work stops: restore admitted authored pose');
+observeSources([stateSource({goal_state:'complete'})]);assert.equal(reactions.artistic.at(-1),'delighted');
+reactions.elapse(1601);assert.equal(reactions.artistic.at(-1),'curious');
+observeSources([stateSource({goal_state:'complete'})]);assert.equal(reactions.artistic.at(-1),'curious','Repeated completion cannot celebrate again');
+observeSources([stateSource({goal_state:'budgetLimited'})]);assert.equal(reactions.artistic.at(-1),'sleep');
+observeSources([stateSource({goal_state:'budgetLimited'}),stateSource({id:'other'})]);
+assert.equal(reactions.artistic.at(-1),'curious','One limited sibling cannot send the whole receiver to sleep');
+observeSources([stateSource({goal_state:'usageLimited'})]);assert.equal(reactions.artistic.at(-1),'sleep');
+observeSources([stateSource()]);assert.equal(reactions.artistic.at(-1),'welcome');
+reactions.elapse(1601);assert.equal(reactions.artistic.at(-1),'curious');
+observeSources([stateSource({goal_state:'blocked'})]);assert.equal(reactions.artistic.at(-1),'uncertain');
+observeSources([stateSource({waiting_for_human:true})]);assert.equal(reactions.artistic.at(-1),'curious');
+observeSources([stateSource({execution:'working'})]);reactions.elapse(20001);
+assert.equal(reactions.artistic.at(-1),'curious','Expiry restores authored art without another poll');
+observeSources([stateSource({goal_state:'budgetLimited',fresh:false})]);assert.equal(reactions.artistic.at(-1),'curious');
+reactions.companion.update({connected:false});assert.equal(reactions.artistic.at(-1),'curious','Disconnect is not exhaustion');
+reactions.companion.reset();assert.equal(reactions.artistic.at(-1),undefined,'Account reset forgets reactions and authored cues');
+console.log('Temporary reactions: actual work, idle goal, question, blocked, quota, sibling isolation, completion dedup, wake, expiry and reset passed; zero models.');
+
+const partial=boot(), limited={id:'limited',fresh:true,observed_at:.1,execution:'idle',goal_state:'budgetLimited',waiting_for_human:false};
+partial.companion.sonic({schema:'telecodex.sonic-state/v1',connected:true,observed_at:.1,truncated:true,sources:[limited]});
+assert.equal(partial.artistic.at(-1),undefined,'Truncated inventory cannot establish receiver exhaustion');
+partial.companion.sonic({schema:'telecodex.sonic-state/v1',connected:true,observed_at:.1,sources:[{...limited,observed_at:30}]});
+assert.equal(partial.artistic.at(-1),undefined,'Future observations are not fresh');
+partial.companion.sonic({schema:'telecodex.sonic-state/v1',connected:true,observed_at:.1,sources:[limited]});
+assert.equal(partial.artistic.at(-1),'sleep');partial.elapse(20000);
+assert.equal(partial.artistic.at(-1),undefined,'Sleep expires without another request');

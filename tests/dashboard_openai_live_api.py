@@ -42,6 +42,9 @@ class Owner:
         self.journal=context_fixtures.Journal()
         self.media_retention=None;self.binding='a'*64;self.held=False
     def conversation_live_context(self,body):return self.journal.conversation_live_context(body)
+    def public_live_integrator_context(self,frozen,max_bytes):
+        return {'kind':'current_integrator_conversation','thread':frozen['native_thread'],
+            'messages':[],'earlier_history_available':False}
     def presentation(self,command):return {'binding':self.binding}
     def presentation_list(self,*args):return {'binding':self.binding,'items':[]}
     def authorized(self,human):return human==100
@@ -63,6 +66,7 @@ class Client:
         self.events=queue.Queue();self.sent=[];self.creations=0;self.detached=False;self.forks=[]
         self.instances.append(self)
     def _project_key(self):return 'test-only-project-key'
+    def prepare_transport(self):self._project_key()
     def create(self,sdp,spec):
         self.creations+=1;self.spec=spec
         if self.failure:raise LiveUnavailable(self.failure)
@@ -120,6 +124,7 @@ class Mounted(unittest.TestCase):
         value=socket.receive_json()
         while value['type']=='context_preparing':value=socket.receive_json()
         self.assertEqual(value['type'],'prepared')
+        self.assertEqual(value['admission']['source_close_reasons'],sorted(LiveCreations.source_close_reasons))
         return value
     def socket(self):return self.client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
     def read(self):return json.loads((self.state/'public-live-visits'/(self.ident+'.json')).read_text())
@@ -133,6 +138,198 @@ class Mounted(unittest.TestCase):
     def close(self,socket):
         socket.send_json({'type':'close'});self.assertEqual(socket.receive_json()['type'],'finishing')
         result=socket.receive_json();self.assertEqual(result['type'],'closed');return result
+
+    def renewal_app(self):
+        app=self.app_with_history()
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'backend_mode':'native','continuous_renewal':True}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        return app
+
+    def test_cold_native_entry_auth_failure_never_initializes(self):
+        calls=[]
+        self.owner.prepare_native_voice=lambda binding:calls.append(binding)
+        app=self.app_with_history()
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        async def authorize(request):
+            if not self.allowed:raise HTTPException(401,'Expired synthetic access')
+            return {'human':100,'csrf':'fresh','scope':self.scope}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        with TestClient(app,base_url='https://example.test') as client:
+            for allowed,scope,csrf in ((False,None,'fresh'),(True,'monitor_readonly','fresh'),(True,None,'wrong')):
+                self.allowed=allowed;self.scope=scope
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    socket.send_json({**self.meta,'csrf':csrf})
+                    self.assertEqual(socket.receive_json()['type'],'unconfirmed')
+        self.assertEqual(calls,[]);self.assertEqual(Client.instances,[])
+
+    def test_cold_native_entry_initializes_after_auth_before_context_and_not_on_history(self):
+        calls=[];bound=False
+        original=self.owner.public_live_binding
+        def initialize(binding):
+            nonlocal bound
+            self.assertEqual(binding,self.owner.binding);calls.append('initialize');bound=True
+        def current(binding):
+            self.assertTrue(bound,'Context owner lookup must follow explicit metadata initialization')
+            calls.append('binding');return original(binding)
+        self.owner.prepare_native_voice=initialize
+        self.owner.public_live_binding=current
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            response=client.get('/api/interaction/voice/gpt-live/visits',headers=self.headers)
+            self.assertEqual(response.status_code,200);self.assertEqual(calls,[])
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                self.start(socket);self.close(socket)
+        self.assertEqual(calls.count('initialize'),1)
+        self.assertEqual(calls[0],'initialize')
+    def test_missing_sideband_dependency_refuses_before_admission_mic_or_creation(self):
+        class MissingTransport(Client):
+            def prepare_transport(self):raise LiveUnavailable('sideband_dependency_unavailable')
+        with patch('dashboard.openai_live_api.OpenAILive',MissingTransport):
+            with self.socket() as socket:
+                socket.send_json(self.meta)
+                event=socket.receive_json()
+                self.assertEqual(event['type'],'unconfirmed')
+                self.assertIn('No call was opened',event['message'])
+        self.assertEqual(sum(c.creations for c in Client.instances),0)
+        self.assertFalse(list((self.state/'public-live-visits').glob('*.json')))
+        self.assertEqual(self.owner.journal.producers,{})
+        self.assertEqual(self.owner.journal.calls,[])
+
+    def test_native_avatar_default_is_admitted_by_actual_config_without_a_provider_session(self):
+        app=self.app_with_history()
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],
+            'backend_mode':'native','default_native':True}}
+        self.assertTrue(install(app,config,self.owner,authorize,['https://example.test']))
+        self.assertEqual(Client.instances,[])
+        self.assertEqual(list((self.state/'public-live-visits').glob('*.json')),[])
+
+    def test_renewal_ready_follows_native_close_and_releases_owner_before_successor(self):
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                socket.send_json({'type':'close','reason':'transport_renewal'})
+                self.assertEqual(socket.receive_json()['type'],'finishing')
+                final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                self.assertTrue(final['renewal_pending'])
+                ready=socket.receive_json();self.assertEqual(ready['type'],'successor_ready')
+                self.assertTrue(native.detached)
+                self.assertEqual(app.state.voice_active,set())
+                prior=self.ident
+                self.ident=str(uuid.uuid4())
+                self.meta={**self.meta,'id':self.ident,'voice_continuation':prior,'renewal':ready['renewal']}
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as successor:
+                self.start(successor);self.close(successor)
+        old=json.loads((self.state/'public-live-visits'/(prior+'.json')).read_text())
+        new=self.read()
+        self.assertEqual(old['renewal_target'],self.ident)
+        self.assertEqual(new['renewal_from'],prior)
+        self.assertEqual(new['native_continuation_from'],prior)
+        self.assertEqual(len(Client.instances),2)
+
+    def test_confirmed_provider_expiry_uses_same_native_barriers_without_reclosing_provider(self):
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                native.events.put({'type':'session.closed','event_id':'expiry',
+                    'reason':'expired','usage':{'seconds':15},'session':{'id':'live_opaque:provider/42'}})
+                final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                self.assertTrue(final['renewal_pending'])
+                ready=socket.receive_json();self.assertEqual(ready['type'],'successor_ready')
+                self.assertTrue(native.detached)
+                self.assertEqual(app.state.voice_active,set())
+                self.assertFalse(any(event['type']=='session.close' for event in native.sent))
+                prior=self.ident;self.ident=str(uuid.uuid4())
+                self.meta={**self.meta,'id':self.ident,'voice_continuation':prior,'renewal':ready['renewal']}
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as successor:
+                self.start(successor);self.close(successor)
+        self.assertEqual(len(Client.instances),2)
+        self.assertEqual(self.read()['renewal_from'],prior)
+
+    def test_unsettled_native_context_never_publishes_successor_ready(self):
+        app=self.renewal_app()
+        async def failed_close(*args,**kwargs):raise ProviderUnavailable('Synthetic context remains uncertain')
+        with patch('dashboard.openai_live_api.PublicLiveSessionContext.close',failed_close):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    self.start(socket)
+                    socket.send_json({'type':'close','reason':'transport_renewal'})
+                    self.assertEqual(socket.receive_json()['type'],'finishing')
+                    self.assertEqual(socket.receive_json()['type'],'closed')
+                    with self.assertRaises(WebSocketDisconnect):socket.receive_json()
+        self.assertNotIn('renewal_ready',self.read())
+        self.assertEqual(len(Client.instances),1)
+
+    def test_failed_optional_result_reader_keeps_live_speech_until_explicit_stop(self):
+        app=self.app_with_history()
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def authorize(request):return {'human':100,'csrf':'fresh'}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        install(app,config,self.owner,authorize,['https://example.test'])
+        calls=[]
+        def unavailable(*args,**kwargs):
+            calls.append(1)
+            raise ProviderUnavailable('Synthetic historical result read unavailable')
+        with patch('dashboard.openai_live_api.return_next_native_part',unavailable):
+            with TestClient(app,base_url='https://example.test') as client:
+                with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                    native=self.start(socket)
+                    notice=socket.receive_json()
+                    self.assertEqual(notice,{'type':'notice','code':'native_results_unavailable'})
+                    for index in range(3):
+                        event={'type':'session.output_transcript.delta','event_id':'continuing-'+str(index),'delta':'Still speaking.'}
+                        native.events.put(event)
+                        self.assertEqual(socket.receive_json(),{'type':'provider_event','event':event})
+                    self.assertFalse(native.detached)
+                    self.assertEqual(native.sent,[],'An optional read must not close the paid voice session')
+                    self.assertEqual(calls,[1],'An uncertain result failure is not automatically replayed')
+                    self.close(socket)
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
+
+    def test_optional_close_diagnostic_write_failure_cannot_block_stop(self):
+        with patch.object(LiveCreations,'record_close_reason',side_effect=OSError('Synthetic diagnostic write failure')):
+            with self.socket() as socket:
+                native=self.start(socket)
+                socket.send_json({'type':'close','reason':'explicit_stop'})
+                self.assertEqual(socket.receive_json()['type'],'finishing')
+                self.assertEqual(socket.receive_json()['type'],'closed')
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
+
+    def test_client_close_reason_is_bounded_and_preserves_explicit_stop(self):
+        with self.socket() as socket:
+            native=self.start(socket)
+            socket.send_json({'type':'close','reason':'source_unconfirmed'})
+            self.assertEqual(socket.receive_json()['type'],'finishing')
+            self.assertEqual(socket.receive_json()['type'],'closed')
+        value=self.read()
+        self.assertEqual(value['client_close_reason'],'source_unconfirmed')
+        self.assertTrue(value['finalization']['voice_usage_confirmed'])
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        history=LiveCreations(self.state/'public-live-visits')
+        for invalid in ('raw private error',{},None,42):
+            with self.assertRaises(ValueError):history.record_close_reason(self.ident,100,self.owner.public_live_binding('a'*64),invalid)
+        self.assertEqual(self.read(),value)
+
+    def test_fixed_source_close_observation_preserves_finalization_and_first_receipt(self):
+        with self.socket() as socket:
+            native=self.start(socket)
+            socket.send_json({'type':'close','reason':'source_boundary_timeout'})
+            self.assertEqual(socket.receive_json()['type'],'finishing')
+            self.assertEqual(socket.receive_json()['type'],'closed')
+        value=self.read()
+        self.assertEqual(value['client_close_reason'],'source_boundary_timeout')
+        self.assertTrue(value['finalization']['voice_usage_confirmed'])
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        history=LiveCreations(self.state/'public-live-visits')
+        history.record_close_reason(self.ident,100,self.owner.public_live_binding('a'*64),'source_owner_changed')
+        self.assertEqual(self.read(),value,'A later diagnostic cannot replace the original observation')
 
     def test_studio_choice_reaches_provider_and_reconnect_keeps_frozen_delivery(self):
         from dashboard.avatar_workshop import AvatarWorkshop
@@ -219,6 +416,66 @@ class Mounted(unittest.TestCase):
             self.assertEqual(before['state'],'created');self.assertNotIn('finalization',before)
             self.assertEqual(before['replacement_review']['target'],self.ident)
             self.assertEqual(sum(c.creations for c in Client.instances),2)
+
+    def test_replacement_preparation_failure_retains_receipt_without_reusing_consumed_review(self):
+        from dashboard.avatar_workshop import AvatarWorkshop
+        self.config['openai_live']['session_options']={'audio':{'output':{'voice':'cedar'}}}
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        with self.choice_client() as client:
+            client.app.state.avatar_workshop=AvatarWorkshop(self.state)
+            socket=lambda:client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
+            self.meta={**self.meta,'backend':'native'}
+            with socket() as ws:self.start(ws)
+            old=self.ident;owner=self.owner.public_live_binding(self.owner.binding)
+            self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+            with socket() as ws:
+                ws.send_json(self.meta);review=ws.receive_json()['replacement']
+            self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident,'replacement':review}
+            async def failed_prepare(*args,**kwargs):raise ValueError('Current integrating result changed')
+            with patch('dashboard.openai_live_api.PublicLiveSessionContext.prepare',failed_prepare):
+                with socket() as ws:
+                    ws.send_json(self.meta);ack=ws.receive_json();failure=ws.receive_json()
+                    self.assertEqual(ack['type'],'context_preparing');self.assertEqual(ack['replacement_accepted'],review)
+                    self.assertEqual(ack['voice_continuation'],old)
+                    self.assertEqual(failure['type'],'unconfirmed');self.assertEqual(failure['replacement_accepted'],review)
+            failed=self.read();self.assertEqual(failed['state'],'not_created');self.assertNotIn('request_sha256',failed)
+            self.assertEqual(failed['startup_failure'],{'stage':'native_context','code':'context_changed'})
+            public=client.get('/api/interaction/voice/gpt-live/visits/'+self.ident,headers=self.headers)
+            self.assertEqual(public.status_code,200);self.assertNotIn('startup_failure',public.json())
+            self.assertEqual(sum(c.creations for c in Client.instances),1,'Preparation failure never creates a provider call')
+            history=LiveCreations(self.state/'public-live-visits')
+            history.startup_failure(self.ident,100,owner,'offer','timeout')
+            self.assertEqual(self.read()['startup_failure'],failed['startup_failure'],'Keep the first fixed observation')
+            with self.assertRaises(ValueError):history.startup_failure(self.ident,101,owner,'offer','timeout')
+            with self.assertRaises(ValueError):history.startup_failure(self.ident,100,owner,'private detail','timeout')
+            self.assertEqual(history.accepted_replacement(100,owner,review),review)
+            with self.assertRaises(ValueError):history.accepted_replacement(101,owner,review)
+            # An uncertain provider attempt is never evidence for clearing review.
+            uncertain={**failed,'state':'creation_unconfirmed','request_sha256':'f'*64}
+            history._write(uncertain);self.assertIsNone(history.accepted_replacement(100,owner,review));history._write(failed)
+            # A lost admission ACK is recovered by observation, not another call.
+            self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+            with socket() as ws:
+                ws.send_json(self.meta);again=ws.receive_json()
+                self.assertEqual(again['type'],'unconfirmed');self.assertEqual(again['replacement_accepted'],review)
+                self.assertEqual(again['voice_continuation'],old)
+            self.assertFalse((history.root/(self.ident+'.json')).exists())
+            self.assertEqual(sum(c.creations for c in Client.instances),1)
+            self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':self.owner.binding,'csrf':'fresh','backend':'native','voice_continuation':old}
+            with socket() as ws:self.start(ws);self.close(ws)
+            self.assertEqual(sum(c.creations for c in Client.instances),2)
+            original=history.read(old,100,owner);self.assertEqual(original['state'],'created');self.assertNotIn('finalization',original)
+
+    def test_optional_startup_diagnostic_failure_does_not_break_cleanup_or_leak_details(self):
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        async def failed_prepare(*args,**kwargs):raise ValueError('Current integrating result changed')
+        with self.choice_client() as client,patch('dashboard.openai_live_api.PublicLiveSessionContext.prepare',failed_prepare),patch.object(LiveCreations,'startup_failure',side_effect=OSError('private diagnostic storage detail')):
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta,'backend':'native'})
+                self.assertEqual(ws.receive_json()['type'],'context_preparing');failure=ws.receive_json()
+                self.assertEqual(failure['type'],'unconfirmed');self.assertNotIn('private',json.dumps(failure))
+        self.assertEqual(self.read()['state'],'not_created');self.assertNotIn('startup_failure',self.read())
+        self.assertEqual(sum(c.creations for c in Client.instances),0)
 
     def test_explicit_native_choice_does_not_replace_the_existing_responses_mode(self):
         self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
@@ -421,7 +678,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def _native_backend_flow(self,slow_result=False,renew=False):
+    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False):
         app=self.app_with_history();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
@@ -456,8 +713,8 @@ class Mounted(unittest.TestCase):
         owner.conversation_voice_submit=capture;owner.conversation_foreground_interpret=interpret
         owner.conversation_foreground_delegate=delegate;owner.conversation_input_status=lambda ident:copy.deepcopy(saved[ident])
         owner.presentation_list=lambda delivery,native,direction:{'binding':owner.binding,
-            'newest':{'native':77 if calls['work'] else 0},'items':[{'id':'native:77',
-                'revision':'d'*64,'kind':'integrator_answer','local_turn':42}] if calls['work'] and native<77 else [],
+            'newest':{'native':77 if calls['work'] and not automatic else 0},'items':[{'id':'native:77',
+                'revision':'d'*64,'kind':'integrator_answer','local_turn':42}] if calls['work'] and native<77 and not automatic else [],
             'more':False,'cursor':{'delivery':0,'native':77}}
         owner.presentation_part=lambda source,revision,offset:{'id':source,'revision':revision,'offset':offset,
             'next_offset':None,'text':'Soy CompAII. Este resultado viene del integrador nativo.',
@@ -473,7 +730,8 @@ class Mounted(unittest.TestCase):
                 client.events.put({'type':'session.commentary.appended','event_id':'native-context-ack',
                     'client_event_id':event['event_id']})
         async def authorize(request):return {'human':100,'csrf':'fresh'}
-        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native'}}
+        config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',
+            **({'continuous_renewal':True} if automatic else {})}}
         install(app,config,owner,authorize,['https://example.test'])
         with patch.object(Client,'send',acknowledge):
             with TestClient(app,base_url='https://example.test') as client:
@@ -493,7 +751,20 @@ class Mounted(unittest.TestCase):
                     socket.send_json({'type':'source_sealed','request':request['request'],
                         'through_ordinal':1,'capture_bytes':len(audio)-44})
                     self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
-                    if slow_result:
+                    if automatic:
+                        # Keep the sealed, admitted native work running with no result yet.
+                        socket.send_json({'type':'close','reason':'transport_renewal'})
+                        self.assertEqual(socket.receive_json()['type'],'finishing')
+                        final=socket.receive_json();self.assertEqual(final['type'],'closed')
+                        self.assertTrue(final['renewal_pending'])
+                        ready=socket.receive_json();self.assertEqual(ready['type'],'successor_ready')
+                        pending=self.read()['delegations']['native-task']
+                        self.assertEqual(pending['state'],'native_handed_off')
+                        self.assertEqual(pending['native_pipeline']['state'],'admitted')
+                        self.assertEqual(pending['native_work']['state'],'observed')
+                        self.assertEqual([event['type'] for event in native.sent],['session.close'])
+                        self.assertTrue(native.detached);self.assertEqual(app.state.voice_active,set())
+                    elif slow_result:
                         self.assertTrue(entered.wait(1));socket.send_json({'type':'close'})
                         self.assertEqual(socket.receive_json()['type'],'finishing')
                         self.assertFalse(release.is_set());release.set()
@@ -506,6 +777,7 @@ class Mounted(unittest.TestCase):
                 first_value=self.read()
                 if renew:
                     original=self.ident;self.ident=str(uuid.uuid4());self.meta={**self.meta,'id':self.ident}
+                    if automatic:self.meta.update(voice_continuation=original,renewal=ready['renewal'])
                     source='delivery:11111111-1111-4111-8111-111111111111'
                     owner.conversation_input_trace=lambda root:{'id':root,'entry_binding':frozen['entry_binding'],
                         'routes':[{'target_available':True,'results':[{'source':source,'revision':'c'*64,
@@ -516,7 +788,7 @@ class Mounted(unittest.TestCase):
                         'kind':'worker_result','current':True,'correction_pending':False,'native_binding_current':True}
                     with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as second:
                         continued=self.start(second)
-                        seed=continued.spec['input'][-1]
+                        seed=continued.spec['input'][-2]
                         self.assertEqual(seed['role'],'developer')
                         self.assertIn('Friday, not Thursday',seed['content'][0]['text'])
                         self.assertEqual(second.receive_json()['event']['type'],'session.commentary.appended')
@@ -529,11 +801,14 @@ class Mounted(unittest.TestCase):
                     self.assertEqual(renewed['delegations'],{},'No new provider delegation or original was needed')
                     self.assertEqual(calls,{'asr':0,'work':1},'Renewal never interprets or dispatches the old work again')
                     self.assertEqual(next(iter(renewed['native_result_updates'].values()))['origin_visit'],original)
+                    if automatic:
+                        self.assertEqual(len(renewed['native_result_updates']),1)
+                        self.assertEqual(len([r for r in continued.sent if r['type']=='session.commentary.append']),1)
         self.assertEqual(first_value['state'],'closed')
         self.assertEqual(first_value['delegations']['native-task']['native_pipeline']['state'],'admitted')
         updates=list(first_value.get('native_result_updates',{}).values())
-        self.assertEqual(len(updates),0 if slow_result else 1)
-        if not slow_result:
+        self.assertEqual(len(updates),0 if slow_result or automatic else 1)
+        if not slow_result and not automatic:
             self.assertEqual(updates[0]['state'],'context_injected');self.assertNotIn('heard',updates[0])
         else:self.assertEqual([row['type'] for row in native.sent],['session.close'])
         self.assertFalse(first_value['delegations']['native-task']['native_pipeline']['work_completed'])
@@ -543,6 +818,9 @@ class Mounted(unittest.TestCase):
 
     def test_closed_native_work_returns_to_fresh_voice_without_new_original_or_dispatch(self):
         self._native_backend_flow(renew=True)
+
+    def test_automatic_renewal_keeps_pending_native_work_and_delivers_its_late_result_once(self):
+        self._native_backend_flow(renew=True,automatic=True)
 
     def test_slow_native_result_read_keeps_close_responsive_without_canceling_work(self):
         self._native_backend_flow(slow_result=True)
@@ -759,6 +1037,26 @@ class Mounted(unittest.TestCase):
             self.assertEqual(self.client.get(path,headers={**self.headers,'x-voice-binding':'b'*64}).json()['visits'],[])
             self.owner.binding='a'*64
         self.allowed=False;self.assertEqual(self.client.get(path,headers=self.headers).status_code,401)
+    def test_explicit_stop_finalizes_native_voice_with_an_unsealed_client_request(self):
+        app=self.renewal_app()
+        with TestClient(app,base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
+                native=self.start(socket)
+                native.events.put({'type':'session.delegation.created','event_id':'client-source',
+                    'delegation':{'id':'waiting-client','target':'client'}})
+                self.assertEqual(socket.receive_json()['type'],'provider_event')
+                request=socket.receive_json();self.assertEqual(request['type'],'source_seal_requested')
+                before=copy.deepcopy(self.read()['delegations'])
+                socket.send_json({'type':'close','reason':'explicit_stop'})
+                self.assertEqual(socket.receive_json()['type'],'finishing')
+                closed=socket.receive_json();self.assertEqual(closed['type'],'closed')
+                self.assertTrue(closed['finalization']['voice_usage_confirmed'])
+                self.assertFalse(closed['renewal_pending'],'Stop never admits an automatic successor')
+                self.assertEqual(self.read()['delegations'],before,'Native work/source uncertainty is retained unchanged')
+        self.assertEqual([x['type'] for x in native.sent],['session.close'])
+        self.assertEqual(native.creations,1)
+        self.assertEqual(app.state.voice_active,set())
+
     def test_known_pending_responses_drain_before_close_without_work_replay(self):
         with self.socket() as socket:
             native=self.start(socket)
@@ -811,6 +1109,28 @@ class Mounted(unittest.TestCase):
         self.assertEqual(changed.status_code,409)
         self.assertEqual(Client.instances[0].creations,0)
         self.assertEqual(self.client.post(path,headers={**self.headers,'x-dashboard-csrf':'stale'},content=audio).status_code,403)
+
+    def test_original_body_outlives_application_clock_without_replay_or_larger_bounds(self):
+        import httpx
+        with self.socket() as socket:
+            socket.send_json(self.meta);self.assertEqual(socket.receive_json()['type'],'prepared')
+        audio=wav_bytes(b'\0\0'*800);clock=asyncio.timeout;scheduled=[]
+        def expiry(seconds):
+            scheduled.append(seconds)
+            return clock(.001 if seconds==30 else seconds)
+        async def body():
+            yield audio[:44]
+            await asyncio.sleep(.02)
+            yield audio[44:]
+        async def send():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app),base_url='https://example.test') as client:
+                return await client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',headers=self.headers,content=body())
+        with patch('dashboard.openai_live_api.asyncio.timeout',side_effect=expiry):
+            result=asyncio.run(send())
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertNotIn(30,scheduled,'Transport body reads have no application lifetime cutoff')
+        self.assertEqual(result.json()['recording']['audio_bytes'],len(audio))
+        self.assertEqual(Client.instances[0].creations,0)
     def test_mid_visit_revocation_releases_media_lease_but_never_cancels_backend(self):
         with self.socket() as socket:
             native=self.start(socket);self.allowed=False
@@ -850,6 +1170,60 @@ class Mounted(unittest.TestCase):
 
 
 class Journal(unittest.TestCase):
+    def test_expiry_requires_explicit_server_readiness_complete_usage_and_no_stop_or_source_gap(self):
+        value=self.history.read(self.ident,100,self.frozen)
+        value['backend_mode']='native';self.history._write(value)
+        self.history.end_capture(self.ident,100,self.frozen['binding'])
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'expired',
+            'reason':'expired','session':{'id':'live_opaque:provider/42'},'usage':{'seconds':15}})
+        with self.assertRaises(ValueError):self.history.ready_for_renewal(self.ident,100,self.frozen)
+        original=self.history.read(self.ident,100,self.frozen)
+        for mutation in ('stop','usage','source'):
+            value=copy.deepcopy(original)
+            if mutation=='stop':value['client_close_reason']='user_hold'
+            elif mutation=='usage':value['finalization']['voice_usage_confirmed']=False
+            else:value['delegations']['pending']={'target':'client'}
+            self.history._write(value)
+            with self.assertRaises(ValueError):self.history.ready_for_renewal(self.ident,100,self.frozen,allow_expired=True)
+        self.history._write(original)
+        ready=self.history.ready_for_renewal(self.ident,100,self.frozen,allow_expired=True)
+        child=str(uuid.uuid4())
+        self.history.prepare(child,100,self.frozen,backend_mode='native',voice_continuation=self.ident,renewal=ready)
+        self.assertEqual(self.history.read(child,100,self.frozen)['renewal_from'],self.ident)
+
+    def renewal_ready(self):
+        value=self.history.read(self.ident,100,self.frozen)
+        value['backend_mode']='native';self.history._write(value)
+        self.history.record_close_reason(self.ident,100,self.frozen,'transport_renewal')
+        self.history.end_capture(self.ident,100,self.frozen['binding'])
+        self.history.observe_closed(self.ident,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'close_requested','session':{'id':'live_opaque:provider/42'}})
+        return self.history.ready_for_renewal(self.ident,100,self.frozen)
+
+    def test_renewal_claim_survives_partial_write_and_refuses_second_successor(self):
+        ready=self.renewal_ready();child=str(uuid.uuid4());write=self.history._write
+        def fail_destination(value):
+            if value['id']==child:raise OSError('Synthetic destination write failure')
+            write(value)
+        with patch.object(self.history,'_write',side_effect=fail_destination):
+            with self.assertRaises(OSError):self.history.prepare(child,100,self.frozen,backend_mode='native',
+                voice_continuation=self.ident,renewal=ready)
+        self.assertEqual(self.history.read(self.ident,100,self.frozen)['renewal_target'],child)
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,backend_mode='native')
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,
+            backend_mode='native',voice_continuation=self.ident,renewal=ready)
+
+    def test_renewal_requires_same_service_epoch_owner_token_and_confirmed_reason(self):
+        ready=self.renewal_ready()
+        for renewal,history in (({**ready,'token':str(uuid.uuid4())},self.history),
+                                (ready,LiveCreations(self.root))):
+            with self.assertRaises(ValueError):history.prepare(str(uuid.uuid4()),100,self.frozen,
+                backend_mode='native',voice_continuation=self.ident,renewal=renewal)
+        value=self.history.read(self.ident,100,self.frozen)
+        value['finalization']['reason']='content';self.history._write(value)
+        with self.assertRaises(ValueError):self.history.prepare(str(uuid.uuid4()),100,self.frozen,
+            backend_mode='native',voice_continuation=self.ident,renewal=ready)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.root.chmod(0o700)
@@ -987,6 +1361,27 @@ class Journal(unittest.TestCase):
             self.assertTrue(permitted(method,path));self.assertFalse(permitted(method,path,scope='monitor_readonly'))
         self.assertFalse(permitted('POST',root+'/visits/'+ident+'/tools'))
         self.assertFalse(permitted('POST',root+'/visits/'+ident+'/recordings/32'))
+    def test_prepare_native_voice_initializes_only_the_exact_empty_owned_entry(self):
+        owner=Provider.__new__(Provider);owner.human=100;calls=[]
+        capabilities={'binding':'a'*64,'voice_available':True,
+            'entry_binding':[100,{'chat_id':100,'thread_id':7},1,'']}
+        def presentation(command):
+            calls.append(command)
+            return capabilities.copy()
+        owner.presentation=presentation
+        owner.prepare_native_voice('a'*64)
+        self.assertEqual(calls[0],'input voice capabilities')
+        self.assertEqual(json.loads(calls[1].split('initialize ',1)[1]),{'binding':'a'*64})
+        capabilities['entry_binding'][-1]='existing-native';calls.clear()
+        owner.prepare_native_voice('a'*64)
+        self.assertEqual(calls,['input voice capabilities'])
+        for change in ({'binding':'b'*64},{'voice_available':False},
+                       {'entry_binding':[101,{},1,'']}):
+            calls.clear();old=capabilities.copy();capabilities.update(change)
+            with self.assertRaises(ProviderUnavailable):owner.prepare_native_voice('a'*64)
+            self.assertEqual(calls,['input voice capabilities'])
+            capabilities.clear();capabilities.update(old)
+
     def test_public_binding_does_not_require_native_codex_voice_entitlement(self):
         owner=Provider.__new__(Provider);owner.human=100
         owner.presentation=lambda _:{'binding':'a'*64,'native_codex_voice':None,

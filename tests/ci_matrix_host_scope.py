@@ -29,6 +29,7 @@ def selected(paths, previous=None):
                 and target.id
                 in {
                     "native_handoff",
+                    "avatar_model_tests",
                     "voice_templates",
                     "common",
                     "header_changed",
@@ -54,6 +55,26 @@ def selected(paths, previous=None):
 
 
 class MatrixHostScope(unittest.TestCase):
+    def test_contribution_guidance_keeps_owning_web_checks_without_native_rebuild(self):
+        self.assertEqual(selected(['CONTRIBUTING.md','AGENTS.md']),set())
+        self.assertEqual(selected(['CONTRIBUTING.md','dashboard/school_mission_host.py']),set())
+        self.assertEqual(selected(['CONTRIBUTING.md.extra']),{'text','audio','activity'})
+        self.assertIn('text',selected(['CONTRIBUTING.md','src/app.rs']))
+
+    def test_inert_avatar_model_fixtures_use_dashboard_without_native_requalification(self):
+        files=['tests/avatar_layer_model.mjs','tests/avatar_layer_model_browser.cjs']
+        for path in files:
+            self.assertEqual(selected([path,'dashboard/web/avatar-workshop/renderer.mjs']),set())
+            self.assertIn('text',selected([path,'src/app.rs']))
+            self.assertEqual(selected([path,'Cargo.toml']),{'text','audio','activity'})
+            self.assertIn('text',selected([path+'.extra']))
+        workflow=WORKFLOW.read_text()
+        dashboard=workflow.split('  dashboard:\n',1)[1]
+        self.assertIn('python -B tests/dashboard_avatar_workshop.py',dashboard)
+        store=(WORKFLOW.parents[2]/'tests/dashboard_avatar_workshop.py').read_text()
+        self.assertIn("with_name('avatar_layer_model.mjs')",store)
+        self.assertNotIn('needs.scope.outputs',dashboard)
+
     def test_public_voice_briefs_use_web_gates_without_repeating_native_fixtures(self):
         templates = ['templates/public-live-voice-brief.txt',
                      'templates/public-live-native-voice-brief.txt']

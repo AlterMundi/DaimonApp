@@ -6,6 +6,89 @@ person's sole access to their hosted daimon. Telegram remains an optional
 projection, not installation, sign-in or navigation infrastructure. Preserve the
 unfinished continuous-voice/foreground/attention obligations in #301.
 
+## Android Share intake candidate —8November2026
+
+The selected requirement is a system Share destination for the existing Android
+App: text/links, images and files must enter a reviewable existing composer,
+not submit a message, upload or alter capture merely because an intent arrived.
+The candidate registers `ACTION_SEND` and `ACTION_SEND_MULTIPLE` as **Daimon**.
+It accepts literal text/links and up to eight distinct `content:` URI references,
+retaining source order. Stream and ClipData descriptions must agree when both
+are present; file/http URIs, duplicate files and excessive selections refuse.
+One pending offer (12KiB text plus8URI references of at most8192 characters each) survives Activity recreation
+until Add/Discard or task removal. Android owns transient read grants; there is
+no persistable permission, new native byte cache or background file reader.
+A second offer refuses instead of overwriting the first.
+
+The first writable conversation binds the pending home/account before display.
+Add/Discard require that same destination; reset hides text and cancels pending
+browser admission. Existing draft/reply/capture remain. Added/discarded IDs stay
+in the bounded16-ID page set, preventing delayed-ACK resurrection. URI strings
+are never sent to the web page. The offer shows file count and literal caption.
+
+Explicit Add opens an offer-specific HTML file input. The actual Android
+`onShowFileChooser` supplies only that offer's granted URIs, only on the current
+foreground App page/home and after binding. Ordinary file pickers keep their
+existing behavior. Chromium reads the files through its existing file-input
+path; the parent reuses `FileInput.addFiles` for atomic preparation, existing
+8file/20MiB each/40MiB total limits, original-byte SHA256 and binding fences.
+No upload or message occurs until the ordinary explicit Send/recording path.
+Only successful full preparation appends the caption and acknowledges the offer.
+Capture/busy/disabled controls govern admission; once FileInput has accepted the
+attachments, settle that same operation under its retained epoch/binding even if
+capture starts meanwhile. Access reset still invalidates ownership. This keeps
+file IDs/caption/ACK together and prevents a second Add from duplicating already
+accepted attachments. Unavailable grants, count/size failures or changed access
+preserve an unconsumed offer. Android task removal releases the transient authority; a restored stale
+URI must fail visibly rather than fabricate bytes or request broad storage access.
+
+Qualification includes actual Chromium offer→FileList→existing attachment
+admission→explicit capture, exact ordered bytes/hash, no upload on Add, draft
+preservation and access/ACK fences. Native parser/Activity recreation tests cover
+ordered8URI references and no URI leak in the page offer; an additional actual App WebView/chooser/ContentResolver test now checks two
+ordered synthetic originals through the real injected adapter and existing
+chooser, with network blocked and no Send. Final Android build/lint/emulator
+and real phone Sharesheet/byte-read acceptance remain required.
+This source is not installed/released. No new native stream-copy/cache is needed
+for the supported picker route. Preserve all other voice/background/Beacon/iOS
+requirements and their acceptance gaps.
+
+## Share receiving candidate0.9 —8November2026
+
+The0.9 source adds Daimon to Android's Sharesheet for literal text/links and up to
+8 ordered image/file content URIs. The existing composer offers Add or Discard;
+Add prepares attachments through the current foreground WebView file chooser and
+existing bounded FileInput. It does not upload, send or open shared URLs. The
+current draft, capture, account and destination remain selected. Access reset
+invalidates a pending Add; transient busy state after accepted attachment mutation
+does not lose the caption/ACK or permit duplicate attachment IDs.
+
+One pending offer retains at most12KiB text and8 distinct content URIs, with
+existing20MiB per-file/40MiB combined attachment admission. No native byte cache,
+background URI reader, persistable permission or new login/store is introduced.
+Added and discarded offer IDs are deduplicated in the bounded16-ID page window.
+
+Independent source review identified the post-mutation capture interleaving;
+focused Chromium red/green qualification at618ed44b fixes it. Exact native13-case
+CI42460773030 and web/speech/dashboard checks42460773020 passed. That latter
+run's unrelated native question-control boundary test failed and is retained;
+it is not claimed as passing or evidence about Share. Exact final source4fdd35d5 (merge7173ca58) passed Android/decoder13-case
+CI42462842015 and applicable dashboard/speech checks42462842014. The text job
+was still running at receiving selection; its previous unrelated question-boundary
+failure is not counted as passing. Two web deltas were applied over each actual779
+composition, preserving its existing773/770/Matrix/recovery changes. Each composed
+Conversation/FileInput check and owner constructor passed, as did actual Chromium
+with the exact signed APK adapter. All3 voice-fenced web selections verified
+assets/health/private denial and preserved native/Core/configuration.
+
+The same-key v2/v3-verified0.9/versionCode9 APK is published in the existing
+paired-human Android download, preserving its audience and immutable0.8 version.
+Its SHA256 is1f489f633940be5fd4f0fcec3c4b4be569481d65c9ae060247c3497c558d9b6f
+(1,752,588bytes). This is publication, not observed phone installation. Upgrade
+without uninstalling or clearing data; normal rollback requires a higher-versionCode
+forward build. Real phone transient URI/read/lifecycle/Share/Send acceptance remains
+pending; emulator/desktop results do not establish it.
+
 ## Native Beacon candidate0.8 —7November2026
 
 The prepared `BeaconSynth` is a bounded six-carrier PCM synthesizer for the
@@ -285,8 +368,10 @@ Pause and Audio off, and verify notification teardown. This proves service/decod
 mechanics, not the complete WebView/provider late-result path or phone acceptance.
 Native JS tests separately keep the player on background while closing capture,
 route media controls, and retain later-source selection. The candidate is not
-received merely because those checks pass. Native Beacon synthesis, filters,
-mixing, output-route changes and iOS are not implemented. Native0.4 adds an export candidate to the existing artifact, original-file and
+received merely because those checks pass. At that historical0.3 checkpoint,
+native Beacon/mixing and iOS were not implemented. The later0.8 and iOS731
+sections above supersede that source status; physical acceptance and any newly
+selected filters remain separate. Native0.4 adds an export candidate to the existing artifact, original-file and
 local recording Save buttons. Web source/revision/length/hash/authorization checks
 remain before export. The native bridge accepts only in-page Blob bytes, never a
 page URL, path, credential or destination URI. Each operation has a fresh random

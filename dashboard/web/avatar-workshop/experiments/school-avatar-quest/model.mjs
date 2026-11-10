@@ -1,3 +1,4 @@
+import {playbackSpec} from './performances.mjs';
 import {validateAvatarModel} from '../../skills/ascii-avatar-author/scripts/model-runtime.mjs';
 import {validateProps} from './props.mjs';
 import {validateImageArt,coloredImageFrame} from './image-avatar.mjs';
@@ -32,16 +33,20 @@ export function validate(input){
  if(d.avatarModel&&d.characterStyle!=='model/v1')throw Error('El modelo necesita su propio estilo de dibujo.');
  if(['surface/v1','surface/v2'].includes(d.characterStyle)&&!childBodies.includes(d.body))throw Error('Esta forma no tiene una ilustración de superficies.');
  d.colorMode=input.colorMode===undefined?'mono':input.colorMode;d.palette=input.palette??'aurora';d.depth=input.depth??false;if(!['mono','layers'].includes(d.colorMode)||!['aurora','forest','ember'].includes(d.palette)||typeof d.depth!=='boolean')throw Error('Hay una paleta o un modo de color inválido.');
+ // Older monochrome designs open in the workshop's layered color presentation.
+ d.colorMode='layers';
+ if(input.bodyColors!==undefined){if(!input.bodyColors||typeof input.bodyColors!=='object'||Array.isArray(input.bodyColors)||Object.entries(input.bodyColors).some(([k,v])=>!['pocket-dragon','modular-bot','moon-visitor','cloud-axolotl','comet-fox','little-mushroom'].includes(k)||typeof v!=='string'||!/^#[0-9a-f]{6}$/i.test(v)))throw Error('El color del avatar no es válido.');d.bodyColors={...input.bodyColors};}
  for(const [k,a,b] of [['aperture',.6,1.4],['complexity',.6,1.4],['curvature',-1,1]]){if(!Number.isFinite(input[k]))throw Error('Hay un control inválido.');d[k]=clamp(input[k],a,b);}
  const source=input.schema==='ascii-quest-design/v1'?[{...input.gesture,id:'legacy-first-gesture',motion:d.motion}]:input.gestures;
  if(!Array.isArray(source)||source.length<1||source.length>16)throw Error('El taller conserva entre uno y dieciséis gestos por compañero.');
- const ids=new Set();d.gestures=source.map(g=>{if(!g||typeof g.id!=='string'||! /^[\w-]{8,80}$/.test(g.id)||ids.has(g.id)||!Number.isFinite(g.opening)||!Number.isFinite(g.bend)||!['together','offset','rejoin'].includes(g.motion))throw Error('Hay un gesto inválido o repetido.');ids.add(g.id);const result={id:g.id,name:str(g.name,90),opening:clamp(g.opening,.6,1.4),bend:clamp(g.bend,-1,1),motion:g.motion};for(const [key,min,max] of [['width',.75,1.25],['height',.75,1.25],['lean',-.25,.25],['tempo',.5,1.8]])if(g[key]!==undefined){if(!Number.isFinite(g[key])||g[key]<min||g[key]>max)throw Error('Hay una proporción de gesto inválida.');result[key]=g[key];}if(g.rig!==undefined){if(g.rig!=='local/v1'||!cues.includes(g.cue))throw Error('Hay un gesto por partes inválido.');result.rig=g.rig;result.cue=g.cue;}const props=validateProps(g.props);if(props!==undefined)result.props=props;return result;});
+ const ids=new Set();d.gestures=source.map(g=>{if(!g||typeof g.id!=='string'||! /^[\w-]{8,80}$/.test(g.id)||ids.has(g.id)||!Number.isFinite(g.opening)||!Number.isFinite(g.bend)||!['together','offset','rejoin'].includes(g.motion))throw Error('Hay un gesto inválido o repetido.');ids.add(g.id);const result={id:g.id,name:str(g.name,90),opening:clamp(g.opening,.6,1.4),bend:clamp(g.bend,-1,1),motion:g.motion};for(const [key,min,max] of [['width',.75,1.25],['height',.75,1.25],['lean',-.25,.25],['tempo',.5,1.8]])if(g[key]!==undefined){if(!Number.isFinite(g[key])||g[key]<min||g[key]>max)throw Error('Hay una proporción de gesto inválida.');result[key]=g[key];}if(g.rig!==undefined){if(g.rig!=='local/v1'||![...cues,'sleep'].includes(g.cue))throw Error('Hay un gesto por partes inválido.');result.rig=g.rig;result.cue=g.cue;}if(g.performance!==undefined){if(g.performance!=='accessory/v1')throw Error('La actuación del accesorio no es compatible.');result.performance=g.performance;}const props=validateProps(g.props);if(props!==undefined)result.props=props;return result;});
  d.activeGestureId=input.schema==='ascii-quest-design/v1'?d.gestures[0].id:input.activeGestureId;
  if(!ids.has(d.activeGestureId))throw Error('No encontré el gesto elegido en el archivo.');
  if(input.image!==null){const t=str(input.image,12000),lines=t.split('\n');if(!/^[\x20-\x7e\n]+$/.test(t)||lines.length>100||lines.some(l=>l.length>96))throw Error('La imagen ASCII excede el tamaño del taller.');d.image=t;}
  d.imageArt=validateImageArt(input.imageArt,d.image);if(d.imageArt&&!d.image)throw Error('Falta el dibujo del retrato de colores.');
  return d;
 }
+export const animationSpec=d=>playbackSpec(d,activeGesture(d));
 export function activeGesture(d){return d.gestures.find(g=>g.id===d.activeGestureId);}
 export function settings(d,gesture=false,blend=1){const g=activeGesture(d),mix=(base,chosen)=>base+(chosen-base)*Math.max(0,Math.min(1,blend)),local=gesture&&g.rig==='local/v1';return {...defaults,characterStyle:d.characterStyle,name:d.name,body:d.body,material:d.material,color:d.color,aura:'none',relation:local?d.motion:gesture&&blend>0?g.motion:d.motion,aperture:local?d.aperture:gesture?mix(d.aperture,g.opening):d.aperture,complexity:d.complexity,curvature:local?d.curvature:gesture?mix(d.curvature,g.bend):d.curvature,stretchX:local?1:gesture?mix(1,g.width??1):1,stretchY:local?1:gesture?mix(1,g.height??1):1,lean:local?0:gesture?mix(0,g.lean??0):0,rigCue:local?g.cue:undefined,rigStrength:local?blend:0};}
 let surfaceRenderer=null,surfaceSceneRenderer=null;

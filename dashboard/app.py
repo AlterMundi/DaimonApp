@@ -30,7 +30,7 @@ from .menu_attention import attention_projection
 from .operator import sessions_selection
 from .speech import Speech, SpeechUnavailable, speech_part
 from .media_retention import MediaRetention, RetentionUnavailable
-from .companion import Grants as CompanionGrants, permitted as companion_permitted
+from .companion import Grants as CompanionGrants, permitted as companion_permitted, application_identity
 from .home_auth import HomeAuth
 from scripts.speech_render import RenderError
 
@@ -60,6 +60,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     if config is None:
         config = tomllib.loads(Path(os.environ['TELECODEX_DASHBOARD_CONFIG']).read_text())
     provider = provider or Provider(config)
+    application = application_identity(config, provider)
+    telegram_launch = 'application_id' not in config
     companions = CompanionGrants(config, provider)
     home_auth = HomeAuth(config, provider)
     speech = Speech(config['speech']) if config.get('speech') else None
@@ -132,7 +134,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         traffic = Traffic(config, provider)
     if traffic is not None and alerts is not None:
         alerts.dispatch_ready = traffic.notification_ready
-    scope_binding = [config['bot_id'],
+    scope_binding = [application,
         getattr(provider, 'binding_bytes', getattr(provider, 'receiver_bytes', b'')).hex()]
     if alerts is not None:
         scope_binding.append(alerts.binding)
@@ -197,7 +199,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 bound = (1048576 if request.url.path=='/api/interaction/avatars' else
                     262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
             # Native capture-only uploads own their fresh-auth/CSRF checks,
-            # two upload slots,30s deadline and bounded streaming body. Do not
+            # two upload slots and bounded streaming body. Do not
             # buffer them before that admission in the general JSON middleware.
             if not re.fullmatch(r'/api/interaction/voice/(?:codex|gpt-live)/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',request.url.path):
                 data = bytearray()
@@ -216,7 +218,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             (' '+appearance+'/home-style.js' if appearance else '') +
             "; style-src 'self'" + (' '+appearance if appearance else '') +
             "; font-src 'self'" + (' '+appearance if appearance else '') +
-            "; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+            "; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
             "frame-ancestors 'self' https://web.telegram.org")
         return response
 
@@ -231,7 +233,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     raise HTTPException(401, 'Companion access is unavailable; operator enrollment required')
                 if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False), coordination_control_access=grant.get('coordination_control_access', False), workspace_access=grant.get('workspace_access', False)):
                     raise HTTPException(403, 'Companion access is limited to the integrating conversation')
-                return grant
+                return {**grant, 'native_decision_access': False}
             # A restricted WebView may omit cookies. Never downgrade an invalid
             # explicit credential to a different ambient cookie session.
             if len(headers) != 1 or not (match := re.fullmatch(
@@ -290,9 +292,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     can_codex_voice=install_codex_voice(app,config,provider,authorize_async,[origin,*additional_origins])
     from .openai_live_api import install as install_openai_live
     can_public_live=install_openai_live(app,config,provider,authorize_async,[origin,*additional_origins])
+    native_avatar_default=config.get('openai_live',{}).get('default_native',False)
+    if (type(native_avatar_default)is not bool or native_avatar_default and
+            (not can_public_live or not (config.get('openai_live',{}).get('native_backend_enabled')is True
+                or config.get('openai_live',{}).get('backend_mode')=='native'))):
+        raise ValueError('Configured native Avatar default is unavailable')
+
     app.state.voice_preview_capacity=openai_speech.capacity if openai_speech else None
     from .avatar_workshop_api import install as install_avatar_workshop
-    install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins])
+    from .school_mission_host import compose as compose_school_mission
+    install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins],
+                            mission_host=compose_school_mission(config,provider))
 
     public = Path(__file__).parent / 'web'
 
@@ -320,7 +330,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         client_build = hashlib.sha256((public / 'index.html').read_bytes())
-        for name in ('app.js', 'live.js', 'requests.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             client_build.update(name.encode() + b'\0' + asset)
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -336,6 +346,12 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                             and request.query_params.get('client') == 'standalone')
         if standalone_entry:
             body = body.replace('<title>Sessions · Telecodex</title>', '<title>Daimon Interaction</title>')
+            # Select the initial visible shell before scripts or account reads.
+            # This is presentation only: controls retain their existing grants.
+            body = body.replace('<body>', '<body class="conversation-mode standalone-conversation">', 1)
+            body = body.replace('<h1>Sessions</h1>', '<h1>Daimon</h1>', 1)
+            body = body.replace('Connecting to Telegram…', 'Opening your conversation…', 1)
+            body = body.replace('<section id="conversation" hidden', '<section id="conversation"', 1)
             body = body.replace('</head>', '<link rel="manifest" href="manifest.webmanifest">'
                 '<meta name="theme-color" content="#0b1018">'
                 '<link rel="apple-touch-icon" href="assets/interaction-192.png"></head>')
@@ -343,7 +359,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="authored"', 1)
         if appearance and not (standalone_entry and conversation_appearance == 'authored'):
             base = html.escape(appearance, quote=True)
-            body = body.replace('<html lang="en">', '<html lang="en" data-style-policy="inherit">')
+            body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="inherit"', 1)
             body = body.replace('</head>', '<link rel="stylesheet" data-home-style href="'+base+
                 '/style.css?surface=sessions"><script src="'+base+'/home-style.js" defer></script></head>')
         return HTMLResponse(body)
@@ -418,7 +434,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]
@@ -435,6 +451,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.post('/api/session')
     async def exchange(request: Request):
+        if not telegram_launch:
+            raise HTTPException(403, 'Use this conversation’s shared sign-in')
         try:
             body = await request.json()
             raw = body['init_data']
@@ -615,11 +633,16 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         return value
 
     @app.get('/api/interaction')
-    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None):
+    async def interaction_sources(request: Request, delivery: int = 0, native: int = 0, direction: str = 'after', matrix: int | None = None, inbox: int | None = None, responses: int | None = None, publications: int | None = None):
         session = await authorize_async(request)
         try:
             from starlette.concurrency import run_in_threadpool
-            result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)
+            if publications is not None:
+                result=await run_in_threadpool(provider.presentation_list,delivery,native,direction,matrix,inbox,responses,publications)
+            elif inbox is not None or responses is not None:
+                result=await run_in_threadpool(provider.presentation_list,delivery,native,direction,matrix,inbox,responses)
+            else:
+                result = await run_in_threadpool(provider.presentation_list, delivery, native, direction) if matrix is None else await run_in_threadpool(provider.presentation_list, delivery, native, direction, matrix)
         except (ProviderUnavailable, OSError, ValueError):
             raise HTTPException(503, 'Integrating conversation unavailable; refresh before continuing') from None
         can_files=bool(getattr(provider,'receiver',{}).get('interaction',{}).get('artifact_store')) and (dict(session).get('scope') is None or dict(session).get('scope')=='interaction_only' and dict(session).get('artifact_access') is True)
@@ -631,10 +654,12 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 files={'state':'unavailable'}
         await authorize_async(request)
         return {**result, 'csrf':session['csrf'],
+                'can_decide_requests':dict(session).get('scope') is None or dict(session).get('native_decision_access') is True,
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),
                 'can_view_coordination':coordination.enabled and (dict(session).get('scope') is None or dict(session).get('coordination_access') is True),
                 'can_listen':default_speech is not None,
                 'voice_services_default':services_default,
+                'avatar_voice_default':'gpt-live-native' if native_avatar_default else None,
                 'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
                 'can_openai_live_result':bool(can_openai_stream_transcribe and config.get('streaming_transcription_openai',{}).get('mode')=='prepared' and 'openai-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
@@ -648,7 +673,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_codex':bool(can_codex_voice and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_public_live':bool(can_public_live and dict(session).get('scope')!='monitor_readonly'),
-                'can_converse_public_live_native':bool(can_public_live and config.get('openai_live',{}).get('native_backend_enabled') is True
+                'can_converse_public_live_native':bool(can_public_live and (config.get('openai_live',{}).get('native_backend_enabled') is True
+                    or config.get('openai_live',{}).get('backend_mode')=='native')
                     and dict(session).get('scope')!='monitor_readonly'),
                 'can_session_workspace':workspace_granted(session),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')
@@ -1172,7 +1198,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             body=await request.json()
             # Conversation-only devices keep their existing approval/cancellation restriction.
-            if kind=='requests' and dict(session).get('scope')=='interaction_only' and (
+            if kind=='requests' and dict(session).get('scope')=='interaction_only' and dict(session).get('native_decision_access') is not True and (
                     not isinstance(body,dict) or not isinstance(body.get('action'),dict)
                     or body['action'].get('kind') not in ('answer','option')):
                 raise HTTPException(403,'Use Sessions to review this approval or cancellation')
@@ -1324,6 +1350,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.post('/api/alerts/attention')
     async def launcher_attention(request: Request):
+        if not telegram_launch:
+            raise HTTPException(403, 'Telegram launch is not configured')
         # Read-only signed-launch route. It mints no control/session credential.
         try:
             body = await request.json()

@@ -1,22 +1,114 @@
+# Integration requirements
+
+Read `CONTRIBUTING.md` before integration. Apply Nicolas's recorded operational
+delegation: an already authorized same-actor service composition is not waiting
+for another conversation or review to authorize it again. Preserve existing
+authentication, tokens, session bindings, grants and private-state contracts;
+qualify the exact own/foreign/anonymous and changed-selection boundaries through
+the actual receiving writer. Reuse valid review evidence for unchanged code.
+Independent review remains required for new token handling, changed ingress or
+session semantics, migrations and changes to an existing authority contract.
+A routine same-actor composition with those contracts unchanged uses its concrete
+source/receiving checks without an additional external approval gate. Record
+actual reviews, checks and receiving adoption separately; never invent a review.
+
+Voice-first public-native entry initializes an empty owned native context only on
+explicit authenticated Avatar entry, through `input voice native initialize`.
+Keep its durable metadata receipt, stable logical binding and existing originals;
+never invent a seed message, start inference or repeat an uncertain creation.
+History/page reads stay read-only. Optional `openai_live.default_native` selects
+only the configured Avatar route on initial page load, preserving later choices.
+See docs/interaction-native-codex-voice.md#voice-first-native-conversation-entry.
+
+After the final edit beneath `dashboard/web/avatar-workshop`, run
+`python3 -B -m dashboard.avatar_workshop_provenance --update` and the workshop
+provenance tests. Refresh only adapted hashes; preserve Ani/Oliva source attribution.
+
+Recover selected historical output bytes through `input artifacts recover` and
+its existing canonical copy job; never regenerate an image, replay the user or
+invent an old delivery receipt. Keep explicit recovery attribution, exact source
+SHA256 and same-conversation ownership. Verified raster previews belong beside
+their original reply and release bytes/URLs on expiry or revoked access. See
+`docs/retained-artifacts.md` for the supported operator and bounds.
+
+Ordinary voice messages already recording survive browser tab visibility changes,
+as do their in-flight original uploads. Keep late microphone permission blocked
+while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
+explicit teardown distinct. No hidden-tab automatic capture/restart is allowed.
+The existing120second/20MiB bounds remain; browser/OS suspension is not physical
+mobile background-capture acceptance. Qualify microphone_ui.js with both ordinary
+and live-backed recording plus hidden permission and upload races.
+
+Use our general conversation for the paired ongoing dialogue. Other task
+conversations are the same daimon doing different work, not separate beings.
+Voice/Avatar is the same being; technical routing names remain identifiers.
+Keep distinct daimons and actual heartbeat/context delivery evidence separate.
+
+The session menu always keeps its is_entry conversation visible first and uses
+the existing owner-selected daimon display name (fallback Daimon). This changes
+presentation only; preserve native session titles, references, audio keys and
+frozen input destinations. Worker activity sorting and recent/all stay intact.
+
+Image send preparation shares one bounded in-flight immutable PNG upload between
+text and voice consumers. Ordinary audio/image media POSTs have no application
+wall-clock cutoff (Nicolas503b5d76); network failure and existing explicit
+selection/lifecycle cancellation end them. Ordinary read/JSON deadlines stay
+unchanged. Preserve the2MiB image/20MiB audio byte caps and selection binding.
+Only a later explicit capture retries after failure; do not turn retention into
+native work admission. Reset/remove aborts only that selection's request. Preserve
+drafts, images, confirmed uploads and frozen destination checks on unknown outcomes.
+
+Public Live original-audio POSTs likewise have no application wall-clock abort.
+The public/native capture-only server routes also read through network completion
+or disconnect, retaining their2upload slots, byte caps and fresh authority checks
+before receipt/retirement. A capture/work/cleanup deadline is not an upload clock.
+Keep byte/storage bounds, confirmed-source sealing and explicit recovery unchanged;
+never replay a missing original or native work automatically. WebRTC disconnected
+is recoverable on the same call: show reconnecting, retaining explicit Stop and
+existing visit/capture limits. Failed/closed still pause. This creates no new
+provider call, ICE restart, microphone grant or automatic successor admission.
+
+Public GPT-Live WebRTC starts through its successful HTTP creation answer and
+connected peer; do not impose the WebSocket session.started gate on this path.
+Backend events remain source-bound, and frontend events use session_id with
+legacy nested-ID compatibility. Fixtures must exercise a connected valid HTTP
+creation with no frontend startup event, not only synthetic nested events.
+
+Public Live returns from earlier voice connections retain their original UTC
+opening date and exact canonical wording/cursors. Treat relative time and
+first-person action claims as belonging to that earlier encounter; a historical
+return is not newly executed work. Keep useful late answers without interrupting
+an unrelated new topic with old progress. The brief is behavior guidance, not
+proof of spoken uptake. Do not replay work or unknown appends to repair phrasing.
+
+Public-native Avatar entry reads the current integrating thread through the
+existing read-only native observer AND raw owner-scoped original/result readers;
+visible ledger updates may not yet be incorporated into native history. Merge
+them with the prior voice checkpoint by source timestamps/capture order, never
+by modality or read/append order. A native item read now can predate voice.
+Preserve whole source text, explicit earlier-history/unknown-order markers,
+source revisions and machine-transcription attribution within existing setup
+bounds. Charge startup context after both JSON escaping layers and measure the
+actual message envelope/policy against the complete32KiB specification. Do not
+replace this with raw text bytes or a fixed envelope allowance. Do not use
+media-retiring convenience readers, expose private analysis,
+start work or enable another provider to obtain startup context. Source/transport
+qualification is not proof of useful speech or physical continuity.
+
 Prepared iOS Beacon IPC reuses the existing Android beacon_begin/frame/level/stop
 contract under the exact main origin/frame/document fence. Strict canonical UUID
-owners stay separate from PCM; at most128starts/controller, no accepted ID reuse.
+owners stay separate from PCM; at most128 starts/controller, no accepted ID reuse.
 Frames retain absolute monotonic milliseconds; gain cannot carry a new deadline.
-Navigation/process/background closes both outputs. Normal capability stays OFF;
-source/SDK tests do not establish actual bridge/runtime or physical acceptance.
-Independent review is required before integration of this new message boundary.
+Navigation/process/background closes both outputs. Normal capability stays OFF.
 
-Prepared iOS BeaconSynth is the six-carrier Android-compatible DSP core.
-BeaconPlaybackDriver now prepares foreground native output through the existing
-shared session; its qualification-only app probe does not advertise a capability.
-Keep at most two40ms buffers and one reschedulable timer, contiguous played
-callbacks, a two-second stalled-output close, stale fade and independent holder
-release. The native probe exercises synthetic output and host foreground-exit
-policy, not physical hearing, OS background, music routes or capture overlap. Preserve normalized mix,
-phase/ramp continuity on identical refresh, exact silence and PCM16 rounding.
-Future output must reuse the shared session,<=20s observation expiry without
-cached-refresh renewal, two-hour nonrenewable owner and bounded latest controls.
-No provider, observer, background activation or automatic resumption is implied.
+BeaconPlaybackDriver uses the existing shared session with independent speech
+and Beacon holders, at most two40ms buffers and one reschedulable timer. Preserve
+contiguous played callbacks, two-second stalled-output close, <=20s source expiry,
+nonrenewable two-hour owner, stale fade, normalized mix, phase/ramp continuity,
+exact silence and Android-compatible PCM16 rounding. Retained native/JS simulator
+qualification does not establish physical hearing, actual OS background, music
+routes, capture/duplex, shared login, signing or phone delivery. No provider,
+observer, background activation or automatic resumption is implied.
 
 iOS preparation is in clients/ios. Keep the Android-compatible verified PCM span
 contract, one serial owner, bounded queue/source metadata and nonrenewable lifetime
@@ -38,15 +130,9 @@ capabilities still stay off pending real duplex/capture/account/device acceptanc
 Navigation, process loss and foreground exit close sound/capture without replay.
 The simulator app uses the exact existing adapter bytes/hash. Keep QUALIFICATION
 code and its separate bundle ID out of normal builds. Its disposable loopback TLS
-fixture now uses only a qualification-bundle custom anchor for exact localhost443,
-with bounded public launch anchors, wrong-host/alien-anchor refusal and system
-trust unchanged. No app-container read/copy is needed before the single launch. Compile the normal
-app without FixtureTrust.swift and verify its symbols contain no QualificationTLS.
-Never weaken production TLS or mutate existing device trust. No capture/provider/human-original
+fixture may trust a one-day CA only in its own new simulator; never weaken the
+production TLS policy or existing device trust. No capture/provider/human-original
 fixture, automatic timeout relaunch or permanent simulator/server/cache is allowed.
-Qualification page readiness has a40s absolute monotonic deadline, including late
-JS callbacks; outer terminal observation65s includes cold WebKit plus12s probe.
-Keep the ten-minute job cap and native close receipt before retired-ID testing.
 
 Native Beacon preparation reuses the existing Sonic score/explicit activation.
 Keep six normalized phase-continuous sine carriers, bounded latest frame/level,
@@ -169,6 +255,15 @@ still open. Do not
 activate peer avatars, voice/provider/default/heartbeat flags or publish school
 media as a side effect. Fixed workshop cues are artistic choices, not emotion or
 agent/microphone measurements. Full original voice/client/UX scope remains open.
+
+Opt-in `openai_live.continuous_renewal` separates a native logical foreground
+capture from its finite physical calls. Keep the exact server-side confirmed
+close AND settled native-context/readiness barriers, same-process single-successor
+claim and frozen voice/owner. Stop/hidden teardown/binding change wins over late
+readiness. Retain closing-gap audio as the old interrupted prefix, never replay
+it as new speech. Unknown outcomes, content closures, restart and exhausted
+existing storage pause; no fallback/refill. Default-off/Responses/legacy finite
+behavior stays. Source tests do not prove sustained provider/device audio. Capture transport statistics before retiring a peer; missing post-close statistics are unavailable, never zero audio. Reuse retained PCM/source/closure proof rather than repeating a paid journey to repair its verifier.
 
 Native public-voice renewal keeps work on its original native thread. Historical
 returns need current original/result proofs and flat origin-to-destination claims;
@@ -544,3 +639,19 @@ companion.permitted; add only the exact intended action and retain monitor,
 foreign actor, CSRF and unknown-path refusals. A provider socket smoke test does
 not establish browser grant admission. No grant reenrollment follows from an
 ordinary route correction.
+
+The two exact inert avatar-model fixtures (`tests/avatar_layer_model.mjs` and
+`tests/avatar_layer_model_browser.cjs`) use the existing always-run dashboard
+validator/store gate. They do not select unchanged native qualification. Unknown
+test paths and actual Rust/dependency changes retain normal native checks.
+The scope regression evaluates the actual workflow program and confirms the
+fixture's invocation through dashboard_avatar_workshop.py.
+
+## Product language, not debugging output — Nicolas, 2026-11-10
+
+Never expose debugging text in ordinary user interfaces. Internal generations,
+protocol stages, raw diagnostics and implementation caveats belong in an explicit
+technical/debugging section, or require Nicolas's agreement at that moment.
+Explain meaningful states and available actions in plain product language.
+Do not hide a failure or imply readiness that has not been observed.
+Source: human instruction c437d2e1-53bf-5d18-a499-5b85f443e8c0.

@@ -300,3 +300,22 @@ metadata and task controls read the same ledger; no parallel request store,
 responder or human impersonation is introduced. This is development work for
 #61/#208: new real-controller process cases use synthetic model peers and do not
 replace the finished-version real-session/phone/voice campaign.
+
+## Publish necessary tasks during an active goal
+
+A turn manifest is processed only after successful logical-turn completion.
+An automatic goal can keep that turn open across many physical turns; a failed
+turn preserves its file but does not publish it. A file alone is not a durable
+request receipt.
+
+Use the current scoped controller `publish_tasks` with the same
+`telecodex.human-requests/v1` schema and `requests` array when the human action
+is needed while work continues. The receiver derives the human, conversation,
+logical and physical turn from the current execution; arguments cannot override
+them. The ordinary title/action/link bounds apply, with at most ten task records
+per logical turn. Publication starts no model and acknowledges no human action.
+Use `human_tasks`/`human_task` to inspect the retained receipt. Exact stable IDs
+and unchanged content return the original record, including after resolution or
+a lost acknowledgement; changed content refuses. The successful-turn manifest
+also reuses those receipts, so it cannot duplicate or reopen a published task.
+Keep withdrawals on `withdraw_task`, with its exact inspected revision.

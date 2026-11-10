@@ -129,6 +129,38 @@ to the standalone conversation and shared sign-in returns to that same path.
 `artifact_access = true` additionally permits the receiving conversation's
 existing generated-file downloads; administration and approvals stay separate.
 
+### Native request decisions for the paired Home human
+
+`shared_auth.native_decision_access = true` explicitly permits that verified
+receiving human to decide native requests in Conversation, including approval
+choices and an offered per-request cancellation. It defaults to false. The
+existing Home actor kind/reference and current native human must still match;
+the operator selects this action permission separately from appearance, session
+workspace access or merely being signed in. No new login, device enrollment or
+native owner identity is created.
+
+The permission covers only existing request decision routes. Every action keeps
+the original request ID, binding, full reviewed revision, offered action,
+Origin/CSRF and canonical receipt/retry checks. Global Stop/Resume, Sessions
+administration and unrelated controls remain denied. Conversation metadata
+reports `can_decide_requests`; it is a capability hint, never write authority.
+The existing request controls show decisions only with that capability, preserve
+the draft and require full review before one explicit click. A capability update
+also fences an already-rendered cancellation action.
+
+Companion device credentials and monitor grants keep their current restrictions,
+including when sent alongside an ambient Home cookie. This option neither adds
+the permission to those grants nor changes another pair's configuration. Limited
+Conversation clients retain their existing question-answer route and inspectable
+approval text. Missing or malformed policy cannot grant a native decision.
+
+Mounted Home/device fixtures exercise allowed decisions through the unchanged
+Provider framing, default denial, wrong CSRF/actor and forbidden administration.
+The shipped Chromium controller fixture accepts
+`QUALIFICATION_HOME_DECISIONS=allowed` or `limited` for320px review/decision/draft
+checks and capability changes. These use synthetic identity/native responses;
+actual paired-human sign-in and a real offered approval remain separate evidence.
+
 `alerts_access = true` optionally adds a read-only operational-alert list at
 `GET /api/interaction/alerts`. It defaults to false. The Conversation badge and
 list reuse the same receiving Alerts projection and attention rules as Sessions
@@ -149,6 +181,124 @@ manual reading remains available when the browser lacks intersection observation
 
 The enrollment commands above remain for physical Talk clients and the selected
 read-only monitor. They are not human browser onboarding.
+
+### Web-only receiving instances
+
+The same web application supports a native receiver with `telegram.enabled=false`
+without creating a bot, requesting a token, calling `getMe` or registering a menu.
+In the dashboard configuration omit `bot_id`, `bot_username` and
+`miniapp_short_name`. Set `application_id` to one stable, canonical UUID selected
+for that receiving instance. This is a scope identifier, not an account or grant.
+The native receiver still supplies its actual configured human/destination and
+existing native user authorization. Historical database field names do not
+require a Telegram account or transport.
+
+Reuse `[shared_auth]` and the registered Home route above. Configure `human_ref`
+as the **exact existing authoritative human reference** returned by shared login
+for this pairing. The App compares that reference and separately rechecks the
+native human grant. Do not fabricate a human reference, map one child's identity
+to another, infer it from a name, or substitute a hostname for identity. Missing
+signed pairing or Home registration is an onboarding dependency, not permission
+to create another login. These settings grant no access by themselves.
+
+The Homes `dm.home-identities/v1` adapter also supports explicitly registered
+`human:local:<canonical UUID>` actors without Telegram. Reuse its existing Home
+registration, owner credential, approved-browser/passkey and pairing routes;
+select the exact registered reference here. The provider inference account is
+independent of the human actor. No bot ID, adult identity reuse or fabricated
+Telegram reference is needed. The owning contract is
+[Humans without Telegram](https://github.com/nicoechaniz/daimon-cluster/blob/2b7467c5188c1a4b2211be1a0418c57cc8239a68/docs/design/home-shared-login.md#humans-without-telegram).
+
+Owning hooks: Cluster `homes.authority.NativeAuthority.actors()` and `paired_human()`.
+
+`application_id` cannot coexist with bot fields, an enabled native Telegram
+transport, or enabled Telegram Alerts/Traffic adapters. The Telegram launch and
+attention exchange endpoints refuse this mode before signature validation.
+Existing shared-login Host/Origin/CSRF checks, per-actor workshop storage, device
+grants and native execution remain in use. The application UUID participates in
+device authority, web binding and shared-login CSRF, together with the exact
+registered human reference: changing either invalidates those scopes without
+rewriting a journal. Existing bot configurations preserve
+their previous binding bytes and defaults. Telegram menu CLI operations refuse
+web-only configuration before reading a receiver token or issuing network I/O.
+
+Explicitly disabled Telegram is part of the receiving authority fingerprint.
+Enabling or otherwise changing that setting after startup invalidates existing
+web/device access until the operator requalifies the receiver; a cached startup
+identity cannot keep the web-only scope alive. Legacy enabled/default receiver
+fingerprints retain their existing bytes.
+
+For the four children's receiving route, Clúster owns signed native admission,
+actual per-child human grants and registered HTTPS Home entry. App owns this
+configuration contract, the existing avatar/Voice workshops and provider routes.
+Keep each being's own identity/history/storage and authorized account custody;
+no bot-shaped placeholder values are needed. Configuration and synthetic HTTP
+qualification do not establish child login, voice hearing or physical acceptance.
+
+### Minimal general Conversation bootstrap
+
+Basic private Conversation does not depend on running Matrix social/group
+services, a canonical Matrix running lease, Tribe reader selection, School/Oca,
+Drive, workshops, dashboard fleet controls or voice. `App::bootstrap` initializes
+the authorized owner's missing local entry metadata; `Provider` reads that
+SQLite database and the authenticated local owner socket. Signed own identity
+and authoritative Home pairing still belong to their existing owners; an offline
+identity file by itself does not create a browser grant. Preserve all existing
+identity, credential, session and native home files.
+
+Use the receiving instance's own retained Codex configuration/account. The
+minimal native fields below are a TEMPLATE: `OWNER`, `CHAT` and `TOPIC` mean
+existing operator-selected authorized local IDs, not Telegram identities. Reuse
+those stable values; do not replace them to repair an uncertain operation.
+
+```toml
+db_path = "/private/own/telecodex.sqlite3"
+startup_admin_ids = [OWNER]
+
+[telegram]
+enabled = false
+
+[codex]
+binary = "/path/to/selected/codex"
+default_cwd = "/path/to/own/workspace"
+shared_app_server = true
+# Required for the control socket and Interaction; preserve selected model/profile.
+
+[session_control]
+socket_path = "/private/own/control.sock"
+human_id = OWNER
+
+[interaction]
+human_id = OWNER
+chat_id = CHAT
+topic_id = TOPIC
+# No targets, Matrix adapter or Telegram projections are required.
+```
+
+Start the existing selected listener as its own user, with its own `CODEX_HOME`:
+`CODEX_HOME=/path/to/own/.codex /path/to/selected/telecodex /private/receiver.toml`.
+Observe readiness without a model/priming input:
+`/path/to/selected/telecodex --control /private/receiver.toml presentation list 0 0`.
+The first real human input uses the ordinary native creation/admission path;
+never seed raw session rows or manufacture a human message.
+
+For the web process use `dashboard/config.example.toml` with its actual receiver,
+native home, state root and registered origin. Omit all bot identifiers; select
+one stable `application_id` UUID. Set exact `[shared_auth]` `enabled=true`,
+`home_origin`, `entry_path="/interaction/"` and registered `human_ref`; add that
+origin to `additional_origins`. Keep unneeded bot Alerts/Traffic adapters off.
+Start with the existing environment:
+`TELECODEX_DASHBOARD_CONFIG=/private/dashboard.toml python -m uvicorn dashboard.app:create_app --factory --host 127.0.0.1 --port PORT`.
+Reuse the registered Home proxy: strip only the mount prefix, preserve Host and
+cookies, and supply `X-Forwarded-Prefix: /interaction`. The clean HTTPS entry
+returns to the same conversation after normal shared login. Operator startup,
+actual authorized read/write and a child's device acceptance remain distinct.
+
+Source evidence: `src/app.rs::App::bootstrap`, `src/app/tests.rs` cold-entry and
+disabled-Telegram bootstrap cases, `src/main.rs` owner-control CLI,
+`dashboard/provider.py::{authorized,presentation}`, and
+`dashboard/companion.py::application_identity`. The web-only actor/binding tests
+retain changed-config, foreign-actor, Origin/CSRF and Telegram-launch refusals.
 
 ## Standalone read-only routing monitor
 
@@ -286,3 +436,11 @@ pin captures and workspace reads; it does not cancel existing work or change the
 existing same-original recovery contract. Captured originals never silently
 change destination. Avatar's independent foreground/delegation scope is unchanged.
 A published capability is not receiving selection or phone acceptance.
+
+A native Matrix transport profile change also requires this same-scope companion
+requalification before web recovery is complete. Compare the retained exact
+preimage with the selected profile, qualify unchanged actor/credentials/grants,
+preserve all journal outcomes and reload only the affected web service through
+its existing voice-idle fence. A healthy `/health` alone does not establish
+Conversation readiness: verify the owner input-list read and anonymous access
+denial. Device sign-in cannot repair a stale server authority binding.

@@ -26,7 +26,7 @@ def qualify(binary):
         j.wait(lambda:'native-topic-9' in j.runs)
         entry=j.access(1)
         caps=j.cli(entry,'capabilities')
-        assert all(name in caps['operations'] for name in ('human_tasks','human_task','withdraw_task'))
+        assert all(name in caps['operations'] for name in ('human_tasks','human_task','withdraw_task','publish_tasks'))
         original=j.cli(entry,'inputs')['inputs'][-1]['input_ref']
         j.declare_task=True
         j.cli(entry,'dispatch',{'input_ref':original,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
@@ -80,7 +80,20 @@ def qualify(binary):
         j.wait(lambda:j.row("SELECT count(*) FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=7 AND t.status='running'")==[(1,)])
         context=''.join(v['value'] for k,v in sorted(j.packets['native-topic-7'][-1]['additionalContext'].items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
         manifest=Path(re.search(r'explicitly declare it in (\S+human-requests\.json)',context).group(1))
-        manifest.write_text(json.dumps({'schema':'telecodex.human-requests/v1','requests':[{'id':'direct-observation','title':'Direct observation','action':'Only this direct topic needs this action.','links':[]}]}))
+        declaration={'schema':'telecodex.human-requests/v1','requests':[{'id':'direct-observation','title':'Direct observation','action':'Only this direct topic needs this action.','links':[]}]}
+        manifest.write_text(json.dumps(declaration))
+        worker=j.access(7)
+        published=j.cli(worker,'publish_tasks',declaration)
+        assert len(published['ids'])==1 and published['human_completion'] is False
+        assert j.cli(worker,'publish_tasks',declaration)['ids']==published['ids']
+        assert j.cli(worker,'human_task',{'id':published['ids'][0]})['action']==declaration['requests'][0]['action']
+        assert j.row("SELECT count(*) FROM human_interactions WHERE kind='task' AND state='pending'")==[(1,)]
+        assert j.row("SELECT count(*) FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=7 AND t.status='running'")==[(1,)]
+        changed=json.loads(json.dumps(declaration));changed['requests'][0]['action']='Changed source'
+        j.cli(worker,'publish_tasks',changed,ok=False)
+        invalid=json.loads(json.dumps(declaration));invalid['requests'][0]['links']=[{'label':'Private','url':'https://user:secret@example.org'}]
+        j.cli(worker,'publish_tasks',invalid,ok=False)
+        j.cli(worker,'publish_tasks',{**declaration,'target':{'thread_id':8}},ok=False)
         j.broadcast('native-topic-7','turn/completed',{'turn':{'id':j.runs['native-topic-7'],'status':'completed'}})
         j.wait(lambda:j.row("SELECT count(*) FROM human_interactions WHERE kind='task' AND state='pending'")==[(1,)])
         assert j.cli(entry,'human_tasks')['items']==[]

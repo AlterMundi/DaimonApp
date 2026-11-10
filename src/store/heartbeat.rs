@@ -12,10 +12,12 @@ pub use producer::{HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPur
 mod reports;
 pub use reports::HeartbeatReportSource;
 mod resources;
+mod review;
 pub(super) use executions::claim_on as execution_claim_on;
 pub use resources::HeartbeatResources;
 #[cfg(test)]
 pub(in crate::store) use resources::test_contract;
+pub use review::HeartbeatReviewContract;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -87,6 +89,216 @@ pub(super) fn generation_current_on(
 }
 
 impl Store {
+    /// Actual owner-selected production defaults; no counter, hour or gate reset.
+    pub fn heartbeat_production_defaults(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        source: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let c: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            c.paused && c.generation == generation,
+            "Pause and inspect the exact generation before production policy selection"
+        );
+        resources::production_defaults_on(&tx, session, human, source)?;
+        producer::production_recovery_on(&tx, session, human, source)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Explicit owner selection of persistent operation, with a recurring rate.
+    /// Historical contracts/counters and all controls remain untouched.
+    pub fn heartbeat_enable_continuous(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        attempts_per_hour: u32,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let control: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            control.paused && control.generation == generation,
+            "Pause and select the exact heartbeat generation before owner continuous adoption"
+        );
+        anyhow::ensure!(
+            !executions::unresolved_on(&tx, human, entry)?,
+            "Heartbeat execution unresolved"
+        );
+        let status = producer::status_on(&tx, human, session)?;
+        anyhow::ensure!(
+            matches!(
+                status["state"].as_str(),
+                Some("configured" | "expired" | "check_capacity")
+            ),
+            "Select the existing bound heartbeat producer; preserve stopped or uncertain work"
+        );
+        resources::enable_continuous_on(&tx, session, human, attempts_per_hour)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Explicit owner-only model-free observation successor. No account change.
+    pub fn heartbeat_renew_observation(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+    ) -> Result<()> {
+        self.heartbeat_observation_successor(
+            human,
+            entry,
+            generation,
+            expected_expiry,
+            expiry,
+            None,
+        )
+    }
+
+    /// Explicit cumulative ceiling for a new finite model-free observation period.
+    pub fn heartbeat_renew_observation_capacity(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+        max_checks: u32,
+    ) -> Result<()> {
+        self.heartbeat_observation_successor(
+            human,
+            entry,
+            generation,
+            expected_expiry,
+            expiry,
+            Some(max_checks),
+        )
+    }
+
+    fn heartbeat_observation_successor(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+        max_checks: Option<u32>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let control: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            control.paused && control.generation == generation,
+            "Pause and select the exact heartbeat generation before explicit owner renewal"
+        );
+        producer::renew_observation_on(
+            &tx,
+            human,
+            entry,
+            generation,
+            expected_expiry,
+            expiry,
+            max_checks,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Owner-console only: not part of HeartbeatCommand or model tool actions.
+    /// Renew an expired finite window without minting capacity or activating it.
+    pub fn heartbeat_renew_window(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected_expiry: i64,
+        expiry: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let raw: String = tx.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("heartbeat_control:{human}:{session}")],
+            |r| r.get(0),
+        )?;
+        let control: Control = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            control.paused && control.generation == generation,
+            "Pause and select the exact heartbeat generation before explicit owner renewal"
+        );
+        anyhow::ensure!(
+            !executions::unresolved_on(&tx, human, entry)?,
+            "Heartbeat execution unresolved"
+        );
+        let receipt_key = format!("heartbeat_window_renewal:{human}:{session}");
+        let mut receipt = json!({"generation":generation,"previous_expires_at_unix_ms":expected_expiry,
+            "expires_at_unix_ms":expiry,"resources_refilled":false,"activated":false});
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [&receipt_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if previous
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()?
+            .as_ref()
+            .is_some_and(|previous| {
+                previous["generation"] == generation
+                    && previous["previous_expires_at_unix_ms"] == expected_expiry
+                    && previous["expires_at_unix_ms"] == expiry
+            })
+        {
+            // Same command after a lost ACK observes its retained effect.
+            return Ok(());
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        anyhow::ensure!(
+            expected_expiry <= now && expiry > now && expiry <= now + 7 * 86400 * 1000,
+            "Select an expired predecessor and a new finite window within seven days"
+        );
+        resources::renew_window_on(&tx, session, human, expected_expiry, expiry)?;
+        receipt["retry"] = serde_json::to_value(producer::renew_window_on(
+            &tx,
+            human,
+            entry,
+            expected_expiry,
+            expiry,
+        )?)?;
+        // One replaceable current receipt, not an accumulating renewal journal.
+        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![receipt_key,serde_json::to_string(&receipt)?])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// One control record per existing integrating entry. Restart never resumes
     /// attention or replenishes a resource account. Default is paused.
     pub fn heartbeat_control(
@@ -189,6 +401,12 @@ impl Store {
                 producer::resume_on(&tx, human, entry, control.generation)?;
             }
         }
+        let initial_configuration = raw.is_none()
+            && matches!(
+                &command,
+                HeartbeatCommand::ConfigureResources { .. }
+                    | HeartbeatCommand::ConfigureProducer { .. }
+            );
         let selected = match command {
             HeartbeatCommand::SetPaused { .. } | HeartbeatCommand::SetLanePaused { .. } => {
                 unreachable!("normalized above")
@@ -261,16 +479,34 @@ impl Store {
                 }
             }
         }
+        if initial_configuration {
+            tx.execute(
+                "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+                params![key, serde_json::to_string(&control)?],
+            )?;
+        }
         tx.commit()?;
         // A damaged resource record must never roll back the pause fence.
         let resources = resources::status_on(&conn, session, human)
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
         let producer = producer::status_on(&conn, human, session)
             .unwrap_or_else(|_| json!({"state":"unavailable"}));
+        let renewal: Option<String> = conn
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [format!("heartbeat_window_renewal:{human}:{session}")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let renewal = renewal
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .unwrap_or_else(|_| Some(json!({"state":"unavailable"})));
         Ok(
             json!({"schema":"telecodex.heartbeat-control/v1","admission_paused":control.paused,"generation":control.generation,"changed_at":control.changed_at,"lanes":lanes::status(&control),
             "controls":{"schema":"telecodex.heartbeat-controls/v1","conditional_global":true,"conditional_lane":true,"actions":["set_paused","set_lane_paused"],"configuration_activates":false},
-            "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
+            "attention_engine":if producer["state"]=="not_configured" {"not_configured"} else {"finite_canonical_offer_producer"},"producer":producer,"owned_execution_control":"not_implemented","resources":resources,"window_renewal":renewal,"scope":"heartbeat_attention_only","maintenance_shutdown":false,"funding_changed":false,"goals_changed":false}),
         )
     }
 }
@@ -304,6 +540,59 @@ pub(in crate::store) fn enable_test_lanes(store: &Store, human: i64, entry: Sess
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fresh_configuration_can_select_continuous_without_redundant_pause() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let entry = SessionKey::new(100, Some(1));
+        store
+            .ensure_session(entry, 100, &super::super::tests::defaults())
+            .unwrap();
+        store
+            .set_session_codex_thread(entry, "same-native")
+            .unwrap();
+        let resources = test_contract();
+        let expiry = resources.expires_at_unix_ms;
+        store
+            .heartbeat_control(
+                100,
+                entry,
+                HeartbeatCommand::ConfigureResources {
+                    generation: 0,
+                    contract: resources,
+                },
+            )
+            .unwrap();
+        store
+            .heartbeat_control(
+                100,
+                entry,
+                HeartbeatCommand::ConfigureProducer {
+                    generation: 0,
+                    contract: HeartbeatProducerContract {
+                        purpose: None,
+                        interval_seconds: 30,
+                        max_checks: 6,
+                        expires_at_unix_ms: expiry,
+                        matrix_replies: true,
+                        matrix_inbox: None,
+                        workflows: false,
+                        session_progress: false,
+                        reports: vec![],
+                    },
+                },
+            )
+            .unwrap();
+        store
+            .heartbeat_enable_continuous(100, entry, 0, 48)
+            .unwrap();
+        let status = store
+            .heartbeat_control(100, entry, HeartbeatCommand::Status)
+            .unwrap();
+        assert_eq!(status["admission_paused"], true);
+        assert_eq!(status["generation"], 0);
+        assert_eq!(status["resources"]["mode"], "continuous");
+    }
     #[test]
     fn versioned_app_controls_reject_stale_global_and_lane_changes_atomically() {
         let file = tempfile::NamedTempFile::new().unwrap();

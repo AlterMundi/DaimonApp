@@ -10,6 +10,11 @@ origin = "https://your-authorized-host"
 prefix = "/sessions"
 bot_id = 123456
 bot_username = "YourBot"
+# For an independent web-only receiving instance instead, OMIT bot_id,
+# bot_username and miniapp_short_name and select one stable application UUID:
+# application_id = "f5625230-c06a-4d8f-a1ac-bb803b4b46b3"
+# Its native receiver must have telegram.enabled=false. Do not configure
+# Telegram Alerts/menu or Traffic adapters. No bot or token is needed.
 label = "This receiving bot"
 # Presentation only; native identity and permissions remain in their existing bindings.
 daimon_name = "Your daimon"
@@ -68,6 +73,9 @@ Development = "/your-development-mount"
 # enabled = true
 # home_origin = "https://your-registered-home"
 # entry_path = "/interaction/"
+# Web-only instances require the EXACT human reference registered by shared
+# auth for this pairing, not an invented Telegram account or a display name.
+# human_ref = "human:provider:REPLACE_WITH_ACTUAL_REGISTERED_REFERENCE"
 # artifact_access = false
 
 # Optional live input-transcription preparation; no conversational model change.
@@ -129,6 +137,7 @@ Development = "/your-development-mount"
 # backend_instructions_file = "/private/selected-responses-instructions.txt"
 # backend_model = "OWNER_SELECTED_RESPONSES_MODEL"
 # session_seconds = 600
+# continuous_renewal = false # Explicit native-only logical capture until Stop; finite physical calls/storage remain.
 # resume_mode = "fresh" # or "stored_fork", only with explicit permitted storage
 # backend_tools = []
 # conversation_context = false # owner-authorized current conversation reads only

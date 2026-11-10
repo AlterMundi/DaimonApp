@@ -141,6 +141,30 @@ class Originals(unittest.TestCase):
             self.assertIn('originals preserved',response.json()['detail'])
         finally:c.tearDown()
 
+    def test_actual_receiver_capture_limit_is_http_storage_failure_before_native_admission(self):
+        from dashboard_companion_io import Companion
+        from dashboard.provider import Provider
+        c=Companion('runTest');c.setUp()
+        try:
+            root=c.root/'full-receiver';root.mkdir(mode=0o700)
+            for index in range(128):
+                p=root/str(index);p.write_bytes(b'original');p.chmod(0o600)
+            entered=[]
+            def submit(metadata,data):
+                Provider.retain_voice_capture(root,metadata['id'],data,metadata['audio_sha256'])
+                entered.append(metadata['id'])
+                raise AssertionError('Full receiver cannot admit native work')
+            c.provider.conversation_voice_submit=submit
+            ident='22222222-2222-4222-8222-222222222222'
+            headers={**c.headers,'content-type':'audio/wav','x-input-binding':'a'*64,
+                     'x-input-id':ident,'x-audio-sha256':hashlib.sha256(b'x').hexdigest()}
+            response=c.client.post('/api/interaction/voice',content=b'x',headers=headers)
+            self.assertEqual(response.status_code,507,response.text)
+            self.assertIn('not submitted',response.json()['detail'])
+            self.assertEqual(entered,[]);self.assertFalse((root/ident).exists())
+            self.assertEqual(sum(p.name!='admission.lock' for p in root.iterdir()),128)
+        finally:c.tearDown()
+
     def test_nonblocking_lock_failure_is_visible_storage_failure(self):
         with speech_render.lock(self.retention.root/'.admission.lock'):
             with self.assertRaises(RetentionUnavailable):self.retention.begin(self.source,'human','audio/wav',10)

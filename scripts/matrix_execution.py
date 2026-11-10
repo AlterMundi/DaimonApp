@@ -458,17 +458,19 @@ class _NativeMatrixTransport:
             if method in ("messaging.send", "messaging.reply", "messaging.inbox"):
                 # Same authenticated client and absolute deadline for both
                 # observations. Origin is bound before any authored effect.
-                _, status = client.invoke("runtime.status", {})
-                source = status.get("result", {}) if status.get("ok") is True else {}
-                if (
-                    source.get("schema") != "dm.runtime.status/v1"
-                    or source.get("being_ref") != self._author["being_ref"]
-                    or source.get("local_origin", {}).get("embodiment_id")
-                    != self._author["embodiment_id"]
-                ):
-                    raise MatrixExecutionError(
-                        "Authenticated source differs from selected source"
-                    )
+                enrolled_source = getattr(client, "verified_source", None)
+                if enrolled_source is not None:
+                    if enrolled_source != self._author:
+                        raise MatrixExecutionError("Authenticated source differs from selected source")
+                else:
+                    _, status = client.invoke("runtime.status", {})
+                    source = status.get("result", {}) if status.get("ok") is True else {}
+                    if (
+                        source.get("schema") != "dm.runtime.status/v1"
+                        or source.get("being_ref") != self._author["being_ref"]
+                        or source.get("local_origin", {}).get("embodiment_id") != self._author["embodiment_id"]
+                    ):
+                        raise MatrixExecutionError("Authenticated source differs from selected source")
             _, response = client.invoke(method, params)
             if not isinstance(response, dict) or response.get("ok") is not True:
                 raise MatrixExecutionError("Native response not successful")

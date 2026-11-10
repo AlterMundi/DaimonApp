@@ -160,7 +160,7 @@ async fn create_selected(
         )
         .into());
     }
-    if cfg.targets.len() >= 64
+    if cfg.targets.len() >= crate::interaction::MAX_LOCAL_TARGETS
         || !cfg.resolve(&args.name).is_empty()
         || cfg
             .matrix_targets
@@ -245,13 +245,14 @@ async fn create_selected(
         &args.name,
         &args.reason,
         &context,
-        64 - shared
-            .config
-            .interaction
-            .as_ref()
-            .context("Missing profile")?
-            .targets
-            .len(),
+        crate::interaction::MAX_LOCAL_TARGETS
+            - shared
+                .config
+                .interaction
+                .as_ref()
+                .context("Missing profile")?
+                .targets
+                .len(),
         closed,
     )?;
     if !fresh {

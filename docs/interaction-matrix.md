@@ -1,5 +1,89 @@
 # Selected Matrix execution adapter
 
+## Portable Conversation publication
+
+The optional `interaction.matrix_publication` configuration adds a typed,
+owner-local publication writer to the existing Conversation store. This is the
+App portion of [Matrix #496](https://github.com/AlterMundi/daimon-matrix/issues/496),
+not a messaging-delivery claim. On10November the existing original three App
+receivers adopted the qualified full-audio native publisher and the matching
+current web reader. Each actual owner status returns its paired-human general
+Conversation descriptor; this does not install Matrix signed publication policy
+or discharge an older ambiguous obligation. It needs
+no Telegram account, bot token, browser or model turn.
+
+The selected descriptor contains `surface_ref`, a sorted unique `audience`
+(at most 256 entries and 32 KiB serialized), and an absolute `signing_key_file`.
+The latter is a same-owner, mode-0600 regular file holding an Ed25519 seed;
+symlinks and unsafe permissions refuse. Keep actual custody paths and private
+bytes out of project records. The `status` operation returns only the public
+descriptor and verification key. Installation must use the existing authorized
+resource/owner route; this configuration does not grant arbitrary actors access.
+
+Existing owner control commands are:
+
+```text
+telecodex --control CONFIG matrix publication status
+telecodex --control CONFIG matrix publication commit < REQUEST.json
+telecodex --control CONFIG matrix publication inspect PUBLICATION_UUID
+telecodex --control CONFIG matrix publication confirm PUBLICATION_UUID REQUEST_SHA256
+telecodex --control CONFIG matrix publication retire
+telecodex --control CONFIG matrix publication list CURSOR
+```
+
+`commit` takes at most 64 KiB on stdin and validates the exact deterministic
+publication ID, native binding digest, selected surface/audience and bounded
+part. An immediate SQLite transaction commits the immutable content and receipt
+body before the backend signs it. Exact duplicate requests recover the same
+proof; changed content, binding, owner, audience or signing key refuses. Missing
+acknowledgment requires inspecting that identity, never reauthoring speech.
+Existing Stop and maintenance admission fences apply to fresh publication.
+The request binds `not_after_ms` from the original native operation in both its
+native obligation digest and deterministic part UUID. Expired fresh requests
+refuse; existing exact proofs remain inspectable after expiry.
+
+The normal authenticated Conversation feed has an independent `publications`
+cursor. Its `matrix_visibility` sources use the existing revision-checked part
+reader and retain explicit provenance. They are neither human utterances nor
+execution authority, receiving-copy evidence or task completion. They do not
+trigger automatic speech or companion reactions. Older native readers keep the
+old cursor form when this optional configuration is absent.
+
+The staged journal caps each owner's conversation at 4096 parts / 64 MiB. Its
+technical copies have a rolling 24-hour retention window after both the native
+deadline and the host acknowledgment of durably retained native confirmation.
+`confirm` is a trusted model-free host operation with the exact request digest,
+invoked only after that native journal commit. It establishes visibility proof
+acknowledgment, never receiving delivery, human reading or task completion. A
+lost acknowledgment leaves the copy pending and pinned.
+
+Each new commit and the owner `retire` operation removes at most 64 eligible
+copies. Deletion and a constant-size per-conversation retired-deadline fence
+share one transaction. No per-message tombstone archive is created; a regressed
+clock cannot recreate a retired exact request. Monotonic sequences preserve feed
+cursors. Native histories and ordinary inbox/response records are unchanged.
+Pending/ambiguous copies are never deleted for capacity. If they fill the journal,
+publication refuses rather than losing work. No new timer or model turn is used.
+
+**End-to-end receiving remains distinct:** the selected native installation/transport
+must supply the real deadline and confirm only after its committed proof. Matrix
+owns the signed publication policy and seven-body useful messaging journey. App
+owner/reader readiness and retirement tests alone do not establish that connection.
+
+`tests/matrix_publication_http_io.py` drives the actual Matrix native journal
+and `ConversationJournalTransport` through the real owner socket and SQLite,
+verifies native commit before metadata acknowledgment using another connection,
+and exercises the authenticated HTTP feed/part reader and restart recovery.
+Home identity and the native harness are synthetic. Its lost-result case recovers through one durably reserved exact proof read,
+without another publication. A failed proof read keeps uncertainty pinned across
+restart/calls and does not reset the read budget. Both fresh and warm metadata
+acknowledgments run outside the native SQLite transaction.
+Set `PYTHONPATH` to the selected Matrix candidate SDK; CI pins
+`ae2bd0b5c014dda5d4cf4ac63b730468e271a453` for this composition. It verifies no Telegram token,
+transmission, inference, fabricated input or native turn. The portable fixture
+is public synthetic test material, not operational custody. The seven-body
+native installation and useful messaging journey remain separate qualification.
+
 The optional host module `scripts/matrix_execution.py` connects an already
 approved Matrix `ExecutionStore` cycle to its authenticated owner-local SDK
 client. It is a building block for [Matrix #367](https://github.com/AlterMundi/daimon-matrix/issues/367),
@@ -286,7 +370,7 @@ releases the same watcher. Only confirmed `handoffReady` plus observed old-proce
 exit permits stopped installation and snapshot-preserving restoration in the
 same persistent cgroup. Compare all package files/resources and the installer's
 fixed `codex -> bin/codex` compatibility link; CLI equality alone is insufficient.
-Pin the complete previous tree and release path independently. A known old package can be restored after refused
+Pin the complete previous tree and release path independently. Inventory is bounded at64regular files,128total entries and1GiB, covering the actual44-file stock0.167 predecessor without copying it. A known old package can be restored after refused
 installation; this is software recovery, never a history restore or input replay.
 
 Uncertain maintenance/exit/restore is retained, never resent or converted into
@@ -604,3 +688,63 @@ Production deployment, qualified receiver execution and the selected live
 cross-body correction/renewal trial remain open in #367. One inference/token admission does not establish a global
 monetary ceiling. No existing local routing, selected runtime or paused goal is
 changed by importing this module.
+
+### Existing signed messaging enrollment as the host owner proof
+
+A receiving host can use `telecodex.matrix-host-binding/v2` with `source`, the
+existing messaging-only client reference, and `enrollment` containing absolute
+`application`/`binding` references, the signed public `identity`, and its pinned
+Ed25519 `public_key`. Keep the host binding and enrollment documents in their
+existing owner-only directories. The SDK's protected reader requires that private
+parent as well as private, single-link files; public adapter code stays separate.
+
+The host verifies the detached enrollment signature and exact application hash,
+its messaging descriptor, being/origin, and the configured native runtime ID,
+label and expected server. Each actual native call still authenticates and checks
+its current messaging authority, reader selection and destination. Tampered
+metadata or a different native client refuses before an effect. This permits the
+already-enrolled messaging role to read/reply without depending on an unrelated
+legacy `runtime.status` capability's expiry. It issues no role, renews no key or
+validity, reads no private ledger and synthesizes no runtime status. The v1 host
+binding remains compatible with its separate observation capability.
+
+Use the same finite owner-selected heartbeat/resource controls. Enrollment alone
+is neither model-execution permission nor proof of receipt, action or response.
+
+The v2 owner binding may additionally select `intake_after`, a nonnegative native
+inbox frontier at most2^53-1, observed through the existing authenticated SDK.
+Set this only for a new intake before producer activation, under the existing
+paused generation, to avoid spending model allocation on pre-pilot history.
+The private owner selection filters the intake view; no native original is
+removed, acknowledged, marked read or described as processed. Existing retained
+parent verification and direct/manual native history access remain unchanged.
+
+A zero consumer cursor fetches after that configured native frontier. An empty
+view keeps the consumer cursor at zero; the page meaning discloses the selected
+frontier. Only a genuine new native event advances it to that event's sequence.
+A nonzero consumer cursor below the selected frontier refuses: this cannot rebase
+an existing reader or hide its pending originals. Keep the selected window frozen
+for the operation; it is not a model-supplied request argument or a reset control.
+
+## Heartbeat user menu
+
+The heart opens a viewport-clamped menu next to its actual button on desktop
+and mobile. The normal menu presents a brief useful state and supported controls;
+it omits internal generations, source-check timestamps, implementation caveats
+and unsupported feature placeholders. Messages and scheduled reviews are shown
+only when supported. Pausing/enabling keeps the existing generation-fenced owner
+commands; status reads never change settings or start work. Only fresh explicit
+operational evidence animates the heart. Pending work is described as waiting,
+not as proof of readiness or a disabled heartbeat. Operator diagnostics remain
+available through the existing owner status API.
+
+## Communication card language
+
+Ordinary Matrix inbox, response and visibility cards use brief product states
+(Received, Sent, Delivered, Delivery not confirmed, Message copy or Communication)
+from existing metadata. Detailed verification caveats, publication identities
+and receipts remain in the existing collapsed Matrix details. Source text,
+attribution, revisions, reply binding, cursor and publication journals are
+unchanged. Payload-to-speech formatting and suppression of authorization-control
+payloads remain with the Matrix producer's existing compact-text projection;
+this presentation change adds no parser, router, publication or provider call.

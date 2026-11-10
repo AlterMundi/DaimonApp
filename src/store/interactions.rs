@@ -512,15 +512,71 @@ impl Store {
     ) -> Result<()> {
         self.save_human_requests(key, tasks, None)
     }
+    #[cfg(test)]
     pub fn save_human_requests(
         &self,
         key: SessionKey,
         tasks: &[(String, HumanInteraction)],
         withdrawal: Option<(i64, &str, i64, &[TaskWithdrawal])>,
     ) -> Result<()> {
+        self.save_human_requests_checked(key, tasks, withdrawal, None)
+            .map(|_| ())
+    }
+    pub fn save_human_requests_checked(
+        &self,
+        key: SessionKey,
+        tasks: &[(String, HumanInteraction)],
+        withdrawal: Option<(i64, &str, i64, &[TaskWithdrawal])>,
+        live: Option<(&LiveTaskActor<'_>, &tokio_util::sync::CancellationToken)>,
+    ) -> Result<Vec<String>> {
+        use anyhow::bail;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        if let Some((actor, closed)) = live {
+            super::live_tasks::actor_on(&tx, actor, closed)?;
+            if key != actor.key
+                || tasks.iter().any(|(_, item)| {
+                    item.requester != actor.human
+                        || item.native_thread != actor.native
+                        || item.local_turn != actor.local
+                })
+                || withdrawal.is_some_and(|(user, native, turn, rows)| {
+                    user != actor.human
+                        || native != actor.native
+                        || turn != actor.local
+                        || !rows.is_empty()
+                })
+            {
+                bail!("Live task declaration differs from current actor");
+            }
+        }
+        let mut receipts = Vec::new();
         for (client, item) in tasks {
+            let prior: Option<(String,String)> = tx.query_row(
+                "SELECT h.id,h.payload_json FROM human_interactions h JOIN sessions s ON s.id=h.session_id JOIN users u ON u.tg_user_id=h.requester WHERE h.local_turn=?1 AND h.kind='task' AND h.client_id=?2 AND s.chat_id=?3 AND s.thread_id=?4 AND s.codex_thread_id=h.native_thread AND u.allowed=1",
+                params![item.local_turn,client,key.chat_id,key.thread_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((id, raw)) = prior {
+                let previous: HumanInteraction = serde_json::from_str(&raw)?;
+                if previous.requester != item.requester
+                    || previous.native_thread != item.native_thread
+                    || previous.title != item.title
+                    || previous.action != item.action
+                    || previous.source["links"] != item.source["links"]
+                {
+                    bail!("Human task declaration changed; original retained");
+                }
+                receipts.push(id);
+                continue;
+            }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM human_interactions WHERE local_turn=?1 AND kind='task'",
+                [item.local_turn],
+                |r| r.get(0),
+            )?;
+            if count >= 10 {
+                bail!("Task declarations exceed ten per logical turn");
+            }
+            receipts.push(item.id.clone());
             let session: Option<i64> = tx
                 .query_row(
                     "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=?3
@@ -569,8 +625,11 @@ impl Store {
                 )?;
             }
         }
+        if let Some((actor, closed)) = live {
+            super::live_tasks::actor_on(&tx, actor, closed)?;
+        }
         tx.commit()?;
-        Ok(())
+        Ok(receipts)
     }
 
     pub fn update_native_interaction(
@@ -1027,10 +1086,11 @@ mod lifecycle_tests {
             .ensure_session(entry, 100, &super::super::tests::defaults())
             .unwrap();
         store.record_turn_native_thread(turn, "source").unwrap();
+        // Historical ledgers may exceed the new declaration bound; pagination must retain them.
         for index in 0..23 {
             let id = format!("worker-{index}");
             store
-                .save_human_tasks(worker, &[(id.clone(), task(&id, turn))])
+                .save_interaction(worker, &task(&id, turn), Some(&id))
                 .unwrap();
         }
         store
@@ -1058,10 +1118,11 @@ mod lifecycle_tests {
     #[test]
     fn pages_have_topic_totals_and_separate_terminal_history() {
         let (_root, store, key, turn) = fixture();
+        // Populate retained historical rows without using the bounded new-declaration writer.
         for n in 0..60 {
             let id = format!("task-{n:03}");
             store
-                .save_human_tasks(key, &[(id.clone(), task(&id, turn))])
+                .save_interaction(key, &task(&id, turn), Some(&id))
                 .unwrap();
         }
         store
@@ -1263,6 +1324,80 @@ mod lifecycle_tests {
             "completed"
         );
     }
+    #[test]
+    fn live_publication_is_atomic_bounded_and_never_reopens_originals() {
+        use crate::store::LiveTaskActor;
+        use tokio_util::sync::CancellationToken;
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        let closed = CancellationToken::new();
+        let actor = LiveTaskActor {
+            key,
+            human: 100,
+            local: turn,
+            native: "source",
+            physical: "current",
+            integrator: false,
+        };
+        let mut entry = task("original", turn);
+        let publish = |rows: &[(String, HumanInteraction)]| {
+            store.save_human_requests_checked(key, rows, None, Some((&actor, &closed)))
+        };
+        assert_eq!(
+            publish(&[("phone".into(), entry.clone())]).unwrap(),
+            vec!["original"]
+        );
+        store
+            .transition_interaction(key, 100, "original", "pending", "completed")
+            .unwrap();
+        entry.id = "retry-uuid".into();
+        assert_eq!(
+            publish(&[("phone".into(), entry.clone())]).unwrap(),
+            vec!["original"]
+        );
+        assert_eq!(
+            store
+                .interaction(key, 100, "original")
+                .unwrap()
+                .unwrap()
+                .state,
+            "completed"
+        );
+        // Final manifest uses the same receipt rather than duplicating a live request.
+        store
+            .save_human_requests(key, &[("phone".into(), entry.clone())], None)
+            .unwrap();
+        let mut changed = entry.clone();
+        changed.action = "Different task".into();
+        assert!(
+            publish(&[
+                ("fresh".into(), task("fresh", turn)),
+                ("phone".into(), changed)
+            ])
+            .is_err()
+        );
+        assert!(store.interaction(key, 100, "fresh").unwrap().is_none());
+        let mut foreign = entry.clone();
+        foreign.requester = 101;
+        assert!(publish(&[("foreign".into(), foreign)]).is_err());
+        let many: Vec<_> = (0..10)
+            .map(|n| (format!("task-{n}"), task(&format!("task-{n}"), turn)))
+            .collect();
+        assert!(publish(&many).is_err());
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM human_interactions", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        closed.cancel();
+        assert!(publish(&[("cancelled".into(), entry)]).is_err());
+    }
+
     #[test]
     fn live_retirement_requires_current_actor_and_exact_task_and_preserves_human_meaning() {
         use crate::store::LiveTaskActor;

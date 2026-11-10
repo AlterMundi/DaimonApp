@@ -46,15 +46,18 @@ class WorkshopVoiceRevisions:
     def voice_snapshot(self,human):
         with history_lock(self.root/'.lock'):return self._voice_summary(self._read(human))
 
-    def voice_save(self,human,ident,profile,delivery,parent,expected):
+    def voice_save(self,human,ident,profile,delivery,parent,expected,name=None):
         self._ident(ident)
         if parent is not None:self._ident(parent)
+        if name is not None and (not isinstance(name,str) or not name.strip()
+                or '\0' in name or len(name)>80 or len(name.encode())>320):
+            raise ValueError('Give this voice a name of at most80characters')
         canonical,digest=voice_profile(profile,delivery)
         with history_lock(self.root/'.lock'):
             value=self._read(human);voice=voice_state(value)
             old=next((r for r in voice['versions'] if r['id']==ident),None)
             if old is not None:
-                if old['sha256']!=digest or old['parentId']!=parent:
+                if old['sha256']!=digest or old['parentId']!=parent or old.get('name')!=name:
                     raise self.conflict_error('A saved voice revision is immutable')
                 return self._voice_summary(value)
             self._expected(voice,expected)
@@ -65,7 +68,7 @@ class WorkshopVoiceRevisions:
             content=json.loads(canonical)
             voice=copy.deepcopy(voice)
             voice['versions'].append({'id':ident,'parentId':parent,'createdAt':int(time.time()*1000),
-                                      **content,'sha256':digest})
+                                      **content,'sha256':digest,**({'name':name} if name is not None else {})})
             voice['generation']+=1;value['voice']=voice
             self._write(human,value)
             return self._voice_summary(value)

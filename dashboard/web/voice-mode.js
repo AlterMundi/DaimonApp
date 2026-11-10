@@ -18,7 +18,7 @@ window.ConversationVoiceMode=(()=>{
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
     let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
     const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',foreground_saved:'Phrase saved · voice conversation',review:'Recording needs review'};
-    let audioPaused=false,audioEnabled=true,reconnecting=false;
+    let audioPaused=false,audioEnabled=true,reconnecting=false,untilStop=false;
     const reconnectNotice='Your recording is kept; anything said during the pause may need review.';
     const canResumeAudio=()=>continuous&&listening&&!preparing&&!directPending&&typeof onResumeAudio==='function'&&(audioPaused||!audioEnabled);
     function showDetection(value){
@@ -55,9 +55,9 @@ window.ConversationVoiceMode=(()=>{
       portrait.setAttribute('aria-label',opened?'Conversation avatar':'Open direct voice conversation');
       portrait.title=available&&!opened?'Direct voice conversation':'';
     }
-    // Continuous engines enforce their own (at most ten-minute) capture budget.
-    // The old alternating view keeps its shorter five-minute opt-in.
-    function armClose(){clearTimeout(timer);timer=setTimeout(close,(continuous?10:5)*60*1000);}
+    // Each physical engine keeps its own capture budget. An explicitly admitted
+    // renewing native dialogue owns the logical lifetime until human Stop.
+    function armClose(){clearTimeout(timer);timer=undefined;if(continuous&&untilStop)return;timer=setTimeout(close,(continuous?10:5)*60*1000);}
     function close(){
       if(!opened)return lastClose;opened=false;clearTimeout(timer);clearTimeout(rearm);
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
@@ -66,7 +66,7 @@ window.ConversationVoiceMode=(()=>{
     function open(){
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
-      opened=true;audioPaused=false;audioEnabled=true;reconnecting=false;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
+      opened=true;untilStop=false;audioPaused=false;audioEnabled=true;reconnecting=false;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();attention(getAttention());
@@ -87,6 +87,7 @@ window.ConversationVoiceMode=(()=>{
       if(value.continuousState?.starting){detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;}
       if(value.continuousState){
         const state=value.continuousState;
+        if(typeof state.untilStop==='boolean'&&state.untilStop!==untilStop){untilStop=state.untilStop;armClose();}
         if(Object.hasOwn(state,'message'))directMessage=state.message;
         if(typeof state.active==='boolean')listening=state.active;
         if(typeof state.starting==='boolean')preparing=state.starting;

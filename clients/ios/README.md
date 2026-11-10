@@ -298,3 +298,20 @@ capture/duplex compatibility, shared login/account, signing and phone delivery a
 not established by this synthetic runtime. The old srcdoc non-reservation result
 still does not prove actual frame-handler admission. The full original goal stays
 open; this record does not grant production selection or peer activation.
+
+
+## Integration with the current App source —10 November 2026
+
+The existing PR731 preparation is composed with the current App source rather
+than implemented again. All executable iOS/fixture/workflow and shared-adapter
+bytes remain identical to the previously qualified runtime2c021f1 (documentation
+heade0ab9a2); only guidance changes. NativeCI42393667849 is still an observed
+success; the later documentation-head installation failure remains a separate
+failed observation. No old simulator operation or unknown launch is replayed.
+
+Nicolas's instruction0a39d043 requests delivering prepared work without waiting
+for another independent review. This source-only integration uses the retained
+concrete qualification and does not claim an independent boundary review occurred.
+Normal capabilities stay OFF, and there is no signing, installation, production
+activation or device/hearing acceptance. Keep the exact origin/frame/document,
+retired owner, finite-buffer/deadline and lifecycle boundaries above.

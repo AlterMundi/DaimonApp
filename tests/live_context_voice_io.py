@@ -612,6 +612,16 @@ def qualify_public_context(binary):
         visits=LiveCreations(j.root/'public-visits')
         baseline=j.row('SELECT count(*) FROM conversation_inputs')
         async def owner(function,*args):return await asyncio.to_thread(function,*args)
+        class CurrentObserver:
+            # The Core peer is synthetic throughout this fixture. Only the
+            # observer RPC is stubbed; ledger reads still use the actual wrapper.
+            def __init__(self,binary):self.closed=False
+            def rpc(self,method,params):
+                assert method=='thread/items/list' and params['threadId']==frozen['native_thread']
+                return {'data':[{'turnId':'existing-integrator','item':{
+                    'id':'current-progress','type':'agentMessage','phase':'commentary',
+                    'text':'Existing current integrator progress.'}}],'nextCursor':None}
+            def close(self):self.closed=True
         async def scenario():
             previous=None
             # A complete provider fragment near12KiB still fits native typed
@@ -627,7 +637,7 @@ def qualify_public_context(binary):
                 assert spec['audio']['output']['voice']=='cedar'
                 assert visits.read(ident,100,frozen)['state']=='prepared'
                 if previous is not None:
-                    startup=spec['input'][-1]
+                    startup=spec['input'][-2]
                     assert startup['role']=='developer'
                     assert all(text in startup['content'][0]['text'] for text in texts[:cycle])
                     doc=json.loads(j.row('SELECT doc FROM live_context WHERE dialogue=?',(ident,))[0][0])
@@ -646,7 +656,7 @@ def qualify_public_context(binary):
                     'reason':'close_requested','session':{'id':'live:synthetic/'+ident}})
                 await context.close();previous=ident
             assert not j.fixture_errors,j.fixture_errors
-        asyncio.run(scenario())
+        with patch('dashboard.provider.Native',CurrentObserver):asyncio.run(scenario())
         assert j.row('SELECT count(*) FROM conversation_inputs')==baseline
         assert j.row("SELECT count(*) FROM live_context WHERE json_extract(doc,'$.closed')=1")==[(3,)]
         assert len(j.read_texts)>=2 and not j.messages
