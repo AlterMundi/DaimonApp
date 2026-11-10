@@ -1406,10 +1406,11 @@ html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.heartbeat-menu,#
  background:linear-gradient(135deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) left top/24px 24px no-repeat,linear-gradient(225deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) right top/24px 24px no-repeat,linear-gradient(45deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) left bottom/24px 24px no-repeat,linear-gradient(315deg,transparent 8px,#bf9067aa 9px 10px,transparent 11px) right bottom/24px 24px no-repeat,linear-gradient(145deg,#1c2b38,#0b151f 70%);
 }
 
-/* Cut panel silhouettes share the shell geometry. Pseudo-elements carry the
-   frame so children, focus rings and upward popovers are never clipped. */
+/* The scrolling panel itself owns its opaque surface. Decorative cut frames
+   must never be the only background: positioned layers cover the initial
+   scrollport, not every later scroll position. Keep children/focus unclipped. */
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer) {
- --hud-panel-cut:12px;isolation:isolate;border:0;border-radius:0;background:none;box-shadow:none;
+ --hud-panel-cut:12px;isolation:isolate;border:0;border-radius:0;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:none;
 }
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::before,
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {
