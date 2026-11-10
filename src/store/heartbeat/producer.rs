@@ -215,10 +215,24 @@ pub(in crate::store) fn save_returns(
     settle_terminal_attention_on(conn, &mut p)?;
     save(conn, &p)
 }
+// Retention protects recovery evidence; resource windows, not historical
+// receipts, bound inference. Continuous operation has room for more than two
+// full 48-envelope hours of exceptional outcomes while reviewed detail rotates.
+fn metadata_limits(conn: &Connection, p: &Parent) -> Result<(usize, usize)> {
+    Ok(
+        if super::resources::continuous_on(conn, p.session, p.human)? {
+            (128, 4 * 1024 * 1024)
+        } else {
+            (16, 256 * 1024)
+        },
+    )
+}
+
 pub(super) fn save(conn: &Connection, p: &Parent) -> Result<()> {
     let raw = serde_json::to_string(p)?;
+    let (returns, bytes) = metadata_limits(conn, p)?;
     anyhow::ensure!(
-        p.seen.len() <= 256 && p.native_returns.len() <= 16 && raw.len() <= 256 * 1024,
+        p.seen.len() <= 256 && p.native_returns.len() <= returns && raw.len() <= bytes,
         "Heartbeat metadata capacity reached; retained evidence was preserved"
     );
     conn.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key(p.human,p.session),raw])?;
@@ -462,7 +476,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
         "check_capacity"
     } else if p.seen.len() >= 256 {
         "cursor_capacity"
-    } else if p.native_returns.len() >= 16 {
+    } else if p.native_returns.len() >= metadata_limits(conn, &p)?.0 {
         "receipt_capacity"
     } else {
         "configured"
@@ -513,7 +527,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             "originals":"retained; exact attempted revisions are not automatically replayed"})
         });
     Ok(
-        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":16,"max_document_bytes":262144,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":metadata_limits(conn, &p)?.0,"max_document_bytes":metadata_limits(conn, &p)?.1,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -730,7 +744,7 @@ pub(super) fn renew_window_on(
         p.stopped_reason.is_none()
             && p.checks < p.contract.max_checks
             && p.seen.len() < 256
-            && p.native_returns.len() < 16,
+            && p.native_returns.len() < metadata_limits(conn, &p)?.0,
         "Producer capacity exhausted; renewal cannot reset counters or evidence"
     );
     let mut retry = None;
@@ -814,7 +828,7 @@ pub(super) fn renew_observation_on(
                 .checked_sub(p.checks)
                 .is_some_and(|remaining| remaining <= 1024)
             && p.seen.len() < 256
-            && p.native_returns.len() < 16,
+            && p.native_returns.len() < metadata_limits(conn, &p)?.0,
         "Select a nondecreasing cumulative observation ceiling with1–1024 remaining checks; evidence capacity and counters cannot reset"
     );
     if max_checks.is_some() {
@@ -939,11 +953,10 @@ fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
             }
         }
     }
-    // Preserve every unresolved receipt, but leave one of the existing sixteen
-    // slots for fresh work. Eight reviewed batches plus old pinned outcomes can
-    // otherwise fill the queue permanently despite available resources.
+    // Reviewed cache detail never consumes the final admission slot. Protected
+    // outcomes remain intact; normal reviewed work rotates indefinitely.
     let pinned = p.native_returns.len() - completed.len();
-    let reviewed_to_keep = 8.min(15usize.saturating_sub(pinned));
+    let reviewed_to_keep = 8.min((metadata_limits(conn, p)?.0 - 1).saturating_sub(pinned));
     for i in completed.into_iter().rev().skip(reviewed_to_keep) {
         p.native_returns.remove(i);
     }
@@ -986,7 +999,7 @@ fn check_on(conn: &Connection, c: &Check) -> Result<Option<Parent>> {
     if p.stopped_reason.is_some()
         || executions::unresolved_on(conn, c.human, c.entry)?
         || p.seen.len() >= 256
-        || p.native_returns.len() >= 16
+        || p.native_returns.len() >= metadata_limits(conn, &p)?.0
         || p.checks != c.sequence
         || p.binding != c.binding
         || p.native != c.native
@@ -1080,7 +1093,7 @@ impl Store {
             || (!super::resources::continuous_on(&tx, p.session, p.human)?
                 && (now >= p.contract.expires_at_unix_ms || p.checks >= p.contract.max_checks))
             || p.seen.len() >= 256
-            || p.native_returns.len() >= 16
+            || p.native_returns.len() >= metadata_limits(&tx, &p)?.0
         {
             save(&tx, &p)?;
             tx.commit()?;
@@ -1361,7 +1374,7 @@ impl Store {
         };
         p.native_returns.push(r);
         // Reserve room for this receipt's ACK and at most four new cursor keys.
-        if serde_json::to_vec(&p)?.len() > 256 * 1024 - 1024 {
+        if serde_json::to_vec(&p)?.len() > metadata_limits(&tx, &p)?.1 - 1024 {
             p.native_returns.pop();
             p.stopped_reason = Some("document_capacity".into());
             save(&tx, &p)?;
@@ -1686,6 +1699,10 @@ mod inbox_tests {
     #[test]
     fn continuous_retirement_leaves_headroom_without_retiring_pinned_outcomes() {
         let (_fixture, store, entry, _source) = setup();
+        assert_eq!(
+            store.heartbeat_control(100, entry, H::Status).unwrap()["producer"]["max_returns"],
+            16
+        );
         let generation = store.heartbeat_control(100, entry, H::Pause).unwrap()["generation"]
             .as_u64()
             .unwrap();
@@ -1734,9 +1751,9 @@ mod inbox_tests {
         // execution detail is unavailable must remain byte-for-byte intact.
         let pinned = serde_json::to_value(&parent.native_returns[..8]).unwrap();
         let seen = parent.seen.clone();
-        for index in 16..48 {
+        for index in 16..208 {
             compact_resolved_on(&conn, &mut parent).unwrap();
-            assert_eq!(parent.native_returns.len(), 15);
+            assert_eq!(parent.native_returns.len(), 16);
             assert_eq!(
                 serde_json::to_value(&parent.native_returns[..8]).unwrap(),
                 pinned
@@ -1755,14 +1772,34 @@ mod inbox_tests {
             parent.native_returns.push(next);
         }
         compact_resolved_on(&conn, &mut parent).unwrap();
-        assert_eq!(parent.native_returns.len(), 15);
+        assert_eq!(parent.native_returns.len(), 16);
         save(&conn, &parent).unwrap();
         drop(conn);
         let reopened = store.heartbeat_control(100, entry, H::Status).unwrap();
         assert_eq!(reopened["resources"], before["resources"]);
         assert_eq!(reopened["admission_paused"], before["admission_paused"]);
         assert_eq!(reopened["lanes"], before["lanes"]);
-        assert_eq!(reopened["producer"]["retained_returns"], 15);
+        assert_eq!(reopened["producer"]["retained_returns"], 16);
+        assert_eq!(reopened["producer"]["max_returns"], 128);
+        assert_eq!(reopened["producer"]["max_document_bytes"], 4 * 1024 * 1024);
+        let conn = store.conn.lock().unwrap();
+        let mut parent = load(&conn, 100, session).unwrap().unwrap();
+        while parent.native_returns.len() < 128 {
+            let mut retained = parent.native_returns[0].clone();
+            retained.id = format!("exceptional:{}", parent.native_returns.len());
+            parent.native_returns.push(retained);
+        }
+        save(&conn, &parent).unwrap();
+        parent.native_returns.push(parent.native_returns[0].clone());
+        assert!(save(&conn, &parent).is_err());
+        assert_eq!(
+            load(&conn, 100, session)
+                .unwrap()
+                .unwrap()
+                .native_returns
+                .len(),
+            128
+        );
     }
 
     #[test]
@@ -1779,7 +1816,7 @@ mod inbox_tests {
             let before = store.heartbeat_control(100, entry, H::Status).unwrap();
             let conn = store.conn.lock().unwrap();
             let mut parent = load(&conn, 100, session).unwrap().unwrap();
-            for index in 0..16 {
+            for index in 0..17 {
                 parent.native_returns.push(WorkflowReturn {
                     id: format!(
                         "heartbeat:100:{session}:{}",
@@ -1806,7 +1843,7 @@ mod inbox_tests {
             }
             save(&conn, &parent).unwrap();
             let protected = serde_json::to_value(&parent.native_returns[..8]).unwrap();
-            for index in 8..16 {
+            for index in 8..17 {
                 let r = &parent.native_returns[index];
                 let local = r.local.unwrap();
                 let mut execution = json!({"phase":"terminal","terminal_status":"completed",
@@ -1847,7 +1884,7 @@ mod inbox_tests {
                     .all(|r| r.phase == "accepted_terminal_reviewed")
             );
             compact_resolved_on(&conn, &mut observed).unwrap();
-            assert_eq!(observed.native_returns.len(), 15);
+            assert_eq!(observed.native_returns.len(), 16);
             assert_eq!(
                 serde_json::to_value(&observed.native_returns[..8]).unwrap(),
                 protected
