@@ -737,3 +737,14 @@ commands; status reads never change settings or start work. Only fresh explicit
 operational evidence animates the heart. Pending work is described as waiting,
 not as proof of readiness or a disabled heartbeat. Operator diagnostics remain
 available through the existing owner status API.
+
+## Communication card language
+
+Ordinary Matrix inbox, response and visibility cards use brief product states
+(Received, Sent, Delivered, Delivery not confirmed, Message copy or Communication)
+from existing metadata. Detailed verification caveats, publication identities
+and receipts remain in the existing collapsed Matrix details. Source text,
+attribution, revisions, reply binding, cursor and publication journals are
+unchanged. Payload-to-speech formatting and suppression of authorization-control
+payloads remain with the Matrix producer's existing compact-text projection;
+this presentation change adds no parser, router, publication or provider call.

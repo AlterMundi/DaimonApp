@@ -1803,8 +1803,9 @@ window.Conversation = (() => {
       const progress=source.kind.endsWith("_progress");
       sessionTitle(card,source,integrator ? "Conversation" : source.label);
       const matrix=source.kind==="matrix_inbox"||source.kind==="matrix_response";
+      const visibility=source.kind==="matrix_visibility";
       const deliveryPhase=source.handling?.phase;
-      card.status.textContent = source.kind==="matrix_visibility" ? "Durable communication copy. This record is not a human message or a delivery confirmation." : matrix ? (source.kind==="matrix_response" ?
+      const diagnosticStatus = visibility ? "Durable communication copy. This record is not a human message or a delivery confirmation." : matrix ? (source.kind==="matrix_response" ?
         deliveryPhase==="recipient_copy_proved" ? "Recipient receiving copy proved. Reading and work completion are unconfirmed." :
         deliveryPhase==="uncertain" ? "Delivery uncertain. The original response intent is retained; it has not been resent." :
         deliveryPhase==="submitted" ? "Submitted; recipient delivery is not proved." : "Response intent retained; delivery is not proved."
@@ -1814,14 +1815,20 @@ window.Conversation = (() => {
         : !source.current ? "Instruction coverage has not been confirmed."
         : source.kind === "matrix_result" ? "Reply from the selected daimon. Work completion is not independently verified."
         : source.completed ? "Session reports this request complete." : "Session progress; work may continue.";
-      if(matrix){
+      card.status.textContent = visibility ? "Communication" : matrix ? (
+        source.kind==="matrix_response" ? deliveryPhase==="recipient_copy_proved" ? "Delivered" :
+          deliveryPhase==="submitted" ? "Sent" : "Delivery not confirmed" :
+          source.direction==="incoming" ? "Received" : "Message copy") : diagnosticStatus;
+      if(matrix || visibility){
         if(!card.matrixDetails){
           card.matrixDetails=node("details");card.matrixDetails.append(node("summary","Matrix details"));card.matrixReceipt=node("pre",undefined,"route-identity");card.matrixDetails.append(card.matrixReceipt);card.box.append(card.matrixDetails);
         }
         card.matrixReceipt.textContent=JSON.stringify({direction:source.direction,author:source.source_author,
           original:source.kind==="matrix_inbox"?source.id.slice("matrix-inbox:".length):undefined,
           parent:source.parent_message_id,thread:source.thread_id,send:source.send_id,
-          handling:source.handling,verification:source.verification},null,2);
+          handling:source.handling,verification:source.verification,diagnostic:diagnosticStatus,
+          ...(visibility?{publication:source.publication_id,resource:source.publication_resource,
+            request_sha256:source.publication_request_sha256,part_index:source.part_index,part_count:source.part_count}:{})},null,2);
       }
       card.box.dataset.pending = String(!!source.correction_pending || source.native_binding_current === false);
       card.listen.hidden = !canListen;
