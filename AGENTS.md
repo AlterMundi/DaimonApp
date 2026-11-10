@@ -12,6 +12,14 @@ A routine same-actor composition with those contracts unchanged uses its concret
 source/receiving checks without an additional external approval gate. Record
 actual reviews, checks and receiving adoption separately; never invent a review.
 
+Voice-first public-native entry initializes an empty owned native context only on
+explicit authenticated Avatar entry, through `input voice native initialize`.
+Keep its durable metadata receipt, stable logical binding and existing originals;
+never invent a seed message, start inference or repeat an uncertain creation.
+History/page reads stay read-only. Optional `openai_live.default_native` selects
+only the configured Avatar route on initial page load, preserving later choices.
+See docs/interaction-native-codex-voice.md#voice-first-native-conversation-entry.
+
 After the final edit beneath `dashboard/web/avatar-workshop`, run
 `python3 -B -m dashboard.avatar_workshop_provenance --update` and the workshop
 provenance tests. Refresh only adapted hashes; preserve Ani/Oliva source attribution.

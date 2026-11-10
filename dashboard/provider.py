@@ -650,6 +650,16 @@ class Provider:
         self.check_capture_questions(body.get('capture_questions'))
         return self.decorate_input(self.presentation('input foreground retain '+json.dumps(body,ensure_ascii=False)))
 
+    def prepare_native_voice(self, binding):
+        """Explicit voice entry only: initialize an empty own native context, no input."""
+        value=self.presentation('input voice capabilities')
+        entry=value.get('entry_binding')
+        if (value.get('binding')!=binding or value.get('voice_available') is not True
+                or not isinstance(entry,list) or len(entry)!=4 or entry[0]!=self.human):
+            raise ProviderUnavailable('Configured voice entry unavailable or changed')
+        if entry[3] not in (None,''):return
+        self.presentation('input voice native initialize '+json.dumps({'binding':binding}))
+
     def public_live_binding(self, binding):
         """Resolve the integrating owner without borrowing Codex voice entitlement."""
         return self._voice_binding(binding, native=False)

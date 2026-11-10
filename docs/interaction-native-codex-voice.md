@@ -1424,3 +1424,43 @@ all four native source receipts. Both subsequent seeds inherited that language
 once and appended only their own flat event window, without nesting a previous
 serialized envelope. Spoken readback after both replacements agreed. This is
 natural semantic checkpoint evidence, not a forced64k-pressure test.
+
+
+### Voice-first native conversation entry
+
+An authenticated explicit public-native Avatar start can initialize an owned empty
+conversation with one metadata-only `thread/start` through the existing shared
+Codex server. This sends no human text, `turn/start`, goal update or inference.
+History GETs and ordinary page loading do not initialize a context. Existing
+native contexts and later explicit mode choices are preserved.
+
+The owner control is `input voice native initialize '{"binding":"CURRENT_BINDING"}'`.
+It requires the configured voice route, shared App Server and current allowed
+conversation owner. The existing ingress mutex and transactional receipt fence
+concurrent creation. Stop, maintenance, busy work, changed ownership or a changed
+logical generation refuse binding. Any observed native ID remains in the same
+receipt even when a later control wins. A lost creation response is retained as
+uncertain: do not create a replacement, reset the receipt or invent a seed message.
+The warm operation returns the current binding without another native request.
+First binding uses the existing context-carry transaction, preserving originals.
+
+After an explicit logical reset, a fully observed prior creation may precede a
+fresh initialization for the new binding. Preserve its original receipt in a
+flat history inside the same document; do not overwrite it or nest another
+history envelope. An unchanged binding or an unknown in-flight creation still
+refuses another creation, including after Reset. Known observed-unbound outcomes
+keep their original phase and native ID instead of pretending they were bound.
+The document holds at most64receipts and64KiB, reserving room for the returned
+native ID before creation. Capacity refusal preserves every receipt and starts
+nothing; it never discards history or refunds provider/accounting state.
+
+`openai_live.default_native = true` optionally selects this configured native
+Avatar route at page initialization. It defaults to false and requires an enabled
+native public Live route. It neither enables another speech provider nor changes
+`voice_services_default`; a later manual page selection survives refresh. Existing
+model, account, voice and physical-session/resource bounds remain unchanged.
+
+`tests/native_voice_first_entry_io.py` exercises the actual owner socket, native
+proxy and SQLite restart with a synthetic backend: exactly one `thread/start`,
+zero `turn/start` or invented originals. Provider audio and device/hearing
+acceptance remain separate from this metadata qualification.

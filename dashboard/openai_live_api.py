@@ -227,7 +227,11 @@ def install(app, config, provider, authorize, origins):
                 visit=history._ident(meta['id']);binding=meta['binding']
                 session,recheck,actor=await bind_voice_actor(provider,authorize,socket,meta,require_voice=False)
                 if dict(session).get('scope')=='monitor_readonly':raise HTTPException(403,'Voice interaction access required')
-                human=session['human'];owner=await asyncio.to_thread(provider.public_live_binding,binding)
+                human=session['human']
+                if native_backend and callable(getattr(provider,'prepare_native_voice',None)):
+                    await asyncio.to_thread(provider.prepare_native_voice,binding)
+                    await recheck()
+                owner=await asyncio.to_thread(provider.public_live_binding,binding)
                 if native_backend:
                     caps=await asyncio.to_thread(provider.presentation,'input voice capabilities')
                     if (caps.get('binding')!=binding or caps.get('foreground_live_window')!='journal-input/v1'

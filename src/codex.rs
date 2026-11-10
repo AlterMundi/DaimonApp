@@ -948,6 +948,48 @@ impl CodexRunner {
         }
         Ok(Some((native, profile.model, profile.effort)))
     }
+    /// Initialize a configured fresh conversation with metadata only. The
+    /// durable owner claim runs after transport setup, immediately before the
+    /// single thread/start. No turn/start, prompt or inference is submitted.
+    pub async fn initialize_voice_context<F>(
+        &self,
+        session: &SessionRecord,
+        dynamic_tools: &[Value],
+        claim: F,
+    ) -> Result<String>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        anyhow::ensure!(
+            self.shared_app_server && session.codex_thread_id.is_none() && !session.busy,
+            "Select a fresh idle shared native entry"
+        );
+        let profile = self
+            .session_profile(session.key)
+            .map(|p| NativeModelProfile::load(&default_codex_home(), p))
+            .transpose()?;
+        let mut selected = session.clone();
+        if let Some(p) = &profile {
+            selected.model = Some(p.model.clone());
+            selected.reasoning_effort = p.effort.clone();
+        }
+        let mut process = AppServerProcess::spawn(&self.binary, true).await?;
+        let outcome = async {
+            process.initialize().await?;
+            claim()?;
+            let (native, _) = tokio::time::timeout(
+                Duration::from_secs(15),
+                process.start_or_resume_thread(&selected, false, dynamic_tools, profile.as_ref()),
+            )
+            .await
+            .context("Native voice initialization response is unconfirmed")??;
+            Ok(native)
+        }
+        .await;
+        process.shutdown().await?;
+        outcome
+    }
+
     pub fn with_dynamic_tools(mut self, tools: Vec<Value>) -> Self {
         self.dynamic_tools = tools;
         self

@@ -129,6 +129,66 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("voice native initialize ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Initialize {
+            binding: String,
+        }
+        let selected: Initialize = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        anyhow::ensure!(
+            app.shared.config.codex.shared_app_server && app.shared.config.voice.is_some(),
+            "Configured native voice is required"
+        );
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        anyhow::ensure!(
+            current["binding"] == selected.binding,
+            "Voice initialization binding changed"
+        );
+        if current["entry_binding"][3]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        {
+            return Ok(current);
+        }
+        let session = app
+            .shared
+            .store
+            .get_session(cfg.entry())?
+            .context("Voice entry unavailable")?;
+        let token = uuid::Uuid::now_v7().to_string();
+        let native = app
+            .shared
+            .codex
+            .initialize_voice_context(&session, &super::dialogue::tool_specs(), || {
+                app.shared.store.conversation_voice_initialize_claim(
+                    human,
+                    cfg.entry(),
+                    &selected.binding,
+                    &token,
+                )
+            })
+            .await?;
+        let bound = app.shared.store.conversation_voice_initialize_observe(
+            human,
+            cfg.entry(),
+            session.id,
+            &token,
+            &native,
+        )?;
+        anyhow::ensure!(
+            bound,
+            "Observed native thread retained; voice ownership changed during initialization"
+        );
+        return app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry());
+    }
     if let Some(body) = args.strip_prefix("artifacts recover ") {
         let selected: super::artifact_outputs::Recovery = serde_json::from_str(body)?;
         let current = app
