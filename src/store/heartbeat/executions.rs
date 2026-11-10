@@ -255,6 +255,47 @@ impl Store {
         }
         Ok(())
     }
+    /// Observe one exact retained execution after its collector missed closure.
+    /// Full-record comparison preserves later transfer/pause/physical selection.
+    pub(crate) fn heartbeat_observed_terminal(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        expected: &Value,
+        physical: &str,
+        status: &str,
+    ) -> Result<bool> {
+        anyhow::ensure!(
+            matches!(status, "completed" | "failed" | "interrupted"),
+            "Heartbeat native state is not terminal"
+        );
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        if !selected(&conn, human, entry)?.iter().any(|r| r == expected) {
+            return Ok(false);
+        }
+        anyhow::ensure!(
+            expected["physical"].as_str() == Some(physical),
+            "Heartbeat terminal identity changed"
+        );
+        if !matches!(
+            expected["phase"].as_str(),
+            Some("owned" | "stopping" | "transferred")
+        ) || !expected["terminal_status"].is_null()
+        {
+            return Ok(false);
+        }
+        let local = expected["local"]
+            .as_i64()
+            .context("Heartbeat local identity missing")?;
+        let mut observed = expected.clone();
+        observed["terminal_status"] = json!(status);
+        if observed["phase"] != "transferred" {
+            observed["phase"] = json!("terminal");
+        }
+        save(&conn, local, &observed)?;
+        Ok(true)
+    }
+
     pub(crate) fn heartbeat_native_terminal(
         &self,
         local: i64,
@@ -353,6 +394,163 @@ mod tests {
         tx.commit()?;
         Ok(())
     }
+    #[test]
+    fn observed_terminal_releases_exact_owned_execution_without_refund() {
+        let (_file, s, entry) = setup();
+        let local = fresh(&s, &entry, "");
+        own(&s, &entry, local).unwrap();
+        s.heartbeat_native_started(local, "original-physical")
+            .unwrap();
+        let expected = s.heartbeat_executions(100, entry.key, false).unwrap()[0].clone();
+        let before = s
+            .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+            .unwrap();
+        assert!(unresolved_on(&s.conn.lock().unwrap(), 100, entry.key).unwrap());
+        assert!(
+            s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &expected,
+                "original-physical",
+                "completed"
+            )
+            .unwrap()
+        );
+        assert!(!unresolved_on(&s.conn.lock().unwrap(), 100, entry.key).unwrap());
+        let after = s
+            .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+            .unwrap();
+        assert_eq!(after["resources"], before["resources"]);
+        assert_eq!(after["generation"], before["generation"]);
+        assert_eq!(after["admission_paused"], before["admission_paused"]);
+        assert!(
+            !s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &expected,
+                "original-physical",
+                "completed"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn observed_terminal_rechecks_actor_physical_and_later_pause() {
+        let (_file, s, entry) = setup();
+        let local = fresh(&s, &entry, "");
+        own(&s, &entry, local).unwrap();
+        s.heartbeat_native_started(local, "original-physical")
+            .unwrap();
+        let expected = s.heartbeat_executions(100, entry.key, false).unwrap()[0].clone();
+        assert!(
+            s.heartbeat_observed_terminal(
+                101,
+                entry.key,
+                &expected,
+                "original-physical",
+                "completed"
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &expected,
+                "different-physical",
+                "completed"
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &expected,
+                "original-physical",
+                "inProgress"
+            )
+            .is_err()
+        );
+        s.heartbeat_control(100, entry.key, HeartbeatCommand::Pause)
+            .unwrap();
+        s.heartbeat_executions(100, entry.key, true).unwrap();
+        assert!(
+            !s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &expected,
+                "original-physical",
+                "completed"
+            )
+            .unwrap()
+        );
+        let stopping = s.heartbeat_executions(100, entry.key, false).unwrap()[0].clone();
+        assert_eq!(stopping["phase"], "stopping");
+        assert!(
+            s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &stopping,
+                "original-physical",
+                "interrupted"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            s.heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["admission_paused"],
+            true
+        );
+    }
+
+    #[test]
+    fn observed_terminal_preserves_transferred_original_and_human_successor() {
+        let (_file, s, entry) = setup();
+        let local = fresh(&s, &entry, "");
+        own(&s, &entry, local).unwrap();
+        s.heartbeat_native_started(local, "original-physical")
+            .unwrap();
+        let before_transfer = s.heartbeat_executions(100, entry.key, false).unwrap()[0].clone();
+        s.heartbeat_external_input(local).unwrap();
+        assert!(
+            !s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &before_transfer,
+                "original-physical",
+                "completed"
+            )
+            .unwrap()
+        );
+        let transferred = s.heartbeat_executions(100, entry.key, false).unwrap()[0].clone();
+        assert!(
+            s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &transferred,
+                "human-successor",
+                "completed"
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_observed_terminal(
+                100,
+                entry.key,
+                &transferred,
+                "original-physical",
+                "completed"
+            )
+            .unwrap()
+        );
+        let observed = s.heartbeat_executions(100, entry.key, false).unwrap()[0].clone();
+        assert_eq!(observed["phase"], "transferred");
+        assert_eq!(observed["physical"], "original-physical");
+        assert_eq!(observed["terminal_status"], "completed");
+    }
+
     #[test]
     fn heartbeat_lane_pause_claims_only_its_exact_owned_execution() {
         let (_f, s, entry) = setup();
