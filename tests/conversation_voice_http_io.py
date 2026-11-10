@@ -126,6 +126,10 @@ print(json.dumps({'text':item['text'],'final':True}))
         silent=audio(silence=True);register(silent,'Never use hallucinated silence')
         silent_id,r=upload(silent);assert r.status_code==200
         j.wait(lambda:status(silent_id)['phase']=='preparation_unconfirmed');assert len(calls())==1 and len(j.packets)==2
+        assert 'voice_failure' not in status(silent_id),'Diagnostics belong in the existing technical trace only'
+        trace=client.get('/api/interaction/inputs/'+silent_id+'/trace',headers=headers)
+        assert trace.status_code==200,trace.text
+        assert trace.json()['voice_failure']=={'stage':'audio_signal','interrupted':False,'completed_only':False}
         # Failed originals recover only already completed text, preserving order/identity.
         recovery_data=audio(610);recovery_digest=register(recovery_data,'Recovered original')
         transcripts[recovery_digest]['fail']=True
