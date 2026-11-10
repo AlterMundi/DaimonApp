@@ -47,6 +47,7 @@
     if(selected==='unavailable' && fresh){
       if(e.reason==='attention_pending')return {label:'Waiting',detail:'Earlier heartbeat work is still pending.'};
       if(e.reason==='native_busy')return {label:'Waiting',detail:'Automatic work waits while our conversation is busy.'};
+      if(e.reason==='native_idle_unloaded')return {label:'Waiting',detail:'Our conversation will be prepared when automatic work arrives.'};
       if(['source_check_stale','source_check_unavailable','controls_changed','native_binding_changed'].includes(e.reason))return {label:'Checking',detail:'Checking whether heartbeat is ready.'};
       if(['loop_unavailable','native_support_unavailable','native_admission_unavailable','native_observation_unavailable'].includes(e.reason))return {label:'Needs attention',detail:'Heartbeat is enabled but cannot start automatic work.'};
     }

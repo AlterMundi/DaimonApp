@@ -902,6 +902,15 @@ impl CodexRunner {
                         "Native model selection changed"
                     );
                 }
+                // An evicted idle thread has no loaded admission capability.
+                // The existing bounded-work path may resume it when work arrives;
+                // null isn't an explicit refusal and doesn't require a repair.
+                if thread["status"]["type"] == "notLoaded"
+                    && (thread["canAcceptDirectInput"].is_null()
+                        || thread["canAcceptDirectInput"] == true)
+                {
+                    return Ok("native_idle_unloaded");
+                }
                 if thread["canAcceptDirectInput"] != true {
                     return Ok("native_admission_unavailable");
                 }
@@ -4288,13 +4297,21 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn bounded_idle_readiness_is_read_only_and_checks_actual_native_metadata() {
-        for (support, status, returned_id, model, expected) in [
-            (true, "idle", "selected-native", "gpt-5.4", Some("ready")),
+        for (support, status, returned_id, model, accepts, expected) in [
+            (
+                true,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some(true),
+                Some("ready"),
+            ),
             (
                 true,
                 "active",
                 "selected-native",
                 "gpt-5.4",
+                Some(true),
                 Some("native_busy"),
             ),
             (
@@ -4302,6 +4319,7 @@ mod tests {
                 "idle",
                 "selected-native",
                 "gpt-5.4",
+                Some(true),
                 Some("native_support_unavailable"),
             ),
             (
@@ -4309,10 +4327,50 @@ mod tests {
                 "notLoaded",
                 "selected-native",
                 "gpt-5.4",
-                Some("native_binding_unavailable"),
+                Some(true),
+                Some("native_idle_unloaded"),
             ),
-            (true, "idle", "another-native", "gpt-5.4", None),
-            (true, "idle", "selected-native", "another-model", None),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                None,
+                Some("native_idle_unloaded"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                Some(false),
+                Some("native_admission_unavailable"),
+            ),
+            (
+                true,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some(false),
+                Some("native_admission_unavailable"),
+            ),
+            (
+                true,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                None,
+                Some("native_admission_unavailable"),
+            ),
+            (true, "idle", "another-native", "gpt-5.4", Some(true), None),
+            (
+                true,
+                "idle",
+                "selected-native",
+                "another-model",
+                Some(true),
+                None,
+            ),
         ] {
             let root = tempfile::tempdir().unwrap();
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4336,7 +4394,7 @@ mod tests {
                                 request["params"],
                                 json!({"threadId":"selected-native","includeTurns":false})
                             );
-                            json!({"thread":{"id":returned_id,"model":model,"modelProvider":"openai","canAcceptDirectInput":true,"status":{"type":status}}})
+                            json!({"thread":{"id":returned_id,"model":model,"modelProvider":"openai","canAcceptDirectInput":accepts,"status":{"type":status}}})
                         }
                         other => panic!(
                             "Readiness must never resume, admit, mutate or call a provider: {other:?}"
