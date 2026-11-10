@@ -17,7 +17,7 @@ window.ConversationVoiceMode=(()=>{
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(review,speak,back);
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
     let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
-    const detectionLabels={waiting_speech:'Waiting for voice detection',speaking:'Voice detected',waiting_endpoint:'Voice detected · waiting for phrase end',waiting_analysis:'Checking captured sound',waiting_transcript:'Phrase end detected · waiting for transcript',finishing:'Phrase end detected · saving audio',confirming:'Sending your phrase',confirmed:'Phrase sent',foreground_saved:'Phrase saved · voice conversation',review:'Recording needs review'};
+    const detectionLabels={waiting_speech:'Waiting for speech',speaking:'Voice detected',waiting_endpoint:'Voice detected',waiting_analysis:'Processing your recording',waiting_transcript:'Processing your recording',finishing:'Saving your recording',confirming:'Sending your recording',confirmed:'Recording sent',foreground_saved:'Recording saved',review:'Check your recording in the conversation'};
     let audioPaused=false,audioEnabled=true,reconnecting=false,untilStop=false;
     const reconnectNotice='Your recording is kept; anything said during the pause may need review.';
     const canResumeAudio=()=>continuous&&listening&&!preparing&&!directPending&&typeof onResumeAudio==='function'&&(audioPaused||!audioEnabled);
@@ -26,15 +26,16 @@ window.ConversationVoiceMode=(()=>{
       const {id,gate}=value;
       if(gate==='speaking'){detectorId=id;recentEnd=undefined;}
       if(!detectorId||['waiting_speech','speaking','waiting_endpoint','waiting_analysis','waiting_transcript','finishing'].includes(gate))detectorId=id;
-      if(gate==='waiting_transcript'||gate==='finishing')recentEnd={id,label:'Phrase end detected'};
-      if(recentEnd?.id===id&&gate==='confirmed')recentEnd.label='Phrase sent';
-      if(recentEnd?.id===id&&gate==='foreground_saved')recentEnd.label='Phrase saved';
+      if(gate==='waiting_transcript'||gate==='finishing')recentEnd={id,label:'Phrase ended'};
+      if(recentEnd?.id===id&&gate==='confirmed')recentEnd.label='Recording sent';
+      if(recentEnd?.id===id&&gate==='foreground_saved')recentEnd.label='Recording saved';
       if(id===detectorId||gate==='review'){
-        detectionText=gate==='review'&&value.review_after==='waiting_speech'?'Recording needs review · voice was not detected':detectionLabels[gate];
-        if(Number.isSafeInteger(value.captured_ms)&&Number.isSafeInteger(value.analyzed_ms)&&value.captured_ms-value.analyzed_ms>2000)detectionText+=' · Voice analysis delayed';
-        detection.dataset.warning=String(gate==='review'||Number.isSafeInteger(value.captured_ms)&&Number.isSafeInteger(value.analyzed_ms)&&value.captured_ms-value.analyzed_ms>2000);
+        detectionText=gate==='review'&&value.review_after==='waiting_speech'?'Speech was not detected. Check your recording in the conversation.':detectionLabels[gate];
+        // Capture/analysis timings remain in the existing technical inspector.
+        // Ordinary voice feedback describes progress or the user's next action.
+        detection.dataset.warning=String(gate==='review');
       }
-      const text=(detectionText||'')+(recentEnd&&recentEnd.id!==detectorId?' · Previous phrase: '+recentEnd.label.toLowerCase():'');
+      const text=(detectionText||'')+(recentEnd&&recentEnd.id!==detectorId?' · Previous recording: '+recentEnd.label.toLowerCase():'');
       if(detection.textContent!==text)detection.textContent=text;
       detection.hidden=!continuous||!text;
     }
@@ -115,7 +116,7 @@ window.ConversationVoiceMode=(()=>{
         else if(!listening&&!preparing&&directMessage)caption.textContent=directMessage;
         else if(value.continuousState&&wasStopped&&!Object.hasOwn(value,'caption'))caption.textContent='';
         const resume=!reconnecting&&canResumeAudio(),reconnect=!reconnecting&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect();
-        speak.hidden=reconnect?false:!resume&&(preparing||listening||directPending);speak.disabled=directWorking||preparing||!resume&&!reconnect&&!canStart();speak.title=reconnect?'Reconnect voice and save a connection diagnostic':'';speak.textContent=reconnect?'Reconnect voice':resume?(audioEnabled?'Resume audio':'Enable audio'):'Start voice';
+        speak.hidden=reconnect?false:!resume&&(preparing||listening||directPending);speak.disabled=directWorking||preparing||!resume&&!reconnect&&!canStart();speak.title='';speak.textContent=reconnect?'Reconnect voice':resume?(audioEnabled?'Resume audio':'Enable audio'):'Start voice';
         dialog.dataset.phase=phase==='recording'?'listening':playing?'speaking':'waiting';return;
       }
       status.dataset.nearLimit='false';status.removeAttribute('aria-label');

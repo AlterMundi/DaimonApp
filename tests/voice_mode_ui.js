@@ -57,16 +57,16 @@ assert.equal(direct.nodes.find(n=>n.className==='voice-mode-state').textContent,
 assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textContent,/Voice analysis stopped/);
 const badge=direct.nodes.find(n=>n.className==='voice-mode-detection');
 direct.mode.update({handoff:{id:'first',gate:'waiting_speech',captured_ms:37000,analyzed_ms:6200,words:true}});
-assert.match(badge.textContent,/Waiting for voice detection/);assert.match(badge.textContent,/Voice analysis delayed/);assert.equal(badge.hidden,false);
+assert.equal(badge.textContent,'Waiting for speech','A detector snapshot cannot assert that the microphone is active');assert(!badge.textContent.includes('analysis'));assert.equal(badge.dataset.warning,'false');assert.equal(badge.hidden,false);
 direct.mode.update({handoff:{id:'first',gate:'speaking',captured_ms:1000,analyzed_ms:1000}});assert.equal(badge.textContent,'Voice detected');
-direct.mode.update({handoff:{id:'first',gate:'waiting_endpoint'}});assert.match(badge.textContent,/waiting for phrase end/);
-direct.mode.update({handoff:{id:'first',gate:'finishing'}});assert.match(badge.textContent,/Phrase end detected/);
-direct.mode.update({handoff:{id:'second',gate:'waiting_speech'}});assert.match(badge.textContent,/Previous phrase: phrase end detected/,'Immediate recorder rearm must not erase the visible end marker');
-direct.mode.update({handoff:{id:'first',gate:'confirmed'}});assert.match(badge.textContent,/Previous phrase: phrase sent/);
+direct.mode.update({handoff:{id:'first',gate:'waiting_endpoint'}});assert.equal(badge.textContent,'Voice detected');
+direct.mode.update({handoff:{id:'first',gate:'finishing'}});assert.equal(badge.textContent,'Saving your recording');
+direct.mode.update({handoff:{id:'second',gate:'waiting_speech'}});assert.match(badge.textContent,/Previous recording: phrase ended/,'Immediate recorder rearm must not erase the visible end marker');
+direct.mode.update({handoff:{id:'first',gate:'confirmed'}});assert.match(badge.textContent,/Previous recording: recording sent/);
 direct.mode.update({handoff:{id:'second',gate:'speaking'}});assert.equal(badge.textContent,'Voice detected');
 direct.mode.update({handoff:{id:'first',gate:'confirmed'}});assert.equal(badge.textContent,'Voice detected','An old original cannot replace current voice detection');
 direct.mode.update({caption:'Visible words'});assert.equal(badge.textContent,'Voice detected','ASR text cannot assert or erase endpoint detection');
-direct.mode.update({handoff:{id:'second',gate:'review',review_after:'waiting_speech'}});assert.match(badge.textContent,/voice was not detected/);
+direct.mode.update({handoff:{id:'second',gate:'review',review_after:'waiting_speech'}});assert.match(badge.textContent,/Speech was not detected/);assert.match(badge.textContent,/Check your recording in the conversation/);assert.equal(badge.dataset.warning,'true');
 direct.mode.update({handoff:{id:'second',gate:'__proto__',text:'untrusted'}});assert(!badge.textContent.includes('untrusted'));
 direct.mode.configure(true,false);assert(!direct.mode.active);assert.equal(direct.portrait.parent,direct.header);
 const background=boot({suspend:true});background.mode.configure(true,true);background.portrait.events.click();
@@ -122,7 +122,7 @@ paused.mode.update({continuousState:{active:false,pending:true,audioPaused:true}
 
 console.log('Fullscreen voice: avatar identity, explicit opt-in, response/rearm fences, review, explicit in-avatar audio recovery, Escape, hidden and bounded exit passed.');
 
-let reconnected=0;const recoveryMode=boot({reconnect:()=>reconnected++});recoveryMode.mode.configure(true,true);recoveryMode.portrait.events.click();recoveryMode.canStart(false);recoveryMode.mode.update({continuousState:{active:false,starting:false,pending:true,working:false,message:'Recordings retained.'}});const reconnectButton=recoveryMode.nodes.find(v=>v.textContent==='Reconnect voice');assert(reconnectButton&&!reconnectButton.hidden&&!reconnectButton.disabled);reconnectButton.events.click();assert.equal(reconnected,1);assert(recoveryMode.mode.active,'Reconnect stays inside Avatar and keeps the review action available');
+let reconnected=0;const recoveryMode=boot({reconnect:()=>reconnected++});recoveryMode.mode.configure(true,true);recoveryMode.portrait.events.click();recoveryMode.canStart(false);recoveryMode.mode.update({continuousState:{active:false,starting:false,pending:true,working:false,message:'Recordings retained.'}});const reconnectButton=recoveryMode.nodes.find(v=>v.textContent==='Reconnect voice');assert(reconnectButton&&!reconnectButton.hidden&&!reconnectButton.disabled);assert.equal(reconnectButton.title,'','Product reconnect does not expose diagnostic-storage machinery');reconnectButton.events.click();assert.equal(reconnected,1);assert(recoveryMode.mode.active,'Reconnect stays inside Avatar and keeps the review action available');
 
 // A continuous engine owns a ten-minute microphone visit, whereas the legacy
 // alternating view retains its independent five-minute opt-in.
