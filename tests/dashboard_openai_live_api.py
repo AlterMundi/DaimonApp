@@ -716,7 +716,7 @@ class Mounted(unittest.TestCase):
         owner.presentation_list=lambda delivery,native,direction:{'binding':owner.binding,
             'newest':{'native':77 if calls['work'] and not automatic else 0},'items':[{'id':'native:77',
                 'revision':'d'*64,'kind':'integrator_answer','local_turn':42}] if calls['work'] and native<77 and not automatic else [],
-            'more':False,'cursor':{'delivery':0,'native':77}}
+            'more':False,'cursor':{'delivery':0,'native':77 if calls['work'] and not automatic else 0}}
         owner.presentation_part=lambda source,revision,offset:{'id':source,'revision':revision,'offset':offset,
             'next_offset':None,'text':'Soy CompAII. Este resultado viene del integrador nativo.',
             'entry_binding':frozen['entry_binding'][:3]+[owner.binding],
