@@ -465,5 +465,17 @@ Node regressions reproduce the missing link on the previous source, then pass
 initial/delayed/refused ownership, exact microphone retention across successor,
 Stop-before-ack, duplicate/stale/foreign and uncertain-result cases. Foundation
 regressions cover the closed IPC fields, predecessor CAS, duplicate generations,
-retired IDs and512-ID limit. Swift/SDK qualification for this delta is pending;
-no microphone/provider/physical hearing or runtime activation is claimed.
+retired IDs and512-ID limit. Exact Swift/SDK and synthetic bridge checks passed;
+active-microphone handover and physical hearing remain unqualified.
+
+PR848 source43f8a950 merged80b6561c. Native42787218013 passed40Swift cases,
+both SDK apps/helper absence and the actual iPhone16/iOS26.2 simulator fixture:
+28800PCM played bytes,35520Beacon frames, capture identity/duplicate admission,
+inactive successor refusal, iframe/outside/TLS boundaries and confirmed owned
+cleanup. It requested no microphone; active-capture renewal is not demonstrated.
+Main42787217947 passed. Android build and its13instrumentation cases passed, but
+the decoder command ended255 after its OK output; the ending command/cause is
+not established and that overall job remains failed. Android product source is
+unchanged. The compatible optional Public Live client is HTTPS-byte-verified on
+all7 existing receivers; source integration/web selection does not activate, sign
+or distribute an iOS native build. Normal native flags remain OFF.

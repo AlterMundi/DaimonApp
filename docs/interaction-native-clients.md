@@ -544,3 +544,12 @@ active. Stop/expiry/background and unknown acknowledgments prevent resurrection;
 no new permission, provider/context/storage budget or automatic retry follows.
 The bounded512-ID ledger and old-deadline generation fence are source preparation;
 exact Swift/SDK/runtime and physical acceptance remain separately tracked.
+
+PR848 source43f8a950/merge80b6561c adds the connection lease and the compatible
+optional web hook.40Swift/SDK/main checks and the real simulator bridge fixture
+passed, including refusing a successor without active microphone capture. The
+web client is selected and HTTPS-byte-verified all7, with existing configuration
+and protected native processes preserved. Native iOS capability activation,
+signing/distribution, actual microphone handover and phone/hearing acceptance
+remain open. Android13instrumentation cases reported OK but its final command
+exited255; the cause remains unproved, not an overall Android green claim.
