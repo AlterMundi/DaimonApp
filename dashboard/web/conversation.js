@@ -147,8 +147,8 @@ window.Conversation = (() => {
     if(standalone){
       const presence=$("#conversation-companion"),identity=$("header .identity"),tools=$("header .header-tools"),beacon=$("#conversation-sound-toggle");
       if(presence && identity)identity.append(presence);
-      const build=$("#client-build"),diagnostics=$("#conversation-diagnostics .conversation-diagnostics-content");
-      if(build && diagnostics)diagnostics.prepend(build);
+      const build=$("#client-build"),name=$("#conversation-companion .companion-name");
+      if(build && name)name.before(build);
       if(tools && beacon){tools.insertBefore(beacon,tools.firstChild);beacon.title="Session sound · Beacon";}
       $("#conversation-sound").append($("#conversation-sound-controls"),$("#conversation-sound-feedback"));
       const compose = $("#conversation-compose"), playback = $("#conversation-audio-tools");
