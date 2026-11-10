@@ -72,3 +72,10 @@ assert.equal(presentation({...waiting,operational_evidence:{...waiting.operation
 assert.equal(presentation({...waiting,operational_evidence:{...waiting.operational_evidence,reason:'native_busy'}},now).label,'Waiting');
 for(const input of [null,base,waiting,continuous,failed])assert.doesNotMatch(JSON.stringify(presentation(input,now)),/Generation|generation|source check|admission|allocation|lane|2023-|arbitrary private/i);
 console.log('Heartbeat: plain product states preserve fresh evidence and hide operator diagnostics.');
+
+const unloaded={...waiting,operational_evidence:{...waiting.operational_evidence,reason:'native_idle_unloaded'}};
+assert.equal(presentation(unloaded,now).label,'Waiting');
+assert.equal(presentation(unloaded,now).detail,'Our conversation will be prepared when automatic work arrives.');
+assert.equal(state(unloaded,now),'unavailable','An unloaded thread is not fresh positive admission proof');
+assert.equal(presentation(unloaded,now+15000).label,'Status unavailable');
+assert.equal(presentation({...unloaded,operational_evidence:{...unloaded.operational_evidence,reason:'native_admission_unavailable'}},now).label,'Needs attention','An explicit native refusal still needs attention');

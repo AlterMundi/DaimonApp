@@ -156,6 +156,7 @@ pub(super) async fn annotate(app: &App, human: i64, entry: SessionKey, value: &m
                 | "native_binding_unavailable"
                 | "native_support_unavailable"
                 | "native_admission_unavailable"
+                | "native_idle_unloaded"
                 | "native_busy"
                 | "attention_pending"
                 | "native_observation_unavailable"
