@@ -61,7 +61,7 @@
     "PR776 mission bridge composed with the existing App owner selection: clean saved-revision return/reopen; Use, actual participation, display review and Oca credit remain separate."
   ],
   "receiving_hashes": {
-    "renderer.mjs": "4bac887e1750c521486ad31f2a536b60639f43cc576c85cf635b391d507f3dc8",
+    "renderer.mjs": "4a8fcd782c9ac3346022f0b575d5a8bd000b500ba93776b5e7e8fadafe6ba814",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
     "experiments/school-avatar-quest/index.html": "0751eff50e1a1e2b5dd783f3246ff683c506c260921fa9851980708a15a619ab",

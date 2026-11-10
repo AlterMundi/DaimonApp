@@ -3,6 +3,10 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const output=process.env.QUALIFICATION_OUTPUT;assert(output&&path.isAbsolute(output)&&!fs.existsSync(output));fs.mkdirSync(output,{mode:0o700});
+const avatarPath=process.env.QUALIFICATION_AVATAR_RECORD;
+let avatarRecord;
+if(avatarPath){assert(path.isAbsolute(avatarPath));const bytes=fs.readFileSync(avatarPath);assert(bytes.length<=1048576);avatarRecord=JSON.parse(bytes);assert(/^[a-f0-9-]{36}$/.test(avatarRecord.id)&&avatarRecord.design);}
+const avatarEntrySelector=avatarRecord?'#conversation-companion .avatar-surface':'#conversation-companion pre';
 const imageCase=process.env.QUALIFICATION_IMAGE_PREVIEW==='1';let imageAccess=true;
 const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
 const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
@@ -38,6 +42,9 @@ const server=http.createServer(async(req,res)=>{
  try{
  if(url.pathname.startsWith('/api/')){
   const route=url.pathname.slice(5);
+  if(avatarRecord&&route==='interaction/avatars'&&req.method==='GET')return json({generation:1,active:avatarRecord.id,editing:avatarRecord.id,versions:[]});
+  if(avatarRecord&&route==='interaction/avatars/'+avatarRecord.id&&req.method==='GET')return json(avatarRecord);
+
   if(imageCase&&route==='interaction/artifacts/'+imageArtifact.id){res.writeHead(200,{'content-type':'application/octet-stream','X-Artifact-Sha256':imageArtifact.sha256});res.end(imageBytes);return;}
   if(route==='interaction/voice/gpt-live/visits'){
    const older=url.searchParams.has('before');
@@ -99,12 +106,12 @@ const server=http.createServer(async(req,res)=>{
   if(route.startsWith('interaction/inputs/'))return json({schema:'telecodex.conversation-trace/v1',routes:[],text:'Exact synthetic input',read_only:true});
   return json({...base(),schema:route==='interaction/telegram-inputs'?'telecodex.telegram-input-list/v1':undefined});
  }
- const name=url.pathname.startsWith('/assets/')?path.basename(url.pathname):'index.html';
- const file=path.join(publicRoot,name);if(!fs.existsSync(file)){res.writeHead(404);return res.end();}
+ const name=url.pathname.startsWith('/assets/avatar-workshop/')?url.pathname.slice('/assets/'.length):url.pathname.startsWith('/assets/')?path.basename(url.pathname):'index.html';
+ const file=path.resolve(publicRoot,name);if(!file.startsWith(publicRoot+path.sep)){res.writeHead(404);return res.end();}if(!fs.existsSync(file)){res.writeHead(404);return res.end();}
  let body=fs.readFileSync(file);
  if(name==='index.html')body=body.toString().replace('<html lang="en">','<html lang="en" data-shared-auth="true"'+(authoredCase?' data-style-policy="authored"':'')+'>').replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>','');
  if(name==='index.html'&&appearanceCase)body=body.toString().replace('</head>','<style>:root{--dm-background:#ffffff;--dm-surface:#ffffff;--dm-text:#111111;--dm-accent:#176241}</style></head>');
- res.writeHead(200,{'content-type':name.endsWith('.js')?'application/javascript':name.endsWith('.css')?'text/css':name.endsWith('.woff2')?'font/woff2':'text/html'});res.end(body);
+ res.writeHead(200,{'content-type':(name.endsWith('.js')||name.endsWith('.mjs'))?'application/javascript':name.endsWith('.json')?'application/json':name.endsWith('.ttf')?'font/ttf':name.endsWith('.css')?'text/css':name.endsWith('.woff2')?'font/woff2':'text/html'});res.end(body);
  }catch(error){errors.push(String(error));res.writeHead(500);res.end('Fixture error');}
 });
 server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>sockets.delete(socket));});
@@ -181,8 +188,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  if(reconnectCase)await context.addInitScript(()=>{
   let source;Object.defineProperty(window,'SessionWorkspace',{configurable:true,get:()=>source,set(value){source={...value,mount(options){const control=value.mount(options);window.workspaceFixture.workspace=control;return control;}};}});
  });
- const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
+ let selectedAvatarCanvas;const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
+ if(avatarRecord){await page.waitForFunction(()=>document.querySelector('.avatar-surface')?.dataset.avatarState==='custom');selectedAvatarCanvas=await page.locator('.avatar-surface canvas').elementHandle();assert.equal(await page.locator('.avatar-surface canvas').count(),1);report.avatar={id:avatarRecord.id,sha256:avatarRecord.sha256,name:avatarRecord.name,evidence:'Retained selected artwork rendered with synthetic API ownership; no selection/save or hearing claim'};}
  if(process.env.QUALIFICATION_COMPACT_AVATAR_HEADER==='1'){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   assert.equal(await page.locator('#conversation-presence,.companion-status-track,.companion-caption,.companion-phases').count(),0,'Caption lane and its status/background container are absent');
@@ -490,18 +498,33 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.evaluate(()=>codexFixture.opens),0,'Reading source history never opens voice');
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','Public Live never replaces the default');
   await page.locator('#conversation-message').fill('Keep this draft while I compare voices.');
-  await selectEngine('gpt-live');await page.locator('#conversation-companion pre').click();
+  await selectEngine('gpt-live');await page.locator(avatarEntrySelector).click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');
   assert(await page.locator('#conversation-voice-engine').isDisabled());
   await page.locator('#conversation-voice-engine').evaluate(select=>{select.value='provider';select.dispatchEvent(new Event('change'));});
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'gpt-live','A running public visit is frozen');
   await page.waitForFunction(()=>codexFixture.captureBytes>64000);
   await page.screenshot({path:path.join(output,'public-live-desktop.png')});
+  if(avatarRecord){
+   report.avatar.layouts=[];
+   for(const [width,height] of [[390,844],[320,450]]){
+    await page.setViewportSize({width,height});
+    const layout=await page.evaluate(()=>{
+     const box=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+     return {portrait:box('.voice-mode-portrait'),canvas:box('.voice-mode-portrait canvas'),status:box('.voice-mode-state'),controls:box('.voice-mode-controls'),viewport:{width:innerWidth,height:innerHeight}};
+    });
+    assert(layout.canvas.width>0&&layout.canvas.height>0);assert(layout.portrait.bottom<=layout.status.top+1);assert(layout.controls.bottom<=height+1);assert(layout.controls.left>=0&&layout.controls.right<=width+1);
+    assert.equal(await page.locator('.voice-mode canvas').count(),1,'Same selected canvas enters full-screen voice');
+    assert(await selectedAvatarCanvas.evaluate(c=>document.querySelector('.voice-mode canvas')===c));report.avatar.layouts.push(layout);
+    await page.screenshot({path:path.join(output,`public-live-selected-${width}x${height}.png`)});
+   }
+  }
   await page.setViewportSize({width:390,height:844});
   await page.getByRole('button',{name:'Back to conversation',exact:true}).click();
   await page.waitForFunction(()=>codexFixture.contexts.every(ctx=>ctx.state==='closed')&&codexFixture.peers.every(peer=>peer.connectionState==='closed'));
   await page.locator('#conversation-timeline').getByText('Conservo tu corrección.',{exact:true}).waitFor();
   assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I compare voices.');
+  if(avatarRecord){assert.equal(await page.locator('#conversation-companion .avatar-surface canvas').count(),1,'Back restores the same selected artwork');assert(await selectedAvatarCanvas.evaluate(c=>document.querySelector('#conversation-companion canvas')===c));}
   await page.locator('#conversation-compose-notices>summary').click();const panel=page.locator('#conversation-public-live-recovery');await panel.waitFor({state:'visible'});await panel.locator('summary').click();
   await page.screenshot({path:path.join(output,'public-live-mobile-recovery.png')});
   await panel.getByRole('button',{name:'Try saving audio',exact:true}).click();await panel.waitFor({state:'hidden'});
@@ -509,9 +532,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0,'Public media and original recovery never submit ordinary native work');
   assert.equal(await page.evaluate(()=>codexFixture.opens),1);
   report.state='qualified-public-live-synthetic-browser';report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
-  report.viewports=['1280x800','390x844'];
+  report.viewports=avatarRecord?['1280x800','390x844','320x450']:['1280x800','390x844'];
  }else if(codexCase&&reloadCase){
-  await selectEngine('codex');await page.locator('#conversation-companion pre').click();
+  await selectEngine('codex');await page.locator(avatarEntrySelector).click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening');await page.waitForTimeout(3500);
   const before=await page.evaluate(()=>codexFixture.captureBytes);assert(before>32000);
   const locked=await page.evaluate(async()=>{const row=(await VoiceInput.recoveryStore('codex_voice').list())[0];return navigator.locks.request('daimon-native-voice:'+row.codex_visit,{ifAvailable:true},lock=>lock===null);});
@@ -554,7 +577,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-message').fill('');
   await page.locator('#conversation-message').fill('My unsent draft stays while I review the question.');
   await selectEngine('codex');
-  await page.locator('#conversation-companion pre').click();
+  await page.locator(avatarEntrySelector).click();
   await page.waitForFunction(()=>document.querySelector('.voice-mode-state').textContent==='Listening',null,{timeout:10000});
   if(codexActivityCase){
    await page.waitForFunction(()=>codexFixture.outputLevels?.at(-1)>0);
