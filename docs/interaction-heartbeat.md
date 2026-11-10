@@ -441,6 +441,15 @@ reservation. An unloaded cache retains the existing model-free resume path;
 missing metadata is not a new permanent activation gate. Mandatory atomic native
 admission still verifies readiness/profile and handles later races.
 
+When that read observes `notLoaded` and a null direct-input capability, status
+reports `native_idle_unloaded`, presented as ordinary waiting. A cold native cache
+is not an explicit admission refusal. It does not pulse as ready, resume a thread
+or spend an attempt merely for the indicator. Explicit false admission capability
+still reports unavailable; the ordinary work path and atomic admission are unchanged.
+For a raw diagnostic read, reuse the shared proxy's WebSocket transport, as the
+runner does. Sending newline JSON directly to that proxy never initializes it
+and is not evidence of a native outage. Ordinary status uses the existing CLI.
+
 At an acknowledged physical goal terminal, eligible pending canonical attention
 can release the completed ordinary collector. The existing parent then admits
 attention through the normal native idle check. Without eligible pending work,
