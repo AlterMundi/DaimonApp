@@ -2172,13 +2172,27 @@ function boot(readOnly=false,standalone=false,options={}) {
   const echo='matrix-inbox:22222222-2222-4222-8222-222222222222';f.overrideSource(6,{id:echo,kind:'matrix_inbox',direction:'outgoing',preview:'An own response.',revision:'d'.repeat(64)});
   await f.ui.refresh();const cards=f.nodes.get('#conversation-timeline').children;
   const incoming=cards.find(c=>c.dataset.sourceId===id),outgoing=cards.find(c=>c.dataset.sourceId?.startsWith('matrix-response:'));
-  assert(incoming);assert(outgoing);assert.match(incoming.children[1].textContent,/incoming message/);assert.match(outgoing.children[1].textContent,/Delivery uncertain/);
+  assert(incoming);assert(outgoing);assert.equal(incoming.children[1].textContent,"Received");assert.equal(outgoing.children[1].textContent,"Delivery not confirmed");
   assert.match(incoming.children.find(c=>c.children?.[0]?.textContent==='Matrix details').children[1].textContent,/signed-eko/);
   const reply=incoming.children[3].children[2];assert.equal(reply.hidden,false);await reply.handlers.click();
   f.nodes.get('#conversation-message').value='Let us discuss this Matrix message';await f.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});
   const original=[...f.originals.values()].at(-1);assert.equal(original.reply.source,id);assert.equal(original.reply.context_only,true);
   f.overrideSource(7,{id:'matrix-response:11111111-1111-4111-8111-111111111111',kind:'matrix_response',label:'Matrix · outgoing',direction:'outgoing',preview:'An own response.',revision:'c'.repeat(64),handling:{phase:'recipient_copy_proved',outcome:{message_id:'22222222-2222-4222-8222-222222222222'}}});
-  await f.ui.refresh();assert.match(outgoing.children[1].textContent,/receiving copy proved/);assert.equal(cards.filter(c=>c.dataset.sourceId?.startsWith('matrix-response:')).length,1);
+  await f.ui.refresh();assert.equal(outgoing.children[1].textContent,"Delivered");assert.equal(cards.filter(c=>c.dataset.sourceId?.startsWith('matrix-response:')).length,1);
   assert(!f.nodes.get('#conversation-timeline').children.some(c=>c.dataset.sourceId===echo),'A native own-copy and observed response receipt must not duplicate speech');
   f.ui.stop();console.log('Matrix Conversation: attribution, delivery uncertainty refresh and context-only human discussion passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Ordinary visibility speech stays untouched; technical receipt notes are opt-in.
+(async()=>{
+  const f=boot(false,true),id='matrix-publication:33333333-3333-4333-8333-333333333333';
+  f.overrideSource(8,{id,kind:'matrix_visibility',label:'Communication record',preview:'Eko: An attributed ordinary message.',revision:'e'.repeat(64),text_characters:36,publication_id:'33333333-3333-4333-8333-333333333333',publication_resource:'selected-surface',publication_request_sha256:'f'.repeat(64),part_index:0,part_count:1,verification:'Committed owner-local visibility publication.'});
+  await f.ui.refresh();const card=f.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId===id);
+  assert(card);assert.equal(card.children[1].textContent,'Communication');
+  assert.equal(card.children[2].textContent,'Eko: An attributed ordinary message.');
+  assert.doesNotMatch(card.children[1].textContent,/Durable|confirmation|verification|receipt/);
+  const details=card.children.find(c=>c.children?.[0]?.textContent==='Matrix details');assert(details);assert(!details.open);
+  const receipt=JSON.parse(details.children[1].textContent);assert.equal(receipt.publication,id.slice('matrix-publication:'.length));assert.equal(receipt.request_sha256,'f'.repeat(64));assert.match(receipt.diagnostic,/not a human message/);
+  assert.equal(f.originals.size,0,'Rendering a publication cannot submit a new human input');
+  f.ui.stop();console.log('Matrix visibility: unchanged attributed speech and receipt; diagnostics only in collapsed details passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
