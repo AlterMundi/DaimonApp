@@ -170,6 +170,10 @@ assert.equal(nativeRecoveryStatus.textContent,'Reconnecting voice');assert.match
 nativeRecovery.mode.update({playback:'idle'});assert.equal(nativeRecoveryStatus.textContent,'Reconnecting voice');
 nativeRecovery.mode.update({continuousState:{active:true,starting:false,reconnecting:false,pending:false,working:false,message:'Listening'}});
 assert.equal(nativeRecoveryStatus.textContent,'Listening');assert.equal(nativeRecoveryCaption.textContent,'');
+nativeRecovery.mode.update({continuousState:{active:true,starting:false,reconnecting:true,pending:false,working:false}});
+assert.equal(nativeRecoveryStatus.textContent,'Reconnecting voice','A retained active microphone does not prove the transport is listening');
+nativeRecovery.mode.update({continuousState:{active:true,starting:false,reconnecting:false}});
+assert.equal(nativeRecoveryStatus.textContent,'Listening');assert.equal(nativeRecoveryCaption.textContent,'');
 nativeRecovery.mode.update({continuousState:{active:false,starting:true,reconnecting:true}});
 nativeRecovery.mode.update({caption:'New audible words'});
 nativeRecovery.mode.update({continuousState:{active:true,starting:false,reconnecting:false}});

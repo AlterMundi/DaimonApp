@@ -287,12 +287,15 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
   transient.peers[0].connectionState='disconnected';transient.peers[0].onconnectionstatechange();
   assert(transient.engine.active,'Temporary WebRTC disconnection must allow the same transport to recover');
   assert.match(transient.states.at(-1).message,/reconnect/i);
+  assert.equal(transient.states.at(-1).reconnecting,true,'Avatar must know the same-call transport is reconnecting');
   assert(!transient.sockets[0].sent.some(v=>v.type==='close'));
   transient.peers[0].connectionState='connected';transient.peers[0].onconnectionstatechange();
   assert.equal(transient.states.at(-1).message,'Listening');assert.equal(transient.sockets.length,1);
+  assert.equal(transient.states.at(-1).reconnecting,false,'Recovered transport clears the reconnecting view');
   assert.equal(transient.permission(),1,'Transport recovery does not reopen the microphone');
   transient.peers[0].connectionState='failed';transient.peers[0].onconnectionstatechange();
   await until(()=>!transient.engine.active);assert.equal(transient.stops(),1);assert.equal(transient.sockets[0].sent.find(v=>v.type==='close').reason,'transport_failed');
+  assert.equal(transient.states.at(-1).reconnecting,false,'Terminal failure must allow the existing explicit reconnect control');
  }finally{await transient.engine.hold();}
  const endedPermission=fixture();
  endedPermission.navigator.mediaDevices.getUserMedia=async()=>{endedPermission.track.readyState='ended';return endedPermission.media;};

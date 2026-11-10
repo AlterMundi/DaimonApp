@@ -19,6 +19,7 @@ window.PublicLiveConversation=(()=>{
     // Avatar/notice renderer cannot interrupt Stop before closing is cleared.
     const present=(callback,value)=>{try{callback(value);}catch{/* Keep owned audio cleanup running. */}};
     const state=message=>present(onState,{active,starting,working:closing,untilStop:continuity,pending:originals.size>0,floor:false,
+      reconnecting:!closing&&(renewing||peer?.connectionState==='disconnected'),
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,...(message?{message}:{})});
     const notify=()=>present(onRecovery,[...originals.values()]);
     const usage=value=>{try{onUsage({visit,binding,...value});}catch{/* Diagnostics never fail voice cleanup. */}};
