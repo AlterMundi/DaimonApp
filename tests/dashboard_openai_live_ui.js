@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false}={}){
+function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -70,9 +70,11 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
    output.activity=options.onActivity;nativeOutputs.push(output);return output;
   }};
  }
+ let releaseUploadHash;
+ const uploadHash=deferUploadHash?new Promise(resolve=>{releaseUploadHash=resolve;}):Promise.resolve();
  async function fetch(url,options){
   if(!options.body)return readHistory(String(url),options);
-  requests.push({url:String(url),sha:await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer()),bytes:options.body.size});
+  requests.push({url:String(url),sha:await uploadHash.then(async()=>crypto.subtle.digest('SHA-256',await options.body.arrayBuffer())),bytes:options.body.size});
   let aborted;
   try{await Promise.race([beforeUpload(),new Promise((resolve,reject)=>{
    aborted=()=>reject(Error('Upload clock expired'));options.signal?.addEventListener('abort',aborted,{once:true});
@@ -93,7 +95,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
  return {engine,start,track,trackListeners,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
-  history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},
+  history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},releaseUploadHash:()=>releaseUploadHash?.(),
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   expireNetworkClocks:()=>{for(const clock of networkClocks)clock.controller.abort();},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
@@ -277,7 +279,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
  endedPermission.navigator.mediaDevices.getUserMedia=async()=>{endedPermission.track.readyState='ended';return endedPermission.media;};
  assert.equal(await endedPermission.engine.start(),false,'An already-ended device cannot enter Listening');
  assert.equal(endedPermission.peers.length,0);assert.equal(endedPermission.trackListeners.size,0);
- const lostMicrophone=fixture();await lostMicrophone.start();
+ const lostMicrophone=fixture({deferUploadHash:true});await lostMicrophone.start();
  try{
   const retiredEnded=lostMicrophone.trackListeners.get('ended');
   lostMicrophone.pcm();lostMicrophone.track.readyState='ended';retiredEnded?.();
@@ -286,12 +288,16 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
   assert.equal(lostMicrophone.sockets[0].sent.find(v=>v.type==='close').reason,'capture_unavailable');
   await until(()=>!lostMicrophone.states.at(-1).working);
   assert.equal(lostMicrophone.permission(),1);assert.equal(lostMicrophone.sockets.length,1,'Device loss never automatically opens another paid session');
+  assert.equal(lostMicrophone.requests.length,0,'Stop does not wait for asynchronous upload verification');
+  lostMicrophone.releaseUploadHash();await until(()=>lostMicrophone.requests.length===1);
   assert.equal(lostMicrophone.requests.length,1,'Retain the exact captured prefix');
+  assert.equal(lostMicrophone.requests[0].bytes,32044,'One captured second plus its WAV header');
+  await until(()=>!lostMicrophone.recovered().length);
   assert.equal(lostMicrophone.trackListeners.size,0,'Release the ended listener on Stop');
   await lostMicrophone.start();retiredEnded?.();
   assert(lostMicrophone.engine.hasAudio,'An old device event cannot close a later logical visit');
   assert.equal(lostMicrophone.sockets.length,2);
- }finally{await lostMicrophone.engine.hold();}
+ }finally{lostMicrophone.releaseUploadHash();await lostMicrophone.engine.hold();}
  const diagnosticFailure=fixture({usageFailure:true});await diagnosticFailure.start();await diagnosticFailure.engine.hold();
  assert(!diagnosticFailure.engine.active,'A diagnostic callback failure cannot break voice cleanup');
  const metered=fixture({nativeChoice:true});await metered.start();

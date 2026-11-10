@@ -8,6 +8,11 @@ Reuse a coherent passing CI baseline for unchanged behavior, naming its exact so
 
 Run cargo fmt --all --check, locked text-only tests and clippy; optional audio changes must also pass locked all-features tests/clippy. Relevant CI qualifies Linux/macOS text builds with the committed toolchain. Test actual SQLite transactions/restarts, loopback HTTP and native App Server attachment where relevant. Unit tests alone do not prove live Telegram or native model delivery.
 
+Lifecycle fixtures wait for the exact persisted outcome or transport receipt they
+assert. An idle session or terminal local audio state does not prove a later
+journal commit or upload acknowledgment; use bounded observation of that boundary
+instead of a sleep or an unrelated presentation flag.
+
 Parallel load and control-flow fixtures use synthetic workers with zero inference.
 When semantic qualification requires a real model, start with Luna low and move
 to Sol low or medium only when the case requires it. Preserve ordinary human
