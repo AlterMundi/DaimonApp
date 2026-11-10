@@ -624,3 +624,12 @@ validator/store gate. They do not select unchanged native qualification. Unknown
 test paths and actual Rust/dependency changes retain normal native checks.
 The scope regression evaluates the actual workflow program and confirms the
 fixture's invocation through dashboard_avatar_workshop.py.
+
+## Product language, not debugging output — Nicolas, 2026-11-10
+
+Never expose debugging text in ordinary user interfaces. Internal generations,
+protocol stages, raw diagnostics and implementation caveats belong in an explicit
+technical/debugging section, or require Nicolas's agreement at that moment.
+Explain meaningful states and available actions in plain product language.
+Do not hide a failure or imply readiness that has not been observed.
+Source: human instruction c437d2e1-53bf-5d18-a499-5b85f443e8c0.
