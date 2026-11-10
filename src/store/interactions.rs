@@ -568,15 +568,13 @@ impl Store {
                 receipts.push(id);
                 continue;
             }
-            if live.is_some() {
-                let count: i64 = tx.query_row(
-                    "SELECT count(*) FROM human_interactions WHERE local_turn=?1 AND kind='task'",
-                    [item.local_turn],
-                    |r| r.get(0),
-                )?;
-                if count >= 10 {
-                    bail!("Live task declarations exceed ten per logical turn");
-                }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM human_interactions WHERE local_turn=?1 AND kind='task'",
+                [item.local_turn],
+                |r| r.get(0),
+            )?;
+            if count >= 10 {
+                bail!("Task declarations exceed ten per logical turn");
             }
             receipts.push(item.id.clone());
             let session: Option<i64> = tx
