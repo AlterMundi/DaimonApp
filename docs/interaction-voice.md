@@ -183,3 +183,14 @@ No failure starts ASR, resends an original or retries native work. Historical
 failures without this observation stay unexplained. Telegram normalization and
 forwarded-speaker provenance in #817 remain separate unfinished work; this change
 does not retroactively diagnose the reported phone or forwarded-audio failures.
+
+## Ordinary Avatar feedback
+
+Avatar shows short product states (listening, processing, saving, sent) and a
+useful recording-review action. Capture/analysis lag and handoff stages remain in
+the existing technical timing inspector instead of appearing as warning prose in
+the ordinary voice view. The Reconnect control does not describe diagnostic
+storage; its existing connection/recovery action still runs unchanged. Keep
+transcripts, stale-phrase fences, actual recovery warnings, Stop, For You and
+reconnect readiness intact. This presentation correction does not establish a
+phone startup diagnosis or sustained voice/hearing acceptance.
