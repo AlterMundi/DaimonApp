@@ -330,3 +330,16 @@ actual publisher playback, a model response or participant acceptance. Full exac
 CI and receiving qualification remain separate before any scoped adoption. Keep
 current native associations/goals and uncertain requests intact; no reconnect,
 provider input, capture or global Stop is implied by this source checkpoint.
+
+## Selected peer audience
+
+The existing peer handoff accepts `whole-tribe` and `selected-being` disclosure.
+Group requests retain the whole-Tribe instruction. A directed request requires
+a valid pinned being reference and instructs the same native conversation to
+use Matrix's existing structured being destination, without a group fallback.
+Both remain visible in the Nexus table and selected human projection; directed
+delivery is not secrecy. Unknown audiences/invalid direct recipients fail before
+submission. Tokens, bindings, journals, finite admission and original retry
+identities are unchanged. Reconnect or a new request never reauthors an uncertain
+old group request. The paired Nexus route/preview/adapter must also support the
+same selected audience before claiming the end-to-end workflow.
