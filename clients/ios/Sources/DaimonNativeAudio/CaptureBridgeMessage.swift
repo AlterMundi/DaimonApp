@@ -44,17 +44,21 @@ struct CaptureConnectionLease {
     private var predecessor: UUID?
     private var seen: Set<UUID> = []
     private(set) var generation = 0
+    private(set) var expires: TimeInterval
+    init(now: TimeInterval = ProcessInfo.processInfo.systemUptime) { expires = now + 600 }
 
     /// Initial binding and exact duplicate acknowledgments never extend time.
     /// Only a new successor of the current connection advances the600s lease.
-    mutating func connect(_ next: UUID, from previous: UUID?) throws -> Bool {
+    mutating func connect(_ next: UUID, from previous: UUID?, now: TimeInterval = ProcessInfo.processInfo.systemUptime) throws -> Bool {
+        // Refuse expiry even if the main-actor timeout callback is still queued.
+        guard now.isFinite, now >= 0, now < expires else { throw CaptureBridgeMessage.Refusal.invalid }
         if visit == next && predecessor == previous { return false }
         guard seen.count < 512, !seen.contains(next), previous == visit else {
             throw CaptureBridgeMessage.Refusal.invalid
         }
         let advances = visit != nil
         visit = next; predecessor = previous; seen.insert(next)
-        if advances { generation += 1 }
+        if advances { generation += 1; expires = now + 600 }
         return advances
     }
 }

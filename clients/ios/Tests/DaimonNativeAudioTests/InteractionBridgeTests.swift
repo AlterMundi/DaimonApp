@@ -98,6 +98,20 @@ final class InteractionBridgeTests: XCTestCase {
         XCTAssertThrowsError(try lease.connect(last,from:first),"A stale predecessor cannot advance capture")
         XCTAssertTrue(try lease.connect(last,from:next)); XCTAssertEqual(lease.generation,2)
     }
+    func testQueuedTimeoutCannotBeBypassedAndDuplicateDoesNotExtend600Seconds() throws {
+        var lease = CaptureConnectionLease(now:0)
+        let first = UUID(), next = UUID()
+        XCTAssertFalse(try lease.connect(first,from:nil,now:1))
+        XCTAssertFalse(try lease.connect(first,from:nil,now:599))
+        XCTAssertEqual(lease.expires,600)
+        XCTAssertTrue(try lease.connect(next,from:first,now:599))
+        XCTAssertEqual(lease.expires,1199); XCTAssertEqual(lease.generation,1)
+        XCTAssertFalse(try lease.connect(next,from:first,now:1198))
+        XCTAssertEqual(lease.expires,1199)
+        XCTAssertThrowsError(try lease.connect(UUID(),from:next,now:1199))
+        XCTAssertThrowsError(try lease.connect(next,from:first,now:1199))
+        XCTAssertEqual(lease.generation,1); XCTAssertEqual(lease.expires,1199)
+    }
     func testPhysicalConnectionHistoryIsBoundedWithoutExtendingDuplicateDeadline() throws {
         var lease = CaptureConnectionLease(), previous: UUID?
         for _ in 0..<512 {
