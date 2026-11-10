@@ -725,3 +725,15 @@ frontier. Only a genuine new native event advances it to that event's sequence.
 A nonzero consumer cursor below the selected frontier refuses: this cannot rebase
 an existing reader or hide its pending originals. Keep the selected window frozen
 for the operation; it is not a model-supplied request argument or a reset control.
+
+## Heartbeat user menu
+
+The heart opens a viewport-clamped menu next to its actual button on desktop
+and mobile. The normal menu presents a brief useful state and supported controls;
+it omits internal generations, source-check timestamps, implementation caveats
+and unsupported feature placeholders. Messages and scheduled reviews are shown
+only when supported. Pausing/enabling keeps the existing generation-fenced owner
+commands; status reads never change settings or start work. Only fresh explicit
+operational evidence animates the heart. Pending work is described as waiting,
+not as proof of readiness or a disabled heartbeat. Operator diagnostics remain
+available through the existing owner status API.
