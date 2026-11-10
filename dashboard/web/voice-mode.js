@@ -17,7 +17,7 @@ window.ConversationVoiceMode=(()=>{
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(review,speak,back);
     dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
     let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
-    const detectionLabels={waiting_speech:'Listening',speaking:'Voice detected',waiting_endpoint:'Voice detected',waiting_analysis:'Processing your recording',waiting_transcript:'Processing your recording',finishing:'Saving your recording',confirming:'Sending your recording',confirmed:'Recording sent',foreground_saved:'Recording saved',review:'Check your recording in the conversation'};
+    const detectionLabels={waiting_speech:'Waiting for speech',speaking:'Voice detected',waiting_endpoint:'Voice detected',waiting_analysis:'Processing your recording',waiting_transcript:'Processing your recording',finishing:'Saving your recording',confirming:'Sending your recording',confirmed:'Recording sent',foreground_saved:'Recording saved',review:'Check your recording in the conversation'};
     let audioPaused=false,audioEnabled=true,reconnecting=false,untilStop=false;
     const reconnectNotice='Your recording is kept; anything said during the pause may need review.';
     const canResumeAudio=()=>continuous&&listening&&!preparing&&!directPending&&typeof onResumeAudio==='function'&&(audioPaused||!audioEnabled);

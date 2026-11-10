@@ -57,7 +57,7 @@ assert.equal(direct.nodes.find(n=>n.className==='voice-mode-state').textContent,
 assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textContent,/Voice analysis stopped/);
 const badge=direct.nodes.find(n=>n.className==='voice-mode-detection');
 direct.mode.update({handoff:{id:'first',gate:'waiting_speech',captured_ms:37000,analyzed_ms:6200,words:true}});
-assert.equal(badge.textContent,'Listening');assert(!badge.textContent.includes('analysis'));assert.equal(badge.dataset.warning,'false');assert.equal(badge.hidden,false);
+assert.equal(badge.textContent,'Waiting for speech','A detector snapshot cannot assert that the microphone is active');assert(!badge.textContent.includes('analysis'));assert.equal(badge.dataset.warning,'false');assert.equal(badge.hidden,false);
 direct.mode.update({handoff:{id:'first',gate:'speaking',captured_ms:1000,analyzed_ms:1000}});assert.equal(badge.textContent,'Voice detected');
 direct.mode.update({handoff:{id:'first',gate:'waiting_endpoint'}});assert.equal(badge.textContent,'Voice detected');
 direct.mode.update({handoff:{id:'first',gate:'finishing'}});assert.equal(badge.textContent,'Saving your recording');
