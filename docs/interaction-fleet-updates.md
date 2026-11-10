@@ -79,7 +79,10 @@ or infer that a retained native-write intent was sent.
 
 
 The shared avatar workshop additionally requires Node20+ on the actual web
-service PATH. Qualify the pinned inert-design validator as that service user,
+service PATH. Run staged WebRTC/Avatar Node lifecycle fixtures with that same
+PATH and consuming UID too; a shell PATH can miss an already installed runtime.
+Keep any unchanged external fixture dependency beside the test, outside the
+selected web package. Qualify the pinned inert-design validator as that service user,
 including catalogue/custom save/reload/use in temporary synthetic-account storage,
 before selection. A root-only executable check or installed package alone is not
 consuming-process acceptance. Keep a required body-local PATH entry in the
