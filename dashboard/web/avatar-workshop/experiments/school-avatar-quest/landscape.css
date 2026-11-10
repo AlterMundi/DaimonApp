@@ -1,0 +1,66 @@
+#landscape-gate{width:min(430px,calc(100vw - 40px));max-height:calc(100dvh - 32px);padding:24px;text-align:center;background:var(--paper);color:var(--ink);font:16px/1.4 ArchiveText,sans-serif;overflow:auto}
+#landscape-gate::backdrop{background:var(--paper)}
+#landscape-gate h2{font:500 28px/1.1 ArchivePixel,sans-serif;margin:12px 0}
+#landscape-gate p{margin:12px 0}.rotate-device{display:block;font-size:44px;line-height:1}.rotate-help{font-size:14px}
+#landscape-gate button{font-size:16px;margin:6px;min-height:44px}
+#landscape-gate [hidden]{display:none!important}
+/* Keep the actual game columns even below the old 720px stacking breakpoint. */
+@media(orientation:landscape){
+ html.landscape-game main{padding:0 12px;max-width:none}
+ html.landscape-game .masthead{height:36px;padding:2px 12px;max-width:none}
+ html.landscape-game .brand{font-size:16px;gap:6px}html.landscape-game .brand strong{display:inline;font-size:20px;margin-left:4px}
+ html.landscape-game .brand .brandmark{width:28px;height:28px}
+ html.landscape-game .topright{flex-direction:row;gap:8px}html.landscape-game #versions{transform:none;font-size:16px;min-height:30px;padding:2px 6px}
+ html.landscape-game .wardrobe-shell{height:calc(100dvh - 44px);min-height:0;max-height:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:30px 10px 4px;gap:12px}
+ html.landscape-game .application-bar{height:22px;left:5px;right:5px;top:3px;font-size:16px}
+ html.landscape-game .closet{order:0;grid-column:1;grid-row:1;align-self:stretch;min-height:0;display:flex;flex-direction:column}
+ html.landscape-game .closet-top{font-size:16px;min-height:20px;padding:0 0 3px}
+ html.landscape-game #tabs{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.1fr) minmax(0,1.2fr) minmax(0,.9fr);gap:3px;flex-shrink:0}
+ html.landscape-game #tabs button{font-size:16px;padding:3px 1px;min-height:30px;white-space:normal;overflow-wrap:anywhere;line-height:1.05;border-bottom:2px solid var(--ink)}
+ html.landscape-game #panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:visible;padding:5px}
+ html.landscape-game #panel .tile-grid{flex:1;min-height:0;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:5px}
+ html.landscape-game .wardrobe-tile{height:100%;min-height:0;padding:3px;gap:2px;overflow:hidden}
+ html.landscape-game .wardrobe-tile canvas,html.landscape-game .upload-symbol{flex:1;min-height:0;height:0;width:100%}
+ html.landscape-game .wardrobe-tile strong{font-size:16px;line-height:1.05;min-height:17px;flex-shrink:0;white-space:normal;overflow-wrap:anywhere;overflow:visible;text-overflow:clip}
+ html.landscape-game .upload-symbol svg{width:46px;max-height:100%;height:100%}
+ html.landscape-game .prop-tile{min-height:0}.landscape-game .prop-tile>.wardrobe-tile{min-height:0}
+ html.landscape-game .pager{padding:4px 0 0;gap:12px;flex-shrink:0;font-size:16px}
+ html.landscape-game .pager button{min-height:30px;min-width:38px;padding:2px;font-size:18px}
+ html.landscape-game .closet #message{padding:2px 0 0;font-size:14px;line-height:1.1;min-height:0}
+ html.landscape-game .stage{order:0;grid-column:2;grid-row:1;align-self:stretch;min-height:0;display:flex;flex-direction:column}
+ html.landscape-game .stage .art-wrap{height:0;min-height:0;flex:1;margin:0}
+ html.landscape-game .stage #portrait{padding-top:12px}
+ html.landscape-game .stage .world-label .name-button{font-size:16px;left:6px;top:-8px;padding:5px 8px;max-width:54%}
+ html.landscape-game .stage #expression-title{font-size:16px;right:7px;top:8px;height:27px;padding:4px 6px}
+ html.landscape-game .stage .art-wrap #appearance{top:40px;right:8px;bottom:48px}
+ html.landscape-game .stage .art-wrap #appearance>summary{width:32px;height:32px;min-height:32px}
+ html.landscape-game .stage .art-wrap #appearance[open]{top:4px;bottom:4px}
+ html.landscape-game .stage .art-wrap .appearance-popover{top:0;bottom:0;padding:8px;overflow:auto}
+ html.landscape-game .stage .art-wrap .playback{bottom:7px;left:7px}
+ html.landscape-game .trial-tools{right:7px;bottom:7px;gap:4px}
+ html.landscape-game .trial-tools button,html.landscape-game .stage .art-wrap #play{height:32px;width:32px;min-height:32px}
+ html.landscape-game .trial-tools #surprise{font-size:16px;width:auto;padding:0 5px}
+ html.landscape-game .keep-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));padding-top:5px;gap:3px;flex-shrink:0}
+ html.landscape-game .keep-actions button,html.landscape-game .stage .keep-actions #save,html.landscape-game .stage .keep-actions #use-avatar{font:500 16px/1.05 ArchivePixel;min-height:38px;width:100%;padding:3px;grid-column:auto;white-space:normal;overflow-wrap:anywhere}
+ html.landscape-game #save-state{font-size:14px;min-height:15px;line-height:1.1}
+ html.landscape-game .prop-controls{margin:3px 0 0;padding:3px;gap:2px;flex-shrink:0}
+ html.landscape-game .prop-size{display:flex;align-items:center;font-size:14px;gap:5px}.landscape-game .prop-size input{min-width:0;min-height:20px;flex:1}
+ html.landscape-game .prop-controls .side-switch button{font-size:16px;min-height:28px;padding:2px 6px}
+ html.landscape-game .prop-swatch{bottom:22px;right:9px}
+ html.landscape-game .archive-ornament{display:none}
+}
+
+@media(orientation:landscape) and (max-height:550px){
+ html.landscape-game .stage .art-wrap .appearance-popover{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start;gap:4px;padding:5px}
+ html.landscape-game .appearance-top{grid-column:1/-1;min-height:28px;margin:0}
+ html.landscape-game .appearance-top strong{font-size:18px}
+ html.landscape-game #close-appearance{width:28px;height:28px;min-height:28px;padding:0;font-size:20px}
+ html.landscape-game #appearance-content{display:contents}
+ html.landscape-game .appearance-popover label{font-size:14px;margin:0;min-width:0;gap:2px}
+ html.landscape-game .appearance-popover .control-label{font-size:14px;line-height:1.1}
+ html.landscape-game .appearance-popover input:not([type=range]){width:100%;min-width:0;min-height:28px;height:28px;padding:2px;font-size:16px}
+ html.landscape-game .appearance-popover input[type=range]{width:100%;min-width:0;min-height:26px;height:26px;margin:0}
+ html.landscape-game .frame-label{display:flex;flex-direction:column;align-items:stretch}
+}
+
+@media(orientation:landscape){html.landscape-game .topright #cancel-workshop{min-height:30px;padding:2px 6px;font-size:16px}}

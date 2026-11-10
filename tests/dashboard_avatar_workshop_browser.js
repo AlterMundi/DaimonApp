@@ -48,6 +48,66 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    throw Error('Unexpected preview write '+body.action);
   });
   const origin=process.argv[2];
+  async function landscapeJourney(){
+   const phone=await newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true,reducedMotion:'reduce'});
+   const faults=[];phone.on('pageerror',e=>faults.push(e.message));phone.on('dialog',d=>d.accept());
+   await phone.addInitScript(()=>{
+    window.testPhysicalOrientation='portrait-primary';
+    Object.defineProperty(screen.orientation,'type',{get:()=>testPhysicalOrientation});
+    HTMLElement.prototype.requestFullscreen=async()=>{throw new DOMException('Synthetic unsupported fullscreen','NotSupportedError');};
+   });
+   await phone.goto(origin);await phone.locator('#avatar-workshop-open').click();
+   const game=phone.frameLocator('iframe');await game.locator('#landscape-gate[open]').waitFor();
+   assert.equal(await phone.locator('iframe').getAttribute('allowfullscreen'),'','Only own editor can request fullscreen');
+   await game.locator('#landscape-start').click();assert(await game.locator('#landscape-gate').isVisible(),'Rejected API preserves manual turn prompt');
+   // A keyboard shrinking the viewport must not impersonate a physical turn.
+   await phone.setViewportSize({width:390,height:300});assert(await game.locator('#landscape-gate').isVisible());
+   const turn=async(width,height,orientation)=>{
+    await phone.setViewportSize({width,height});
+    await game.locator('body').evaluate((_,type)=>{window.testPhysicalOrientation=type;screen.orientation.dispatchEvent(new Event('change'));},orientation);
+   };
+   await turn(844,390,'landscape-primary');await game.locator('#landscape-gate').waitFor({state:'hidden'});
+   await game.locator('#tab-avatar').waitFor();
+   const writes=[];phone.on('request',r=>{if(r.method()!=='GET'&&r.url().includes('/api/'))writes.push(r.url());});
+   await game.locator('#appearance summary').click();await game.locator('#name').fill('Mi bichito');await game.locator('#close-appearance').click();
+   for(const [width,height] of [[844,390],[667,375],[1024,768]]){
+    await turn(width,height,'landscape-primary');
+    const geometry=await game.locator('.wardrobe-shell').evaluate(e=>{const a=e.querySelector('.closet').getBoundingClientRect(),b=e.querySelector('.stage').getBoundingClientRect();return {aRight:a.right,bLeft:b.left,aBottom:a.bottom,bBottom:b.bottom,height:innerHeight,width:innerWidth,grid:getComputedStyle(e).gridTemplateColumns,areas:getComputedStyle(e).gridTemplateAreas,cls:document.documentElement.className,orientation:matchMedia('(orientation:landscape)').matches,overflow:document.documentElement.scrollWidth>innerWidth};});
+    assert(geometry.aRight<=geometry.bLeft,'Both game halves stay side-by-side at '+width+': '+JSON.stringify(geometry));
+    assert(!geometry.overflow,'No horizontal overflow at '+width);
+    assert(await game.locator('#tabs button').evaluateAll(nodes=>nodes.every(e=>e.scrollWidth<=e.clientWidth+1)),'Tab labels fit at '+width);
+    assert(geometry.aBottom<=geometry.height+1&&geometry.bBottom<=geometry.height+1,'Both halves fit the viewport at '+width+': '+JSON.stringify(geometry));
+    if(process.env.LANDSCAPE_SHOT)await phone.screenshot({path:process.env.LANDSCAPE_SHOT+'-'+width+'.png'});
+   }
+   await turn(390,844,'portrait-primary');assert(await game.locator('#landscape-gate').isVisible());
+   await turn(844,390,'landscape-secondary');await game.locator('#appearance summary').click();assert.equal(await game.locator('#name').inputValue(),'Mi bichito','Turning preserves unsaved design');await game.locator('#close-appearance').click();
+   assert.deepEqual(writes,[],'Orientation never saves, uses or starts provider work');
+   // API success and lifecycle cancellation are simulated, not device acceptance.
+   await turn(390,844,'portrait-primary');
+   await game.locator('body').evaluate(()=>{
+    window.lockCount=window.unlockCount=0;window.fakeFullscreen=false;
+    Object.defineProperty(document,'fullscreenElement',{configurable:true,get:()=>fakeFullscreen?document.documentElement:null});
+    document.documentElement.requestFullscreen=async()=>{window.fakeFullscreen=true;};
+    screen.orientation.lock=async()=>{window.lockCount++;window.testPhysicalOrientation='landscape-primary';screen.orientation.dispatchEvent(new Event('change'));};
+    screen.orientation.unlock=()=>{window.unlockCount++;};
+   });
+   await game.locator('#landscape-start').click();await game.locator('#landscape-gate').waitFor({state:'hidden'});
+   assert.equal(await game.locator('body').evaluate(()=>lockCount),1);
+   await game.locator('body').evaluate(()=>{window.fakeFullscreen=false;document.dispatchEvent(new Event('fullscreenchange'));});
+   assert.equal(await game.locator('body').evaluate(()=>unlockCount),1,'Release only the workshop-owned orientation lock');
+   await turn(390,844,'portrait-primary');
+   await game.locator('body').evaluate(()=>{screen.orientation.lock=()=>new Promise(resolve=>window.resolveLock=resolve);});
+   await game.locator('#landscape-start').click();
+   await phone.waitForFunction(()=>typeof document.querySelector('iframe').contentWindow.resolveLock==='function');
+   await game.locator('body').evaluate(async()=>{window.dispatchEvent(new Event('pagehide'));window.resolveLock();await new Promise(resolve=>setTimeout(resolve,0));});
+   assert.equal(await game.locator('body').evaluate(()=>unlockCount),2,'Late lock after page exit is released');
+   await game.locator('body').evaluate(()=>window.dispatchEvent(new Event('pageshow')));
+
+   await turn(390,844,'portrait-primary');await game.locator('#landscape-back').click();await phone.locator('iframe').waitFor({state:'detached'});
+   assert.deepEqual(faults,[]);await phone.close();console.log('PASS landscape phone/tablet game: portrait gate, API refusal, keyboard, two-pane fit, turn/draft preservation and existing cancel; zero writes/providers');return;
+  }
+  if(process.env.LANDSCAPE_ONLY==='1'){await landscapeJourney();return;}
+
   async function missionJourney(){
    const requestId='00000000-0000-4000-8000-000000000001';
    await page.goto(origin+'/?avatar_mission='+requestId);
@@ -621,6 +681,6 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   releaseSelection();await page.locator('.avatar-surface[data-avatar-state="custom"]').waitFor();
   assert.equal(await page.locator('#conversation-companion pre').isVisible(),false,'Only the selected avatar becomes visible');
 
-  console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; named voice save lost-ACK/use, actor isolation, direct Play/change/custom and expression text, exact cached playback, unknown generation no retry and narrow layouts; no provider calls');
+  await landscapeJourney();console.log('PASS actual editor + renderer + authenticated mounted storage: catalogue/custom save/use/reload, prior avatar, cancel, failed activation, actor isolation, image fallback, simultaneous object/detail, editable export/import, keyboard, reduced motion, large/compact and375/320 layouts; named voice save lost-ACK/use, actor isolation, direct Play/change/custom and expression text, exact cached playback, unknown generation no retry and narrow layouts; no provider calls');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

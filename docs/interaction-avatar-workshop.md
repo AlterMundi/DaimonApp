@@ -601,3 +601,17 @@ The School's existing `record_review` retains its agreement/attribution checks.
 The bounded source/browser qualification uses fictional descriptors and the
 actual resolver/host/ledger, not an injected accepting resolver. Receiving and
 family/device acceptance remain distinct and are not claimed by source tests.
+
+## Touch landscape editing
+
+The selected workshop adds a portrait rotate prompt on coarse-pointer phones/tablets
+and preserves a two-column game in landscape, including short667x375 screens. It
+uses physical Screen Orientation when available so a keyboard does not masquerade
+as rotation. The prompt leaves drafts and the authenticated account untouched.
+Unsupported fullscreen/orientation locking keeps the manual rotate path. The own
+editor iframe alone gets allowFullscreen; no sandbox or account policy changes.
+The surrounding App toolbar becomes compact in touch landscape. The ordinary
+Voice/Conversation screens retain their controls; nothing starts audio/providers.
+The existing mounted browser qualification includes the landscape journey; use
+LANDSCAPE_ONLY=1 for the isolated case. Source/Chromium qualification is distinct
+from real phone/tablet rotation acceptance and selected receiving deployment.

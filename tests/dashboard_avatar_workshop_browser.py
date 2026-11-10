@@ -78,7 +78,7 @@ def qualify():
             return FileResponse(public/name)
         @app.get('/')
         def shell():
-            return HTMLResponse('''<!doctype html><html><head><link rel="stylesheet" href="assets/style.css"><script src="assets/voice-mode.js"></script><script src="assets/voice-studio.js"></script><script src="assets/avatar-workshop.js"></script><script src="fixture.js" defer></script></head><body style="--dm-background:#101820;--dm-surface:#17212b;--dm-text:#f3f1e6;--dm-accent:#82d5e7"><section id="conversation-companion"><pre>PREVIOUS AVATAR</pre></section><button id="avatar-workshop-open" hidden>Personalize avatar</button><button id="avatar-workshop-pause" hidden>Pause avatar</button><p id="avatar-workshop-status"></p></body></html>''')
+            return HTMLResponse('''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="assets/style.css"><script src="assets/voice-mode.js"></script><script src="assets/voice-studio.js"></script><script src="assets/avatar-workshop.js"></script><script src="fixture.js" defer></script></head><body style="--dm-background:#101820;--dm-surface:#17212b;--dm-text:#f3f1e6;--dm-accent:#82d5e7"><section id="conversation-companion"><pre>PREVIOUS AVATAR</pre></section><button id="avatar-workshop-open" hidden>Personalize avatar</button><button id="avatar-workshop-pause" hidden>Pause avatar</button><p id="avatar-workshop-status"></p></body></html>''')
         @app.get('/fixture.js')
         def fixture():
             from fastapi.responses import Response

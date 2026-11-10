@@ -64,7 +64,7 @@
     "renderer.mjs": "4a8fcd782c9ac3346022f0b575d5a8bd000b500ba93776b5e7e8fadafe6ba814",
     "LICENSE": "16e88a69f4cf280ed748e4d940c327d8aecf782dfa98a21982bced0a649eece8",
     "validate-design.mjs": "ca075b32336447da83f92893519f361ac0ff8509b783e2b1dc2f8a2dcd4706fa",
-    "experiments/school-avatar-quest/index.html": "0751eff50e1a1e2b5dd783f3246ff683c506c260921fa9851980708a15a619ab",
+    "experiments/school-avatar-quest/index.html": "1db384f163cc18b1431480443f8d982f2d0e900a9b882a8b498fd6c5afec4c73",
     "experiments/school-avatar-quest/style.css": "71effcfda296a465270b8f6bd89fdc8dcb495170d416faa7f7726aef129d9d78",
     "experiments/school-avatar-quest/storage.mjs": "2fedbb1de2b46a0d840a98a367b8afeac174b2eaa91f2ad10202bcbf30f3096a",
     "experiments/school-avatar-quest/wardrobe.mjs": "8508c3ae0f328461bd3eb1b96e4c2859046e1c70d3368414e3f658c1ceec5a92",
@@ -83,7 +83,7 @@
     "experiments/school-avatar-quest/props.mjs": "c34c685a00d84fbafc2ceb3a1ac47b70e890264654cb3474afb36a2a40db5799",
     "experiments/school-avatar-quest/performance-illustration.mjs": "9f1aaa54ef2a366b56e3efd6430b2235841e687f74132f86def8e99aa925f1fa",
     "experiments/school-avatar-quest/color.mjs": "3befc2a3a7e64be3be65fabde96f23447206623ffeb3819e89841d9cfbb30c69",
-    "experiments/school-avatar-quest/app.mjs": "6d1cf357eb676205b03248266d8282c06351402543cfb58c15e02f27345c7b9c",
+    "experiments/school-avatar-quest/app.mjs": "08b74d671bac3ad2f1cbd1316146f5f89be548d52533ebdb2300ed0960e3c6f5",
     "experiments/school-avatar-quest/surface-organic-masters.mjs": "33cab8d27fc01cf83784a0210901934c1bc2f77004b9909167253ad96d1881c5",
     "experiments/school-avatar-quest/wardrobe.css": "cd80ba71e899b207352ae3c1ec51f6209a3ac0555b1d4e42ed7bee6822a9b39a",
     "experiments/school-avatar-quest/interaction-geometry.mjs": "1c3a08c83fbc7a712df45f68c023761d400e6a56495faee0f996c00025e2b958",
@@ -105,7 +105,9 @@
     "experiments/school-avatar-quest/archive-assets/pixelifysans.ttf": "9ba86cd010a4de309d263ceff8e8044092c9db7efda869620cb9ff1c4389e8a5",
     "experiments/school-avatar-quest/archive-icons.mjs": "971fe96f604e7eb76b8dcdd7ce2e8082e3358f279ba8d93bae1b4d57cd5790b5",
     "experiments/school-avatar-quest/archive.css": "a9e81f6f836958823273696bd8fe538faed968a8da29e94ae6e70ec00cd5dc65",
-    "experiments/school-avatar-quest/receiving.css": "f49f0eb3b420c30d27be6f90690ec5536b4c3d14edd2862795bce24c72dc01ee"
+    "experiments/school-avatar-quest/receiving.css": "f49f0eb3b420c30d27be6f90690ec5536b4c3d14edd2862795bce24c72dc01ee",
+    "experiments/school-avatar-quest/landscape.css": "0872328284c261ff073c2a698c5ebabff9c4e09486a806c90a7fe6dfe5206637",
+    "experiments/school-avatar-quest/landscape.mjs": "2297c080c41af48ad8ea2e6d9be283cac81a0fa2199cd620e87715303686ab5e"
   },
   "previous_source_revision": "4acdb30f85848933d2c50c9557bbc2fc7d51ec9d",
   "archive_ui": {
