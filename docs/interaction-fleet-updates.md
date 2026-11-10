@@ -18,6 +18,16 @@ handoff; a web-only change does not restart native work. Preserve paused/blocked
 goals and uncertain inputs. Never clear journals or replay a command to manufacture
 convergence. Reuse actual outcomes after a failed verifier.
 
+Native selectors may use a symlink. Compare the effective existing ExecStart
+argument with the process executable's resolved identity and qualified digest;
+conditionally replace that actual argument, rather than searching the unit for
+the resolved target pathname. Keep source-manifest cache exclusions identical at
+preparation and selection: ordinary `__pycache__`/`.pyc` files do not change the
+qualified package, while every selected source/asset must still match. Retain
+failed preflight receipts and use a separate known-unsent continuation. After a
+selection times out during observation, inspect that original installed outcome;
+never rerun selection just to obtain a successful verifier exit.
+
 Apply the short path to the whole delivery, from preparation through installation
 and verification. Reuse qualified unchanged packages and observed receipts rather
 than adding another build, review or approval gate. A task's clean checkpoint
