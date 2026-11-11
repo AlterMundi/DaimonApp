@@ -600,7 +600,7 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
         .and_then(|s| s.codex_thread_id)
         .context("Existing entry native binding required")?;
     let [verb, id, rest @ ..] = fields.as_slice() else {
-        bail!("Expected workflow status ID or workflow recover ID REVISION");
+        bail!("Expected workflow status ID, result ID STEP REVISION OFFSET or recover ID REVISION");
     };
     let current = app
         .shared
@@ -608,6 +608,15 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
         .interaction_workflow_status(human, cfg.entry(), &native, id)?;
     match (*verb, rest) {
         ("status", []) => Ok(current),
+        ("result", [step, revision, offset]) => app.shared.store.interaction_workflow_result(
+            human,
+            cfg.entry(),
+            &native,
+            id,
+            step,
+            revision,
+            offset.parse()?,
+        ),
         ("recover", [revision]) => {
             anyhow::ensure!(
                 current["revision"].as_str() == Some(*revision),
@@ -640,6 +649,8 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
                 json!({"instruction":app.shared.store.interaction_instruction(&i.id,human)?,"meaning":"Exact known-unsent step recovered; native admission and useful completion require separate observations"}),
             )
         }
-        _ => bail!("Expected workflow status ID or workflow recover ID REVISION"),
+        _ => bail!(
+            "Expected workflow status ID, result ID STEP REVISION OFFSET or recover ID REVISION"
+        ),
     }
 }
