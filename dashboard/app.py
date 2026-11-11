@@ -1305,7 +1305,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 revision=await run_in_threadpool(app.state.avatar_workshop.voice_for_conversation,
                     session['human'],configured_profiles(config))
                 if revision is not None:engine=engine.selected_voice(config,revision)
-            selected = speech_part(canonical) if engine.incremental else canonical
+            # Live voices generate near playback speed. Keep their finite parts
+            # equally short and certify a second future boundary from this same
+            # canonical window; clients never guess offsets from rendered text.
+            live_reading = engine.incremental and engine.receiving_route()['provider']=='openai-live'
+            part_bound = 240 if live_reading else None
+            selected = speech_part(canonical, part_bound) if engine.incremental else canonical
+            lookahead = None
+            consumed = len(selected['text'])
+            if live_reading and selected['next_offset'] is not None and consumed < len(canonical['text']):
+                following = {**canonical, 'offset':selected['next_offset'], 'text':canonical['text'][consumed:]}
+                lookahead = speech_part(following, part_bound)['next_offset']
         except (ProviderUnavailable, OSError, ValueError, KeyError, SpeechUnavailable, RenderError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
         await authorize_async(request)
@@ -1351,7 +1361,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             'X-Audio-Sha256':rendered['audio_sha256'], 'X-Playback-Observation':'not_observed',
             'X-Presentation-End-Offset':str(body['offset']+len(selected['text'])) if engine.incremental and selected.get('kind')!='native_question' else '',
             'X-Presentation-Text-Sha256':hashlib.sha256(selected['text'].encode()).hexdigest() if engine.incremental and selected.get('kind')!='native_question' else '',
-            'X-Presentation-Prefetch':'true' if engine.incremental and selected.get('kind')!='native_question' else 'false'})
+            'X-Presentation-Prefetch':'true' if engine.incremental and selected.get('kind')!='native_question' else 'false',
+            'X-Presentation-Lookahead-Offset':str(lookahead) if lookahead is not None and selected.get('kind')!='native_question' else ''})
 
     @app.post('/api/alerts/attention')
     async def launcher_attention(request: Request):

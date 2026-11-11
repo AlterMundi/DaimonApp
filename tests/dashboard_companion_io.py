@@ -640,13 +640,23 @@ class Companion(unittest.TestCase):
         store=AvatarWorkshop(self.config['state_dir']);ident=str(uuid.uuid4())
         store.voice_save(100,ident,profile,'Calm.',None,0);store.voice_select(100,ident,1,[profile])
         engines=[]
+        self.provider.source['text']='A complete sentence with Unicode 🙂. '*50
+        rendered_parts=[]
         async def render(engine,source):
-            engines.append(engine);return b'synthetic audio',{'audio_sha256':'c'*64}
+            engines.append(engine);rendered_parts.append(source);return b'synthetic audio',{'audio_sha256':'c'*64}
         with patch('dashboard.voice_studio.configured_profiles',return_value=[profile]),patch.object(Speech,'render',render):
             response=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai'},headers=self.headers)
             self.assertEqual(response.status_code,200,response.text)
             self.assertEqual(engines[-1].receiving_route()['voice'],'willow')
             self.assertIn('Calm.',engines[-1].receiving_route()['instruction'])
+            self.assertLessEqual(len(rendered_parts[-1]['text']),240)
+            first_end=int(response.headers['x-presentation-next-offset'])
+            second_end=int(response.headers['x-presentation-lookahead-offset'])
+            self.assertGreater(second_end,first_end)
+            self.assertLessEqual(second_end-first_end,240)
+            self.assertEqual(self.provider.source['text'][:first_end],rendered_parts[-1]['text'])
+            canonical={**self.provider.source,'offset':first_end,'text':self.provider.source['text'][first_end:]}
+            self.assertEqual(second_end,speech_part(canonical,240)['next_offset'])
             self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','text':'forged'},headers=self.headers).status_code,409)
         self.assertEqual(len(engines),1)
 

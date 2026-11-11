@@ -28,13 +28,13 @@ class SpeechUnavailable(Exception):
     pass
 
 
-def speech_part(source):
+def speech_part(source, bound=None):
     """Choose an exact canonical prefix; offsets remain Unicode character counts."""
     # Question labels and their synthetic prefixes keep the existing reader contract.
     if source.get('kind') == 'native_question':
         return source
     text = source['text']
-    bound = 240 if source['offset'] == 0 else 640
+    bound = bound or (240 if source['offset'] == 0 else 640)
     if len(text) <= bound:
         return source
     window = text[:bound]

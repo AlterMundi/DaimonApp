@@ -2176,17 +2176,33 @@ window.Conversation = (() => {
         if(next!==null && (!Number.isSafeInteger(next)||next<=offset))throw Error("Invalid audio continuation");
         const endHeader=response.headers.get("x-presentation-end-offset"),end=endHeader?Number(endHeader):undefined;
         if(end!==undefined && (!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end))throw Error("Invalid audio segment boundary");
-        return {blob,next,end,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:response.headers.get("x-presentation-prefetch")==="true"};
+        const aheadHeader=response.headers.get("x-presentation-lookahead-offset"),lookahead=aheadHeader?Number(aheadHeader):undefined;
+        if(lookahead!==undefined && (next===null || !Number.isSafeInteger(lookahead) || lookahead<=next || lookahead>offset+1600))throw Error("Invalid audio lookahead boundary");
+        return {blob,next,end,lookahead,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:response.headers.get("x-presentation-prefetch")==="true"};
       }finally{clearTimeout(deadline);}
     }
     function prefetchNext(selected){
-      if(!selected.prefetch || voiceSuspended || captureBusy || active!==selected || prefetched || queuedPreparations.size || sessionMuted(selected.source))return;
+      if(!selected.prefetch || voiceSuspended || captureBusy || active!==selected || queuedPreparations.size || sessionMuted(selected.source))return;
       if(selected.source.kind!=="integrator_live"){
         if(selected.next===null)return;
-        const controller=new AbortController(),source=selected.source,offset=selected.next;
-        const waiting={controller,source,offset};prefetched=waiting;
-        waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return;
+        const prepare=offset=>{
+          const controller=new AbortController(),source=selected.source,waiting={controller,source,offset};
+          waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return waiting;
+        };
+        if(!prefetched)prefetched=prepare(selected.next);
+        // Only finalized WAV Live readings advertise the second exact boundary.
+        // Two future preparations share the existing server's two slots; no
+        // guessed offsets, recursive expansion or retry of an unknown attempt.
+        if(selected.lookahead!==undefined && !selected.streaming && !prefetched.following
+            && prefetched.source?.id===selected.source.id && prefetched.source.revision===selected.source.revision
+            && prefetched.offset===selected.next){
+          const waiting=prefetched;waiting.following=prepare(selected.lookahead);
+          waiting.abortFollowing=()=>waiting.following?.controller.abort();
+          waiting.controller.signal.addEventListener("abort",waiting.abortFollowing,{once:true});
+        }
+        return;
       }
+      if(prefetched)return;
       if(!voiceEnabled || !canSpeakLive || !selected.auto || selected.interrupted || selected.segmentEnded)return;
       const owned=generation,waiting={controller:new AbortController(),owner:selected.source,ahead:true};prefetched=waiting;
       waiting.selection=(async()=>{
@@ -2204,11 +2220,16 @@ window.Conversation = (() => {
       if(captureBusy)return;
       const key=preparationKey(source,offset);
       const prepared=queuedPreparations.get(key) || (prefetched?.source?.id===source.id && prefetched.source.revision===source.revision && prefetched.offset===offset?prefetched:undefined);
+      const following=prepared?.following;
+      if(following)prepared.controller.signal.removeEventListener("abort",prepared.abortFollowing);
       if(prepared===prefetched)prefetched=undefined;
       queuedPreparations.delete(key);
       if(!chain?.queued){cancelPreparedMessage(source);for(let n=voiceQueue.length-1;n>=0;n--)if(sameNative(voiceQueue[n],source))removeQueued(n);}
       if(!chain?.queued){interruptedTurns.delete(source.native_turn);skippedMessages.delete(messageKey(source));liveSpeech?.continueSource(source);voiceSuspended=false;}
       stop();
+      // Transfer the already owned successor after teardown, which must still
+      // cancel every preparation on ordinary Stop/Skip/source replacement.
+      if(following)prefetched=following;
       if(voiceEnabled)voiceBusy=true;
       const owned = generation;
       active = {source, offset, generation:owned, auto:false, focusVersion:chain?.focusVersion ?? focusVersion,queued:!!chain?.queued};
