@@ -1,6 +1,6 @@
 {
   "source": "AnnieScigliano/ASCII-Interfaces",
-  "source_revision": "b8dcad4be8077b39a72468a6cbdf018f9bc29d64",
+  "source_revision": "bd7dcbda2ebf1a3d360606852f39597d3b383a3d",
   "handoff_revision": "990dce9",
   "author": "Oliva for Ani",
   "license": "MIT; included LICENSE",
@@ -180,7 +180,7 @@
   },
   "custom_capabilities": {
     "upstream_pr": 4,
-    "source": "b8dcad4be8077b39a72468a6cbdf018f9bc29d64",
+    "source": "bd7dcbda2ebf1a3d360606852f39597d3b383a3d",
     "app_pr": 867,
     "selection": "Explicit inert interaction targets/material swatches; legacy defaults unchanged. Current App mission/storage/renderer/background adaptations retained."
   }
