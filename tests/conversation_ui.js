@@ -175,6 +175,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     fetch:(_route, options) => {
       if(_route.startsWith('api/interaction/artifacts/'))return Promise.resolve(new Response(artifactPayload,{headers:{'Content-Type':artifactMime,'X-Artifact-Sha256':require('node:crypto').createHash('sha256').update(artifactPayload).digest('hex')}}));
       audioCalls.push(JSON.parse(options.body));
+      optionsForFixture.preparationSignals?.push(options.signal);
       if(audioFailures){audioFailures--;return Promise.resolve(new Response(JSON.stringify({detail:'Synthetic TTS outage'}),{status:503}));}
       if(renderAudio && JSON.parse(options.body).source.startsWith('live:')){
         const selected=JSON.parse(options.body),end=Number(selected.source.split(':')[4]),text=Array.from(optionsForFixture.liveText||optionsForFixture.responseDraft.text).slice(selected.offset,end).join('');
@@ -186,7 +187,9 @@ function boot(readOnly=false,standalone=false,options={}) {
         if(optionsForFixture.incremental){
           const chars=Array.from(replyTexts.get(selected.source)||'Selected reply'),end=Math.min(chars.length,selected.offset+(selected.offset===0?120:300));
           const text=chars.slice(selected.offset,end).join(''),sha=require('node:crypto').createHash('sha256').update(text).digest('hex');
-          return Promise.resolve(new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'','x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}}));
+          const response=new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'',...(optionsForFixture.liveLookahead && end<chars.length && end+300<chars.length?{'x-presentation-lookahead-offset':String(end+300)}:{}),'x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}});
+          if(optionsForFixture.futureReleases && selected.offset>0)return new Promise((resolve,reject)=>{optionsForFixture.futureReleases.set(selected.offset,()=>resolve(response));options.signal.addEventListener('abort',()=>reject(new Error('Synthetic preparation cancelled')),{once:true});});
+          return Promise.resolve(response);
         }
         return Promise.resolve(new Response(data,{headers:{...(selected.speech_provider?{'x-speech-provider':selected.speech_provider}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':multipart&&selected.offset===0?'1600':'','x-audio-sha256':hash}}));
       }
@@ -196,7 +199,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   });
   vm.runInContext(fs.readFileSync("dashboard/web/requests.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
-  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
+  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},pauseEditing:()=>{continuousCalls.push(['edit-pause']);return true;},editDraft:text=>continuousCalls.push(['edit-draft',text]),ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
     context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);},release:id=>continuousCalls.push(['release',id])};}};
     if(options.continuousDriver){
@@ -617,6 +620,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>openaiOnly.audioCalls.length===1);
   assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
   services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
+  const editable=boot(false,true,{capture:true});await editable.ui.refresh();const editableInput=editable.nodes.get('#conversation-message');const selectionEdits=[];editableInput.setSelectionRange=(a,b)=>selectionEdits.push([a,b]);
+  const captureDraft={id:'edited-capture',binding:'fixture',active:true,editable:true,text:'Automatic opening'};
+  editable.microphoneTranscript(captureDraft);assert.equal(editableInput.readOnly,false);
+  editableInput.handlers.pointerdown();assert(editable.continuous().calls.some(v=>v[0]==='edit-pause'));
+  editableInput.value='Human correction';editableInput.handlers.input();assert(editable.continuous().calls.some(v=>v[0]==='edit-draft'&&v[1]==='Human correction'));
+  editable.microphoneTranscript({...captureDraft,text:'Human correction with later speech',resumed:true});assert.equal(editableInput.value,'Human correction with later speech');assert.deepEqual(selectionEdits.at(-1),[34,34]);
+  editable.microphoneTranscript({...captureDraft,active:false,edited:true,text:editableInput.value});assert.equal(editableInput.value,'Human correction with later speech','Finalization preserves the edited draft');
   const transcript=boot(false,true,{capture:true});await transcript.ui.refresh();
   const transcriptInput=transcript.nodes.get('#conversation-message');
   transcriptInput.value='Earlier typed draft';transcriptInput.selectionStart=2;transcriptInput.selectionEnd=7;
@@ -1084,6 +1094,22 @@ function boot(readOnly=false,standalone=false,options={}) {
   early.ended=true;const continuing=early.handlers.ended();incremental.clock.fire(180);await continuing;await until(()=>incremental.audioCalls.length===3&&!early.paused).catch(e=>{throw Error(JSON.stringify({calls:incremental.audioCalls,state:incremental.nodes.get('#conversation-state').textContent,audioState:incremental.nodes.get('#conversation-audio-state').textContent,paused:early.paused,muted:early.muted}));});
   assert.deepEqual(incremental.audioCalls.map(x=>x.offset),[0,120,420],'Continuation consumes its exact cached attempt and prepares only the next segment');
   incremental.ui.stop();const stoppedCalls=incremental.audioCalls.length;incremental.clock.fire(180);await new Promise(r=>setImmediate(r));assert.equal(incremental.audioCalls.length,stoppedCalls,'Stop cannot revive prefetched speech');
+  // Slow finalized-WAV voices use two exact future segments concurrently.
+  const preparationSignals=[],futureReleases=new Map();
+  const buffered=boot(false,true,{clock:true,incremental:true,liveLookahead:true,preparationSignals,futureReleases});buffered.audio();buffered.replyTexts.set('native:9','Measured sentence. '.repeat(120));await buffered.ui.refresh();
+  buffered.nodes.get('#conversation-voice-replies').handlers.click();buffered.addReplies(1);await buffered.ui.refresh();
+  const bufferedPlayer=buffered.nodes.get('#conversation-audio');await until(()=>buffered.audioCalls.length===3&&!bufferedPlayer.paused&&!bufferedPlayer.muted);
+  assert.deepEqual(buffered.audioCalls.map(x=>x.offset),[0,120,420],'Two future exact parts start before the current part ends');
+  assert.deepEqual([...futureReleases.keys()],[120,420],'Both futures are in flight without waiting for either response');
+  futureReleases.get(120)();
+  const originalMedia=bufferedPlayer.src;bufferedPlayer.ended=true;const bufferedContinue=bufferedPlayer.handlers.ended();buffered.clock.fire(180);await bufferedContinue;
+  await until(()=>buffered.audioCalls.length===4&&!bufferedPlayer.paused&&!bufferedPlayer.muted);
+  assert.notEqual(bufferedPlayer.src,originalMedia);
+  assert.deepEqual(buffered.audioCalls.map(x=>x.offset),[0,120,420,720],'Promotion consumes existing parts once and fills only one free future slot');
+  assert.equal(preparationSignals[2].aborted,false,'Promoting its predecessor does not cancel the owned next part');
+  buffered.ui.stop();assert(preparationSignals[2].aborted&&preparationSignals[3].aborted,'Stop cancels both future preparations');
+  const bufferedCount=buffered.audioCalls.length;buffered.clock.fire(180);await new Promise(r=>setImmediate(r));assert.equal(buffered.audioCalls.length,bufferedCount);assert.equal(buffered.nativePosts.length,0);
+
   // Barge-in pauses the existing media immediately without canceling its
   // stream or any native work. Reload can restart the interrupted segment,
   // never claim word-level hearing from an estimated position.

@@ -344,14 +344,14 @@ window.Conversation = (() => {
     });
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
-    let transcriptPreview;
+    let transcriptPreview,editedPreview;
     function previewTranscript(value){
       const input=$('#conversation-message');if(!input)return;
       const previous=transcriptPreview;
       if(!value.active){
         if(!previous||value.id!==previous.id)return;
-        transcriptPreview=undefined;
-        if(input.value===previous.text){
+        transcriptPreview=undefined;if(value.edited)editedPreview={...previous,text:input.value};
+        if(!value.edited&&input.value===previous.text){
           input.value=previous.binding===binding?previous.draft:'';
           if(previous.binding===binding)input.setSelectionRange?.(previous.start,previous.end);
         }
@@ -360,13 +360,13 @@ window.Conversation = (() => {
       if(value.binding!==binding)return;
       if(!previous){
         transcriptPreview={id:value.id,binding,draft:input.value,start:input.selectionStart,end:input.selectionEnd,readOnly:input.readOnly,text:input.value};
-        input.readOnly=true;input.setAttribute('data-voice-preview','true');
+        input.readOnly=!value.editable;input.setAttribute('data-voice-preview','true');
       }else if(previous.id!==value.id||input.value!==previous.text)return;
       // This is the existing audio recognizer's provisional preview, never a text submission.
       transcriptPreview.text=value.text;input.value=value.text;
-      input.scrollTop=input.scrollHeight;
+      input.scrollTop=input.scrollHeight;if(value.resumed){input.focus?.();input.setSelectionRange?.(input.value.length,input.value.length);}
     }
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTranscript:previewTranscript,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onLevel:value=>presentState({inputLevel:value}),onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTranscript:previewTranscript,canEditDraft:()=>lastVoiceCapabilities?.can_download_files===true,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{if(editedPreview?.id===value.id&&editedPreview.binding===binding){if(draft.value===editedPreview.text)draft.value=editedPreview.draft;editedPreview=undefined;}retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onLevel:value=>presentState({inputLevel:value}),onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
       const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
       if(!card)return;
@@ -793,6 +793,13 @@ window.Conversation = (() => {
 
     const inputs = new Map();
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
+    const pauseDraft=()=>{if(transcriptPreview&&microphone?.pauseEditing?.()){
+      if(transcriptPreview.draft){draft.value=transcriptPreview.draft+'\n'+draft.value;transcriptPreview.draft='';transcriptPreview.text=draft.value;microphone.editDraft(draft.value);}
+    }};
+    draft.addEventListener('pointerdown',pauseDraft);
+    draft.addEventListener('beforeinput',pauseDraft);
+    draft.addEventListener('input',()=>{if(transcriptPreview){transcriptPreview.text=draft.value;microphone?.editDraft?.(draft.value);}});
+
     const sharedText=readOnly?undefined:window.NativeSharedText?.mount({parent:compose,draft,onFiles:files=>attachedFiles.addFiles(files),getBinding:()=>binding,isBusy:()=>captureBusy||!!voiceMode?.active||!!microphone?.ownsSend()});
     const sendState = $("#conversation-send-state");
     const composerNotice=(text,attention=true)=>{sendState.textContent=text;sendState.setAttribute('data-attention',String(attention));};
@@ -2176,17 +2183,33 @@ window.Conversation = (() => {
         if(next!==null && (!Number.isSafeInteger(next)||next<=offset))throw Error("Invalid audio continuation");
         const endHeader=response.headers.get("x-presentation-end-offset"),end=endHeader?Number(endHeader):undefined;
         if(end!==undefined && (!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end))throw Error("Invalid audio segment boundary");
-        return {blob,next,end,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:response.headers.get("x-presentation-prefetch")==="true"};
+        const aheadHeader=response.headers.get("x-presentation-lookahead-offset"),lookahead=aheadHeader?Number(aheadHeader):undefined;
+        if(lookahead!==undefined && (next===null || !Number.isSafeInteger(lookahead) || lookahead<=next || lookahead>offset+1600))throw Error("Invalid audio lookahead boundary");
+        return {blob,next,end,lookahead,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:response.headers.get("x-presentation-prefetch")==="true"};
       }finally{clearTimeout(deadline);}
     }
     function prefetchNext(selected){
-      if(!selected.prefetch || voiceSuspended || captureBusy || active!==selected || prefetched || queuedPreparations.size || sessionMuted(selected.source))return;
+      if(!selected.prefetch || voiceSuspended || captureBusy || active!==selected || queuedPreparations.size || sessionMuted(selected.source))return;
       if(selected.source.kind!=="integrator_live"){
         if(selected.next===null)return;
-        const controller=new AbortController(),source=selected.source,offset=selected.next;
-        const waiting={controller,source,offset};prefetched=waiting;
-        waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return;
+        const prepare=offset=>{
+          const controller=new AbortController(),source=selected.source,waiting={controller,source,offset};
+          waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return waiting;
+        };
+        if(!prefetched)prefetched=prepare(selected.next);
+        // Only finalized WAV Live readings advertise the second exact boundary.
+        // Two future preparations share the existing server's two slots; no
+        // guessed offsets, recursive expansion or retry of an unknown attempt.
+        if(selected.lookahead!==undefined && !selected.streaming && !prefetched.following
+            && prefetched.source?.id===selected.source.id && prefetched.source.revision===selected.source.revision
+            && prefetched.offset===selected.next){
+          const waiting=prefetched;waiting.following=prepare(selected.lookahead);
+          waiting.abortFollowing=()=>waiting.following?.controller.abort();
+          waiting.controller.signal.addEventListener("abort",waiting.abortFollowing,{once:true});
+        }
+        return;
       }
+      if(prefetched)return;
       if(!voiceEnabled || !canSpeakLive || !selected.auto || selected.interrupted || selected.segmentEnded)return;
       const owned=generation,waiting={controller:new AbortController(),owner:selected.source,ahead:true};prefetched=waiting;
       waiting.selection=(async()=>{
@@ -2204,11 +2227,16 @@ window.Conversation = (() => {
       if(captureBusy)return;
       const key=preparationKey(source,offset);
       const prepared=queuedPreparations.get(key) || (prefetched?.source?.id===source.id && prefetched.source.revision===source.revision && prefetched.offset===offset?prefetched:undefined);
+      const following=prepared?.following;
+      if(following)prepared.controller.signal.removeEventListener("abort",prepared.abortFollowing);
       if(prepared===prefetched)prefetched=undefined;
       queuedPreparations.delete(key);
       if(!chain?.queued){cancelPreparedMessage(source);for(let n=voiceQueue.length-1;n>=0;n--)if(sameNative(voiceQueue[n],source))removeQueued(n);}
       if(!chain?.queued){interruptedTurns.delete(source.native_turn);skippedMessages.delete(messageKey(source));liveSpeech?.continueSource(source);voiceSuspended=false;}
       stop();
+      // Transfer the already owned successor after teardown, which must still
+      // cancel every preparation on ordinary Stop/Skip/source replacement.
+      if(following)prefetched=following;
       if(voiceEnabled)voiceBusy=true;
       const owned = generation;
       active = {source, offset, generation:owned, auto:false, focusVersion:chain?.focusVersion ?? focusVersion,queued:!!chain?.queued};

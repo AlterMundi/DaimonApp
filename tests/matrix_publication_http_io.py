@@ -138,6 +138,50 @@ def qualify(binary):
             if not read_unavailable:
                 retained=journal._load(operation,lost)
                 assert retained['parts'][0]['attempts'][0]['response_source']=='retained-publication'
+        # Complete a genuinely multipart original after its first part committed
+        # but the native result was lost. Real owner socket, App SQLite/signature
+        # and native journal; the shared harness and login remain synthetic.
+        partial_projection=json.loads(canonical(projection))
+        partial_projection['content']['text']='Exact original protocol '+('a'*4500)+'😀'*16
+        partial_policy={**fixture['policy'],'representation':'compact-text/v1'}
+        deadline=time.time_ns()//1_000_000+2000
+        native.execute('BEGIN IMMEDIATE')
+        partial_digest=journal.admit('partial-publication',partial_projection,partial_policy,
+            publication_not_after_ms=deadline)
+        native.commit()
+        partial=echo.MandatoryEcho(journal,transport=publisher,
+            resolve=lambda _:partial_projection,authorize=lambda _:True)
+        send=publisher.send
+        def lose_first(value):
+            send(value)
+            raise TimeoutError('fixture lost first-part result after actual commit')
+        with patch.object(publisher,'send',side_effect=lose_first), patch.object(publisher,'inspect_publication',None):
+            initial=partial.advance('partial-publication',partial_digest)
+        assert initial['state']=='ambiguous' and initial['part_count']>1,initial
+        before=journal._load('partial-publication',partial_digest)
+        first_request=echo._record_request(before,0)
+        time.sleep(max(0,(deadline-time.time_ns()//1_000_000+1)/1000))
+        assert partial.reconcile_publication('partial-publication',partial_digest)['confirmed_parts']==1
+        publisher.prepare_publication_completion()
+        now=time.time_ns()//1_000_000
+        control=dict(schema='dm.visibility.publication-completion/v1',recovery_id=str(uuid.uuid4()),
+            issued_at_ms=now,expires_at_ms=now+60000)
+        with patch.object(publisher,'complete_publication',wraps=publisher.complete_publication) as completion:
+            assert partial.complete_publication('partial-publication',partial_digest,control)['state']=='confirmed'
+            assert completion.call_count==initial['part_count']-1
+            partial.complete_publication('partial-publication',partial_digest,control)
+            assert completion.call_count==initial['part_count']-1
+        after=journal._load('partial-publication',partial_digest)
+        assert before['binding']==after['binding']
+        assert all(len(part['attempts'])==1 for part in after['parts'])
+        assert j.read('matrix','publication','inspect',first_request['publication_id'])['result']['committed_at_ms']<deadline
+        assert j.row('SELECT count(*) FROM conversation_matrix_publications WHERE completion_json IS NOT NULL')==[(initial['part_count']-1,)]
+        assert j.row('SELECT count(*) FROM conversation_matrix_publications WHERE completion_json IS NOT NULL AND not_after_ms<>?',(deadline,))==[(0,)]
+        # The CLI stdin path reads the exact committed proof, not another post.
+        last_request=echo._record_request(after,len(after['parts'])-1)
+        result=subprocess.run([j.binary,'--control',str(j.config),'matrix','publication','complete'],
+            input=canonical({**control,'request':last_request}),capture_output=True,timeout=15)
+        assert result.returncode==0,result.stderr.decode()
         assert j.row('SELECT count(*) FROM conversation_matrix_publications WHERE confirmed_at_ms IS NULL')==[(1,)]
         j.stop();j.start();j.wait_control_socket(j.socket)
         assert j.read('matrix','publication','inspect',request['publication_id'])['result']==first
@@ -145,7 +189,7 @@ def qualify(binary):
         assert j.row('SELECT count(*) FROM incoming_updates')==[(0,)]
         assert not j.telegram_methods and not j.messages and not j.packets
         assert not (j.root/'bot.token').exists()
-        print('PASS actual native journal -> App owner publication -> committed native proof acknowledgment; no-browser authenticated HTTP/foreign denial, restart/exact recovery, bounded lost-result proof inspection and no duplicate publication; zero inference, Telegram or peer transmissions')
+        print('PASS actual native journal -> App owner publication -> committed native proof acknowledgment; no-browser authenticated HTTP/foreign denial, restart/exact recovery, bounded lost-result proof inspection, late multipart completion with original identities/CLI exact retry, and no duplicate publication; zero inference, Telegram or peer transmissions')
     finally:
         if client:client.close()
         if native:native.close()

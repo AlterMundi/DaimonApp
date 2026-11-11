@@ -355,6 +355,13 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         if selected == "status" {
             return publication.descriptor();
         }
+        if selected == "completion-status" {
+            // Separate from the closed signed publication descriptor.
+            return Ok(
+                serde_json::json!({"schema":"dm.visibility.publication-completion-capability/v1",
+                "max_window_ms":60000,"requires":"pinned-unacknowledged-multipart"}),
+            );
+        }
         if selected == "retire" {
             return app
                 .shared
@@ -370,6 +377,16 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
                 publication,
                 fields[0],
                 fields[1],
+            );
+        }
+        if let Some(raw) = selected.strip_prefix("complete ") {
+            anyhow::ensure!(raw.len() <= 65536, "Publication completion exceeds bound");
+            let request: crate::store::PublicationCompletion = serde_json::from_str(raw)?;
+            return app.shared.store.matrix_publication_complete(
+                human,
+                cfg.entry(),
+                publication,
+                &request,
             );
         }
         if let Some(raw) = selected.strip_prefix("commit ") {
@@ -397,7 +414,7 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
                 .matrix_publications(human, cfg.entry(), after.parse()?);
         }
         bail!(
-            "Expected publication status, commit JSON, inspect UUID, confirm UUID HASH, retire or list CURSOR"
+            "Expected publication status, completion-status, commit JSON, complete JSON, inspect UUID, confirm UUID HASH, retire or list CURSOR"
         );
     }
     if let Some(id) = args.strip_prefix("status ") {

@@ -35,8 +35,12 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
-      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6'].includes(old.schema)){
-        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous',...(old.schema.endsWith('/v6')?['openai-live','previous-live']:[])].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
+      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6','telecodex.voice-recovery/v7'].includes(old.schema)){
+        if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous',...(!old.schema.endsWith('/v5')?['openai-live','previous-live']:[])].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
+        for(const item of old.items.filter(v=>v.dictation)){
+          const d=item.dictation;
+          if(!old.schema.endsWith('/v7')||typeof d.text!=='string'||!d.text.trim()||new TextEncoder().encode(d.text).length>32768||typeof d.automatic!=='string'||new TextEncoder().encode(d.automatic).length>65536||typeof d.automaticFinal!=='boolean'||!d.audio||!d.transcript)throw Error('Edited recording recovery is malformed');
+        }
         return [...old.items];
       }
       if(['telecodex.voice-recovery/v3','telecodex.voice-recovery/v4'].includes(old.schema)){
@@ -59,6 +63,7 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete(key);
+      else if(items.some(v=>v.dictation))store.put({schema:'telecodex.voice-recovery/v7',items},key);
       else if(items.some(v=>['openai-live','previous-live'].includes(v.transcriptionProfile)))store.put({schema:'telecodex.voice-recovery/v6',items},key);
       else if(items.some(v=>v.transcriptionProfile!==undefined))store.put({schema:'telecodex.voice-recovery/v5',items},key);
       else if(items.some(v=>v.native_fragment===true))store.put({schema:'telecodex.voice-recovery/v4',items},key);
@@ -66,6 +71,7 @@ window.VoiceInput = (() => {
     }
     function boundedRecords(store,items,other){
       const combined=[...items,...records(other)];
+      if(combined.reduce((n,v)=>n+(v.dictation?new TextEncoder().encode(JSON.stringify(v.dictation)).length:0),0)>262144)throw Error('Edited recording recovery is full');
       if(combined.length>128||combined.some(v=>!Number.isFinite(v.blob?.size))||combined.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording recovery limit reached');
       items.sort((a,b)=>(a.capture_started||0)-(b.capture_started||0));storeRecords(store,items);
     }
@@ -127,7 +133,7 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
@@ -191,19 +197,42 @@ window.VoiceInput = (() => {
     }
     const microphoneIcon=button.querySelector?.('svg')?.cloneNode(true);
     const supported=()=>!!(window.isSecureContext && window.MediaRecorder && typeof window.MediaRecorder.isTypeSupported==='function' && window.navigator?.mediaDevices?.getUserMedia && window.crypto?.subtle);
-    const ownsSend=()=>['permission','recording','ready','finalizing'].includes(phase) || uploading || !!pending;
+    const ownsSend=()=>['permission','recording','editing','ready','finalizing'].includes(phase) || uploading || !!pending;
     let ownedSend=false;
     function syncSend(){
       const owned=ownsSend();button.hidden=owned;
       if(send){send.type=owned?'button':'submit';send.textContent=pending?'Retry send':'Send';send.setAttribute('aria-label',pending?'Retry sending the same recording':owned?'Send voice message':'Send text message');
-        if(owned)send.disabled=button.disabled || !(['recording','ready'].includes(phase)||pending);else if(ownedSend)send.disabled=!getBinding();}
+        if(owned)send.disabled=button.disabled || !(['recording','editing','ready'].includes(phase)||pending);else if(ownedSend)send.disabled=!getBinding();}
       ownedSend=owned;
     }
-    let transcriptCapture;
+    let transcriptCapture,rawTranscript='',previewText='',edited=false,editBase,editAnchor=0,pausePromise,continuing=false;
+    const continueButton=document.querySelector('#conversation-voice-continue');
+    function transcript(text){
+      rawTranscript=text;
+      if(phase==='editing')return;
+      previewText=editBase===undefined?text:editBase+(text.trim().split(/\s+/).slice(editAnchor).join(' ')?' '+text.trim().split(/\s+/).slice(editAnchor).join(' '):'');
+      if(transcriptCapture)onTranscript({...transcriptCapture,active:true,text:previewText,editable:transcriptCapture?.editable,paused:false});
+    }
+    function editDraft(text){if(phase!=='editing'||typeof text!=='string')return;edited ||= text!==previewText;previewText=text;editBase=text;editAnchor=rawTranscript.trim()?rawTranscript.trim().split(/\s+/).length:0;}
+    function pauseEditing(){
+      if(phase!=='recording'||conversationCapture||!transcriptCapture||transcriptCapture.editable===false||!recorder?.pause||!recorder?.resume)return false;
+      const owned=generation,current=recorder;phase='editing';clearTimeout(countdownTimer);notice('Listening paused. Edit your message, then continue.');controls();
+      // The original physical deadline remains in force; editing never renews it.
+      pausePromise=Promise.resolve().then(()=>{if(owned===generation&&recorder===current)return current.pause();}).catch(()=>{if(owned===generation&&recorder===current)hold();});return true;
+    }
+    async function continueEditing(){
+      if(phase!=='editing'||document.hidden||!recorder||continuing)return false;
+      continuing=true;if(continueButton)continueButton.disabled=true;
+      const owned=generation,current=recorder;editBase=previewText;editAnchor=rawTranscript.trim()?rawTranscript.trim().split(/\s+/).length:0;
+      try{await pausePromise;if(owned!==generation||recorder!==current||phase!=='editing'||document.hidden)return false;await current.resume();if(owned!==generation||recorder!==current||phase!=='editing')return false;phase='recording';caption('Listening…');controls();countdown();onTranscript({...transcriptCapture,active:true,text:previewText,editable:true,resumed:true});return true;}
+      catch{hold();return false;}finally{continuing=false;if(continueButton)continueButton.disabled=document.hidden||continuing;}
+    }
+    continueButton?.addEventListener('click',()=>{void continueEditing();});
     function controls() {
-      if(transcriptCapture&&phase!=='recording'){const ended=transcriptCapture;transcriptCapture=undefined;onTranscript({...ended,active:false});}
+      if(transcriptCapture&&!['recording','editing'].includes(phase)){const ended=transcriptCapture;transcriptCapture=undefined;onTranscript({...ended,active:false,edited,text:previewText});}
+      if(continueButton){continueButton.hidden=phase!=='editing';continueButton.disabled=document.hidden||continuing;}
       box.hidden=!available;
-      if(phase!=='recording'){clearTimeout(countdownTimer);if(remaining)remaining.hidden=true;}
+      if(phase!=='recording'){clearTimeout(countdownTimer);if(remaining)remaining.hidden=phase!=='editing';}
       if(phase==='idle' && !pending && microphoneIcon)button.replaceChildren(microphoneIcon.cloneNode(true));
       else button.textContent=phase==='recording'||phase==='ready'?'↑':pending?'↻':['permission','finalizing'].includes(phase)||uploading?'…':'🎙';
       if(pending)button.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5"/></svg>';
@@ -212,12 +241,12 @@ window.VoiceInput = (() => {
       button.disabled=!available || !getBinding() || !supported() || restoring || uploading || phase==='permission' || phase==='finalizing';
       button.setAttribute('aria-pressed',String(phase==='recording'));
       syncSend();
-      discard.hidden=!noticeDismissible&&!pending&&!['permission','recording','ready','finalizing'].includes(phase);discard.disabled=uploading;
+      discard.hidden=!noticeDismissible&&!pending&&!['permission','recording','editing','ready','finalizing'].includes(phase);discard.disabled=uploading;
       if(save){save.hidden=!pending;save.disabled=uploading;}if(review)review.hidden=!pending;
       discard.textContent='×';discard.setAttribute('aria-label',noticeDismissible?'Dismiss recording notice':pending?'Discard local recording':'Discard recording');discard.title=noticeDismissible?'Dismiss recording notice':pending?'Discard local recording':'Discard recording';
       check.hidden=!pending; check.disabled=uploading||checking;check.textContent=checking?'Checking delivery…':'Check delivery';
       if(phase!=='recording')try{onLevel(0);}catch{}
-      onActivity(uploading || ['permission','recording','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
+      onActivity(uploading || ['permission','recording','editing','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
     }
     function stopTracks() {closeCues();if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
     function cancelRecording(message='Recording discarded. Nothing was sent.') {
@@ -231,13 +260,14 @@ window.VoiceInput = (() => {
       cancelRecording('');available=false;controls();
     }
     function deactivate() {
+      if(edited){commit=false;if(['recording','editing'].includes(phase))hold();controller?.abort();return;}
       if(conversationCapture && ['permission','recording'].includes(phase)){hold();controller?.abort();return;}
-      if(['permission','recording','ready','finalizing'].includes(phase))cancelRecording('Recording ended while this view was inactive. Nothing was sent.');
+      if(['permission','recording','editing','ready','finalizing'].includes(phase))cancelRecording('Recording ended while this view was inactive. Nothing was sent.');
       controller?.abort();
     }
     function configure(value,live=false,mode='prepared',openaiLive=false) {
       available=!!value;liveAvailable=!!live;openaiLiveAvailable=!!openaiLive;liveMode=mode==='captions'?'captions':'prepared';
-      if(!available && ['permission','recording','ready','finalizing'].includes(phase))cancelRecording();
+      if(!available && ['permission','recording','editing','ready','finalizing'].includes(phase))cancelRecording();
       if(available && !supported())notice('Microphone unavailable in this browser. You can keep writing.',true);
       controls();
       if(available && recovery && getBinding() && restoreBinding!==getBinding() && !pending && phase==='idle')void restore();
@@ -255,11 +285,11 @@ window.VoiceInput = (() => {
     }
     async function confirmed(value,frozen) {
       if(pending!==frozen || frozen.binding!==getBinding())return;
-      if(value.id!==frozen.id || value.voice?.audio_sha256!==frozen.audio_sha256)throw Error('Voice capture does not match this recording.');
-      if((frozen.captureStop||null)!==(value.voice?.capture_stop||null))throw Error('Recording stop context does not match this capture.');
+      if(value.id!==frozen.id || (frozen.dictation?value.text!==frozen.dictation.text:value.voice?.audio_sha256!==frozen.audio_sha256))throw Error('Voice capture does not match this recording.');
+      if(!frozen.dictation&&(frozen.captureStop||null)!==(value.voice?.capture_stop||null))throw Error('Recording stop context does not match this capture.');
       if(!!frozen.visual!==!!value.visual||Array.isArray(frozen.visual)!==Array.isArray(value.visual)||Array.isArray(frozen.visual)&&frozen.visual.length!==value.visual.length||frozen.visual&&Object.keys(frozen.visual).some(k=>JSON.stringify(frozen.visual[k])!==JSON.stringify(value.visual[k])))throw Error('Visual capture does not match this recording.');
       const fileValues=refs=>(refs||[]).map(file=>['file_id','sha256','name','mime','size'].map(key=>file[key]));
-      if(JSON.stringify(fileValues(frozen.files))!==JSON.stringify(fileValues(value.files)))throw Error('Original files do not match this recording.');
+      if(JSON.stringify(fileValues(frozen.dictation?[...(frozen.files||[]),frozen.dictation.audio,frozen.dictation.transcript]:frozen.files))!==JSON.stringify(fileValues(value.files)))throw Error('Original files do not match this recording.');
       if(frozen.foreground_dialogue&&value.foreground_dialogue!==frozen.foreground_dialogue)throw Error('Avatar recording dialogue changed.');
       if(frozen.foreground_dialogue&&['foreground_captured','preparing','preparation_unconfirmed'].includes(value.phase)){
         notice('Voice original saved, but its interpretation is not confirmed. Your local copy is kept. Retry resumes interpretation of this same original; Check delivery only reads its status.',true);controls();return;
@@ -269,7 +299,7 @@ window.VoiceInput = (() => {
       lastConfirmed=value;
       onInput(value,frozen.focusVersion);onVisualSent(frozen.visual);onFilesSent(frozen.files);pending=undefined;phase='idle';
       try{await recovery?.remove(frozen);if(recovery)recoveryFree=(await recovery.list()).length===0;}catch{recoveryFree=false;}
-      notice(value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
+      notice(frozen.dictation&&!value.retired&&value.phase!=='retained_unsent'?'Edited message and originals saved.':value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
         value.phase==='retained_unsent'?'Recording saved; no work was submitted. You can keep writing.':
         value.phase==='preparation_unconfirmed'?'Recording saved; transcription unconfirmed. Nothing was resubmitted.':
         value.phase==='preparing'?'Confirming transcript…':
@@ -286,8 +316,26 @@ window.VoiceInput = (() => {
       if(value.phase==='preparing'&&latestSaved.preparedText)caption(latestSaved.preparedText);
       else notice('');
     }
+    async function uploadDictation(frozen,active){
+      const d=frozen.dictation;
+      const automatic=new Blob([d.automaticFinal?'Automatic transcript from the same recording:\n':'Automatic live preview, unverified:\n',d.automatic],{type:'text/plain'});
+      for(const [ref,blob] of [[d.audio,frozen.blob],[d.transcript,automatic]]){
+        if(!ref.sha256)ref.sha256=Array.from(new Uint8Array(await window.crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('');
+      }
+      // Persist identities/hashes and the exact edited text before network effects.
+      await recovery?.put(frozen,continuousOwned);
+      for(const [ref,blob] of [[d.audio,frozen.blob],[d.transcript,automatic]]){
+        if(pending!==frozen||frozen.binding!==getBinding()||active.signal.aborted)return;
+        const response=await fetch('api/interaction/files',{method:'POST',credentials:'same-origin',signal:active.signal,headers:{...headers(),'Content-Type':'application/octet-stream','X-File-Reference':encodeURIComponent(JSON.stringify(ref))},body:blob});
+        if(!response.ok)throw Object.assign(Error('Original attachment unconfirmed'),{status:response.status});
+        const value=await response.json();if(Object.keys(ref).some(k=>value[k]!==ref[k]))throw Error('Original attachment changed');
+      }
+      if(pending!==frozen||frozen.binding!==getBinding()||active.signal.aborted)return;
+      const value=await api('interaction/inputs',{binding:frozen.binding,id:frozen.id,text:d.text,files:[...(frozen.files||[]),d.audio,d.transcript],...(frozen.reply?{reply:frozen.reply}:{}),...(frozen.visual?{visual:frozen.visual}:{}),...(frozen.playback?{playback:frozen.playback}:{})});
+      await confirmed(value,frozen);
+    }
     async function upload(automatic=false) {
-      if(!pending || uploading || pending.binding!==getBinding())return;
+      if(!pending || uploading || pending.binding!==getBinding()||pending.dictation&&pending.retentionBlocked)return;
       if(pending.needsVisualSelection&&!pending.uncertainSubmission){
         try{const original=pending,visual=await getVisual();if(pending!==original||original.binding!==getBinding())return;pending={...original,id:window.crypto.randomUUID(),visual,needsVisualSelection:false};}
         catch(_){notice('Point again or remove the image before retrying this recording.',true);return;}
@@ -308,6 +356,7 @@ window.VoiceInput = (() => {
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
         if(frozen.transcriptionProfile!==undefined&&!['openai','previous','openai-live','previous-live'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
         const route=frozen.transcriptionProfile?'api/interaction/voice/'+frozen.transcriptionProfile:'api/interaction/voice';
+        if(frozen.dictation){await uploadDictation(frozen,active);return;}
         const response=frozen.foreground_dialogue?await fetch('api/interaction/voice/recover',{
           method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,
@@ -337,6 +386,7 @@ window.VoiceInput = (() => {
     async function finish(owned,binding,mime,selection) {
       if(owned!==generation)return;
       if(recorder?.preparationTiming)onTiming(selection?.captureId,'prepared',recorder.preparationTiming);
+      if(edited&&recorder?.preparedText){const before=phase;phase='recording';transcript(recorder.preparedText);phase=before;}
       stopTracks();const preparedText=recorder?.preparedText||selection?.preparedText,captureStop=recorder?.captureStop||selection?.captureStop;recorder=undefined;
       const blob=new Blob(parts,{type:mime});parts=[];bytes=0;
       if(!blob.size){cancelRecording('No audio samples were captured. Nothing was sent.');return;}
@@ -348,13 +398,24 @@ window.VoiceInput = (() => {
         if(owned!==generation || binding!==getBinding())return;
         const audio_sha256=Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join('');
         const needsReview=!commit || captureStop==='audio_flush_unconfirmed' && !selection?.captureReviewed;
-        pending={transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
+        let dictation;
+        if(edited){
+          if(!previewText.trim()||new TextEncoder().encode(previewText).length>32768)throw Error('Edited message outside limits');
+          const automatic=preparedText||rawTranscript;
+          const reference=(name,mime,size)=>({file_id:window.crypto.randomUUID(),name,mime,size});
+          const automaticBlob=new Blob([preparedText?'Automatic transcript from the same recording:\n':'Automatic live preview, unverified:\n',automatic],{type:'text/plain'});
+          dictation={text:previewText,automatic,automaticFinal:!!preparedText,audio:reference('Original recording.'+(mime.includes('wav')?'wav':mime.includes('ogg')?'ogg':mime.includes('mp4')?'m4a':'webm'),mime,blob.size),transcript:reference('Automatic transcript.txt','text/plain',automaticBlob.size)};
+
+        }
+        pending={dictation,transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
         try{if(recovery){await recovery.put(pending);pending.localRecovery=true;}}catch{pending.localRecovery=false;}
         if(owned!==generation || binding!==getBinding())return;
-        if(needsReview){
+        const attachmentsFull=dictation&&((selection?.files?.length||0)+2>8||blob.size+dictation.transcript.size+(selection?.files||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024);
+        if(attachmentsFull)pending.retentionBlocked=true;
+        if(needsReview||attachmentsFull){
           phase='ready';commit=false;parts=[blob];
           readySelection={binding,selection:{...selection,captureId:pending.id,captureStop:pending.captureStop,preparedText,captureReviewed:true}};
-          notice((captureStop==='audio_flush_unconfirmed'
+          notice((attachmentsFull?'This recording and your edited draft are kept. Save the audio and reduce the original attachments before sending.':captureStop==='audio_flush_unconfirmed'
             ?'The final audio buffer was not confirmed. The ending may be missing. Send this fragment or discard it.'
             :captureStop==='duration_limit'?'Recording stopped at 2:00. The ending may be incomplete. Send this part or discard it.'
             :'Voice mode ended. Review this recording before sending it, or discard it.')
@@ -368,7 +429,7 @@ window.VoiceInput = (() => {
       if(!available || !getBinding() || !supported() || restoring || ownsSend() || document.hidden)return false;
       prepareCues();
       conversationCapture=conversational;
-      const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={transcriptionProfile:getTranscriptionProfile(),...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;
+      const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={transcriptionProfile:getTranscriptionProfile(),...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;rawTranscript='';previewText='';edited=false;editBase=undefined;editAnchor=0;
       notice('Allow microphone access to begin.');pauseAudio();controls();
       try {
         let selectedVisual;
@@ -393,7 +454,7 @@ window.VoiceInput = (() => {
             onDetectionUnavailable:()=>{if(conversational&&owned===generation){conversationCapture=false;hold();}},
             onPCM:pcm=>{if(owned===generation&&phase==='recording')levelMeter?.(pcm);},
             onUnavailable:()=>{previewUnavailable=true;try{onLevel(0);}catch{}if(owned===generation&&phase==='recording')caption('Recording… Live text unavailable.');},
-            onPartial:text=>{if(owned===generation&&phase==='recording'){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');caption(text||'Listening…');if(!conversational&&binding===getBinding())onTranscript({id:frozenSelection.captureId,binding,active:true,text});}}});hasTranscriptPreview=!!current;}catch{previewUnavailable=true;}
+            onPartial:text=>{if(owned===generation&&['recording','editing'].includes(phase)){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');if(phase==='recording')caption(text||'Listening…');if(!conversational&&binding===getBinding())transcript(text);}}});hasTranscriptPreview=!!current;}catch{previewUnavailable=true;}
         }
         if(owned!==generation||binding!==getBinding()||document.hidden){current?.discard?.();for(const track of media.getTracks())track.stop();return;}
         current=current||canonical;
@@ -407,8 +468,8 @@ window.VoiceInput = (() => {
         });
         current.addEventListener('error',()=>{if(owned===generation)cancelRecording('Recording failed. Nothing was sent.');});
         current.addEventListener('stop',()=>finish(owned,binding,mime,frozenSelection));
-        current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';if(!conversational&&hasTranscriptPreview){transcriptCapture={id:frozenSelection.captureId,binding};onTranscript({...transcriptCapture,active:true,text:''});}recordingStarted=clock();caption(previewUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();
-        timer=setTimeout(()=>{if(owned===generation && current.state==='recording'){phase='finalizing';onTiming(frozenSelection.captureId,'ended');current.captureStop='duration_limit';current.stop();stopTracks();controls();}},RECORDING_MILLIS);
+        current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';if(!conversational&&hasTranscriptPreview){transcriptCapture={id:frozenSelection.captureId,binding,editable:canEditDraft()&&!!current.pause&&!!current.resume&&(frozenSelection.files?.length||0)<=6&&(frozenSelection.files||[]).reduce((n,f)=>n+f.size,0)<=20*1024*1024-65536};onTranscript({...transcriptCapture,active:true,text:'',editable:transcriptCapture.editable});}recordingStarted=clock();caption(previewUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();
+        timer=setTimeout(()=>{if(owned===generation && ['recording','paused'].includes(current.state)){phase='finalizing';onTiming(frozenSelection.captureId,'ended');current.captureStop='duration_limit';current.stop();stopTracks();controls();}},RECORDING_MILLIS);
       } catch(error) {
         const reason={NotAllowedError:'Microphone permission was denied. Check this browser’s site permissions.',
           NotFoundError:'This browser could not find an accessible microphone.',
@@ -420,14 +481,16 @@ window.VoiceInput = (() => {
     }
     function submit(){
       if(uploading)return;
-      if(phase==='recording'){onTiming(recorder.captureId,'send');onTiming(recorder.captureId,'ended');commit=true;phase='finalizing';recorder.stop();stopTracks();controls();}
+      if(edited&&(!previewText.trim()||new TextEncoder().encode(previewText).length>32768)){pauseEditing();notice('Write a message of at most 32 KiB before sending.',true);return;}
+      if(['recording','editing'].includes(phase)){onTiming(recorder.captureId,'send');onTiming(recorder.captureId,'ended');commit=true;phase='finalizing';recorder.stop();stopTracks();controls();}
+      else if(phase==='ready'&&pending?.dictation){phase='idle';return upload();}
       else if(phase==='ready'){commit=true;return finish(generation,readySelection.binding,parts[0].type,readySelection.selection);}
       else if(pending)return upload();
     }
     function hold(){
       conversationCapture=false;
       if(phase==='permission'){cancelRecording('Voice mode closed before recording began.');return;}
-      if(phase==='recording'){commit=false;phase='finalizing';onTiming(recorder.captureId,'ended');recorder.stop();stopTracks();controls();}
+      if(['recording','editing'].includes(phase)){commit=false;phase='finalizing';onTiming(recorder.captureId,'ended');recorder.stop();stopTracks();controls();}
     }
     async function retainContinuous(original){
       if(!recovery||!original.blob?.size||original.blob.size>20*1024*1024)throw Error('Local recording recovery unavailable');
@@ -523,7 +586,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {pauseEditing,editDraft,continueEditing,configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
   return {mount,recoveryStore};
 })();

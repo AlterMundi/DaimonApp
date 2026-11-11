@@ -633,22 +633,42 @@ class Companion(unittest.TestCase):
             'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
             'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
         binding.chmod(0o600)
-        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True}
         self.client.close();self.client=self.client_for()
         self.config['openai_live']={'api_key_file':str(self.root/'studio-key')}
         profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'willow'}
         store=AvatarWorkshop(self.config['state_dir']);ident=str(uuid.uuid4())
         store.voice_save(100,ident,profile,'Calm.',None,0);store.voice_select(100,ident,1,[profile])
         engines=[]
+        self.provider.source['text']='A complete sentence with Unicode 🙂. '*50
+        rendered_parts=[]
         async def render(engine,source):
-            engines.append(engine);return b'synthetic audio',{'audio_sha256':'c'*64}
+            engines.append(engine);rendered_parts.append(source);return b'synthetic audio',{'audio_sha256':'c'*64}
         with patch('dashboard.voice_studio.configured_profiles',return_value=[profile]),patch.object(Speech,'render',render):
             response=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai'},headers=self.headers)
             self.assertEqual(response.status_code,200,response.text)
             self.assertEqual(engines[-1].receiving_route()['voice'],'willow')
             self.assertIn('Calm.',engines[-1].receiving_route()['instruction'])
+            self.assertLessEqual(len(rendered_parts[-1]['text']),240)
+            first_end=int(response.headers['x-presentation-next-offset'])
+            second_end=int(response.headers['x-presentation-lookahead-offset'])
+            self.assertGreater(second_end,first_end)
+            self.assertLessEqual(second_end-first_end,240)
+            self.assertEqual(self.provider.source['text'][:first_end],rendered_parts[-1]['text'])
+            canonical={**self.provider.source,'offset':first_end,'text':self.provider.source['text'][first_end:]}
+            self.assertEqual(second_end,speech_part(canonical,240)['next_offset'])
             self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','text':'forged'},headers=self.headers).status_code,409)
-        self.assertEqual(len(engines),1)
+            # A live prefix has already reserved its full range in LiveSpeech.
+            # Do not shorten it behind that cursor or pre-admit a later gap.
+            live={**self.provider.source,'kind':'integrator_live','offset':320,
+                  'text':('A complete frozen provisional sentence. '*25),'next_offset':None}
+            with patch.object(self.provider,'presentation_part',return_value=live):
+                provisional=self.client.post('/api/interaction/audio',json={**self.body,'offset':320,'speech_provider':'openai'},headers=self.headers)
+            self.assertEqual(provisional.status_code,200,provisional.text)
+            self.assertGreater(len(rendered_parts[-1]['text']),240)
+            self.assertLessEqual(len(rendered_parts[-1]['text']),640)
+            self.assertEqual(provisional.headers['x-presentation-lookahead-offset'],'')
+        self.assertEqual(len(engines),2)
 
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True

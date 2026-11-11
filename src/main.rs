@@ -35,20 +35,21 @@ async fn main() -> Result<()> {
     if args.get(1).map(String::as_str) == Some("--control") {
         if owner_control_command(&args).is_none() {
             anyhow::bail!(
-                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; workflow status ID|recover ID REVISION; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
+                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; creation status ID|reconcile ID EVENT_UPDATE|resume ID; workflow status ID|recover ID REVISION; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
             );
         }
         let config = config::Config::load(args[2].clone().into())?;
         if args.get(3).map(String::as_str) == Some("matrix")
             && args.get(4).map(String::as_str) == Some("publication")
-            && args.get(5).map(String::as_str) == Some("commit")
+            && matches!(args.get(5).map(String::as_str), Some("commit" | "complete"))
         {
             use std::io::Read;
             anyhow::ensure!(args.len() == 6, "Pass the exact publication JSON on stdin");
             let mut raw = String::new();
             std::io::stdin().take(65537).read_to_string(&mut raw)?;
             anyhow::ensure!(raw.len() <= 65536, "Publication request exceeds bound");
-            return control_client::run(&config, &format!("matrix publication commit {raw}")).await;
+            return control_client::run(&config, &format!("matrix publication {} {raw}", args[5]))
+                .await;
         }
         let command = owner_control_command(&args).expect("validated control command");
         return control_client::run(&config, &command).await;
@@ -104,7 +105,7 @@ fn owner_control_command(args: &[String]) -> Option<String> {
     match args[3].as_str() {
         "stop" => Some(args[4..].join(" ")),
         "attach-active" | "presentation" | "input" | "requests" | "matrix" | "observer"
-        | "heartbeat" | "topics" | "goal" | "workflow" => Some(args[3..].join(" ")),
+        | "heartbeat" | "topics" | "goal" | "workflow" | "creation" => Some(args[3..].join(" ")),
         _ => None,
     }
 }
@@ -121,6 +122,10 @@ mod control_cli_tests {
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
         };
+        assert_eq!(
+            owner_control_command(&args(&["creation", "reconcile", "id", "22"])).as_deref(),
+            Some("creation reconcile id 22")
+        );
         assert_eq!(
             owner_control_command(&args(&["workflow", "status", "id"])).as_deref(),
             Some("workflow status id")
