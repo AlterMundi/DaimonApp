@@ -396,6 +396,7 @@ pub enum CodexEventOutcome {
     FundedInferenceAllowance {
         allowance: NativeInferenceAllowance,
         cycle_id: String,
+        max_output_tokens: u32,
     },
     /// Only a trusted host callback may supply this result. No UI/model route.
     ProviderAttemptReserved(bool),
@@ -1886,17 +1887,18 @@ where
             json!({"kind":"application","value":awareness});
     }
     let admission = on_event(CodexEvent::NativeTurnSubmitting).await?;
-    let (inference_allowance, provider_cycle) = match admission {
+    let (inference_allowance, provider_cycle, provider_output_limit) = match admission {
         CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
             allowance.validate()?;
-            (Some(allowance), None)
+            (Some(allowance), None, None)
         }
-        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id } if idle_only => {
+        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id, max_output_tokens } if idle_only => {
             allowance.validate()?;
             anyhow::ensure!(Uuid::parse_str(&cycle_id).is_ok_and(|id|id.to_string()==cycle_id), "Canonical funding cycle UUID required");
-            (Some(allowance), Some(cycle_id))
+            anyhow::ensure!(max_output_tokens > 0, "Positive signed owner output ceiling required");
+            (Some(allowance), Some(cycle_id), Some(max_output_tokens))
         }
-        CodexEventOutcome::None if !idle_only => (None, None),
+        CodexEventOutcome::None if !idle_only => (None, None, None),
         _ => bail!("Fresh heartbeat requires its exact retained inference reservation"),
     };
     // Capture once: no incoming RPC may renew the original reservation horizon.
@@ -1966,6 +1968,7 @@ where
             if let Some(cycle) = provider_cycle.as_ref() {
                 bounded_params["providerReservationCycleId"] = json!(cycle);
                 bounded_params["providerUsageObservations"] = json!(true);
+                bounded_params["providerMaxOutputTokens"] = json!(provider_output_limit);
             }
             ("turn/startBoundedIfIdle", bounded_params)
         } else { ("turn/start",params) };
@@ -5178,6 +5181,7 @@ mod tests {
                             cancelling.cancel();
                             CodexEventOutcome::FundedInferenceAllowance {
                                 cycle_id: "caa11c1d-b05b-4f56-99ab-167878e86126".into(),
+                                max_output_tokens: 200,
                                 allowance: NativeInferenceAllowance {
                                     max_provider_attempts: 2,
                                     max_request_bytes: 1024,
@@ -5441,6 +5445,7 @@ mod tests {
                                     CodexEventOutcome::FundedInferenceAllowance {
                                         allowance,
                                         cycle_id: CYCLE.into(),
+                                        max_output_tokens: 200,
                                     }
                                 })
                             }

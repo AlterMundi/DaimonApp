@@ -358,6 +358,15 @@ all admitted effects. EOF, expiry, invalid frames or lost writes retain ambiguit
 there is no restart/reconstruction, replay or refund. A closed pipe is not a
 terminal native receipt. Signed accounting and terminal reconciliation are
 separate; missing usage retains maximum exposure even after a known terminal.
+The signed owner descriptor also supplies positive `maxOutputTokens` from its
+instruction. App forwards it as `providerMaxOutputTokens` on the same bounded
+start; it is not a model option or an account choice. The native HTTP/WS physical
+request must contain that ceiling (or a tighter explicit cap), including retries
+and inherited Responses compaction. Unknown old readers reject the requested
+contract rather than silently execute without it. The unselected ordinary
+attempt-only path remains unchanged. The provider must still be independently
+qualified to honor the field and the complete exposure/route/isolation contract.
+
 Funded starts explicitly request `providerUsageObservations`. The owner-only
 `turn/providerAttempt/usage` callback accepts only an attempt UUID/ordinal already
 authorized in this cycle, with a32KiB closed payload. Identical duplicates reuse

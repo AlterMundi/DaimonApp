@@ -1100,7 +1100,7 @@ pub(super) async fn process_turn(
                                     let descriptor=owner.descriptor.clone();
                                     shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
                                     *held=Some(owner);
-                                    return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id});
+                                    return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens});
                                     }
                                 }
                                 Ok(match allowance {

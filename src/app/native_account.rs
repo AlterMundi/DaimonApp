@@ -16,6 +16,7 @@ pub(super) struct Descriptor {
     pub thread_id: String,
     pub provider_reservation_cycle_id: String,
     pub allowance: NativeInferenceAllowance,
+    pub max_output_tokens: u32,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -153,7 +154,8 @@ impl Session {
         .ready;
         ready.allowance.validate()?;
         anyhow::ensure!(
-            ready.thread_id == thread
+            ready.max_output_tokens > 0
+                && ready.thread_id == thread
                 && Uuid::parse_str(&ready.provider_reservation_cycle_id)
                     .is_ok_and(|id| id.to_string() == ready.provider_reservation_cycle_id)
                 && ready.allowance.max_provider_attempts <= parent.max_provider_attempts
@@ -363,7 +365,7 @@ start=json.loads(sys.stdin.readline())
 allowance=start['parent_allowance'].copy()
 if mode=='larger': allowance['maxProviderAttempts']+=1
 cycle='58963816-596f-4ec0-8122-9769b34887e7'
-print(json.dumps({'ready':{'threadId':start['thread_id'],'providerReservationCycleId':cycle,'allowance':allowance}}),flush=True)
+print(json.dumps({'ready':{'threadId':start['thread_id'],'providerReservationCycleId':cycle,'maxOutputTokens':200,'allowance':allowance}}),flush=True)
 for line in sys.stdin:
  f=json.loads(line)
  with open(path,'a') as log: log.write(f['operation']+'\n')
