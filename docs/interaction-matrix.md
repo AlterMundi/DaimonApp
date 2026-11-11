@@ -504,7 +504,13 @@ imports; a15second host cutoff could reject normal work before its result.
 Use a measured startup allowance within the existing1–60second range;45seconds
 is the ordinary example. This does not enlarge native inference budgets or
 permit retrying an uncertain send. Keep the adapter's bounded RPC deadline and
-use status-only inspection after a lost command result. Changing this field
+use status-only inspection after a lost command result. The backend supplies
+`DAIMON_MATRIX_HOST_DEADLINE_MS` before spawning the command. The adapter inherits
+it through qualified SDK bootstrap and gives its RPCs only the remaining time,
+instead of imposing a separate10second cap or restarting a full window after
+startup. Invalid, expired or over60second windows refuse. Standalone calls without
+the App deadline retain their previous10second default; the App's process-group
+termination and original authoring/physical execution deadlines remain unchanged. Changing this field
 uses the existing same-actor profile/companion maintenance route in
 [the fleet guide](interaction-fleet-updates.md#matrix-profile-changes-and-same-scope-web-companions).
 

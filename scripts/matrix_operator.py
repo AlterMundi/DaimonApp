@@ -30,6 +30,19 @@ from matrix_execution import (
 )
 
 
+def host_timeout():
+    """Use the existing owner's remaining command budget after SDK startup."""
+    value = os.environ.get("DAIMON_MATRIX_HOST_DEADLINE_MS")
+    if value is None:
+        return 10  # Compatible standalone invocation without an App deadline.
+    if (not re.fullmatch(r"[1-9][0-9]{0,15}", value)):
+        raise MatrixExecutionError("Invalid owner host deadline")
+    remaining = (int(value) - time.time_ns() // 1_000_000) / 1000
+    if not 0.05 <= remaining <= 60:
+        raise MatrixExecutionError("Owner host deadline expired or unavailable")
+    return remaining
+
+
 @dataclass(frozen=True)
 class NativeOwnerClient:
     """Separate existing purpose capabilities for one authenticated runtime."""
@@ -596,8 +609,8 @@ def main():
     )
     operation = (
         (
-            lambda value, client: respond(
-                value, client, inspect_only=args.response_status
+            lambda value, client, timeout: respond(
+                value, client, timeout=timeout, inspect_only=args.response_status
             )
         )
         if args.respond or args.response_status
@@ -618,10 +631,8 @@ def main():
         if args.receive
         else ("messaging.send",)
     )
-    result = operation(
-        value,
-        configured_client(args.binding, value["source"], required_methods=required),
-    )
+    client = configured_client(args.binding, value["source"], required_methods=required)
+    result = operation(value, client, timeout=host_timeout())
     output = canonical(result)
     if len(output.encode()) > 65536:
         raise MatrixExecutionError("Bounded host outcome required")
