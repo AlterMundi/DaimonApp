@@ -866,11 +866,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Programmatic positioning does not compact header');
  assert.equal(await page.locator('#conversation-presence').count(),0,'Obsolete presence lane is removed');
  await timeline.hover();await page.mouse.wheel(0,900);await page.waitForTimeout(150);
- assert(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),'User forward scroll compacts header');
+ assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Forward scrolling keeps the full header during the redesign');
  assert.equal(await page.locator('#conversation-presence').count(),0,'Compact header does not recreate the removed lane');
  const identity=await page.locator('header .companion-name').boundingBox(),header=await page.locator('header').boundingBox();
- assert(identity.y>=header.y&&identity.y+identity.height<=header.y+header.height,'Compact identity remains fully visible');
- await page.screenshot({path:path.join(output,'mobile-compact.png')});
+ assert(identity.y>=header.y&&identity.y+identity.height<=header.y+header.height,'Expanded identity remains fully visible');
+ await page.screenshot({path:path.join(output,'mobile-expanded.png')});
  await page.mouse.wheel(0,-300);await page.waitForTimeout(150);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Reverse scroll restores header');
  assert.equal(await page.locator('#conversation-presence').count(),0,'Reverse scroll does not restore the removed lane');
