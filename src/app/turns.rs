@@ -1052,7 +1052,7 @@ pub(super) async fn process_turn(
                                 }
                                 *physical_turn.lock().expect("native correlation mutex poisoned")=Some(native_id.clone());
                                 #[cfg(unix)]
-                                if let Some(owner)=native_account.lock().await.as_mut() {owner.bind(&native_id).await?;}
+                                if let Some(owner)=native_account.lock().await.as_mut() && !owner.bind_or_cancel(&native_id,&cancel).await {tracing::warn!("Native accounting bind unconfirmed; exact-turn cancellation requested");}
                                 if !shared.store.nexus_local_requests(turn_id)?.is_empty() { shared.store.nexus_native_started(turn_id,&native_id)?; }
                                 if let Some(id)=admission.as_deref(){shared.store.tribu_native_turn(id,&native_id,None)?;}
                                 Ok(CodexEventOutcome::None)

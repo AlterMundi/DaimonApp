@@ -776,7 +776,7 @@ def serve_native_account_owner(owner, input_fd, output_fd):
 
 def prepare_native_account_owner(
     store, instruction, task, *, thread_id, parent_allowance, cost_bound,
-    registration, work_id, read_message, monotonic=time.monotonic,
+    registration, work_id, read_message, host_source=None, monotonic=time.monotonic,
 ):
     """Concrete provider-account factory for the current signed queued original.
 
@@ -795,11 +795,22 @@ def prepare_native_account_owner(
             or registration.get("binding") != list(instruction.binding)
             or hashlib.sha256(task.encode()).hexdigest() != instruction.task_sha256):
         raise ExecutionDenied("Native owner differs from the selected work binding")
+    from daimon_matrix.execution_instruction import digest
+
+    mode = registration.get("source_mode", "coordination")
+    if (digest(dict(registration)) != cost_bound.registration_sha256
+            or mode not in {"coordination", "app_owned_inbox"}
+            or (mode == "coordination" and (work_id is None or host_source is not None))
+            or (mode == "app_owned_inbox" and (
+                work_id is not None or host_source is None
+                or registration.get("instruction_sha256") != instruction.sha256
+                or registration.get("source_channel") != host_source.get("channel_id")))):
+        raise ExecutionDenied("Signed native source policy differs from selected work")
     context = CycleContext.prepare(
         store, None, instruction.instruction_id, instruction.revision, task,
         principal=registration.get("principal"), binding=instruction.binding,
         work_id=work_id, require_funding=True, require_queued_source=True,
-        read_message=read_message, monotonic=monotonic,
+        read_message=read_message, host_source=host_source, monotonic=monotonic,
     )
     if context is None:
         raise ExecutionDenied("Selected native work cannot be reserved")

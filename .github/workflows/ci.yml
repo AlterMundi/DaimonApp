@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: AlterMundi/daimon-matrix
-          ref: 1d5318f4f11a2fd005d413db70a3d8a1c70f8c1e
+          ref: d03e764644c1e7ff3d9f8318a964f67f0b87ebd2
           path: .matrix-sdk
       - run: python -m pip install cryptography==50.0.0 jsonschema==4.26.0 wasmtime==45.0.0 idna==3.20
       - run: python -B tests/ci_matrix_host_scope.py

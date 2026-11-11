@@ -331,9 +331,15 @@ local execution ID, original sequence/ID/native content hash, channel and retain
 parent allowance; it cannot select an account or trust root. The authenticated
 SDK content hash must match the App-retained native hash before reservation;
 this is distinct from the journal digest of the complete signed document.
-The current authenticated SDK reads that exact original and the existing funded
-queue retains its immutable digest. Ordinary messages without eligible approved
-coordination metadata do not silently become financially authorized work.
+The current authenticated SDK reads that exact original. A signed registration
+with `source_mode="app_owned_inbox"`, `source_channel` and the exact
+`instruction_sha256` uses the App-owned source directly. It stores only source
+references and a distinct signed-document digest in the existing native-owner
+marker. There is no second queue or requirement for peers to include financial
+metadata. The default legacy `coordination` mode still requires its eligible
+funded coordination work row; neither mode falls back to the other. A selected
+signed task must express the authorized Messaging purpose; selecting a cost
+policy never expands the task or its social effect permissions.
 
 `CycleContext.prepare` reserves that signed work before dispatch; the host builds
 the native owner outside a journal transaction. No pinned ephemeral reviewer or
@@ -356,16 +362,16 @@ The Unix native event loop now has an opt-in `matrix_transport.native_funding_bi
 caller. One owned child supplies startup, exact-attempt reservations and physical
 turn binding. Current App ownership and immutable source are checked before and
 after reservation; later pause or ownership transfer prevents a positive reply.
-Cancelled pipe exchanges fence that child permanently. Missing configuration
+Cancelled pipe exchanges fence that child permanently. An unconfirmed or
+cancelled physical-turn bind cancels the same native turn through the existing
+interrupt loop, without waiting for the child timeout or claiming it stopped.
+Missing configuration
 retains ordinary attempt-only fuel; a selected financial error never falls back.
 Other lanes are not selected by this Messaging configuration.
 
-This remains an unselected source candidate. The current Python queue requires
-coordination metadata, so ordinary Messaging originals are not yet supported by
-this financial mode. The successor must explicitly bind the signed operator
-policy to the App-owned original, without adding financial fields to peer speech
-or a second queue. Human handover and known-no-start reconciliation also remain
-unqualified. The Rust terminal callback closes its child conservatively; it does
+This remains an unselected source candidate. Ordinary signed group/directed
+originals are covered by the App-owned source mode; current human handover and
+known-no-start reconciliation remain unqualified. The Rust terminal callback closes its child conservatively; it does
 not manufacture signed usage or financial reconciliation. Exact native
 attempt-to-provider-usage correlation and actual route/exposure/isolation
 qualification remain unfinished. No private funding file is provisioned by these

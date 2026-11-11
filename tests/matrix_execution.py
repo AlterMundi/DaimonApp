@@ -910,6 +910,60 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
         self.assertEqual(state.runner.starts, [])
 
+    def test_native_owner_uses_app_owned_group_original(self):
+        self.check_app_owned_original(None)
+
+    def test_native_owner_uses_app_owned_directed_original(self):
+        self.check_app_owned_original(self.target)
+
+    def check_app_owned_original(self, target):
+        from dataclasses import asdict
+        from daimon_matrix.execution_instruction import ExecutionDenied, digest
+        from tests.test_execution_instruction import proof, verifier
+        from daimon_matrix.review_runner import ProviderCostBound
+
+        state = self.funded_original(native_attempts=2)
+        arguments = dict(client_id="test", send_id=str(uuid.uuid4()),
+                         thread_id=str(uuid.uuid4()), text="Inspect the ordinary resource")
+        if target is not None:
+            arguments["destination"] = target
+        sent = self.fixture.send_and_settle(self.sender, **arguments)
+        original = self.receiver.message(sent["message_id"])
+        self.assertIsNone(original["payload"]["body"].get("coordination"))
+        options = self.native_funding_selection(state)
+        registration = options["registration"] | dict(
+            source_mode="app_owned_inbox", source_channel="tribe",
+            instruction_sha256=state.instruction.sha256)
+        payload = asdict(options["cost_bound"]) | dict(
+            registration_sha256=digest(registration))
+        options.update(registration=registration, work_id=None,
+                       read_message=self.receiver.message,
+                       host_source=dict(channel_id="tribe", message_id=sent["message_id"],
+                                        message_hash=original["content_hash"], local_execution_id=42),
+                       cost_bound=ProviderCostBound.verify(
+                           payload, proof(state.key, "approve", payload, "ordinary-cost"),
+                           verifier(state.key)))
+        for changes in (
+            dict(host_source=options["host_source"] | {"message_hash": "0" * 64}),
+            dict(work_id=state.work),
+            dict(registration=registration | {"instruction_sha256": "0" * 64}),
+        ):
+            with self.assertRaises(ExecutionDenied):
+                prepare_native_account_owner(state.store, state.instruction, state.purpose,
+                                             **(options | changes))
+        owner = prepare_native_account_owner(state.store, state.instruction,
+                                             state.purpose, **options)
+        self.assertEqual(owner._context.selected_original(), original)
+        descriptor = owner.descriptor()
+        packet = dict(threadId="owned-native", cycleId=descriptor["providerReservationCycleId"],
+                      attemptId=str(uuid.uuid4()), ordinal=1,
+                      maxRequestBytes=512, deadlineUnixMs=108000)
+        replies = []
+        owner.reserve(packet, replies.append)
+        self.assertTrue(replies[0]["authorized"])
+        self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+        self.assertEqual(state.runner.starts, [])
+
     def test_native_owner_factory_denies_changed_thread_binding_and_original(self):
         from daimon_matrix.execution_instruction import ExecutionDenied
 
@@ -1018,6 +1072,12 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(state.store.funding_status("episode")["calls"], 1)
 
     def test_native_owner_executable_entry_reads_private_selection_and_exact_sdk_source(self):
+        self.check_native_owner_executable_entry()
+
+    def test_native_owner_executable_entry_reads_ordinary_app_owned_source(self):
+        self.check_native_owner_executable_entry(app_owned=True)
+
+    def check_native_owner_executable_entry(self, app_owned=False):
         from concurrent.futures import ThreadPoolExecutor
         from dataclasses import asdict
         from tempfile import TemporaryDirectory
@@ -1027,6 +1087,17 @@ class AdapterTests(unittest.TestCase):
 
         state = self.funded_original(native_attempts=2)
         options = self.native_funding_selection(state)
+        if app_owned:
+            from daimon_matrix.execution_instruction import digest
+            sent = self.fixture.send_and_settle(
+                self.sender, client_id="test", send_id=str(uuid.uuid4()),
+                thread_id=str(uuid.uuid4()), text="Ordinary signed group original")
+            state.source = self.receiver.message(sent["message_id"])
+            options["registration"].update(
+                source_mode="app_owned_inbox", source_channel="tribe",
+                instruction_sha256=state.instruction.sha256)
+            options["cost_bound"] = replace(
+                options["cost_bound"], registration_sha256=digest(options["registration"]))
         row = next(row for row in self.receiver.page(after=0, limit=100)
                    if row["message"]["event_id"] == state.source["event_id"])
         start = dict(source=dict(being_ref=state.instruction.being,

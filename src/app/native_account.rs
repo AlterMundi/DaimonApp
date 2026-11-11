@@ -213,6 +213,20 @@ impl Session {
         }
         validated
     }
+    pub async fn bind_or_cancel(&mut self, physical: &str, cancel: &CancellationToken) -> bool {
+        let bound = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => false,
+            result = self.bind(physical) => result.is_ok(),
+        };
+        if !bound {
+            self.closed = true;
+            // Return to the native loop so its existing exact-turn interrupt
+            // can run. This requests cancellation; it never proves a stop.
+            cancel.cancel();
+        }
+        bound
+    }
     pub async fn bind(&mut self, physical: &str) -> Result<()> {
         if let Some(bound) = &self.bound {
             anyhow::ensure!(
@@ -299,7 +313,7 @@ for line in sys.stdin:
  with open(path,'a') as log: log.write(f['operation']+'\n')
  if mode=='lost': time.sleep(3)
  if f['operation']=='bind':
-  print(json.dumps({'bound':f['nativeTurnId'],'cycleId':cycle}),flush=True)
+  print(json.dumps({'bound':('wrong' if mode=='bad-bind' else f['nativeTurnId']),'cycleId':cycle}),flush=True)
  else:
   p=f['params']; reply={'cycleId':cycle,'attemptId':p['attemptId'],'authorized':True}
   if mode=='wrong': reply['attemptId']='2f699de7-c1ba-4cc0-af09-e2b53aeec2ae'
@@ -349,6 +363,41 @@ for line in sys.stdin:
         owner.bind(&physical).await.unwrap();
         assert!(owner.reserve(request(&owner)).await.unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "bind\nreserve\n");
+    }
+    #[tokio::test]
+    async fn owner_bind_cancellation_and_failure_yield_to_native_interrupt() {
+        for mode in ["lost", "bad-bind"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("writes");
+            let (mut config, start) = fixture(mode, &path);
+            config.timeout_seconds = 60;
+            let mut owner = Session::start(&config, &start).await.unwrap();
+            let cancel = CancellationToken::new();
+            let control = cancel.clone();
+            let observed = path.clone();
+            let cancelling = tokio::spawn(async move {
+                if mode == "lost" {
+                    let deadline = Instant::now() + Duration::from_secs(1);
+                    while !observed.exists() && Instant::now() < deadline {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    assert!(observed.exists());
+                    control.cancel();
+                }
+            });
+            assert!(
+                !tokio::time::timeout(
+                    Duration::from_secs(2),
+                    owner.bind_or_cancel(&Uuid::now_v7().to_string(), &cancel)
+                )
+                .await
+                .unwrap()
+            );
+            cancelling.await.unwrap();
+            assert!(cancel.is_cancelled());
+            assert!(owner.reserve(request(&owner)).await.is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "bind\n");
+        }
     }
     #[tokio::test]
     async fn owner_pipe_refuses_larger_inherited_allowance_before_requests() {

@@ -469,7 +469,7 @@ def respond(value, client, *, timeout=10, inspect_only=False):
 def native_owner_session(value, client, selection_path, *, clock=time.time, monotonic=time.monotonic):
     """Run the selected private account binding in this existing host process."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    from daimon_matrix.execution_instruction import ApprovalVerifier
+    from daimon_matrix.execution_instruction import ApprovalVerifier, digest
     from daimon_matrix.execution_store import ExecutionStore
     from daimon_matrix.messaging_config import protected_read
     from daimon_matrix.review_runner import ProviderCostBound
@@ -545,13 +545,24 @@ def native_owner_session(value, client, selection_path, *, clock=time.time, mono
             raise MatrixExecutionError("Current authenticated original unavailable")
         return rows[0]["message"]
 
-    work_id = store.enqueue_coordination(value["message_id"], read)
-    if work_id is None:
-        raise MatrixExecutionError("Original is not eligible for the selected funded work")
+    if digest(dict(selection["registration"])) != bound.registration_sha256:
+        raise MatrixExecutionError("Native source policy differs from signed registration")
+    mode = selection["registration"].get("source_mode", "coordination")
+    host_source = None
+    work_id = None
+    if mode == "app_owned_inbox":
+        host_source = {key: value[key] for key in (
+            "channel_id", "message_id", "message_hash", "local_execution_id")}
+    elif mode == "coordination":
+        work_id = store.enqueue_coordination(value["message_id"], read)
+        if work_id is None:
+            raise MatrixExecutionError("Original is not eligible for the selected funded work")
+    else:
+        raise MatrixExecutionError("Unsupported signed native source policy")
     owner = prepare_native_account_owner(
         store, instruction, selection["task"], thread_id=value["thread_id"],
         parent_allowance=parent, cost_bound=bound, registration=selection["registration"],
-        work_id=work_id, read_message=read, monotonic=monotonic,
+        work_id=work_id, read_message=read, host_source=host_source, monotonic=monotonic,
     )
     serve_native_account_owner(owner, sys.stdin.fileno(), sys.stdout.fileno())
 

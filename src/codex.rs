@@ -4969,7 +4969,7 @@ mod tests {
                         assert_eq!(ack["id"], 500);
                         assert_eq!(
                             ack["result"],
-                            json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal")})
+                            json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal"|"started-cancel")})
                         );
                         if mode == "allow" {
                             socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
@@ -5022,8 +5022,25 @@ mod tests {
                             ))
                             .await
                             .unwrap();
+                        if mode == "started-cancel" {
+                            continue;
+                        }
                         socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"completed"}}}).to_string().into())).await.unwrap();
                         continue;
+                    }
+                    Some("turn/interrupt") if mode == "started-cancel" => {
+                        assert_eq!(
+                            request["params"],
+                            json!({"threadId":"funded-native","turnId":"funded-turn"})
+                        );
+                        socket
+                            .send(WsMessage::Text(
+                                json!({"id":request["id"],"result":{}}).to_string().into(),
+                            ))
+                            .await
+                            .unwrap();
+                        socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"interrupted"}}}).to_string().into())).await.unwrap();
+                        break;
                     }
                     other => {
                         panic!("No fallback, human prompt or extra native submission: {other:?}")
@@ -5089,6 +5106,12 @@ mod tests {
                                     }
                                 })
                             }
+                            CodexEvent::NativeTurnStarted(_) if mode == "started-cancel" => {
+                                // The App bind helper yields here with its token
+                                // cancelled; native must target the active turn.
+                                cancel.cancel();
+                                Ok(CodexEventOutcome::None)
+                            }
                             CodexEvent::NativeProviderAttemptReservation(attempt) => {
                                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                 assert_eq!(attempt.cycle_id, CYCLE);
@@ -5133,7 +5156,10 @@ mod tests {
             .await;
         assert_eq!(
             run.is_ok(),
-            !matches!(mode, "pending" | "deadline" | "late-owner"),
+            !matches!(
+                mode,
+                "pending" | "deadline" | "late-owner" | "started-cancel"
+            ),
             "{:?}",
             run.err()
         );
@@ -5159,6 +5185,12 @@ mod tests {
     #[tokio::test]
     async fn native_provider_reservation_before_ack_is_exact_and_nonreplayable() {
         provider_owner_fixture("allow").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_started_owner_cancellation_interrupts_exact_turn() {
+        provider_owner_fixture("started-cancel").await;
     }
 
     #[cfg(unix)]
