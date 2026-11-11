@@ -42,6 +42,7 @@ function boot(live=false,recovery,status404=false,cues=false){
    const result={...(old||{id,foreground_dialogue:options.headers['X-Foreground-Dialogue'],voice:{audio_sha256:options.headers['X-Audio-Sha256']}}),phase:old?.phase==='foreground'?'foreground':'preparing'};
    originals.set(id,result);return {ok:true,json:async()=>result};
   }
+  if(_route==='api/interaction/files'){const ref=JSON.parse(decodeURIComponent(options.headers['X-File-Reference']));return {ok:true,json:async()=>ref};}
   const id=options.headers['X-Input-Id'];
   if(mode==='before'){mode=undefined;throw Error('Offline before capture');}
   if(mode==='retention-full'){mode=undefined;return {ok:false,status:507,json:async()=>({})};}
@@ -56,12 +57,13 @@ function boot(live=false,recovery,status404=false,cues=false){
  }
  const timing=[],transcripts=[],levels=[];
  let preparation;
- if(live)window.StreamingVoice={supported:()=>true,async create(stream,meta){preparation=meta;const recorder=new Recorder(stream);recorder.discard=()=>recorder.stop();return recorder;}};
+ if(live)window.StreamingVoice={supported:()=>true,async create(stream,meta){preparation=meta;const recorder=new Recorder(stream);recorder.pause=async()=>{recorder.state='paused';};recorder.resume=async()=>{recorder.state='recording';};recorder.discard=()=>recorder.stop();return recorder;}};
  const context=vm.createContext({Date:{now:()=>now},window,document,Blob,Uint8Array,ArrayBuffer,Int16Array,fetch,AbortController,
+  TextEncoder,
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
  vm.runInContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),context);
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
  return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,levels,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
   confirmation:value=>{confirmDiscard=value;},confirmations,
@@ -71,6 +73,41 @@ function boot(live=false,recovery,status404=false,cues=false){
  };
 }
 (async()=>{
+ const editedStore=memoryRecovery(),edited=boot(true,editedStore);await until(()=>edited.ui.canStartNative());await edited.click();const recorder=edited.devices.at(-1);
+ edited.preparation().onPartial('A wrong opening');
+ assert.equal(edited.ui.pauseEditing(),true);await Promise.resolve();
+ edited.ui.editDraft('A corrected opening');
+ edited.preparation().onPartial('A wrong opening');
+ assert.equal(edited.transcripts.at(-1).active,true);
+ assert.equal(edited.ui.ownsSend(),true,'Editing retains recording ownership');
+ assert.equal(edited.nodes.get('#conversation-voice-continue').hidden,false);
+ assert(edited.timers.filter(t=>t.ms===1000).every(t=>t.closed),'Editing pauses the visible countdown');
+ assert.equal(await edited.ui.continueEditing(),true);
+ edited.preparation().onPartial('A wrong opening and a new ending');
+ assert.equal(edited.transcripts.at(-1).text,'A corrected opening and a new ending','New speech appends after the human edit');
+ recorder.preparedText='A wrong opening and a new ending';
+ edited.ui.submit();await until(()=>edited.received.length===1);
+ assert.equal(edited.received[0].text,'A corrected opening and a new ending');
+ assert.equal(edited.received[0].files.length,2,'The original and automatic transcript accompany the human text');
+ assert.equal(edited.uploads.filter(u=>u.route.includes('/voice')).length,0,'The edited text must never replay the audio as another instruction');
+ const attached=edited.uploads.filter(u=>u.route==='api/interaction/files');assert.equal(attached.length,2);
+ assert.equal(await attached[1].body.text(),'Automatic transcript from the same recording:\nA wrong opening and a new ending');
+ assert.equal(edited.received[0].files[0].sha256,Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await attached[0].body.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join(''));
+ const uncertainStore=memoryRecovery(),uncertain=boot(true,uncertainStore);await until(()=>uncertain.ui.canStartNative());await uncertain.click();uncertain.preparation().onPartial('Before edit');assert(uncertain.ui.pauseEditing());uncertain.ui.editDraft('After edit');uncertain.mode('before');uncertain.ui.submit();await until(()=>uncertainStore.values.get('pending')?.items?.[0]?.dictation);
+ assert.equal(uncertainStore.values.get('pending').schema,'telecodex.voice-recovery/v7','Old readers must refuse an edited original instead of sending its unedited transcript');
+ assert.equal(uncertainStore.values.get('pending').items[0].dictation.text,'After edit');
+ const restored=boot(true,uncertainStore,true);await until(()=>restored.state().includes('recovered'));restored.click();await until(()=>restored.received.length===1);assert.equal(restored.received[0].text,'After edit');assert.equal(restored.uploads.filter(v=>v.route.includes('/voice')).length,0,'Recovery retains the edited path and never replays ASR');
+ const double=boot(true);await double.click();double.preparation().onPartial('Words');assert(double.ui.pauseEditing());const outcomes=await Promise.all([double.ui.continueEditing(),double.ui.continueEditing()]);assert.equal(outcomes.filter(Boolean).length,1,'Double Continue resumes exactly once');
+ const lateContinue=boot(true);await lateContinue.click();const pauseHold=deferred();let resumedLate=0;lateContinue.devices.at(-1).pause=()=>pauseHold.promise;lateContinue.devices.at(-1).resume=async()=>{resumedLate++;};lateContinue.preparation().onPartial('Late words');assert(lateContinue.ui.pauseEditing());const resumeWait=lateContinue.ui.continueEditing();lateContinue.visibility(true);pauseHold.resolve();assert.equal(await resumeWait,false);assert.equal(resumedLate,0,'A pause completion cannot resume listening in a hidden tab');
+ const untouched=boot(true);await untouched.click();untouched.preparation().onPartial('Original untouched words');assert(untouched.ui.pauseEditing());assert(await untouched.ui.continueEditing());untouched.ui.submit();await until(()=>untouched.received.length===1);assert.equal(untouched.uploads.length,1);assert(untouched.uploads[0].route.includes('/voice'),'Pausing alone keeps the ordinary original-audio route');
+ const changed=boot(true);changed.visual({source_id:'kept-image',sha256:'a'.repeat(64)});await changed.click();changed.preparation().onPartial('Original picture words');assert(changed.ui.pauseEditing());changed.ui.editDraft('Human picture words');changed.ui.submit();await until(()=>changed.received.length===1);assert.equal(changed.received[0].visual.source_id,'kept-image');
+ const background=boot(true,memoryRecovery());await until(()=>background.ui.canStartNative());await background.click();background.preparation().onPartial('Background words');assert(background.ui.pauseEditing());background.ui.editDraft('Kept edited words');background.events.nativecapturebackground();await until(()=>background.nodes.get('#conversation-recording-review').hidden===false);assert.equal(background.uploads.length,0,'Background retains the edited original for explicit review');
+ const editingEnd=boot(true);await editingEnd.click();const endRecorder=editingEnd.devices.at(-1);endRecorder.pause=async()=>{endRecorder.state='paused';};endRecorder.resume=async()=>{endRecorder.state='recording';};
+ editingEnd.preparation().onPartial('Original words');assert(editingEnd.ui.pauseEditing());editingEnd.ui.editDraft('Human words');await Promise.resolve();
+ editingEnd.visibility(true);assert.equal(await editingEnd.ui.continueEditing(),false,'Hidden pages cannot resume listening');
+ editingEnd.timers.find(t=>t.ms===120000).fn();await until(()=>editingEnd.nodes.get('#conversation-recording-review').hidden===false);
+ assert.equal(editingEnd.uploads.length,0,'Physical expiry while editing retains the original without submission');
+ assert.equal(editingEnd.transcripts.at(-1).text,'Human words');
  const slow=boot();await slow.click();const slowHold=slow.holdUpload();slow.click();await until(()=>slow.uploads.length===1);
  for(const timer of slow.timers.filter(t=>!t.closed))timer.fn();
  assert.equal(slow.uploads[0].signal.aborted,false,'No application timer may abort the recording transfer');

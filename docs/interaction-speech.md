@@ -637,3 +637,36 @@ this is not a promise of zero gaps under provider/network delay. Compare startup
 first PCM, generation and audio duration with the same synthetic passage before
 calling a particular voice slow. Real playback fluency, chosen delivery and human
 hearing are separate acceptance from source/HTTP/queue fixtures.
+
+## Editing a live dictation draft
+
+Touching or typing in an editable live-caption composer pauses its current PCM
+capture and visible countdown. **Continue listening** resumes the same recorder
+and recognition socket, puts the cursor at the end and appends subsequent words
+after the human-owned text. No second recognition or replacement call is opened.
+Pause alone leaves the ordinary original-audio submission unchanged.
+
+Once the human edits, Send uses the existing text-with-files input route: exact
+human text, frozen reply/image/file context, original recording and separately
+labeled automatic transcript (or explicitly unverified live preview). The audio
+is not also submitted as another instruction, and manual edits never become a
+claimed automatic transcript. Two existing file slots are reserved for these
+originals; editing is offered only with file access and sufficient reserved
+attachment capacity. An edited draft follows ordinary text-reply semantics; it
+never runs automatic audio-answer matching. Explicit reply context is preserved. Existing
+eight-file/20MiB-per-file/40MiB-total and32KiB text limits remain.
+
+The visible counter stops while editing; the original120second physical deadline
+still runs and ends in retained review, never automatic submission. Continue is
+foreground-only and never renews capture/provider limits. Worklet pause drops
+incoming samples while preserving and flushing all accepted pre-pause PCM; Stop
+can flush while paused without resuming the microphone. Explicit lifecycle close
+retains an edited original for review; physical browser/OS persistence is separate.
+
+Recovery envelope v7 freezes the edited draft, original/automatic text references,
+identities and hashes before network effects. Legacy readers must refuse v7;
+rollback must retain a compatible reader until those originals settle. Existing
+records are not migrated. Combined edited metadata is capped at256KiB alongside
+the existing shared20MiB acoustic/128-record bounds. Attachment failures, changed
+binding and unknown input results retain the same original; Check delivery is a
+read and does not assert acceptance or replay an uncertain submission.

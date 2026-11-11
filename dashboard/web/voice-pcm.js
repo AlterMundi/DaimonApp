@@ -3,8 +3,8 @@ class InteractionPCM extends AudioWorkletProcessor {
   constructor(options){
     super();const seconds=options?.processorOptions?.sessionSeconds??300;
     if(!Number.isSafeInteger(seconds)||seconds<300||seconds>1800)throw Error('Invalid capture duration');
-    this.maxSamples=seconds*16000;this.active=true;this.index=0;this.next=0;this.previous=0;this.ratio=sampleRate/16000;
-    this.observe=false;this.total=0;this.lastEnergy=0;this.energy=0;this.frames=[];this.port.onmessage=event=>{if(event.data==='observe')this.observe=true;if(event.data&&typeof event.data.boundary==='string'&&/^[a-zA-Z0-9:-]{1,80}$/.test(event.data.boundary)){this.flush();this.port.postMessage({boundary:event.data.boundary,totalBytes:this.total*2});}if(event.data==='finish'){this.active=false;this.flush();this.port.postMessage({finished:true});}};
+    this.maxSamples=seconds*16000;this.active=true;this.paused=false;this.index=0;this.next=0;this.previous=0;this.ratio=sampleRate/16000;
+    this.observe=false;this.total=0;this.lastEnergy=0;this.energy=0;this.frames=[];this.port.onmessage=event=>{if(event.data==='pause'){this.flush();this.paused=true;}if(event.data==='resume')this.paused=false;if(event.data==='observe')this.observe=true;if(event.data&&typeof event.data.boundary==='string'&&/^[a-zA-Z0-9:-]{1,80}$/.test(event.data.boundary)){this.flush();this.port.postMessage({boundary:event.data.boundary,totalBytes:this.total*2});}if(event.data==='finish'){this.active=false;this.flush();this.port.postMessage({finished:true});}};
   }
   flush(){
     if(!this.frames.length)return;
@@ -13,7 +13,7 @@ class InteractionPCM extends AudioWorkletProcessor {
     this.frames=[];this.port.postMessage({pcm:data,totalBytes:this.total*2},[data]);
   }
   process(inputs){
-    if(!this.active)return false;
+    if(!this.active)return false;if(this.paused)return true;
     const input=inputs[0]?.[0];if(!input)return true;
     for(const current of input){
       while(this.next<=this.index){

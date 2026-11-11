@@ -42,6 +42,17 @@ function boot(fail){
   const run=step=>{const w=worklet(rate);for(let i=0;i<rate;i+=step){const size=Math.min(step,rate-i),block=Float32Array.from({length:size},(_,j)=>Math.sin((i+j)*2*Math.PI*230/rate));assert.equal(w.processor.process([[block]]),true);}w.processor.port.onmessage({data:'finish'});assert.equal(w.processor.process([[new Float32Array(128)]]),false);assert(w.messages.at(-1).finished);return Buffer.concat(w.messages.filter(m=>m.pcm).map(m=>Buffer.from(m.pcm)));};
   const small=run(128),large=run(1177);assert.equal(small.length,32000);assert(small.equals(large),`Resampling must not jump at ${rate}Hz chunk boundaries`);
  }
+ // Editing gates the actual processor, preserving every pre-pause sample and
+ // excluding audio while paused. Finish still flushes without re-opening capture.
+ const editWorklet=worklet(16000);editWorklet.processor.process([[Float32Array.of(.1,.2)]]);
+ editWorklet.processor.port.onmessage({data:'pause'});const beforePause=editWorklet.processor.total;
+ editWorklet.processor.process([[new Float32Array(16000).fill(.9)]]);assert.equal(editWorklet.processor.total,beforePause);
+ editWorklet.processor.port.onmessage({data:'resume'});editWorklet.processor.process([[Float32Array.of(.3,.4)]]);
+ editWorklet.processor.port.onmessage({data:'pause'});editWorklet.processor.port.onmessage({data:'finish'});
+ assert.equal(editWorklet.processor.total,4);assert.equal(editWorklet.messages.filter(m=>m.pcm).reduce((n,m)=>n+m.pcm.byteLength,0),8);assert(editWorklet.messages.at(-1).finished);
+ const editTransport=boot(),editRecorder=await editTransport.create();editRecorder.start();await editRecorder.pause();assert.equal(editRecorder.state,'paused');assert.equal(editTransport.worklets[0].controls.at(-1),'pause');
+ await editRecorder.resume();assert.equal(editRecorder.state,'recording');assert.equal(editTransport.worklets[0].controls.at(-1),'resume');
+ await editRecorder.pause();editRecorder.stop();assert.equal(editTransport.worklets[0].controls.at(-1),'finish','Stop while paused flushes, never resumes listening');editTransport.worklets[0].emit({finished:true});editTransport.timers.filter(t=>t.ms===10000&&!t.cleared).forEach(t=>t.fn());assert.equal(editTransport.sockets.length,1);
  // A segment boundary flushes the resampler without stopping or resetting it.
  for(const rate of [16000,44100,48000]){
   const w=worklet(rate),reference=worklet(rate);let before=0;

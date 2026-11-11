@@ -199,7 +199,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   });
   vm.runInContext(fs.readFileSync("dashboard/web/requests.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
-  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
+  if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},pauseEditing:()=>{continuousCalls.push(['edit-pause']);return true;},editDraft:text=>continuousCalls.push(['edit-draft',text]),ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
     context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);},release:id=>continuousCalls.push(['release',id])};}};
     if(options.continuousDriver){
@@ -620,6 +620,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   await until(()=>openaiOnly.audioCalls.length===1);
   assert.equal(openaiOnly.audioCalls[0].speech_provider,'openai');assert.equal(openaiOnly.audioCalls[0].stream,undefined,'Batch OpenAI WAV must not silently use the default Qwen stream');
   services.value='current';services.handlers.change();assert.equal(openaiOnly.transcriptionProfile(),'openai','Do not switch the provider of an active preparation');
+  const editable=boot(false,true,{capture:true});await editable.ui.refresh();const editableInput=editable.nodes.get('#conversation-message');const selectionEdits=[];editableInput.setSelectionRange=(a,b)=>selectionEdits.push([a,b]);
+  const captureDraft={id:'edited-capture',binding:'fixture',active:true,editable:true,text:'Automatic opening'};
+  editable.microphoneTranscript(captureDraft);assert.equal(editableInput.readOnly,false);
+  editableInput.handlers.pointerdown();assert(editable.continuous().calls.some(v=>v[0]==='edit-pause'));
+  editableInput.value='Human correction';editableInput.handlers.input();assert(editable.continuous().calls.some(v=>v[0]==='edit-draft'&&v[1]==='Human correction'));
+  editable.microphoneTranscript({...captureDraft,text:'Human correction with later speech',resumed:true});assert.equal(editableInput.value,'Human correction with later speech');assert.deepEqual(selectionEdits.at(-1),[34,34]);
+  editable.microphoneTranscript({...captureDraft,active:false,edited:true,text:editableInput.value});assert.equal(editableInput.value,'Human correction with later speech','Finalization preserves the edited draft');
   const transcript=boot(false,true,{capture:true});await transcript.ui.refresh();
   const transcriptInput=transcript.nodes.get('#conversation-message');
   transcriptInput.value='Earlier typed draft';transcriptInput.selectionStart=2;transcriptInput.selectionEnd=7;
