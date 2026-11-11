@@ -110,6 +110,16 @@ class Mounted(unittest.TestCase):
         Client.instances=[];Client.failure=None
         self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh'}
         self.headers={'origin':'https://example.test','x-dashboard-csrf':'fresh','x-voice-binding':'a'*64}
+    def test_original_capacity_refusal_is_observed_before_body_read(self):
+        history=LiveCreations(self.state/'public-live-visits')
+        history.prepare(self.ident,100,self.owner.public_live_binding(self.owner.binding),300)
+        with patch('dashboard.openai_live_api.asyncio.Semaphore.locked',return_value=True):
+            response=self.client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/1',headers=self.headers,content=b'not read')
+        self.assertEqual(response.status_code,429)
+        failure=self.read()['recording_failure'];self.assertEqual(failure['stage'],'admission')
+        self.assertEqual(failure['status'],429);self.assertEqual(failure['code'],'http_error')
+        self.assertEqual(self.read()['recordings'],[]);self.assertEqual(Client.instances,[])
+
     def test_original_failure_keeps_first_fixed_owner_diagnostic_and_status(self):
         from dashboard.media_retention import RetentionUnavailable
         history=LiveCreations(self.state/'public-live-visits')

@@ -152,7 +152,6 @@ def install(app, config, provider, authorize, origins):
         capture_stop=request.headers.get('x-voice-capture-stop')
         if capture_stop not in (None,'interrupted_prefix'):raise HTTPException(400,'Unknown recording provenance')
         if not 0<=ordinal<32:raise HTTPException(400,'Recording index exceeds bound')
-        if uploads.locked():raise HTTPException(429,'Two voice originals are being retained')
         stage='admission'
         async def failed(status,code):
             # Technical owner record only: no exception text/audio/URL, no new
@@ -161,6 +160,7 @@ def install(app, config, provider, authorize, origins):
                 await asyncio.to_thread(history.recording_failure,visit,session['human'],
                     binding,ordinal,stage,status,code)
         try:
+            if uploads.locked():raise HTTPException(429,'Two voice originals are being retained')
             async with uploads:
                 await asyncio.to_thread(history.owned,visit,session['human'],binding)
                 stage='body'
