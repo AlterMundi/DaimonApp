@@ -77,13 +77,22 @@ The IDs are documented in [OpenAI voice options](https://developers.openai.com/a
 Keep `LIVE_VOICES`, the explicit receiving list and that source aligned when the
 provider's supported catalogue changes.
 
-A real configured-source preview ended without a confirmed session start/audio.
-A distinct candidate-source single sample retained `model_not_found`; a bounded
-project-model metadata read also omitted GPT-Live while listing the existing
-Realtime speech model. These outcomes do not establish provider acceptance or
-hearing. Keep both attempts and their uncertain final usage without replay.
-A supported transport/account decision remains separate from this UI change.
-Do not silently change Avatar, its configured model, accounts or live captures.
+Earlier configured-source previews ended without confirmed start/audio, and a
+distinct candidate attempt retained `model_not_found`. Those historical outcomes
+remain attributed to their exact attempts; they do not establish that the current
+receiving laboratory is still unavailable. Later real finalized preview evidence
+and named saved/reopened revisions must be reconciled from the owning current
+receiving record before another provider attempt or implementation is proposed.
+Do not pool or substitute accounts/transports to repair a historical diagnosis.
+
+A successful audition requires the actual bounded WAV/hash/format verification
+and confirmed provider close, not the catalogue's `audition_available` flag.
+An expired completed sample keeps its immutable receipt but has no currently
+playable bytes. Reuse retained production verification honestly; do not claim to
+have decoded expired bytes again or regenerate its original identity. Preserve
+`passage_match=false` and unobserved hearing as limits even when synthesis and
+named Save/reopen succeeded. Saved configuration identity, current application
+selection and an ongoing conversation's frozen voice remain separate facts.
 
 Failed transport receipts retain fixed local failure classifications and
 allowlisted provider codes. Raw provider messages, headers, credentials and
