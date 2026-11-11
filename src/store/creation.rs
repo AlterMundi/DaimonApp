@@ -541,6 +541,42 @@ fn creation_on(conn: &Connection, id: &str, human: i64) -> Result<Value> {
         json!({"id":id,"intent":intent,"phase":phase,"topic":topic,"instructions":instructions,"receipt_evidence":receipt,"uncertainty":"A recorded intent or topic is not proof of worker incorporation; never replay an unconfirmed topic creation. Inspect retained instruction IDs for downstream delivery recovery."}),
     )
 }
+/// Additional scoped work reuses a confirmed creation's accepted primary only.
+/// No topic, enrollment, instruction or original is changed here.
+pub(super) fn workflow_continuation_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    native: &str,
+    reference: &InputReference,
+    primary: &str,
+) -> Result<()> {
+    let id: String = conn.query_row(
+        "SELECT id FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND input_update=?4",
+        params![human,entry.chat_id,entry.thread_id,reference],|r|r.get(0),
+    )?;
+    let operation = creation_on(conn, &id, human)?;
+    anyhow::ensure!(
+        operation["phase"] == "ready"
+            && operation["intent"]["entry_native"].as_str() == Some(native),
+        "Creation continuation needs its confirmed current entry"
+    );
+    eligible(conn, &operation)?;
+    let accepted = operation["instructions"].as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|row| row["id"] == primary && row["phase"] == "accepted")
+    });
+    let enrolled:bool=conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_enrollments e JOIN interaction_instructions i ON i.session_id=e.session_id WHERE e.creation_id=?1 AND e.human_id=?2 AND e.entry_chat=?3 AND e.entry_topic=?4 AND e.target_topic=?5 AND i.id=?6)",
+        params![id,human,entry.chat_id,entry.thread_id,operation["topic"].as_i64(),primary],|r|r.get(0),
+    )?;
+    anyhow::ensure!(
+        accepted && enrolled,
+        "Creation continuation needs its exact accepted enrolled primary"
+    );
+    Ok(())
+}
+
 fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
     let d = &operation["intent"];
     let key: SessionKey = serde_json::from_value(d["entry"].clone())?;
