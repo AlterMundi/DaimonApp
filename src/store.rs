@@ -52,7 +52,9 @@ pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
 pub(crate) use matrix::inbox::{Page as MatrixInboxPage, Selection as MatrixInboxSelection};
-pub(crate) use matrix::publication::{PublicationConfig, PublicationRequest};
+pub(crate) use matrix::publication::{
+    PublicationCompletion, PublicationConfig, PublicationRequest,
+};
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routing;
