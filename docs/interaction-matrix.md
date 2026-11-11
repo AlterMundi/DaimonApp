@@ -25,6 +25,8 @@ Existing owner control commands are:
 ```text
 telecodex --control CONFIG matrix publication status
 telecodex --control CONFIG matrix publication commit < REQUEST.json
+telecodex --control CONFIG matrix publication completion-status
+telecodex --control CONFIG matrix publication complete < COMPLETION.json
 telecodex --control CONFIG matrix publication inspect PUBLICATION_UUID
 telecodex --control CONFIG matrix publication confirm PUBLICATION_UUID REQUEST_SHA256
 telecodex --control CONFIG matrix publication retire
@@ -41,6 +43,30 @@ Existing Stop and maintenance admission fences apply to fresh publication.
 The request binds `not_after_ms` from the original native operation in both its
 native obligation digest and deterministic part UUID. Expired fresh requests
 refuse; existing exact proofs remain inspectable after expiry.
+
+Explicit recovery can complete a pinned multipart publication already started
+under this owner. `completion-status` is a read-only compatibility check, separate
+from the closed signed descriptor. `complete` accepts the original `request`
+inside `dm.visibility.publication-completion/v1`, with one canonical `recovery_id`,
+`issued_at_ms` and `expires_at_ms` spanning at most60seconds. Matrix freezes that
+same existing recovery intent for both publication completion and the carrier;
+retry never renews it. The App retains exact control metadata with each added
+part and includes it in the same4096-part/64MiB capacity accounting.
+
+The ordinary request ID, native binding, text, audience and original deadline
+stay unchanged. Existing exact parts return their retained proof. Fresh completion
+requires a same-owner/resource/key multipart anchor, current admission and a
+still-open completion window. It never creates a first publication or recreates
+a retired part. Group acknowledgment is retained on all surviving rows before
+individual retirement through an atomic SQLite trigger that also protects a
+predecessor per-part writer during compatible code rollback. Losing a later ACK
+cannot make a retired prefix look
+like an unfinished publication. The upgrade preserves the old retirement floor
+where older acknowledgment evidence might already be gone; such uncertainty
+remains refused and retained, not silently reset. Unrelated later retirement
+can still proceed while genuinely pinned incomplete groups remain recoverable.
+No new listener, inference, Telegram identity, native input or publication timer
+is introduced. This only completes visibility; actual receiving remains separate.
 
 The normal authenticated Conversation feed has an independent `publications`
 cursor. Its `matrix_visibility` sources use the existing revision-checked part
@@ -79,7 +105,7 @@ without another publication. A failed proof read keeps uncertainty pinned across
 restart/calls and does not reset the read budget. Both fresh and warm metadata
 acknowledgments run outside the native SQLite transaction.
 Set `PYTHONPATH` to the selected Matrix candidate SDK; CI pins
-`ae2bd0b5c014dda5d4cf4ac63b730468e271a453` for this composition. It verifies no Telegram token,
+`dac3bca9098d82ea7d7e00d128552c515e3e49eb` for this composition. It verifies no Telegram token,
 transmission, inference, fabricated input or native turn. The portable fixture
 is public synthetic test material, not operational custody. The seven-body
 native installation and useful messaging journey remain separate qualification.
