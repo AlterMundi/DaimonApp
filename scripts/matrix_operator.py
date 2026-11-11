@@ -466,6 +466,84 @@ def respond(value, client, *, timeout=10, inspect_only=False):
     return output
 
 
+def usage_receipt_command(selection, *, clock=time.time, monotonic=time.monotonic):
+    """One owner-selected, bounded accounting program; no keys or price defaults.
+
+    The one-shot program inherits this owned host's process group. It must not
+    daemonize; the existing App owner kills that group on cancellation/expiry.
+    Only its existing configured public verifier can authorize settlement.
+    """
+    import selectors
+    import subprocess
+
+    closed(selection, ("command", "timeout_seconds"))
+    command = selection["command"]
+    timeout = selection["timeout_seconds"]
+    if (not isinstance(command, list) or not 1 <= len(command) <= 32
+            or not all(isinstance(arg, str) and 0 < len(arg.encode()) <= 4096
+                       and "\x00" not in arg for arg in command)
+            or not Path(command[0]).is_absolute()
+            or type(timeout) is not int or not 1 <= timeout <= 60):
+        raise MatrixExecutionError("Owner-selected bounded accounting command required")
+    command = tuple(command)
+
+    def request_receipt(request):
+        remaining = min(timeout, request["deadline_unix_ms"] / 1000 - clock())
+        if remaining <= 0:
+            return None  # Observation remains durable; do not renew its horizon.
+        deadline = monotonic() + remaining
+        raw = (canonical(request) + "\n").encode()
+        if len(raw) > 65536:
+            raise MatrixExecutionError("Accounting request exceeds bound")
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, close_fds=True)
+        output = bytearray()
+        sent = 0
+        try:
+            with selectors.DefaultSelector() as selector:
+                os.set_blocking(process.stdin.fileno(), False)
+                os.set_blocking(process.stdout.fileno(), False)
+                selector.register(process.stdin, selectors.EVENT_WRITE, "write")
+                selector.register(process.stdout, selectors.EVENT_READ, "read")
+                while selector.get_map():
+                    left = deadline - monotonic()
+                    if left <= 0:
+                        raise MatrixExecutionError("Accounting receipt unconfirmed at deadline")
+                    for key, _ in selector.select(left):
+                        if key.data == "write":
+                            sent += os.write(key.fd, raw[sent:sent + 4096])
+                            if sent == len(raw):
+                                selector.unregister(key.fileobj)
+                                process.stdin.close()
+                        else:
+                            chunk = os.read(key.fd, min(4096, 65537 - len(output)))
+                            if not chunk:
+                                selector.unregister(key.fileobj)
+                                process.stdout.close()
+                            else:
+                                output.extend(chunk)
+                                if len(output) > 65536:
+                                    raise MatrixExecutionError("Accounting receipt exceeds bound")
+            left = deadline - monotonic()
+            if left <= 0 or process.wait(timeout=left) != 0:
+                raise MatrixExecutionError("Accounting receipt unavailable")
+            result = strict_json(bytes(output))
+            return None if result is None else closed(result, ("usage", "proof"))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise MatrixExecutionError("Accounting receipt unconfirmed; retain exposure") from exc
+        finally:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired as exc:
+                raise MatrixExecutionError("Accounting process cleanup unconfirmed") from exc
+            process.stdin.close()
+            process.stdout.close()
+
+    return request_receipt
+
+
 def native_owner_session(value, client, selection_path, *, clock=time.time, monotonic=time.monotonic):
     """Run the selected private account binding in this existing host process."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -476,12 +554,17 @@ def native_owner_session(value, client, selection_path, *, clock=time.time, mono
     from matrix_execution import prepare_native_account_owner, serve_native_account_owner
 
     closed(value, ("source", "channel_id", "message_id", "inbox_sequence", "thread_id", "parent_allowance", "provider", "model", "message_hash", "local_execution_id"))
-    selection = closed(strict_json(protected_read(selection_path)), (
-        "schema", "store", "trust", "usage_trust", "instruction_id", "revision",
-        "task", "cost_bound", "cost_proof", "registration",
-    ))
-    if selection["schema"] != "telecodex.native-funding-binding/v1":
-        raise MatrixExecutionError("Selected native funding binding required")
+    selection = strict_json(protected_read(selection_path))
+    required = ("schema", "store", "trust", "usage_trust", "instruction_id", "revision",
+                "task", "cost_bound", "cost_proof", "registration")
+    receipt_provider = None
+    if isinstance(selection, dict) and selection.get("schema") == "telecodex.native-funding-binding/v2":
+        closed(selection, (*required, "usage_receipt"))
+        receipt_provider = usage_receipt_command(selection["usage_receipt"], clock=clock, monotonic=monotonic)
+    else:
+        closed(selection, required)
+        if selection["schema"] != "telecodex.native-funding-binding/v1":
+            raise MatrixExecutionError("Selected native funding binding required")
     for name in ("store", "trust", "usage_trust"):
         if not isinstance(selection[name], str) or not Path(selection[name]).is_absolute():
             raise MatrixExecutionError("Owner-selected absolute accounting reference required")
@@ -564,7 +647,8 @@ def native_owner_session(value, client, selection_path, *, clock=time.time, mono
         parent_allowance=parent, cost_bound=bound, registration=selection["registration"],
         work_id=work_id, read_message=read, host_source=host_source, monotonic=monotonic,
     )
-    serve_native_account_owner(owner, sys.stdin.fileno(), sys.stdout.fileno())
+    serve_native_account_owner(owner, sys.stdin.fileno(), sys.stdout.fileno(),
+                               receipt_provider=receipt_provider)
 
 
 def read_native_owner_start():

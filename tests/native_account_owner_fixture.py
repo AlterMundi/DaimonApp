@@ -51,21 +51,19 @@ try:
                 "message_hash": state.source["content_hash"], "local_execution_id": 42},
         read_message=state.controller.read_message,
     )
-    original_record = owner.record_usage
     observations = []
 
-    def record_and_sign_synthetic_usage(params):
-        ack = original_record(params)
+    def sign_synthetic_usage(request):
+        params = request["observation"]
         observations.append(params)
         usage = dict(schema="execution/usage/v1", store_id=state.store.store_id,
                      principal=state.instruction.principal, cycle_id=owner._context.cycle.cycle_id,
                      operation_id=params["attemptId"], actual=8)
-        state.store.settle_charge(owner._context.cycle, usage,
-            proof(state.key, "approve", usage, "receiving-usage-" + params["attemptId"]))
-        return ack
+        return {"usage": usage, "proof": proof(state.key, "approve", usage,
+            "receiving-usage-" + params["attemptId"])}
 
-    owner.record_usage = record_and_sign_synthetic_usage
-    serve_native_account_owner(owner, sys.stdin.fileno(), sys.stdout.fileno())
+    serve_native_account_owner(owner, sys.stdin.fileno(), sys.stdout.fileno(),
+                               receipt_provider=sign_synthetic_usage)
     cycle = state.store.cycle_status(owner._context.cycle.cycle_id)
     report.write_text(json.dumps({"cycle": cycle, "funding": state.store.funding_status("episode"),
                                  "observations": observations, "synthetic": True}))

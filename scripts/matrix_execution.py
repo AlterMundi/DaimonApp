@@ -684,7 +684,7 @@ class _NativeMatrixTransport:
         return text(relay["text"])
 
 
-def serve_native_account_owner(owner, input_fd, output_fd):
+def serve_native_account_owner(owner, input_fd, output_fd, *, receipt_provider=None):
     """One bounded per-turn pipe session; no listener, retry or new balance store.
 
     Only the trusted App host owns these pipes. It supplies observed native
@@ -744,7 +744,8 @@ def serve_native_account_owner(owner, input_fd, output_fd):
                     owner.reserve(value["params"], publish)
                 elif operation == "usage":
                     closed(value, ("operation", "params"))
-                    publish(owner.record_usage(value["params"]))
+                    publish(owner.record_usage(value["params"]) if receipt_provider is None else
+                            owner.record_usage(value["params"], receipt_provider=receipt_provider))
                 elif operation == "bind":
                     closed(value, ("operation", "cycleId", "nativeTurnId"))
                     if value["cycleId"] != context.cycle.cycle_id or native_turn is not None:

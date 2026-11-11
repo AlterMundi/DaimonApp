@@ -35,7 +35,7 @@ from matrix_execution import (
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
-from matrix_operator import host_timeout
+from matrix_operator import host_timeout, usage_receipt_command
 from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
 from matrix_operator import respond as operator_respond
@@ -65,6 +65,43 @@ class HostDeadline(unittest.TestCase):
                 with patch("matrix_operator.time.time_ns", return_value=100_000_000_000):
                     with self.assertRaises(MatrixExecutionError):
                         host_timeout()
+
+
+class UsageReceiptCommandTests(unittest.TestCase):
+    def selected(self, source, timeout=1):
+        return usage_receipt_command(dict(
+            command=[sys.executable, "-B", "-c", source], timeout_seconds=timeout))
+
+    def test_expired_request_never_starts_and_invalid_selection_refuses(self):
+        callback = self.selected("raise SystemExit(99)")
+        with patch("subprocess.Popen") as spawn:
+            self.assertIsNone(callback(dict(deadline_unix_ms=0)))
+            spawn.assert_not_called()
+        for selection in [dict(command=["relative"], timeout_seconds=1),
+                          dict(command=[sys.executable], timeout_seconds=True)]:
+            with self.assertRaises(MatrixExecutionError):
+                usage_receipt_command(selection)
+
+    def test_declined_receipt_and_bounded_output(self):
+        request = dict(deadline_unix_ms=int((time.time() + 10) * 1000))
+        self.assertIsNone(self.selected("import sys; sys.stdin.read(); print('null')")(request))
+        with self.assertRaisesRegex(MatrixExecutionError, "exceeds bound"):
+            self.selected("import sys; sys.stdin.read(); print('x' * 65537)")(request)
+
+    def test_timeout_kills_and_reaps_the_owned_process(self):
+        import subprocess
+        original = subprocess.Popen
+        retained = []
+        def start(*args, **kwargs):
+            process = original(*args, **kwargs)
+            retained.append(process)
+            return process
+        with patch("subprocess.Popen", side_effect=start):
+            with self.assertRaisesRegex(MatrixExecutionError, "deadline"):
+                self.selected("import time; time.sleep(30)")(
+                    dict(deadline_unix_ms=int((time.time() + 10) * 1000)))
+        self.assertEqual(len(retained), 1)
+        self.assertIsNotNone(retained[0].returncode)
 
 
 @dataclass(frozen=True)
@@ -1141,7 +1178,10 @@ class AdapterTests(unittest.TestCase):
     def test_native_owner_executable_entry_reads_ordinary_app_owned_source(self):
         self.check_native_owner_executable_entry(app_owned=True)
 
-    def check_native_owner_executable_entry(self, app_owned=False):
+    def test_native_owner_executable_entry_uses_selected_accounting_command(self):
+        self.check_native_owner_executable_entry(app_owned=True, receipt=True)
+
+    def check_native_owner_executable_entry(self, app_owned=False, receipt=False):
         from concurrent.futures import ThreadPoolExecutor
         from dataclasses import asdict
         from tempfile import TemporaryDirectory
@@ -1179,14 +1219,33 @@ class AdapterTests(unittest.TestCase):
             trust.chmod(0o600)
             cost = asdict(options["cost_bound"])
             selection = root / "funding.json"
-            selection.write_text(json.dumps(dict(
+            selected = dict(
                 schema="telecodex.native-funding-binding/v1", store=str(state.store.path),
                 trust=str(trust), usage_trust=str(trust),
                 instruction_id=state.instruction.instruction_id, revision=state.instruction.revision,
                 task=state.purpose, cost_bound=cost,
                 cost_proof=proof(state.key, "approve", cost, "entry-cost"),
                 registration=options["registration"],
-            )))
+            )
+            if receipt:
+                authority = root / "synthetic-accountant.py"
+                authority.write_text("import json,sys\n"
+                    "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey\n"
+                    "from tests.test_execution_instruction import proof\n"
+                    "request=json.load(sys.stdin)\n"
+                    "assert request['schema']=='execution/usage-receipt-request/v1'\n"
+                    "assert request['operation_id']==request['observation']['attemptId']\n"
+                    "usage=dict(schema='execution/usage/v1',store_id=request['store_id'],"
+                    "principal=request['principal'],cycle_id=request['cycle_id'],"
+                    "operation_id=request['operation_id'],actual=8)\n"
+                    "key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex("
+                    + repr(state.key.private_bytes_raw().hex()) + "))\n"
+                    "print(json.dumps(dict(usage=usage,proof=proof(key,'approve',usage,'receipt-'"
+                    "+request['operation_id']))))\n")
+                authority.chmod(0o600)
+                selected.update(schema="telecodex.native-funding-binding/v2", usage_receipt=dict(
+                    command=[sys.executable, "-B", str(authority)], timeout_seconds=2))
+            selection.write_text(json.dumps(selected))
             selection.chmod(0o600)
 
             def entry(raw, expect_ready=False):
@@ -1218,6 +1277,15 @@ class AdapterTests(unittest.TestCase):
                                             future.result()
                                         self.fail("executable owner reserve timeout")
                                     self.assertTrue(json.loads(os.read(receive, 4096))["authorized"])
+                                    if receipt:
+                                        observed = {key: params[key] for key in (
+                                            "threadId", "cycleId", "attemptId", "ordinal")} | dict(
+                                            responseId="entry-response",model=None,tokenUsage=None,usageMetadata=None)
+                                        os.write(send, (json.dumps(dict(operation="usage",params=observed))+"\n").encode())
+                                        if not select.select([receive], [], [], 5)[0]:
+                                            if future.done(): future.result()
+                                            self.fail("selected accounting command did not return")
+                                        self.assertTrue(json.loads(os.read(receive,4096))["recorded"])
                                 os.close(send)
                                 send = None
                                 with self.assertRaises(MatrixExecutionError):
@@ -1239,7 +1307,8 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(state.store.funding_status("episode")["calls"], 0)
             self.assertEqual(entry((json.dumps(start) + "\n").encode(), expect_ready=True), 1)
             self.assertEqual(state.store.funding_status("episode")["calls"], 1)
-            self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+            self.assertEqual(state.store.funding_status("episode")["reserved"], 0 if receipt else 30)
+            self.assertEqual(state.store.funding_status("episode")["spent"], 8 if receipt else 0)
             self.assertEqual(state.runner.starts, [])
 
     def test_funded_selected_original_returns_under_the_same_conversation_root(self):

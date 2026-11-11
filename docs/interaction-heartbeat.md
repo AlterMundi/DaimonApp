@@ -379,6 +379,21 @@ observation and signed settlement per attempt plus bind/terminal. Invalid or
 uncertain acknowledgments fence the child; no automatic write replay occurs.
 Unsigned tokens or provider metadata never change actual spending.
 
+The protected `telecodex.native-funding-binding/v2` selects `usage_receipt` with
+an absolute command argv and `timeout_seconds` (1–60). The v1 binding remains
+observation-only. The one-shot accounting command receives only the bounded
+exact-attempt receipt request on stdin and returns JSON `null` or `{usage, proof}`
+on stdout, at most64KiB. It inherits the owned host process group and must not
+daemonize. No shell is used, stderr is discarded, and its timeout cannot exceed
+the original cycle deadline. Failure, excessive output or missing signatures
+retains the existing maximum reservation. The child persists the observation
+before requesting a receipt once; duplicates and lost acknowledgments never
+rerun the command. Reconciliation of an independently recovered valid receipt
+uses the existing settlement API. The existing public trust selection verifies
+the signature; this adapter supplies no signing key, prices or default account.
+A real qualified accounting authority/route remains unselected.
+
+
 A trusted `not_started` reconciliation requires the actual native
 `NativeInputNotSubmitted` result, no physical binding and an atomic journal check
 that the sole operation is the returned native-owner marker. Even a pre-ACK
