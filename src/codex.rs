@@ -311,8 +311,8 @@ pub enum CodexApprovalDecision {
 }
 
 /// A reservation already conserved by the owning journal, never a new grant.
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeInferenceAllowance {
     pub max_provider_attempts: u32,
     pub max_request_bytes: u32,
@@ -345,7 +345,7 @@ impl NativeProviderAttemptReservation {
     }
 }
 impl NativeInferenceAllowance {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.max_provider_attempts > 0
                 && (1..=64 * 1024 * 1024).contains(&self.max_request_bytes),
@@ -370,13 +370,6 @@ pub enum CodexEventOutcome {
     InferenceAllowance(NativeInferenceAllowance),
     /// Explicit owner selection for an already authorized journal cycle.
     /// Ordinary attempt-only heartbeat allocations keep their existing path.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No live financial owner is provisioned; owner-client fixtures exercise this opt-in selection"
-        )
-    )]
     FundedInferenceAllowance {
         allowance: NativeInferenceAllowance,
         cycle_id: String,

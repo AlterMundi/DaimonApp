@@ -475,7 +475,7 @@ def native_owner_session(value, client, selection_path, *, clock=time.time, mono
     from daimon_matrix.review_runner import ProviderCostBound
     from matrix_execution import prepare_native_account_owner, serve_native_account_owner
 
-    closed(value, ("source", "channel_id", "message_id", "inbox_sequence", "thread_id", "parent_allowance"))
+    closed(value, ("source", "channel_id", "message_id", "inbox_sequence", "thread_id", "parent_allowance", "provider", "model", "message_hash", "local_execution_id"))
     selection = closed(strict_json(protected_read(selection_path)), (
         "schema", "store", "trust", "usage_trust", "instruction_id", "revision",
         "task", "cost_bound", "cost_proof", "registration",
@@ -496,7 +496,15 @@ def native_owner_session(value, client, selection_path, *, clock=time.time, mono
                            usage_verifier=trust(selection["usage_trust"]))
     instruction = store.get_instruction(selection["instruction_id"], selection["revision"])
     bound = ProviderCostBound.verify(selection["cost_bound"], selection["cost_proof"], approval)
+    if value["model"] != instruction.model or value["provider"] != instruction.provider:
+        raise MatrixExecutionError("Native model selection differs from the signed cost binding")
     identifier(value["message_id"])
+    if (not isinstance(value["message_hash"], str)
+            or len(value["message_hash"]) != 64
+            or any(c not in "0123456789abcdef" for c in value["message_hash"])
+            or type(value["local_execution_id"]) is not int
+            or value["local_execution_id"] < 1):
+        raise MatrixExecutionError("Retained native source hash and execution required")
     closed(value["source"], ("being_ref", "embodiment_id"))
     if (value["source"] != {"being_ref": instruction.being, "embodiment_id": instruction.embodiment}
             or value["channel_id"] not in {scope.channel for scope in instruction.scope}
@@ -532,7 +540,8 @@ def native_owner_session(value, client, selection_path, *, clock=time.time, mono
         rows = page.get("items")
         if (page.get("channel_id") != value["channel_id"] or not isinstance(rows, list)
                 or len(rows) != 1 or rows[0].get("inbox_sequence") != value["inbox_sequence"]
-                or rows[0].get("message", {}).get("event_id") != message_id):
+                or rows[0].get("message", {}).get("event_id") != message_id
+                or rows[0].get("message", {}).get("content_hash") != value["message_hash"]):
             raise MatrixExecutionError("Current authenticated original unavailable")
         return rows[0]["message"]
 

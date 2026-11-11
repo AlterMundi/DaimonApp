@@ -94,7 +94,9 @@ pub(in crate::store) fn claim_on(
     // Keep the live ownership plus fifteen previous terminal/transferred
     // records. Never delete native turns, source receipts or an uncertain owner.
     for old in retained.iter().skip(15) {
-        if matches!(old["phase"].as_str(), Some("terminal" | "transferred")) {
+        if matches!(old["phase"].as_str(), Some("terminal" | "transferred"))
+            && old["financial"].is_null()
+        {
             conn.execute(
                 "DELETE FROM bot_state WHERE key=?1",
                 [key(old["local"]
@@ -110,6 +112,107 @@ pub(in crate::store) fn claim_on(
     )?;
     conn.execute_batch("CREATE TRIGGER IF NOT EXISTS heartbeat_execution_turn_deleted AFTER DELETE ON turns BEGIN DELETE FROM bot_state WHERE key='heartbeat_execution:'||OLD.id; END;")?;
     Ok(())
+}
+
+fn allowance_on(
+    conn: &Connection,
+    local: i64,
+    human: i64,
+    entry: SessionKey,
+    fresh: bool,
+) -> Result<Option<(Value, crate::codex::NativeInferenceAllowance)>> {
+    let Some(record) = load(conn, local)? else {
+        return Ok(None);
+    };
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let bound:bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.status='running' AND s.codex_thread_id=?4)",
+            params![local,session,human,record["native"].as_str().context("Missing heartbeat native binding")?],|r|r.get(0))?;
+    anyhow::ensure!(
+        bound && record["phase"] == "owned" && (!fresh || record["physical"].is_null()),
+        "Heartbeat allocation no longer owns a fresh execution"
+    );
+    let activation: lanes::Activation = serde_json::from_value(record["activation"].clone())?;
+    if let Some(owner) = record.get("owner") {
+        super::delegation::owner_current_on(conn, human, &serde_json::from_value(owner.clone())?)?;
+    } else {
+        anyhow::ensure!(
+            lanes::current_on(conn, human, entry, &activation)?,
+            "Heartbeat lane is paused or stale"
+        );
+        anyhow::ensure!(
+            generation_current_on(
+                conn,
+                human,
+                entry,
+                record["generation"]
+                    .as_u64()
+                    .context("Missing heartbeat generation")?
+            )?,
+            "Heartbeat admission is paused or stale"
+        );
+    }
+    let allocation = &record["inference_allowance"];
+    let allowance = crate::codex::NativeInferenceAllowance {
+        max_provider_attempts: u32::try_from(
+            allocation["max_provider_attempts"]
+                .as_u64()
+                .context("Missing reserved provider attempts")?,
+        )?,
+        max_request_bytes: u32::try_from(
+            allocation["max_request_bytes"]
+                .as_u64()
+                .context("Missing reserved request byte limit")?,
+        )?,
+        deadline_unix_ms: allocation["deadline_unix_ms"]
+            .as_i64()
+            .context("Missing reserved inference deadline")?,
+    };
+    Ok(Some((record, allowance)))
+}
+
+fn financial_start_on(
+    conn: &Connection,
+    local: i64,
+    human: i64,
+    entry: SessionKey,
+    native: &str,
+    source: &HeartbeatInboxSource,
+    fresh: bool,
+) -> Result<Value> {
+    let (record, allowance) = allowance_on(conn, local, human, entry, fresh)?
+        .context("Native funding requires its existing heartbeat reservation")?;
+    anyhow::ensure!(
+        record["native"] == native && record["activation"]["lane"] == "messaging",
+        "Native financial owner requires the selected messaging execution"
+    );
+    let key = record["source"]
+        .as_str()
+        .context("Missing native funding original")?;
+    let message = key
+        .strip_prefix("matrix-inbox:")
+        .context("Select an existing native inbox original")?;
+    let observed = super::super::presentation::source_on(conn, human, entry, key)?
+        .context("Native financial original unavailable")?;
+    anyhow::ensure!(
+        observed["current"] == true,
+        "Native financial original retired"
+    );
+    let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
+    let (owner, channel, raw):(String,String,String) = conn.query_row(
+        "SELECT owner,channel,doc FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2 AND message_id=?3",
+        params![session,human,message], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+    )?;
+    anyhow::ensure!(
+        serde_json::from_str::<Value>(&owner)? == serde_json::to_value(&source.source)?
+            && channel == source.channel_id,
+        "Native funding source owner changed"
+    );
+    let item: Value = serde_json::from_str(&raw)?;
+    Ok(
+        json!({"source":source.source,"channel_id":channel,"message_id":message,
+              "inbox_sequence":item["inbox_sequence"],"message_hash":item["message_hash"],
+              "local_execution_id":local,"thread_id":native,"parent_allowance":allowance}),
+    )
 }
 
 impl Store {
@@ -162,56 +265,77 @@ impl Store {
         entry: SessionKey,
     ) -> Result<Option<crate::codex::NativeInferenceAllowance>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let Some(record) = load(&conn, local)? else {
+        Ok(allowance_on(&conn, local, human, entry, true)?.map(|(_, allowance)| allowance))
+    }
+
+    pub(crate) fn heartbeat_financial_source(
+        &self,
+        local: i64,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        source: &HeartbeatInboxSource,
+    ) -> Result<Option<Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (record, _) = allowance_on(&conn, local, human, entry, true)?
+            .context("Native funding requires its existing heartbeat reservation")?;
+        if record["activation"]["lane"] != "messaging" {
             return Ok(None);
-        };
-        let (session, _) = super::super::presentation::entry_on(&conn, human, entry)?;
-        let bound:bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.status='running' AND s.codex_thread_id=?4)",
-            params![local,session,human,record["native"].as_str().context("Missing heartbeat native binding")?],|r|r.get(0))?;
-        anyhow::ensure!(
-            bound && record["phase"] == "owned" && record["physical"].is_null(),
-            "Heartbeat allocation no longer owns a fresh execution"
-        );
-        let activation: lanes::Activation = serde_json::from_value(record["activation"].clone())?;
-        if let Some(owner) = record.get("owner") {
-            super::delegation::owner_current_on(
-                &conn,
-                human,
-                &serde_json::from_value(owner.clone())?,
-            )?;
-        } else {
-            anyhow::ensure!(
-                lanes::current_on(&conn, human, entry, &activation)?,
-                "Heartbeat lane is paused or stale"
-            );
-            anyhow::ensure!(
-                generation_current_on(
-                    &conn,
-                    human,
-                    entry,
-                    record["generation"]
-                        .as_u64()
-                        .context("Missing heartbeat generation")?
-                )?,
-                "Heartbeat admission is paused or stale"
-            );
         }
-        let allocation = &record["inference_allowance"];
-        Ok(Some(crate::codex::NativeInferenceAllowance {
-            max_provider_attempts: u32::try_from(
-                allocation["max_provider_attempts"]
-                    .as_u64()
-                    .context("Missing reserved provider attempts")?,
-            )?,
-            max_request_bytes: u32::try_from(
-                allocation["max_request_bytes"]
-                    .as_u64()
-                    .context("Missing reserved request byte limit")?,
-            )?,
-            deadline_unix_ms: allocation["deadline_unix_ms"]
-                .as_i64()
-                .context("Missing reserved inference deadline")?,
-        }))
+        Ok(Some(financial_start_on(
+            &conn, local, human, entry, native, source, true,
+        )?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn heartbeat_financial_attach(
+        &self,
+        local: i64,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        source: &HeartbeatInboxSource,
+        start: &Value,
+        cycle: &str,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            uuid::Uuid::parse_str(cycle).is_ok_and(|id| id.to_string() == cycle),
+            "Canonical native funding cycle required"
+        );
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        anyhow::ensure!(
+            financial_start_on(&tx, local, human, entry, native, source, true)? == *start,
+            "Native financial selection changed during preparation"
+        );
+        let mut record = load(&tx, local)?.context("Missing financial heartbeat")?;
+        anyhow::ensure!(
+            record["financial"].is_null(),
+            "Financial owner cannot be reconstructed"
+        );
+        record["financial"] = json!({"cycle_id":cycle,"start":start});
+        save(&tx, local, &record)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn heartbeat_financial_current(
+        &self,
+        local: i64,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        source: &HeartbeatInboxSource,
+        cycle: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let current = financial_start_on(&conn, local, human, entry, native, source, false)?;
+        let record = load(&conn, local)?.context("Missing financial heartbeat")?;
+        anyhow::ensure!(
+            record["financial"]["cycle_id"] == cycle && record["financial"]["start"] == current,
+            "Native financial owner differs from retained selection"
+        );
+        Ok(())
     }
 
     /// Called at the actual shared native steer boundary, before any external
@@ -385,6 +509,9 @@ mod tests {
         .unwrap()
     }
     fn own(s: &Store, entry: &SessionRecord, local: i64) -> Result<()> {
+        own_source(s, entry, local, "exact-source")
+    }
+    fn own_source(s: &Store, entry: &SessionRecord, local: i64, source: &str) -> Result<()> {
         let mut conn = s.conn.lock().unwrap();
         let tx = conn.transaction()?;
         claim_on(
@@ -394,7 +521,7 @@ mod tests {
             entry.key,
             "heartbeat-native",
             2,
-            "exact-source",
+            source,
             &lanes::Activation {
                 lane: HeartbeatLane::Messaging,
                 generation: 1,
@@ -402,6 +529,145 @@ mod tests {
         )?;
         tx.commit()?;
         Ok(())
+    }
+    fn financial_fixture(
+        s: &Store,
+        entry: &SessionRecord,
+    ) -> (i64, HeartbeatInboxSource, Value, String) {
+        let source = HeartbeatInboxSource {
+            source: MatrixAuthor {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+                embodiment_id: "embodiment:source".into(),
+            },
+            channel_id: "tribe".into(),
+        };
+        let selected = s
+            .matrix_inbox_selection(100, entry.key, source.source.clone(), "tribe")
+            .unwrap();
+        let id = uuid::Uuid::now_v7().to_string();
+        let page=serde_json::from_value(json!({"schema":"daimon.matrix-inbox-page/v1","source":source.source,
+            "channel_id":"tribe","after":0,"next_cursor":1,"page_full":false,"meaning":"Authenticated fixture",
+            "items":[{"inbox_sequence":1,"message_id":id,"message_hash":"b".repeat(64),
+            "author":{"being_ref":format!("dm:being:v1:{}","B".repeat(43)),"embodiment_id":"embodiment:peer"},
+            "thread_id":uuid::Uuid::now_v7().to_string(),"destination":null,"response_context":null,"coordination":null,
+            "text":"An original request","state":"available"}]})).unwrap();
+        s.matrix_inbox_retain(&selected, page).unwrap();
+        let local = fresh(s, entry, "");
+        own_source(s, entry, local, &format!("matrix-inbox:{id}")).unwrap();
+        let start = s
+            .heartbeat_financial_source(local, 100, entry.key, "heartbeat-native", &source)
+            .unwrap()
+            .unwrap();
+        let cycle = uuid::Uuid::now_v7().to_string();
+        s.heartbeat_financial_attach(
+            local,
+            100,
+            entry.key,
+            "heartbeat-native",
+            &source,
+            &start,
+            &cycle,
+        )
+        .unwrap();
+        (local, source, start, cycle)
+    }
+    #[test]
+    fn financial_owner_preserves_source_capability_and_later_lane_pause() {
+        let (_file, s, entry) = setup();
+        let (local, source, start, cycle) = financial_fixture(&s, &entry);
+        assert_eq!(start["inbox_sequence"], 1);
+        assert_eq!(start["message_hash"], "b".repeat(64));
+        assert!(start["local_execution_id"].as_i64().unwrap() > 0);
+        assert_eq!(start["thread_id"], "heartbeat-native");
+        assert!(
+            s.heartbeat_financial_attach(
+                local,
+                100,
+                entry.key,
+                "heartbeat-native",
+                &source,
+                &start,
+                &cycle
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_financial_current(
+                local,
+                101,
+                entry.key,
+                "heartbeat-native",
+                &source,
+                &cycle
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_financial_current(local, 100, entry.key, "other-thread", &source, &cycle)
+                .is_err()
+        );
+        assert!(
+            s.heartbeat_financial_current(
+                local,
+                100,
+                entry.key,
+                "heartbeat-native",
+                &source,
+                &uuid::Uuid::now_v7().to_string()
+            )
+            .is_err()
+        );
+        s.heartbeat_financial_current(local, 100, entry.key, "heartbeat-native", &source, &cycle)
+            .unwrap();
+        s.heartbeat_native_started(local, &uuid::Uuid::now_v7().to_string())
+            .unwrap();
+        s.heartbeat_financial_current(local, 100, entry.key, "heartbeat-native", &source, &cycle)
+            .unwrap();
+        assert!(
+            s.heartbeat_inference_allowance(local, 100, entry.key)
+                .is_err()
+        );
+        s.heartbeat_control(
+            100,
+            entry.key,
+            HeartbeatCommand::PauseLane {
+                lane: HeartbeatLane::Messaging,
+            },
+        )
+        .unwrap();
+        assert!(
+            s.heartbeat_financial_current(
+                local,
+                100,
+                entry.key,
+                "heartbeat-native",
+                &source,
+                &cycle
+            )
+            .is_err()
+        );
+        let retained = load(&s.conn.lock().unwrap(), local).unwrap().unwrap();
+        assert_eq!(retained["financial"]["cycle_id"], cycle);
+    }
+    #[test]
+    fn native_terminal_retirement_preserves_unreconciled_financial_link() {
+        let (_file, s, entry) = setup();
+        let (local, _, _, cycle) = financial_fixture(&s, &entry);
+        let physical = uuid::Uuid::now_v7().to_string();
+        s.heartbeat_native_started(local, &physical).unwrap();
+        s.heartbeat_native_terminal(local, &physical, "completed")
+            .unwrap();
+        for _ in 0..22 {
+            let next = fresh(&s, &entry, "");
+            own(&s, &entry, next).unwrap();
+            s.heartbeat_native_started(next, "synthetic-physical")
+                .unwrap();
+            s.heartbeat_native_terminal(next, "synthetic-physical", "completed")
+                .unwrap();
+        }
+        let retained = load(&s.conn.lock().unwrap(), local).unwrap().unwrap();
+        assert_eq!(retained["financial"]["cycle_id"], cycle);
+        assert_eq!(retained["terminal_status"], "completed");
     }
     #[test]
     fn observed_terminal_releases_exact_owned_execution_without_refund() {

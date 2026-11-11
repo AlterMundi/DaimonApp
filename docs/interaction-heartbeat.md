@@ -326,8 +326,11 @@ new attempt. No model tool, human question or account choice comes from the RPC.
 The host command has an opt-in `--native-owner --funding-binding FILE` session
 mode. Its protected operator file selects the existing journal, approval and
 accounting public verifiers, instruction/task and verified cost registration.
-The startup line selects only the observed body/thread, original sequence/ID,
-channel and retained parent allowance; it cannot select an account or trust root.
+The startup line selects only the observed body/thread/model/provider, retained
+local execution ID, original sequence/ID/native content hash, channel and retained
+parent allowance; it cannot select an account or trust root. The authenticated
+SDK content hash must match the App-retained native hash before reservation;
+this is distinct from the journal digest of the complete signed document.
 The current authenticated SDK reads that exact original and the existing funded
 queue retains its immutable digest. Ordinary messages without eligible approved
 coordination metadata do not silently become financially authorized work.
@@ -349,10 +352,24 @@ there is no restart/reconstruction, replay or refund. A closed pipe is not a
 terminal native receipt. Signed accounting and terminal reconciliation are
 separate; missing usage retains maximum exposure even after a known terminal.
 
-This host-session implementation is not yet wired into the Rust native event
-loop. That caller, exact native attempt-to-provider-usage correlation and actual
-route/exposure/isolation qualification remain unfinished. No private funding
-file is provisioned by these changes and the default handler still denies.
+The Unix native event loop now has an opt-in `matrix_transport.native_funding_binding`
+caller. One owned child supplies startup, exact-attempt reservations and physical
+turn binding. Current App ownership and immutable source are checked before and
+after reservation; later pause or ownership transfer prevents a positive reply.
+Cancelled pipe exchanges fence that child permanently. Missing configuration
+retains ordinary attempt-only fuel; a selected financial error never falls back.
+Other lanes are not selected by this Messaging configuration.
+
+This remains an unselected source candidate. The current Python queue requires
+coordination metadata, so ordinary Messaging originals are not yet supported by
+this financial mode. The successor must explicitly bind the signed operator
+policy to the App-owned original, without adding financial fields to peer speech
+or a second queue. Human handover and known-no-start reconciliation also remain
+unqualified. The Rust terminal callback closes its child conservatively; it does
+not manufacture signed usage or financial reconciliation. Exact native
+attempt-to-provider-usage correlation and actual route/exposure/isolation
+qualification remain unfinished. No private funding file is provisioned by these
+changes and the unconfigured handler still denies financial reservations.
 
 The default App owner explicitly refuses financial reservations. This source
 prepares the native client, not a configured account or receiving activation.

@@ -1033,7 +1033,9 @@ class AdapterTests(unittest.TestCase):
                                  embodiment_id=state.instruction.embodiment),
                      channel_id="tribe", message_id=state.source["event_id"],
                      inbox_sequence=row["inbox_sequence"], thread_id="owned-native",
-                     parent_allowance=options["parent_allowance"])
+                     message_hash=state.source["content_hash"], local_execution_id=42,
+                     parent_allowance=options["parent_allowance"],
+                     provider=state.instruction.provider, model=state.instruction.model)
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             trust = root / "trust.json"
@@ -1095,7 +1097,9 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(entry(b"{incomplete"), 0)
             self.assertEqual(entry(b"x" * 65537), 0)
             for changed in (dict(source=dict(start["source"], being_ref="foreign")),
-                            dict(inbox_sequence=start["inbox_sequence"] + 1)):
+                            dict(inbox_sequence=start["inbox_sequence"] + 1),
+                            dict(model="different-native-model"), dict(provider="different-provider"),
+                            dict(message_hash="0" * 64), dict(local_execution_id=0)):
                 self.assertEqual(entry((json.dumps(start | changed) + "\n").encode()), 1)
                 self.assertEqual(state.store.funding_status("episode")["calls"], 0)
             self.assertEqual(entry((json.dumps(start) + "\n").encode(), expect_ready=True), 1)

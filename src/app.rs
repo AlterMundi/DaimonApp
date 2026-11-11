@@ -37,6 +37,8 @@ mod interactions;
 mod io;
 mod matrix;
 mod merging;
+#[cfg(unix)]
+mod native_account;
 mod native_recovery;
 mod nexus;
 mod observer;
