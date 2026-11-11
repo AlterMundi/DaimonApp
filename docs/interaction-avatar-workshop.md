@@ -38,6 +38,10 @@ human-hearing acceptance.
 
 ## Playback-driven mechanical mouth
 
+See the [shared speech capability contract](avatar-speech-capability.md) for
+representation coverage, optional nonfacial regions and the editor handoff.
+Built-in defaults and flat images do not acquire articulation automatically.
+
 An optional invisible `anchor-mouth` path node opts a model into local jaw
 motion. It uses existing inert node fields: `fill: null`, no stroke, an authored
 hinge pivot and parent. Reparent only the intended lower-shell/jaw parts beneath
