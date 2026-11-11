@@ -1661,3 +1661,15 @@ Native admission, a visible topic/message in Telegram and the paired human's
 actual ability to open it are separate observations. Do not claim human access
 from a service event or operator-command success. Telegram remains an optional
 projection; standalone creation continues using its existing local allocation.
+
+### Historical cumulative workflow evidence
+
+Workflow status may resolve an exact explicit `covered` instruction from a later
+canonical result by the same retained owner/native binding even when that old
+request has no return-delivery membership. Coverage is evidence, not a transport
+reservation or completion. The result's own completion list is evaluated for the
+old instruction's requests; completion of another subtask is never borrowed.
+The owning integrating entry can read current partial evidence using its exact
+workflow source revision. A successor still requires completed, current evidence.
+Source bodies, claims, delivery membership and original admissions remain
+immutable; reading or linking does not replay, publish, advance or retire work.
