@@ -1308,7 +1308,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             # Live voices generate near playback speed. Keep their finite parts
             # equally short and certify a second future boundary from this same
             # canonical window; clients never guess offsets from rendered text.
-            live_reading = engine.incremental and engine.receiving_route()['provider']=='openai-live'
+            live_reading = (engine.incremental and engine.receiving_route()['provider']=='openai-live'
+                            and canonical.get('kind') not in ('integrator_live','native_question'))
             part_bound = 240 if live_reading else None
             selected = speech_part(canonical, part_bound) if engine.incremental else canonical
             lookahead = None
