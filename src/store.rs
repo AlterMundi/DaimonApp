@@ -36,7 +36,7 @@ pub use heartbeat::HeartbeatReportSource;
 pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
 pub use heartbeat::{
     HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
-    HeartbeatResources, HeartbeatReviewContract,
+    HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
 };
 mod interaction;
 mod interactions;

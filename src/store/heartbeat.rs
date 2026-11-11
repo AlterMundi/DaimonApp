@@ -12,12 +12,12 @@ pub use producer::{HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPur
 mod reports;
 pub use reports::HeartbeatReportSource;
 mod resources;
-mod review;
+pub(in crate::store) mod review;
 pub(super) use executions::claim_on as execution_claim_on;
 pub use resources::HeartbeatResources;
 #[cfg(test)]
 pub(in crate::store) use resources::test_contract;
-pub use review::HeartbeatReviewContract;
+pub use review::{HeartbeatReviewContract, HeartbeatReviewTask};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
