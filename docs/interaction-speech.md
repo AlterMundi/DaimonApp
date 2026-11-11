@@ -652,7 +652,8 @@ labeled automatic transcript (or explicitly unverified live preview). The audio
 is not also submitted as another instruction, and manual edits never become a
 claimed automatic transcript. Two existing file slots are reserved for these
 originals; editing is offered only with file access and sufficient reserved
-attachment capacity, outside an explicit native-question-only capture. Existing
+attachment capacity. An edited draft follows ordinary text-reply semantics; it
+never runs automatic audio-answer matching. Explicit reply context is preserved. Existing
 eight-file/20MiB-per-file/40MiB-total and32KiB text limits remain.
 
 The visible counter stops while editing; the original120second physical deadline
