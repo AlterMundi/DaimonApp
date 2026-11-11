@@ -734,14 +734,17 @@ def serve_native_account_owner(owner, input_fd, output_fd):
         publish({"ready": owner.descriptor()})
         with selectors.DefaultSelector() as selector:
             selector.register(input_fd, selectors.EVENT_READ)
-            # One reservation and usage receipt per attempt, plus bind/terminal.
+            # Reservation, observation and signed receipt per attempt, plus bind/terminal.
             # Duplicate requests are refused rather than growing retained state.
-            for _ in range(owner._allowance["maxProviderAttempts"] * 2 + 2):
+            for _ in range(owner._allowance["maxProviderAttempts"] * 3 + 2):
                 value = read_frame(selector)
                 operation = value.get("operation") if isinstance(value, dict) else None
                 if operation == "reserve":
                     closed(value, ("operation", "params"))
                     owner.reserve(value["params"], publish)
+                elif operation == "usage":
+                    closed(value, ("operation", "params"))
+                    publish(owner.record_usage(value["params"]))
                 elif operation == "bind":
                     closed(value, ("operation", "cycleId", "nativeTurnId"))
                     if value["cycleId"] != context.cycle.cycle_id or native_turn is not None:

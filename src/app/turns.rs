@@ -1108,6 +1108,13 @@ pub(super) async fn process_turn(
                                     None=>CodexEventOutcome::None,
                                 })
                             }
+                            CodexEvent::NativeProviderAttemptUsage(usage) => {
+                                #[cfg(unix)]
+                                if let Some(owner)=native_account.lock().await.as_mut() {
+                                    return Ok(CodexEventOutcome::ProviderUsageRecorded(owner.record_usage(usage).await?));
+                                }
+                                Ok(CodexEventOutcome::ProviderUsageRecorded(false))
+                            }
                             CodexEvent::NativeProviderAttemptReservation(request) => {
                                 #[cfg(unix)]
                                 {
@@ -1925,6 +1932,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeTurnSubmitting
             | CodexEvent::NativeProviderAttemptReservation(_)
             | CodexEvent::NativeExternalInputSubmitting
+            | CodexEvent::NativeProviderAttemptUsage(_)
             | CodexEvent::NativeTurnTerminal { .. }
             | CodexEvent::NativeGoalBlocked { .. }
             | CodexEvent::NativeTurnFailure { .. }

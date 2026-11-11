@@ -252,6 +252,7 @@ pub enum CodexEvent {
     /// Host accounting only, never a model tool or human question. The selected
     /// owner must reserve the exact attempt durably before returning true.
     NativeProviderAttemptReservation(NativeProviderAttemptReservation),
+    NativeProviderAttemptUsage(NativeProviderAttemptUsage),
     /// Transactional ownership handover before any new packet joins a writer.
     NativeExternalInputSubmitting,
     NativeTurnTerminal {
@@ -339,6 +340,19 @@ pub struct NativeProviderAttemptReservation {
     pub deadline_unix_ms: i64,
 }
 
+#[derive(Clone, Debug, serde::Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeProviderAttemptUsage {
+    pub thread_id: String,
+    pub cycle_id: String,
+    pub attempt_id: String,
+    pub ordinal: u32,
+    pub response_id: String,
+    pub model: Option<String>,
+    pub token_usage: Option<Value>,
+    pub usage_metadata: Option<Value>,
+}
+
 impl NativeProviderAttemptReservation {
     fn matches(&self, thread: &str, cycle: &str, allowance: &NativeInferenceAllowance) -> bool {
         let canonical =
@@ -385,6 +399,7 @@ pub enum CodexEventOutcome {
     },
     /// Only a trusted host callback may supply this result. No UI/model route.
     ProviderAttemptReserved(bool),
+    ProviderUsageRecorded(bool),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
     DynamicTool(oneshot::Receiver<Value>),
@@ -1948,7 +1963,10 @@ where
             // Mandatory method: old servers must reject before inference. No fallback.
             allowance.validate()?;
             let mut bounded_params = json!({"turn":params,"allowance":allowance});
-            if let Some(cycle) = provider_cycle.as_ref() { bounded_params["providerReservationCycleId"] = json!(cycle); }
+            if let Some(cycle) = provider_cycle.as_ref() {
+                bounded_params["providerReservationCycleId"] = json!(cycle);
+                bounded_params["providerUsageObservations"] = json!(true);
+            }
             ("turn/startBoundedIfIdle", bounded_params)
         } else { ("turn/start",params) };
         initial_write_possible = true;
@@ -2002,6 +2020,8 @@ where
     let mut seen_provider_attempts = HashSet::new();
     let mut seen_provider_ordinals = HashSet::new();
     let mut seen_provider_requests = HashSet::new();
+    let mut authorized_provider_attempts = HashMap::<String,u32>::new();
+    let mut seen_provider_usage = HashMap::<String,(NativeProviderAttemptUsage,bool)>::new();
     let mut provider_owner_fenced = false;
     loop {
         // A heartbeat allowance owns one physical execution. An unrelated active
@@ -2282,6 +2302,34 @@ where
                 }
               }
               RpcMessage::ServerRequest{id,method,params}=>{
+                if method == "turn/providerAttempt/usage" {
+                    if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str()) {continue;}
+                    let mut recorded=false;
+                    if let (Some(cycle),Some(deadline),Ok(usage))=(provider_cycle.as_deref(),provider_deadline,
+                        serde_json::from_value::<NativeProviderAttemptUsage>(params.clone()))
+                        && usage.cycle_id==cycle && authorized_provider_attempts.get(&usage.attempt_id)==Some(&usage.ordinal)
+                        && !usage.response_id.is_empty() && usage.response_id.len()<=200
+                        && usage.model.as_ref().is_none_or(|m|!m.is_empty() && m.len()<=200)
+                        && serde_json::to_vec(&params).is_ok_and(|bytes|bytes.len()<=32*1024)
+                    {
+                        if let Some((previous,ack))=seen_provider_usage.get(&usage.attempt_id) {
+                            recorded=previous==&usage && *ack;
+                        } else {
+                            let identity=usage.attempt_id.clone();
+                            let result=tokio::select! {
+                                biased;
+                                _=cancel.cancelled()=>None,
+                                _=sleep_until(deadline)=>None,
+                                result=on_event(CodexEvent::NativeProviderAttemptUsage(usage.clone()))=>Some(result),
+                            };
+                            recorded=matches!(result,Some(Ok(CodexEventOutcome::ProviderUsageRecorded(true))));
+                            seen_provider_usage.insert(identity,(usage,recorded));
+                        }
+                    }
+                    process.send_result(&id,json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
+                        "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"recorded":recorded})).await?;
+                    continue;
+                }
                 if method == "turn/providerAttempt/reserve" {
                     // This request can precede the start ACK and deliberately
                     // has no turnId. Match the owner-selected cycle/thread before
@@ -2311,6 +2359,9 @@ where
                     }
                     if !authorized && params.get("cycleId").and_then(Value::as_str) == provider_cycle.as_deref() {
                         provider_owner_fenced = true;
+                    }
+                    if authorized && let Ok(attempt)=serde_json::from_value::<NativeProviderAttemptReservation>(params.clone()) {
+                        authorized_provider_attempts.insert(attempt.attempt_id,attempt.ordinal);
                     }
                     process.send_result(&id, json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
                         "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"authorized":authorized})).await?;
@@ -2978,7 +3029,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -5218,6 +5269,44 @@ mod tests {
                             json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal"|"started-cancel")})
                         );
                         if mode == "allow" {
+                            assert_eq!(request["params"]["providerUsageObservations"], true);
+                            let usage = json!({"threadId":"funded-native","cycleId":CYCLE,
+                                "attemptId":ATTEMPT,"ordinal":1,"responseId":"exact-response",
+                                "model":null,"tokenUsage":null,"usageMetadata":null});
+                            let mut changed = usage.clone();
+                            changed["responseId"] = json!("changed-response");
+                            let mut unknown = usage.clone();
+                            unknown["attemptId"] = json!("450c786c-cf2b-40da-b3e4-dd1e5e560d7c");
+                            for (index, (packet, recorded)) in [
+                                (usage.clone(), true),
+                                (usage, true),
+                                (changed, false),
+                                (unknown, false),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                socket
+                                    .send(WsMessage::Text(
+                                        json!({"id":600+index,
+                                    "method":"turn/providerAttempt/usage","params":packet})
+                                        .to_string()
+                                        .into(),
+                                    ))
+                                    .await
+                                    .unwrap();
+                                let ack: Value = serde_json::from_str(
+                                    socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(ack["id"], 600 + index);
+                                assert_eq!(
+                                    ack["result"],
+                                    json!({"cycleId":CYCLE,"attemptId":packet["attemptId"],"recorded":recorded})
+                                );
+                            }
+                        }
+                        if mode == "allow" {
                             socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"id":501,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
                             let duplicate: Value = serde_json::from_str(
@@ -5318,6 +5407,8 @@ mod tests {
         let (_sender, receiver) = mpsc::unbounded_channel();
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = callbacks.clone();
+        let usage_callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let usage_observed = usage_callbacks.clone();
         let late_owner = Arc::new(std::sync::Mutex::new(None));
         let late_work = late_owner.clone();
         let run = runner
@@ -5330,6 +5421,7 @@ mod tests {
                     let cancel = owner_cancel.clone();
                     let observed = observed.clone();
                     let late_work = late_work.clone();
+                    let usage_observed = usage_observed.clone();
                     async move {
                         match event {
                             CodexEvent::NativeTurnSubmitting => {
@@ -5357,6 +5449,14 @@ mod tests {
                                 // cancelled; native must target the active turn.
                                 cancel.cancel();
                                 Ok(CodexEventOutcome::None)
+                            }
+                            CodexEvent::NativeProviderAttemptUsage(usage) => {
+                                assert_eq!(mode, "allow");
+                                assert_eq!(usage.attempt_id, ATTEMPT);
+                                assert_eq!(usage.response_id, "exact-response");
+                                assert!(usage.token_usage.is_none());
+                                usage_observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                Ok(CodexEventOutcome::ProviderUsageRecorded(true))
                             }
                             CodexEvent::NativeProviderAttemptReservation(attempt) => {
                                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -5416,6 +5516,10 @@ mod tests {
             } else {
                 usize::from(!matches!(mode, "unfunded" | "changed-ceiling"))
             }
+        );
+        assert_eq!(
+            usage_callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(mode == "allow")
         );
         let late = late_owner.lock().unwrap().take();
         if let Some(late) = late {

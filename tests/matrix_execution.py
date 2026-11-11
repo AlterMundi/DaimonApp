@@ -1026,6 +1026,14 @@ class AdapterTests(unittest.TestCase):
                     ordinal=ordinal, maxRequestBytes=512, deadlineUnixMs=108000)))
                 self.assertTrue(read()["authorized"])
                 self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+                observation = dict(threadId="owned-native", cycleId=cycle, attemptId=attempt,
+                                   ordinal=ordinal, responseId="response-" + attempt, model=None,
+                                   tokenUsage=None, usageMetadata=None)
+                write(dict(operation="usage", params=observation))
+                self.assertEqual(read(), dict(cycleId=cycle, attemptId=attempt, recorded=True))
+                retained = state.store.cycle_status(cycle)["operations"][-1]
+                self.assertEqual(json.loads(retained["scope"])["usage_observation"]["attemptId"], attempt)
+                self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
                 usage = dict(schema="execution/usage/v1", store_id=state.store.store_id,
                              principal=state.instruction.principal, cycle_id=cycle,
                              operation_id=attempt, actual=8)

@@ -351,12 +351,25 @@ One child keeps the capability for the whole turn. The existing receiving SDK
 bootstrap forwards this mode and its private binding. Startup uses the existing
 host command deadline; sequential frames inherit the original parent deadline.
 Input is bounded to64KiB and responses fit one atomic nonblocking pipe write.
-Frames reserve one exact attempt, bind one observed native turn, submit a signed
-usage receipt, or reconcile that same turn only after the trusted host observes
+Frames reserve one exact attempt, record its unsigned usage observation, bind
+one observed native turn, submit a signed usage receipt, or reconcile that same
+turn only after the trusted host observes
 all admitted effects. EOF, expiry, invalid frames or lost writes retain ambiguity;
 there is no restart/reconstruction, replay or refund. A closed pipe is not a
 terminal native receipt. Signed accounting and terminal reconciliation are
 separate; missing usage retains maximum exposure even after a known terminal.
+Funded starts explicitly request `providerUsageObservations`. The owner-only
+`turn/providerAttempt/usage` callback accepts only an attempt UUID/ordinal already
+authorized in this cycle, with a32KiB closed payload. Identical duplicates reuse
+the retained acknowledgment; conflicting or unreserved reports are refused.
+Reporting uses the original deadline and bypasses new-work admission checks so
+an admitted response can be accounted for after a pause. The child stores the
+observation on its existing provider operation, not another queue or charge.
+The pipe admits at most `3 * maxProviderAttempts + 2` frames, including reserve,
+observation and signed settlement per attempt plus bind/terminal. Invalid or
+uncertain acknowledgments fence the child; no automatic write replay occurs.
+Unsigned tokens or provider metadata never change actual spending.
+
 A trusted `not_started` reconciliation requires the actual native
 `NativeInputNotSubmitted` result, no physical binding and an atomic journal check
 that the sole operation is the returned native-owner marker. Even a pre-ACK
@@ -387,9 +400,9 @@ Other lanes are not selected by this Messaging configuration.
 This remains an unselected source candidate. Ordinary signed group/directed
 originals are covered by the App-owned source mode; human handover and known-no-start source paths have local qualification.
 Actual composed receiving adoption remains unperformed. The Rust terminal callback closes its child conservatively; it does
-not manufacture signed usage or financial reconciliation. Exact native
-attempt-to-provider-usage correlation and actual route/exposure/isolation
-qualification remain unfinished. No private funding file is provisioned by these
+not manufacture signed usage or financial reconciliation. Physical-attempt usage
+now reaches the existing owner journal in the source candidate; authenticated
+settlement and actual route/exposure/isolation qualification remain unfinished. No private funding file is provisioned by these
 changes and the unconfigured handler still denies financial reservations.
 
 The default App owner explicitly refuses financial reservations. This source

@@ -1,7 +1,9 @@
 //! One configured host child owns a financial capability for this native turn.
 //! No account choice, signing key or balance is accepted from model traffic.
 use super::*;
-use crate::codex::{NativeInferenceAllowance, NativeProviderAttemptReservation};
+use crate::codex::{
+    NativeInferenceAllowance, NativeProviderAttemptReservation, NativeProviderAttemptUsage,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -220,6 +222,37 @@ impl Session {
         }
         validated
     }
+    pub async fn record_usage(&mut self, usage: NativeProviderAttemptUsage) -> Result<bool> {
+        let cycle = self.descriptor.provider_reservation_cycle_id.clone();
+        anyhow::ensure!(
+            usage.thread_id == self.descriptor.thread_id && usage.cycle_id == cycle,
+            "Native usage owner changed"
+        );
+        let attempt = usage.attempt_id.clone();
+        let result = self
+            .exchange(json!({"operation":"usage","params":usage}))
+            .await;
+        let validated = result.and_then(|reply| {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Recorded {
+                cycle_id: String,
+                attempt_id: String,
+                recorded: bool,
+            }
+            let result: Recorded = serde_json::from_slice(&reply)?;
+            anyhow::ensure!(
+                result.cycle_id == cycle && result.attempt_id == attempt,
+                "Native usage reply changed"
+            );
+            Ok(result.recorded)
+        });
+        if !matches!(validated, Ok(true)) {
+            self.closed = true;
+        }
+        validated
+    }
+
     pub async fn not_started(&mut self) -> Result<()> {
         anyhow::ensure!(self.bound.is_none(), "Native turn already bound");
         let cycle = self.descriptor.provider_reservation_cycle_id.clone();
@@ -337,6 +370,9 @@ for line in sys.stdin:
  if mode=='lost': time.sleep(3)
  if f['operation']=='reconcile':
   print(json.dumps({'reconciled':('wrong' if mode=='bad-reconcile' else 'not_started'),'cycleId':cycle}),flush=True)
+ elif f['operation']=='usage':
+  p=f['params']
+  print(json.dumps({'cycleId':cycle,'attemptId':('wrong' if mode=='bad-usage' else p['attemptId']),'recorded':True}),flush=True)
  elif f['operation']=='bind':
   print(json.dumps({'bound':('wrong' if mode=='bad-bind' else f['nativeTurnId']),'cycleId':cycle}),flush=True)
  else:
@@ -388,6 +424,35 @@ for line in sys.stdin:
         owner.bind(&physical).await.unwrap();
         assert!(owner.reserve(request(&owner)).await.unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "bind\nreserve\n");
+    }
+    #[tokio::test]
+    async fn owner_usage_correlates_receipt_and_fences_invalid_acknowledgment() {
+        for mode in ["ok", "bad-usage"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("writes");
+            let (config, start) = fixture(mode, &path);
+            let mut owner = Session::start(&config, &start).await.unwrap();
+            let reservation = request(&owner);
+            assert!(owner.reserve(reservation.clone()).await.unwrap());
+            let usage = NativeProviderAttemptUsage {
+                thread_id: reservation.thread_id,
+                cycle_id: reservation.cycle_id,
+                attempt_id: reservation.attempt_id,
+                ordinal: reservation.ordinal,
+                response_id: "response-exact".into(),
+                model: None,
+                token_usage: None,
+                usage_metadata: None,
+            };
+            let result = owner.record_usage(usage).await;
+            if mode == "ok" {
+                assert!(result.unwrap());
+            } else {
+                assert!(result.is_err());
+                assert!(owner.reserve(request(&owner)).await.is_err());
+            }
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "reserve\nusage\n");
+        }
     }
     #[tokio::test]
     async fn owner_not_started_is_exact_and_never_repeated() {
