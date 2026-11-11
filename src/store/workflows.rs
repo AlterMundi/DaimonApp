@@ -750,7 +750,7 @@ impl Store {
         )
         .to_string();
         let (selected,creation):(bool,bool)=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND channel=?2 AND event_id=?3),EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4)",params![human,source.channel,source.event_id,plan.input_ref],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        if creation || selected && plan.parent_instruction.is_none() {
+        if (creation || selected) && plan.parent_instruction.is_none() {
             bail!("Original already has a dispatch or creation plan");
         }
         let primary = plan
@@ -758,6 +758,19 @@ impl Store {
             .as_deref()
             .map(|id| primary_on(&tx, human, &source, id))
             .transpose()?;
+        if creation {
+            super::creation::workflow_continuation_on(
+                &tx,
+                human,
+                entry,
+                native,
+                &plan.input_ref,
+                &primary
+                    .as_ref()
+                    .context("Creation requires its accepted primary")?
+                    .instruction,
+            )?;
+        }
         for step in &plan.steps {
             if let Some(primary) = &primary {
                 anyhow::ensure!(
@@ -1627,6 +1640,129 @@ mod tests {
             .unwrap()
             .unwrap()
     }
+    #[test]
+    fn confirmed_created_original_links_only_its_current_accepted_primary() {
+        let (_file, s, e, mut plan) = setup();
+        let (creation, _) = s
+            .interaction_prepare_creation(
+                e.key,
+                100,
+                "native-1",
+                plan.input_ref.clone(),
+                "Created work",
+                "Distinct authorized task",
+                &json!({}),
+                16,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let id = creation["id"].as_str().unwrap();
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        s.interaction_creation_start(id, 100).unwrap();
+        s.interaction_creation_topic(id, 100, 9).unwrap();
+        let key = SessionKey::new(100, Some(9));
+        s.ensure_session(key, 100, &super::super::tests::defaults())
+            .unwrap();
+        let mut template = e.clone();
+        template.codex_thread_id = None;
+        template.force_fresh_thread = true;
+        s.apply_empty_session_template(key, &template, 100).unwrap();
+        let instruction = s
+            .interaction_creation_finish(id, 100, "conversation")
+            .unwrap();
+        plan.parent_instruction = Some(instruction.id.clone());
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err(),
+            "Ready creation alone is not native acceptance"
+        );
+        s.set_session_codex_thread(key, "native-9").unwrap();
+        s.interaction_bind_epoch(&instruction.id, 100, "initial")
+            .unwrap();
+        accept(&s, &instruction);
+        let before = s
+            .interaction_instruction(&instruction.id, 100)
+            .unwrap()
+            .unwrap();
+        // A retained but uncertain creation must not borrow an accepted primary.
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_creations SET phase='uncertain' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_creations SET phase='ready' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        s.set_session_codex_thread(key, "rebound-native").unwrap();
+        assert!(
+            s.interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                plan.clone(),
+                &CancellationToken::new()
+            )
+            .is_err()
+        );
+        s.set_session_codex_thread(key, "native-9").unwrap();
+        let linked = declare(&s, &e, plan.clone());
+        assert_eq!(linked["primary_routing"]["instruction"], instruction.id);
+        assert_eq!(
+            declare(&s, &e, plan)["id"],
+            linked["id"],
+            "Exact declaration is observation, not replay"
+        );
+        let after = s
+            .interaction_instruction(&instruction.id, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+        assert!(
+            status(&s, &e, linked["id"].as_str().unwrap())["steps"][0]["instruction"].is_null(),
+            "Declaration never submits a worker"
+        );
+    }
+
     #[test]
     fn selected_human_primary_can_link_an_additional_workflow_without_replay_or_transfer() {
         let (_f, s, e, mut plan) = setup();
