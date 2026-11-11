@@ -58,7 +58,9 @@ stay unchanged. Existing exact parts return their retained proof. Fresh completi
 requires a same-owner/resource/key multipart anchor, current admission and a
 still-open completion window. It never creates a first publication or recreates
 a retired part. Group acknowledgment is retained on all surviving rows before
-individual retirement, so losing a later ACK cannot make a retired prefix look
+individual retirement through an atomic SQLite trigger that also protects a
+predecessor per-part writer during compatible code rollback. Losing a later ACK
+cannot make a retired prefix look
 like an unfinished publication. The upgrade preserves the old retirement floor
 where older acknowledgment evidence might already be gone; such uncertainty
 remains refused and retained, not silently reset. Unrelated later retirement

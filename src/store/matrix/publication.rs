@@ -193,6 +193,7 @@ impl Store {
              human_id INTEGER NOT NULL,entry_session INTEGER NOT NULL REFERENCES sessions(id),
              retired_deadline_ms INTEGER NOT NULL,PRIMARY KEY(human_id,entry_session));")?;
         let mut migrate_group_ack = false;
+        let mut migrate_completion_floor = false;
         for (table, column, statement) in [
             (
                 "conversation_matrix_publications",
@@ -207,7 +208,7 @@ impl Store {
             (
                 "conversation_matrix_publication_retention",
                 "completion_floor_ms",
-                "ALTER TABLE conversation_matrix_publication_retention ADD COLUMN completion_floor_ms INTEGER",
+                "ALTER TABLE conversation_matrix_publication_retention ADD COLUMN completion_floor_ms INTEGER DEFAULT 0",
             ),
         ] {
             let exists: bool = conn.query_row(&format!(
@@ -215,11 +216,14 @@ impl Store {
             if !exists {
                 conn.execute_batch(statement)?;
                 migrate_group_ack |= column == "group_ack_ms";
+                migrate_completion_floor |= column == "completion_floor_ms";
             }
         }
         conn.execute_batch("CREATE INDEX IF NOT EXISTS conversation_matrix_publication_group
-            ON conversation_matrix_publications(human_id,entry_session,not_after_ms,json_extract(request,'$.binding_sha256'));
-            UPDATE conversation_matrix_publication_retention SET completion_floor_ms=retired_deadline_ms WHERE completion_floor_ms IS NULL;")?;
+            ON conversation_matrix_publications(human_id,entry_session,not_after_ms,json_extract(request,'$.binding_sha256'));")?;
+        if migrate_completion_floor {
+            conn.execute_batch("UPDATE conversation_matrix_publication_retention SET completion_floor_ms=retired_deadline_ms;")?;
+        }
         if migrate_group_ack {
             // Before this upgrade, a partial ACK could retire only a prefix.
             // Keep surviving acknowledgment evidence; the fixed legacy floor
@@ -230,6 +234,15 @@ impl Store {
                 AND json_extract(a.request,'$.binding_sha256')=json_extract(p.request,'$.binding_sha256')
                 AND a.confirmed_at_ms IS NOT NULL) WHERE p.group_ack_ms IS NULL;")?;
         }
+        // Keep the fence inside SQLite so a compatible code rollback using the
+        // predecessor's per-part UPDATE cannot bypass the new group invariant.
+        conn.execute_batch("CREATE TRIGGER IF NOT EXISTS conversation_matrix_group_ack
+            AFTER UPDATE OF confirmed_at_ms ON conversation_matrix_publications
+            WHEN NEW.confirmed_at_ms IS NOT NULL BEGIN
+            UPDATE conversation_matrix_publications SET group_ack_ms=COALESCE(group_ack_ms,NEW.confirmed_at_ms)
+            WHERE human_id=NEW.human_id AND entry_session=NEW.entry_session AND not_after_ms=NEW.not_after_ms
+            AND json_extract(request,'$.binding_sha256')=json_extract(NEW.request,'$.binding_sha256');
+            END;")?;
         conn.commit()?;
         Ok(())
     }
@@ -510,37 +523,15 @@ impl Store {
             proof["request_sha256"] == sha,
             "Publication acknowledgment differs"
         );
-        let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let (session, _) = super::super::presentation::entry_on(&tx, human, entry)?;
-        let request: String = tx.query_row(
-            "SELECT request FROM conversation_matrix_publications
-            WHERE publication_id=?1 AND human_id=?2 AND entry_session=?3",
-            params![id, human, session],
-            |r| r.get(0),
-        )?;
-        let request: PublicationRequest = serde_json::from_str(&request)?;
-        let at = Utc::now().timestamp_millis();
-        tx.execute(
-            "UPDATE conversation_matrix_publications SET group_ack_ms=COALESCE(group_ack_ms,?1)
-            WHERE human_id=?2 AND entry_session=?3 AND not_after_ms=?4
-            AND json_extract(request,'$.binding_sha256')=?5",
-            params![
-                at,
-                human,
-                session,
-                request.not_after_ms,
-                request.binding_sha256
-            ],
-        )?;
-        let n = tx.execute(
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, _) = super::super::presentation::entry_on(&conn, human, entry)?;
+        let n = conn.execute(
             "UPDATE conversation_matrix_publications
             SET confirmed_at_ms=COALESCE(confirmed_at_ms,?1)
             WHERE publication_id=?2 AND human_id=?3 AND entry_session=?4 AND request_sha256=?5",
-            params![at, id, human, session, sha],
+            params![Utc::now().timestamp_millis(), id, human, session, sha],
         )?;
         anyhow::ensure!(n == 1, "Publication acknowledgment lost its exact record");
-        tx.commit()?;
         Ok(
             json!({"publication_id":id,"publication_acknowledged":true,"receiving_delivery":"not-established"}),
         )
@@ -801,15 +792,15 @@ mod tests {
             .unwrap();
         // An unrelated completed group can advance the global fence without
         // retiring this unacknowledged group's anchor or original request.
-        store
-            .conn
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE conversation_matrix_publication_retention SET retired_deadline_ms=?1",
-                [r.not_after_ms + 1000],
-            )
-            .unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("DELETE FROM conversation_matrix_publication_retention", [])
+                .unwrap();
+            // The predecessor writer omits the added floor column. Its default
+            // must preserve new protected groups through rollback and reopening.
+            conn.execute("INSERT INTO conversation_matrix_publication_retention(human_id,entry_session,retired_deadline_ms) VALUES(100,1,?1)", [r.not_after_ms + 1000]).unwrap();
+        }
+        store.init_matrix_publications().unwrap();
         let request = completion(second);
         assert!(
             store
@@ -913,7 +904,7 @@ mod tests {
                 [r.not_after_ms],
             )
             .unwrap();
-            conn.execute_batch("ALTER TABLE conversation_matrix_publications DROP COLUMN group_ack_ms;
+            conn.execute_batch("DROP TRIGGER conversation_matrix_group_ack; ALTER TABLE conversation_matrix_publications DROP COLUMN group_ack_ms;
                 ALTER TABLE conversation_matrix_publication_retention DROP COLUMN completion_floor_ms;").unwrap();
         }
         drop(store);
@@ -959,7 +950,7 @@ mod tests {
                 receipt["request_sha256"].as_str().unwrap(),
             )
             .unwrap();
-        store.conn.lock().unwrap().execute_batch("ALTER TABLE conversation_matrix_publications DROP COLUMN group_ack_ms;
+        store.conn.lock().unwrap().execute_batch("DROP TRIGGER conversation_matrix_group_ack; ALTER TABLE conversation_matrix_publications DROP COLUMN group_ack_ms;
             ALTER TABLE conversation_matrix_publication_retention DROP COLUMN completion_floor_ms;
             CREATE TRIGGER fixture_migration_failure BEFORE UPDATE ON conversation_matrix_publications
             BEGIN SELECT RAISE(ABORT,'fixture interrupted ACK backfill'); END;").unwrap();
@@ -981,6 +972,35 @@ mod tests {
             retire_on(&store.conn.lock().unwrap(), 100, 1, at).unwrap(),
             1
         );
+        let mut request = completion(first);
+        request.issued_at_ms = at;
+        request.expires_at_ms = at + 60000;
+        assert!(
+            store
+                .matrix_publication_complete_at(100, entry, &cfg, &request, at + 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn predecessor_ack_writer_cannot_bypass_group_fence_after_code_rollback() {
+        let (_dir, store, entry, cfg, r) = setup();
+        let first = multipart(&r, 0);
+        let second = multipart(&r, 1);
+        store
+            .matrix_publication_commit_at(100, entry, &cfg, &first, r.not_after_ms - 1)
+            .unwrap();
+        store
+            .matrix_publication_commit_at(100, entry, &cfg, &second, r.not_after_ms - 1)
+            .unwrap();
+        let at = r.not_after_ms + RETAIN_MS + 1;
+        {
+            let conn = store.conn.lock().unwrap();
+            // Exact predecessor code changes only the acknowledged row. The
+            // installed trigger must preserve its fence on the surviving suffix.
+            conn.execute("UPDATE conversation_matrix_publications SET confirmed_at_ms=1 WHERE publication_id=?1", [&first.publication_id]).unwrap();
+            assert_eq!(retire_on(&conn, 100, 1, at).unwrap(), 1);
+        }
         let mut request = completion(first);
         request.issued_at_ms = at;
         request.expires_at_ms = at + 60000;
