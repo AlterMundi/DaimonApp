@@ -633,7 +633,7 @@ class Companion(unittest.TestCase):
             'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
             'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
         binding.chmod(0o600)
-        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True}
         self.client.close();self.client=self.client_for()
         self.config['openai_live']={'api_key_file':str(self.root/'studio-key')}
         profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'willow'}
@@ -658,7 +658,17 @@ class Companion(unittest.TestCase):
             canonical={**self.provider.source,'offset':first_end,'text':self.provider.source['text'][first_end:]}
             self.assertEqual(second_end,speech_part(canonical,240)['next_offset'])
             self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','text':'forged'},headers=self.headers).status_code,409)
-        self.assertEqual(len(engines),1)
+            # A live prefix has already reserved its full range in LiveSpeech.
+            # Do not shorten it behind that cursor or pre-admit a later gap.
+            live={**self.provider.source,'kind':'integrator_live','offset':320,
+                  'text':('A complete frozen provisional sentence. '*25),'next_offset':None}
+            with patch.object(self.provider,'presentation_part',return_value=live):
+                provisional=self.client.post('/api/interaction/audio',json={**self.body,'offset':320,'speech_provider':'openai'},headers=self.headers)
+            self.assertEqual(provisional.status_code,200,provisional.text)
+            self.assertGreater(len(rendered_parts[-1]['text']),240)
+            self.assertLessEqual(len(rendered_parts[-1]['text']),640)
+            self.assertEqual(provisional.headers['x-presentation-lookahead-offset'],'')
+        self.assertEqual(len(engines),2)
 
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True
