@@ -4042,7 +4042,7 @@ mod tests {
         next.input_ref = original(&s, &e, "Reconcile the retained original without replay");
         next.request_id = "reconcile-existing".into();
         next.steps.truncate(1);
-        let newer = declare(&s, &e, next);
+        let newer = declare(&s, &e, next.clone());
         let work = advance(&s, &e, &newer).unwrap();
         let local = accept(&s, &work);
         let text = format!(
@@ -4088,6 +4088,39 @@ mod tests {
             s.interaction_workflow_return(100, &deliveries[0].id)
                 .unwrap()
                 .is_none()
+        );
+        assert!(
+            s.interaction_workflow_result(
+                100,
+                SessionKey::new(100, Some(8)),
+                "native-8",
+                old["id"].as_str().unwrap(),
+                "produce",
+                result["revision"].as_str().unwrap(),
+                0
+            )
+            .is_err()
+        );
+        // Another owner's explicit coverage cannot link or replace this source.
+        let mut foreign_plan = next;
+        foreign_plan.input_ref = original(&s, &e, "Another owner has its own evidence");
+        foreign_plan.request_id = "foreign-coverage".into();
+        foreign_plan.steps.truncate(1);
+        foreign_plan.steps[0].owner = SessionKey::new(100, Some(8));
+        let foreign = declare(&s, &e, foreign_plan);
+        let foreign_work = advance(&s, &e, &foreign).unwrap();
+        let foreign_local = accept(&s, &foreign_work);
+        answer(
+            &s,
+            &foreign_work,
+            foreign_local,
+            "foreign-coverage",
+            vec![foreign_work.id.clone(), first.id.clone()],
+            "Different owner evidence",
+        );
+        assert_eq!(
+            status(&s, &e, old["id"].as_str().unwrap())["steps"][0]["result"],
+            *result
         );
         // No transport membership, source body or completion claim is rewritten.
         let conn = s.conn.lock().unwrap();
