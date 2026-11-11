@@ -288,17 +288,49 @@ fn result_on(conn: &Connection, w: &Workflow, index: usize) -> Result<Option<(Va
     };
     let i = instruction_on(conn, w.human, &a.instruction)?;
     // Join every covered request, not only the representative delivery request.
-    let found:Option<(String,String,String,String,String)>=conn.query_row(
-        "SELECT d.doc,d.result_id,z.native_thread,z.native_turn,z.item_id FROM interaction_deliveries d JOIN interaction_delivery_requests m ON m.delivery_id=d.id JOIN interaction_request_links l ON l.request_id=m.request_id JOIN interaction_results z ON z.id=d.result_id WHERE l.instruction_id=?1 AND d.human_id=?2 ORDER BY d.rowid DESC LIMIT 1",
-        params![i.id,w.human],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-    let Some((raw, result, native, turn, item)) = found else {
+    // Delivery membership determines return transport, not cumulative evidence.
+    // A later same-owner result can explicitly cover this accepted instruction
+    // without republishing its old request. Keep that distinction read-only.
+    let found: Option<(String, String, String, String, String, String, bool)> = conn.query_row(
+        "SELECT d.doc,d.result_id,z.native_thread,z.native_turn,z.item_id,COALESCE(z.claim,'null'),
+         EXISTS(SELECT 1 FROM interaction_delivery_requests m JOIN interaction_request_links l ON l.request_id=m.request_id WHERE m.delivery_id=d.id AND l.instruction_id=?1)
+         FROM interaction_deliveries d JOIN interaction_results z ON z.id=d.result_id
+         WHERE d.human_id=?2 AND (
+           EXISTS(SELECT 1 FROM interaction_delivery_requests m JOIN interaction_request_links l ON l.request_id=m.request_id WHERE m.delivery_id=d.id AND l.instruction_id=?1)
+           OR (z.native_thread=?3 AND json_extract(d.doc,'$.target.chat_id')=?4
+             AND json_extract(d.doc,'$.target.thread_id') IS ?5
+             AND EXISTS(SELECT 1 FROM json_each(z.claim,'$.covered') c WHERE c.value=?1)))
+         ORDER BY d.rowid DESC LIMIT 1",
+        params![i.id,w.human,i.native_thread,i.target.chat_id,i.target.thread_id],
+        |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
+    let Some((raw, result, native, turn, item, claim, linked)) = found else {
         return Ok(None);
     };
     let d: Delivery = serde_json::from_str(&raw)?;
-    let (current, correction) = super::routing::delivery_freshness(conn, &d)?;
+    let (current, correction, done) = if linked {
+        let (current, correction) = super::routing::delivery_freshness(conn, &d)?;
+        (current, correction, d.completed)
+    } else {
+        let claim: Value = serde_json::from_str(&claim)?;
+        let mut current = i.phase == crate::interaction::TransportPhase::Accepted;
+        let mut correction = false;
+        for request in &i.requests {
+            let (fresh, pending) =
+                super::routing::freshness(conn, request, &d.covered, d.declared)?;
+            current &= fresh;
+            correction |= pending;
+        }
+        let done = !i.requests.is_empty()
+            && i.requests.iter().all(|request| {
+                claim["completed"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(request)))
+            });
+        (current, correction, done)
+    };
     let owner_current =
         owner_on(conn, w.human, w.plan.steps[index].owner).is_ok_and(|(_, n)| n == native);
-    let mut source = json!({"id":result,"delivery":d.id,"native_thread":native,"native_turn":turn,"item":item,"source_session":i.target_session,"instruction":i.id,"completed":d.completed,"current":current && owner_current,"correction_pending":correction});
+    let mut source = json!({"id":result,"delivery":d.id,"native_thread":native,"native_turn":turn,"item":item,"source_session":i.target_session,"instruction":i.id,"completed":done,"current":current && owner_current,"correction_pending":correction});
     // The revision fences the immutable canonical body and current source/coverage.
     source["revision"] = json!(digest(&json!([source, d.covered, d.body]))?);
     Ok(Some((source, d)))
@@ -1370,7 +1402,13 @@ impl Store {
             bail!("Result outside this step's selected dependency");
         }
         let (source, d) = result_on(&conn, &w, index)?.context("Canonical result unavailable")?;
-        if source["revision"].as_str() != Some(revision) || !completed(&source) {
+        // The owning entry may inspect current partial evidence. A successor
+        // still requires a completed predecessor; reading never advances it.
+        let readable = completed(&source)
+            || (actor == w.entry
+                && source["current"] == true
+                && source["correction_pending"] == false);
+        if source["revision"].as_str() != Some(revision) || !readable {
             bail!("Canonical result changed or incomplete");
         }
         let length = d.body.chars().count();
@@ -3991,6 +4029,92 @@ mod tests {
             )
             .unwrap()
                 <= MAX_RETAINED_WORKFLOWS as usize * MAX_WORKFLOW_DOCUMENT_BYTES
+        );
+    }
+
+    #[test]
+    fn cumulative_coverage_links_historical_step_without_borrowing_completion_or_transport() {
+        let (_f, s, e, plan) = setup();
+        let old = declare(&s, &e, plan.clone());
+        let first = advance(&s, &e, &old).unwrap();
+        accept(&s, &first);
+        let mut next = plan;
+        next.input_ref = original(&s, &e, "Reconcile the retained original without replay");
+        next.request_id = "reconcile-existing".into();
+        next.steps.truncate(1);
+        let newer = declare(&s, &e, next);
+        let work = advance(&s, &e, &newer).unwrap();
+        let local = accept(&s, &work);
+        let text = format!(
+            "Exact retained partial evidence\n<daimon-result>{}</daimon-result>",
+            json!({
+            "requests":[work.id,first.id],"covered":[work.id,first.id],
+            "completed":[work.id],"deferred":[first.id]})
+        );
+        let deliveries = s
+            .interaction_record_result(
+                &work.id,
+                100,
+                local,
+                "native-7",
+                &format!("turn-{local}"),
+                "partial-cumulative",
+                &text,
+                true,
+            )
+            .unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].requests(), work.requests);
+        let observed = status(&s, &e, old["id"].as_str().unwrap());
+        let result = &observed["steps"][0]["result"];
+        assert!(!result.is_null());
+        assert_eq!(result["completed"], false);
+        assert_eq!(result["current"], true);
+        assert_eq!(observed["steps"][0]["phase"], "accepted");
+        assert!(advance(&s, &e, &observed).is_none());
+        let read = s
+            .interaction_workflow_result(
+                100,
+                e.key,
+                "native-1",
+                old["id"].as_str().unwrap(),
+                "produce",
+                result["revision"].as_str().unwrap(),
+                0,
+            )
+            .unwrap();
+        assert_eq!(read["text"], "Exact retained partial evidence");
+        assert!(
+            s.interaction_workflow_return(100, &deliveries[0].id)
+                .unwrap()
+                .is_none()
+        );
+        // No transport membership, source body or completion claim is rewritten.
+        let conn = s.conn.lock().unwrap();
+        let members: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM interaction_delivery_requests WHERE delivery_id=?1",
+                [&deliveries[0].id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(members, 1);
+        drop(conn);
+        s.set_session_codex_thread(first.target, "different-owner-native")
+            .unwrap();
+        let changed = status(&s, &e, old["id"].as_str().unwrap());
+        assert_eq!(changed["steps"][0]["result"]["current"], false);
+        assert!(
+            s.interaction_workflow_result(
+                100,
+                e.key,
+                "native-1",
+                old["id"].as_str().unwrap(),
+                "produce",
+                result["revision"].as_str().unwrap(),
+                0
+            )
+            .is_err()
         );
     }
 
