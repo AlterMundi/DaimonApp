@@ -524,17 +524,18 @@ def qualify_inbox(binary):
                str(status["generation"]),
                str(status["lanes"]["messaging"]["generation"]))
         j.wait(lambda: len(j.bounded) == 2, seconds=45)
-        # The first reviewed completion retains its terminal proof independently
-        # of the current owned execution. Both are accepted original returns.
+        packet = json.loads(j.bounded[-1]["turn"]["toolOutput"]["output"])
+        # The earlier reviewed execution settles to accepted_terminal_reviewed.
+        # Wait for this exact admission, not a cumulative count of active ACKs.
         j.wait(
             lambda: (
                 j.row(
-                    "SELECT count(*) FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.phase') IN ('accepted','accepted_terminal_reviewed')"
+                    "SELECT json_extract(r.value,'$.phase') FROM bot_state,json_each(bot_state.value,'$.native_returns') r WHERE bot_state.key LIKE 'heartbeat_producer:%' AND json_extract(r.value,'$.id')=?",
+                    (packet["return_id"],),
                 )
-                == [(2,)]
+                == [("accepted",)]
             )
         )
-        packet = json.loads(j.bounded[-1]["turn"]["toolOutput"]["output"])
         offered = next(
             o["evidence"]
             for o in packet["evidence"]["offers"]

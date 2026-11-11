@@ -1601,3 +1601,24 @@ coming online or the explicit Sign in button rechecks the same remembered sessio
 Only the existing shared sign-in client can initiate login when that check fails.
 Malformed identity-service responses return503, not a fabricated expired session.
 No new identity store, token refresh mechanism, capture reopening or work replay.
+
+
+## Restart before worker submission
+
+A retained attention-workflow step can be recovered after listener startup when
+its old-process document is still queued, has no local execution or physical
+native turn, and retains the same owned native target. Startup changes only the
+SQL phase to `retained_unsent`; requiring a heartbeat execution receipt here
+would strand a step that never obtained an execution. Same-process phase labels,
+changed bindings, partial submissions and uncertain outcomes do not qualify.
+Existing workflow source, owner generation, expiry and Stop/maintenance checks
+still apply. Recovery preserves the instruction and original resource account.
+
+An authenticated owner can inspect `telecodex --control CONFIG workflow status ID`
+and call `telecodex --control CONFIG workflow recover ID REVISION` with that
+exact current revision. This operation recovers only a retained-unsent step;
+it cannot admit a new ready step, resume a goal or invent a human message.
+Inspect the instruction/native receipt after submission uncertainty. The general
+conversation can use its existing `workflow_status`/`workflow_advance` path.
+`workflow_recovery_proof_missing` now names missing non-submission evidence rather
+than collapsing that refusal into generic routing unavailability.

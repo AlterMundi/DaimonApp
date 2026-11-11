@@ -586,3 +586,60 @@ pub(super) fn return_attempt(client_id: &str) -> Option<(&str, u8)> {
     };
     (!id.is_empty() && (1..=3).contains(&attempt)).then_some((id, attempt))
 }
+
+/// Owner-local recovery retains the exact workflow, source and authority. It
+/// does not borrow a live model lease, create work or resume a native goal.
+pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<Value> {
+    let fields: Vec<_> = args.split_whitespace().collect();
+    let cfg = super::routing::profile(&app.shared)?;
+    anyhow::ensure!(cfg.human_id == human, "Workflow owner mismatch");
+    let native = app
+        .shared
+        .store
+        .get_session(cfg.entry())?
+        .and_then(|s| s.codex_thread_id)
+        .context("Existing entry native binding required")?;
+    let [verb, id, rest @ ..] = fields.as_slice() else {
+        bail!("Expected workflow status ID or workflow recover ID REVISION");
+    };
+    let current = app
+        .shared
+        .store
+        .interaction_workflow_status(human, cfg.entry(), &native, id)?;
+    match (*verb, rest) {
+        ("status", []) => Ok(current),
+        ("recover", [revision]) => {
+            anyhow::ensure!(
+                current["revision"].as_str() == Some(*revision),
+                "Workflow revision changed"
+            );
+            let steps = current["steps"]
+                .as_array()
+                .context("Missing retained steps")?;
+            let selected = steps
+                .iter()
+                .find(|s| matches!(s["phase"].as_str(), Some("ready" | "retained_unsent")));
+            anyhow::ensure!(
+                selected.is_some_and(|s| s["phase"] == "retained_unsent"),
+                "No retained unsent step; no new work admitted"
+            );
+            let i = app
+                .shared
+                .store
+                .interaction_workflow_advance(
+                    human,
+                    cfg.entry(),
+                    &native,
+                    id,
+                    revision,
+                    &CancellationToken::new(),
+                )?
+                .context("No retained instruction recovered")?;
+            super::routing::dispatch(app, &i.id, human).await?;
+            Ok(
+                json!({"instruction":app.shared.store.interaction_instruction(&i.id,human)?,"meaning":"Exact known-unsent step recovered; native admission and useful completion require separate observations"}),
+            )
+        }
+        _ => bail!("Expected workflow status ID or workflow recover ID REVISION"),
+    }
+}

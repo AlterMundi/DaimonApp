@@ -47,6 +47,9 @@ pub(crate) fn rejection(error: &anyhow::Error) -> Option<Value> {
         "workflow_original_retired" => {
             "A prior explicit withdrawal/supersession retired this original's workflow authority. Preserve existing effects and select the actual later human instruction instead."
         }
+        "workflow_recovery_proof_missing" => {
+            "This retained step lacks exact pre-submission evidence. Preserve its original identity and inspect the owning execution; accepted or uncertain effects must not be retried."
+        }
         "workflow_selected" => {
             "This original already has attributed workflow work. Inspect the retained workflow. For genuinely additional authorized work, declare a separate bounded workflow with the same input_ref and its own stable request_id and scope; do not dispatch the entire original again or replay an existing subtask."
         }
@@ -902,7 +905,20 @@ impl Store {
                 "SELECT EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN bot_state b ON b.key='heartbeat_execution:'||json_extract(i.doc,'$.local_turn') WHERE i.id=?1 AND s.human_id=?2 AND i.phase='retained_unsent' AND json_extract(i.doc,'$.native_turn') IS NULL AND json_extract(b.value,'$.source')=i.id AND json_extract(b.value,'$.owner') IS NOT NULL AND json_extract(b.value,'$.physical') IS NULL AND json_extract(b.value,'$.phase')='terminal' AND json_extract(b.value,'$.terminal_status')='not_submitted')",
                 params![admission.instruction, human], |row| row.get(0),
             )?;
-            anyhow::ensure!(proven, "No exact unsubmitted delegated execution proof");
+            // Startup changes only the SQL phase of an old queued instruction.
+            // Its immutable queued document and missing execution identities prove
+            // it never crossed the native submission fence. Do not require a
+            // heartbeat execution receipt for work that never obtained one.
+            let restart_queued: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions target ON target.id=i.session_id WHERE i.id=?1 AND s.human_id=?2 AND i.phase='retained_unsent' AND i.instance_id!=?3 AND json_extract(i.doc,'$.phase')='queued' AND json_extract(i.doc,'$.local_turn') IS NULL AND json_extract(i.doc,'$.native_turn') IS NULL AND json_extract(i.doc,'$.native_thread')=target.codex_thread_id AND target.creator_user_id=?2)",
+                params![admission.instruction, human, self.instance_id], |row| row.get(0),
+            )?;
+            if !proven && !restart_queued {
+                return Err(refusal(
+                    "workflow_recovery_proof_missing",
+                    Some(w.id.clone()),
+                ));
+            }
             anyhow::ensure!(
                 super::interaction::recover_on(
                     &tx,
@@ -5247,6 +5263,45 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_workflow_recovers_only_restart_queued_instruction() {
+        let (file, s, entry, plan) = setup();
+        let view = declare(&s, &entry, plan);
+        attention_parent(&s, &entry);
+        let original = attention_advance(&s, &entry, &view).unwrap().unwrap();
+        // A same-process phase label is not restart evidence.
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='retained_unsent' WHERE id=?1",
+                [&original.id],
+            )
+            .unwrap();
+        let retained = status(&s, &entry, view["id"].as_str().unwrap());
+        assert!(attention_advance(&s, &entry, &retained).is_err());
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='queued' WHERE id=?1",
+                [&original.id],
+            )
+            .unwrap();
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let retained = status(&s, &entry, view["id"].as_str().unwrap());
+        let recovered = advance(&s, &entry, &retained).unwrap();
+        assert_eq!(recovered.id, original.id);
+        assert_eq!(recovered.text, original.text);
+        assert_eq!(recovered.requests, original.requests);
+        assert_eq!(recovered.target, original.target);
+        assert_eq!(recovered.phase, P::Queued);
+        assert!(recovered.local_turn.is_none() && recovered.native_turn.is_none());
+        let current = status(&s, &entry, view["id"].as_str().unwrap());
+        assert!(advance(&s, &entry, &current).is_none());
+    }
+
+    #[test]
     fn heartbeat_workflow_recovery_refuses_label_only_and_paused_authority() {
         use crate::store::HeartbeatCommand as H;
         let (_file, s, entry, plan) = setup();
@@ -5282,7 +5337,7 @@ mod tests {
             )
             .unwrap_err()
             .to_string()
-            .contains("unsubmitted")
+            .contains("workflow_recovery_proof_missing")
         );
         s.heartbeat_native_not_submitted(local).unwrap();
         s.heartbeat_control(100, entry.key, H::Pause).unwrap();

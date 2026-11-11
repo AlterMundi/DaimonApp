@@ -33,23 +33,9 @@ async fn main() -> Result<()> {
         return control_client::controller(std::path::Path::new(&args[2]), &args[3]).await;
     }
     if args.get(1).map(String::as_str) == Some("--control") {
-        if args.len() < 5
-            || !matches!(
-                args[3].as_str(),
-                "stop"
-                    | "attach-active"
-                    | "presentation"
-                    | "input"
-                    | "requests"
-                    | "matrix"
-                    | "observer"
-                    | "heartbeat"
-                    | "topics"
-                    | "goal"
-            )
-        {
+        if owner_control_command(&args).is_none() {
             anyhow::bail!(
-                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
+                "Usage: telecodex --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; workflow status ID|recover ID REVISION; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic"
             );
         }
         let config = config::Config::load(args[2].clone().into())?;
@@ -64,22 +50,7 @@ async fn main() -> Result<()> {
             anyhow::ensure!(raw.len() <= 65536, "Publication request exceeds bound");
             return control_client::run(&config, &format!("matrix publication commit {raw}")).await;
         }
-        let command = if matches!(
-            args[3].as_str(),
-            "attach-active"
-                | "presentation"
-                | "input"
-                | "requests"
-                | "matrix"
-                | "observer"
-                | "heartbeat"
-                | "topics"
-                | "goal"
-        ) {
-            args[3..].join(" ")
-        } else {
-            args[4..].join(" ")
-        };
+        let command = owner_control_command(&args).expect("validated control command");
         return control_client::run(&config, &command).await;
     }
     if args.get(1).map(String::as_str) == Some("--probe-native") {
@@ -124,4 +95,44 @@ fn restart_delay_ms_from_env() -> Option<u64> {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
+}
+
+fn owner_control_command(args: &[String]) -> Option<String> {
+    if args.len() < 5 {
+        return None;
+    }
+    match args[3].as_str() {
+        "stop" => Some(args[4..].join(" ")),
+        "attach-active" | "presentation" | "input" | "requests" | "matrix" | "observer"
+        | "heartbeat" | "topics" | "goal" | "workflow" => Some(args[3..].join(" ")),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod control_cli_tests {
+    use super::owner_control_command;
+    #[test]
+    fn workflow_owner_cli_keeps_verb_and_exact_revision() {
+        let args = |tail: &[&str]| {
+            [vec!["telecodex", "--control", "config.toml"], tail.to_vec()]
+                .concat()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            owner_control_command(&args(&["workflow", "status", "id"])).as_deref(),
+            Some("workflow status id")
+        );
+        assert_eq!(
+            owner_control_command(&args(&["workflow", "recover", "id", "revision"])).as_deref(),
+            Some("workflow recover id revision")
+        );
+        assert_eq!(
+            owner_control_command(&args(&["stop", "status", "id"])).as_deref(),
+            Some("status id")
+        );
+        assert!(owner_control_command(&args(&["unknown", "id"])).is_none());
+    }
 }
