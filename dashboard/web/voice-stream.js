@@ -123,7 +123,7 @@ window.StreamingVoice=(()=>{
       get closed(){return closed;}
     };
   }
-  async function create(media,{headers,binding,id,onPartial=()=>{},onUnavailable=()=>{},canonicalRecorder,transcriptionProvider='current',turnDetection=false,onEndpoint=()=>{},onDetectionUnavailable=()=>{},captureSource,initialPCM=()=>[],onFlushed=()=>{}}){
+  async function create(media,{headers,binding,id,onPartial=()=>{},onPCM=()=>{},onUnavailable=()=>{},canonicalRecorder,transcriptionProvider='current',turnDetection=false,onEndpoint=()=>{},onDetectionUnavailable=()=>{},captureSource,initialPCM=()=>[],onFlushed=()=>{}}){
     if(!['current','openai'].includes(transcriptionProvider)||transcriptionProvider==='openai'&&(captureSource||turnDetection))throw Error('OpenAI live transcription requires one manual capture');
     if(captureSource&&canonicalRecorder)throw Error('Shared PCM cannot split a compressed original');
     const shared=!!captureSource,capture=captureSource||await openCapture(media);
@@ -228,7 +228,7 @@ window.StreamingVoice=(()=>{
         if(canonicalRecorder&&disposed)return;
         const input=message.data.pcm,remaining=120*32000-bytes;
         const pcm=input.byteLength>remaining?input.slice(0,remaining):input;
-        if(pcm.byteLength){bytes+=pcm.byteLength;parts.push(pcm);pump();}
+        if(pcm.byteLength){try{onPCM(pcm);}catch{/* Optional presentation cannot interrupt capture. */}bytes+=pcm.byteLength;parts.push(pcm);pump();}
         if(canonicalRecorder&&parts.reduce((n,p)=>n+p.byteLength,0)>256*1024){ready=false;dispose();parts=[];}
         if(bytes===120*32000){recorder.captureStop='duration_limit';recorder.stop();}
       }

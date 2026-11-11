@@ -54,15 +54,16 @@ function boot(live=false,recovery,status404=false,cues=false){
   if(mode==='after'){mode=undefined;throw Error('Lost acknowledgement');}
   return {ok:true,json:async()=>result};
  }
- const timing=[],transcripts=[];
+ const timing=[],transcripts=[],levels=[];
  let preparation;
  if(live)window.StreamingVoice={supported:()=>true,async create(stream,meta){preparation=meta;const recorder=new Recorder(stream);recorder.discard=()=>recorder.stop();return recorder;}};
- const context=vm.createContext({Date:{now:()=>now},window,document,Blob,Uint8Array,fetch,AbortController,
+ const context=vm.createContext({Date:{now:()=>now},window,document,Blob,Uint8Array,ArrayBuffer,Int16Array,fetch,AbortController,
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
+ vm.runInContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),context);
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
- return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
+ return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,levels,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
   confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
@@ -86,11 +87,13 @@ function boot(live=false,recovery,status404=false,cues=false){
  const preview=boot(true);await preview.click();
  const previewStream=preview.preparation();
  assert.equal(preview.transcripts.length,1);assert.equal(preview.transcripts[0].text,'');
+ previewStream.onPCM(new Int16Array([4000,-4000]).buffer);assert(preview.levels.at(-1)>0,'Recording PCM reaches the shared RMS feedback without another microphone request');assert.equal(preview.mediaRequests(),1);
  previewStream.onPartial('Texto de la misma captura');
  assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura');
  assert.equal(preview.transcripts.at(-1).id,previewStream.id);
- previewStream.onUnavailable();assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura','Status is never inserted as recognized speech');
+ previewStream.onUnavailable();assert.equal(preview.levels.at(-1),0,'A failed live observer clears its measured feedback');assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura','Status is never inserted as recognized speech');
  await preview.cancel();assert.equal(preview.transcripts.at(-1).active,false);
+ assert.equal(preview.levels.at(-1),0,'Stopping clears measured input feedback');const closedLevels=preview.levels.length;previewStream.onPCM(new Int16Array([4000,-4000]).buffer);assert.equal(preview.levels.length,closedLevels,'Late PCM cannot revive feedback after Stop');
  const closedPreviewCount=preview.transcripts.length;previewStream.onPartial('Late words');
  assert.equal(preview.transcripts.length,closedPreviewCount);assert.equal(preview.uploads.length,0);
  const openaiCaptions=boot(true);openaiCaptions.profile('openai');openaiCaptions.ui.configure(true,false,'prepared',true);await openaiCaptions.click();

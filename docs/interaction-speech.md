@@ -593,3 +593,18 @@ retain received chunks in order, but digital-silence frames do not reset the
 existing one-second quiet interval after the exact passage transcript matches.
 Final provider closure and usage are still required; there is no retry or audio
 regeneration to repair an unknown outcome.
+
+
+### Header audio feedback
+
+Conversation mounts the existing bounded SVG envelope behind its header content.
+Copper measures current input PCM; accent/cyan measures decoded output. Both use
+40 scalar history points per track and update at most10times per second. The
+ordinary live-caption path observes its existing PCM buffer synchronously; it
+opens no second microphone/recognizer and copies no audio. Plain MediaRecorder
+fallback without measured PCM does not invent an input waveform. Existing
+playback observation and public/native Avatar meters supply the other paths.
+Stop/quiet clears tracks immediately; hidden pages and reduced motion clear/hide
+the feedback. Optional rendering/observer failures cannot interrupt capture,
+original retention, captioning, playback, source identity or explicit Stop.
+The selected header background stays in place rather than changing with pose.

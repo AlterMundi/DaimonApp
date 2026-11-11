@@ -1231,8 +1231,6 @@ pre.session-message-text { font:14px/1.5 ui-monospace,monospace; }
 .avatar-frame-controls button:hover,.avatar-frame-controls button:focus-visible {color:var(--accent);background:var(--panel);}
 .standalone-conversation header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {height:80px;}
 .standalone-conversation header:not(.voice-studio-intro) .avatar-frame .workshop-portrait {top:0;transform:none;}
-.standalone-conversation header:not(.voice-studio-intro):has(#conversation-companion[data-pose="listening"]),
-.standalone-conversation header:not(.voice-studio-intro):has(#conversation-companion[data-pose="speaking"]) {background:radial-gradient(ellipse at 85% 0%,color-mix(in srgb,var(--accent) 22%,var(--bg)),var(--bg) 80%);}
 .standalone-conversation.conversation-header-compact header:not(.voice-studio-intro) #conversation-companion > .avatar-frame {display:none;}
 @media(max-width:480px){#conversation-companion > .avatar-frame,.avatar-workshop-compact-header > .avatar-frame{width:126px;height:90px}.avatar-frame .workshop-portrait,.avatar-frame .avatar-surface{width:94px;height:90px}}
 
@@ -1512,3 +1510,11 @@ html[data-style-policy="authored"] .voice-studio-presets .control-icon {width:26
 .voice-signal [data-signal="output"] {stroke:var(--accent);fill:var(--accent);stroke-opacity:.4;fill-opacity:.055;}
 .voice-mode > :not(.voice-signal) {position:relative;z-index:1;}
 @media(prefers-reduced-motion:reduce){.voice-mode > .voice-signal {display:none;}}
+
+/* Measured input/output envelopes float behind the header's content, preserving
+   its selected appearance. No opaque capture/speaking background replacement. */
+.standalone-conversation header:not(.voice-studio-intro) {isolation:isolate;z-index:2;}
+.standalone-conversation header > .voice-signal {position:absolute;inset:0;width:100%;height:100%;z-index:-1;pointer-events:none;opacity:0;overflow:hidden;}
+.standalone-conversation header > .voice-signal[data-active="true"] {opacity:1;}
+.standalone-conversation header > .voice-signal path {stroke-width:1;stroke-opacity:.65;fill-opacity:.08;}
+@media(prefers-reduced-motion:reduce){.standalone-conversation header > .voice-signal {display:none;}}

@@ -110,10 +110,10 @@ function boot(fail){
   if(failure==='wrong-id')s.message({type:'ready',id:'another',analysis_only:true});
   await assert.rejects(opening);assert.equal(s.readyState,3);assert.equal(unit.contexts.length,0);
  }
- const f=boot(),recorder=await f.create();assert(f.window.StreamingVoice.supported());recorder.start();const socket=f.sockets[0],node=f.worklets[0];socket.open();
+ const observedPCM=[];const f=boot(),recorder=await f.create(undefined,{onPCM:pcm=>{observedPCM.push(pcm);throw Error('Cosmetic observer failed');}});assert(f.window.StreamingVoice.supported());recorder.start();const socket=f.sockets[0],node=f.worklets[0];socket.open();
  assert.equal(socket.url,'wss://example.invalid/interaction/api/interaction/voice/live');assert(!socket.url.includes('synthetic-session'));
  assert.deepEqual(JSON.parse(socket.sent[0]),{id:uuid,binding,csrf:'synthetic-csrf',authorization:'Bearer synthetic-session'});
- node.emit({pcm:samples});assert.equal(socket.sent.length,1,'Wait for server/provider readiness before sending PCM');
+ node.emit({pcm:samples});assert.equal(observedPCM[0],samples,'Meter observes the existing buffer without a second capture or copy');assert.equal(socket.sent.length,1,'Wait for server/provider readiness before sending PCM');
  socket.message({type:'ready'});assert.equal(socket.sent[1],samples);
  socket.message({type:'partial',text:'provisional'});socket.message({type:'partial',text:'corrected'});assert.deepEqual(f.captions,['provisional','corrected']);assert.equal(f.events.length,0,'Captions never submit an original');
  recorder.stop();assert.deepEqual(node.controls,['finish']);assert.equal(f.events.length,0,'Wait for final worklet PCM before admission');node.emit({pcm:pcm(100)});node.emit({finished:true});assert.deepEqual(JSON.parse(socket.sent.at(-1)),{type:'finish'});assert.equal(f.events.length,0,'Preparation final is separate from original submission');
