@@ -48,6 +48,8 @@ window.StreamingVoice=(()=>{
         timer=setTimeout(()=>close('session_limit'),sessionSeconds*1000);
         context.resume().catch(()=>close('capture_unavailable'));
       },
+      pause(){if(closed)throw Error('Capture closed');worklet.port.postMessage('pause');},
+      resume(){if(closed)throw Error('Capture closed');worklet.port.postMessage('resume');},
       observe(){if(!closed)worklet.port.postMessage('observe');},
       boundary(token){if(closed)throw Error('Capture closed');worklet.port.postMessage({boundary:token});},
       finish(){if(!closed)worklet.port.postMessage('finish');},
@@ -259,6 +261,8 @@ window.StreamingVoice=(()=>{
         capture.start();
       }catch{previewFailed();}
     };
+    recorder.pause=async()=>{if(shared||recorder.state!=='recording'||ending)throw Error('Capture cannot pause');recorder.state='paused';canonicalRecorder?.pause();await capture.pause();};
+    recorder.resume=async()=>{if(shared||recorder.state!=='paused'||ending)throw Error('Capture cannot continue');await capture.resume();canonicalRecorder?.resume();recorder.state='recording';};
     recorder.stop=()=>{if(recorder.state==='inactive'||ending||discarded)return;recorder.state='inactive';if(canonicalRecorder){ending=true;ready=false;dispose();canonicalRecorder.stop();return;}if(shared)capture.boundary(id+':end');else capture.finish();timer=setTimeout(complete,6000);};
     recorder.discard=()=>{if(done)return;discarded=true;if(canonicalRecorder&&canonicalRecorder.state!=='inactive'){canonicalRecorder.stop();dispose();return;}if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'discard'}));complete();};
     return recorder;
