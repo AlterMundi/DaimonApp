@@ -877,7 +877,9 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.screenshot({path:path.join(output,'mobile-conversation.png')});
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  workspaceAllowed=false;await page.locator('#conversation-refresh').evaluate(button=>button.click());
- await page.getByText('Session workspace access is unavailable. Return the input to the conversation, or restore access.',{exact:true}).waitFor();
+ // Workspace status lives inside its closed panel; check the retained result
+ // without requiring the panel to cover the restored conversation.
+ await page.waitForFunction(()=>document.querySelector('.session-workspace-status')?.textContent==='Session workspace access is unavailable. Return the input to the conversation, or restore access.');
  assert(await page.locator('#conversation-timeline').isVisible());assert(await titlePin.isDisabled(),'Grant loss disables update-title pin');assert(await page.locator('#conversation-account').isVisible(),'Workspace denial is not a global sign-out');
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();assert.equal(errors.length,0,errors.join('\n'));
