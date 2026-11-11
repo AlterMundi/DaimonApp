@@ -77,7 +77,7 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
             if cancel is not None and cancel.is_set():failure=failure or 'audition-cancelled'
             complete=normalized(transcript)==normalized(fields['passage'])
             if session is not None and (failure or now>=generation_end
-                    or pcm and complete and now-last_audio>=1):close()
+                    or pcm and complete and last_audio is not None and now-last_audio>=1):close()
             if session is None and now>=min(generation_end,started+10):
                 raise SpeechError('audition-start-unconfirmed')
             if session is not None and not closing and now>=next_silence:
@@ -104,7 +104,11 @@ def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=N
                     data=base64.b64decode(event['delta'],validate=True)
                     if not data or len(data)%2 or len(pcm)+len(data)>max_pcm:raise ValueError()
                     if first_audio is None:first_audio=int((clock()-started)*1000)
-                    pcm.extend(data);last_audio=clock()
+                    pcm.extend(data)
+                    # Live continues sending zero PCM after speech ends. Those
+                    # frames are retained in order but cannot reset completion's
+                    # quiet interval once the exact passage is confirmed.
+                    if any(data):last_audio=clock()
                     continue
                 ident=event.get('event_id')
                 if not isinstance(ident,str) or not 1<=len(ident)<=1024:raise ValueError()

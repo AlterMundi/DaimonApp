@@ -582,3 +582,14 @@ are reused. Live read-aloud accepts the existing bounded canonical text (at most
 
 Header compaction on scroll is disabled by default during the interface redesign;
 the retained opt-in implementation is not selected by Conversation.
+
+Desktop wheel events over the surrounding page scroll the visible Conversation
+chat. Events inside the chat keep native scrolling; other scrollable panels,
+editors, open modal dialogs and modified zoom/horizontal gestures keep ownership.
+The relay is removed on Conversation teardown and never compacts the header.
+
+Live emits zero PCM even after a passage has finished. Both auditions and reading
+retain received chunks in order, but digital-silence frames do not reset the
+existing one-second quiet interval after the exact passage transcript matches.
+Final provider closure and usage are still required; there is no retry or audio
+regeneration to repair an unknown outcome.
