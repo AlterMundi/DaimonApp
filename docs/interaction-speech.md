@@ -566,3 +566,19 @@ Missing results or profiles keep audio held; the base file recognizer cannot
 fill that gap. Historical completed results may be read without another provider
 call. A live-only reader must still bind `provider="live-result"`, without
 helper/key/file-provider settings.
+
+
+### Selected workshop voice in Conversation
+
+The actor's active saved workshop voice also selects OpenAI Conversation reading.
+Each new source-linked audio request snapshots that revision, including delivery;
+an in-flight reading and an existing Avatar connection keep their frozen choice.
+New Avatar chats and new readings use the current selection. Explicit previous-
+provider playback retains its selected provider; there is no automatic fallback.
+The existing OpenAI reader cache, two speech slots and original-audio retention
+are reused. Live read-aloud accepts the existing bounded canonical text (at most
+1800 characters), with a 120-second/8MiB ceiling. Studio auditions retain their
+40-word/30-second bounds. No browser-authored text or voice route is accepted.
+
+Header compaction on scroll is disabled by default during the interface redesign;
+the retained opt-in implementation is not selected by Conversation.

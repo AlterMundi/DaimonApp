@@ -1,4 +1,4 @@
-"""Finite GPT-Live preview reading on one primary WebSocket.
+"""Finite GPT-Live source reading on one primary WebSocket.
 
 The existing speech renderer owns the durable intent/cache/audio reservation.
 Silence is synthetic clocking, not microphone input, a native human original or
@@ -52,14 +52,14 @@ def normalized(text):
 
 
 def render(config,fields,token,max_audio,*,connector=None,progress=None,cancel=None,clock=time.monotonic):
-    """One<=30second attempt including finalization, with no audio hardware."""
+    """One bounded attempt including finalization, with no audio hardware."""
     if cancel is not None and cancel.is_set():raise SpeechError('audition-cancelled-before-connect')
     started=clock();deadline=started+config['timeout_seconds'];generation_end=deadline-5
     socket=(connector or connect)(config['endpoint'],config['model'],token,config['timeout_seconds'])
     pcm=bytearray();transcript='';seen={};session=None;closing=False;failure=None
     first_audio=None;last_audio=None;next_silence=None;closed=False;sent_silence=0;close_deadline=None
     details={}
-    max_pcm=min(max_audio-44,30*48000)
+    max_pcm=min(max_audio-44,(120 if config.get('purpose')=='read-aloud' else 30)*48000)
     def send(value):socket.send(json.dumps(value,ensure_ascii=False,separators=(',',':')))
     def report(value):
         if progress:progress(value)

@@ -1,8 +1,9 @@
-/* User-directed scrolling frees reading space; automatic speech following does not. */
+/* Header compaction is paused during the interface redesign. */
 (() => {
   const mounted = new WeakMap();
-  function mount({timeline,header=document.querySelector('header'),body=document.body,clock=()=>performance.now()}) {
+  function mount({timeline,header=document.querySelector('header'),body=document.body,clock=()=>performance.now(),enabled=false}) {
     if(!timeline || !header)return;
+    if(!enabled){body.classList.toggle('conversation-header-compact',false);return;}
     if(mounted.has(timeline))return mounted.get(timeline);
     let previous=timeline.scrollTop,travel=0,direction=0,intentUntil=0,touchY,compact=false;
     const listeners=[];

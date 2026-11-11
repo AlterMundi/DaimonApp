@@ -625,6 +625,31 @@ class Companion(unittest.TestCase):
             self.assertEqual(previous.status_code,200);self.assertEqual(engines[-1].binding,self.speech.binding)
         self.assertEqual(self.speech.calls,[])
 
+    def test_conversation_reading_uses_own_saved_studio_voice(self):
+        from dashboard.speech import Speech
+        from dashboard.avatar_workshop import AvatarWorkshop
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
+        self.client.close();self.client=self.client_for()
+        self.config['openai_live']={'api_key_file':str(self.root/'studio-key')}
+        profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'willow'}
+        store=AvatarWorkshop(self.config['state_dir']);ident=str(uuid.uuid4())
+        store.voice_save(100,ident,profile,'Calm.',None,0);store.voice_select(100,ident,1,[profile])
+        engines=[]
+        async def render(engine,source):
+            engines.append(engine);return b'synthetic audio',{'audio_sha256':'c'*64}
+        with patch('dashboard.voice_studio.configured_profiles',return_value=[profile]),patch.object(Speech,'render',render):
+            response=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai'},headers=self.headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(engines[-1].receiving_route()['voice'],'willow')
+            self.assertIn('Calm.',engines[-1].receiving_route()['instruction'])
+            self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','text':'forged'},headers=self.headers).status_code,409)
+        self.assertEqual(len(engines),1)
+
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

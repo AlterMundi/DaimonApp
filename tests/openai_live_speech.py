@@ -51,6 +51,38 @@ class Preview(unittest.TestCase):
     def run_preview(self,**kwargs):return live.render(self.configured,self.fields,'synthetic',speech.MAX_AUDIO,
         connector=self.connect,clock=self.clock,**kwargs)
 
+    def test_reading_uses_selected_identity_without_preview_word_limit(self):
+        from dashboard.speech import Speech
+        from dashboard.avatar_workshop import AvatarWorkshop
+        import uuid
+        binding=Path(self.temp.name)/'reader.json'
+        base={**self.config,'provider':'openai-realtime','model':'gpt-realtime-2.1-mini','timeout_seconds':60}
+        binding.write_text(json.dumps(base));binding.chmod(0o600)
+        config={'openai_live':{'enabled':True,'api_key_file':str(self.key),
+            'session_options':{'audio':{'output':{'voice':'cedar'}}}},'voice_studio':{'voices':['willow']}}
+        store=AvatarWorkshop(Path(self.temp.name)/'state')
+        profiles=[{'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':v} for v in ('cedar','willow')]
+        ident=str(uuid.uuid4());store.voice_save(100,ident,profiles[1],'Warm and calm.',None,0)
+        store.voice_select(100,ident,1,profiles)
+        original=Speech({'binding':str(binding)})
+        original.media_retention=object()
+        reader=original.selected_voice(config,store.voice_for_conversation(100,profiles))
+        self.assertIs(reader.capacity,original.capacity)
+        self.assertIs(reader.media_retention,original.media_retention)
+        text='palabra '*60
+        route,fields,reading_id=speech.render_plan(reader.receiving_route(),{'scope':'reading','text':text})
+        self.assertEqual(route['voice'],'willow');self.assertEqual(route['timeout_seconds'],120)
+        self.assertIn('Warm and calm.',fields['session']['instructions'])
+        self.assertEqual(fields['passage'],text)
+        self.assertIsNone(store.voice_for_conversation(200,profiles))
+        other=str(uuid.uuid4());store.voice_save(100,other,profiles[0],'',None,2);store.voice_select(100,other,3,profiles)
+        self.assertEqual(reader.receiving_route()['voice'],'willow','In-flight reading stays frozen')
+        next_reader=original.selected_voice(config,store.voice_for_conversation(100,profiles))
+        self.assertEqual(next_reader.receiving_route()['voice'],'cedar')
+        self.assertNotEqual(reading_id,speech.render_plan(next_reader.receiving_route(),{'scope':'reading','text':text})[2])
+        self.assertEqual(json.loads(binding.read_text()),base)
+        with self.assertRaises(speech.RenderError):speech.render_plan(self.config,{'scope':'preview','text':text})
+
     def test_same_live_api_one_greeting_silence_dedup_and_confirmed_usage(self):
         audio,receipt=self.run_preview()
         self.assertEqual(audio[:4],b'RIFF');self.assertEqual(len(audio),44+9600)
