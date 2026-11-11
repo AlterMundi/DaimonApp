@@ -1,6 +1,7 @@
 """Source-linked synthesis; delivery to a client never claims playback."""
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -114,6 +115,27 @@ class Speech:
             raise ValueError('live_response must be a boolean')
         self.capacity = asyncio.Semaphore(2)
 
+    def selected_voice(self, config, revision):
+        """Freeze the actor's selected voice for this reading; share existing quotas."""
+        from .voice_studio import configured_profiles, choice
+        frozen=choice(revision,revision['profile'])
+        if frozen['profile'] not in configured_profiles(config):
+            raise SpeechUnavailable('Selected voice is unavailable; no fallback')
+        base=speech_render.route(self.binding)
+        if base['provider']!='openai-realtime':
+            raise SpeechUnavailable('Selected voice requires the configured OpenAI reader')
+        route={k:base[k] for k in ('schema','cache_root','language','audio_retention_seconds','audio_cache_max_bytes') if k in base}
+        route.update(provider='openai-live',model=frozen['profile']['model'],voice=frozen['profile']['voice'],
+            credential_file=config['openai_live']['api_key_file'],purpose='read-aloud',timeout_seconds=120,
+            instruction=base.get('instruction','')+'\n'+frozen['delivery'])
+        result=copy.copy(self)
+        result.frozen_route=speech_render.route(route)
+        result.timeout=120
+        return result
+
+    def receiving_route(self):
+        return getattr(self,'frozen_route',None) or speech_render.route(self.binding)
+
     async def render(self, source):
         if self.capacity.locked():
             raise SpeechUnavailable('Speech preparation capacity is occupied')
@@ -123,9 +145,9 @@ class Speech:
             fallback = None
             try:
                 if original:
-                    route = speech_render.route(self.binding)
+                    route = self.receiving_route()
                     payload = speech_request(source, route['language'])
-                    _, _, ident = speech_render.render_plan(self.binding, payload)
+                    _, _, ident = speech_render.render_plan(route, payload)
                     fallback = Path(route['cache_root']) / ident
                 data, result = await self._render(source)
                 if original:
@@ -149,11 +171,13 @@ class Speech:
     async def _render(self, source):
         # The caller supplies a controller-certified part, never browser-authored text.
         config_bytes = speech_render.private_bytes(self.binding, 16384)
-        route = speech_render.route(self.binding)
+        route = self.receiving_route()
         payload = speech_request(source, route['language'])
         text = payload['text']
         request = json.dumps(payload).encode()
-        command = [sys.executable, str(Path(speech_render.__file__).resolve()), '--binding', str(self.binding)]
+        if getattr(self,'frozen_route',None):
+            request=json.dumps({'route':route,'request':payload}).encode()
+        command = [sys.executable, str(Path(speech_render.__file__).resolve()), *(['--reading-route'] if getattr(self,'frozen_route',None) else ['--binding',str(self.binding)])]
         child = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         try:

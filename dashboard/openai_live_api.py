@@ -461,7 +461,14 @@ def install(app, config, provider, authorize, origins):
                             break
         except (OSError,ValueError,RenderError,LiveUnavailable,CodexVoiceUnavailable,
                 ProviderUnavailable,HTTPException,TimeoutError,WebSocketDisconnect) as error:
-            logging.getLogger(__name__).warning('Public voice transport ended: %s',type(error).__name__)
+            # Fixed classifications only: useful diagnosis without source text,
+            # provider payloads, credentials or owner identifiers in logs.
+            outcomes={'native_reader_unavailable','project_key_unavailable','sideband_dependency_unavailable',
+                'prior_creation_needs_review','creation_storage_full','stored_continuation_needs_review',
+                'sideband_unavailable','sideband_detached','sideband_closed','creation_unconfirmed'}
+            outcome=error.outcome if isinstance(error,LiveUnavailable) and error.outcome in outcomes else _startup_failure_code(error)
+            logging.getLogger(__name__).warning('Public voice transport ended: %s stage=%s outcome=%s',
+                type(error).__name__,startup_stage or 'admission',outcome)
             failure=_startup_failure_code(error)
             if admitted and startup_stage is not None:
                 with suppress(OSError,ValueError,RenderError):
