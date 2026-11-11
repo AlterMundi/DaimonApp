@@ -458,6 +458,114 @@
         288,
         340
       ]
+    },
+    {
+      "id": "anchor-leftEye",
+      "type": "path",
+      "parent": "eye-white--1",
+      "path": [
+        [
+          "M",
+          245,
+          277
+        ]
+      ],
+      "fill": null,
+      "stroke": null,
+      "pivot": [
+        245,
+        277
+      ]
+    },
+    {
+      "id": "anchor-rightEye",
+      "type": "path",
+      "parent": "eye-white-1",
+      "path": [
+        [
+          "M",
+          331,
+          277
+        ]
+      ],
+      "fill": null,
+      "stroke": null,
+      "pivot": [
+        331,
+        277
+      ]
+    },
+    {
+      "id": "anchor-nose",
+      "type": "path",
+      "parent": "head",
+      "path": [
+        [
+          "M",
+          288,
+          315
+        ]
+      ],
+      "fill": null,
+      "stroke": null,
+      "pivot": [
+        288,
+        315
+      ]
+    },
+    {
+      "id": "anchor-landing",
+      "type": "path",
+      "parent": "head",
+      "path": [
+        [
+          "M",
+          288,
+          190
+        ]
+      ],
+      "fill": null,
+      "stroke": null,
+      "pivot": [
+        288,
+        190
+      ]
+    },
+    {
+      "id": "anchor-leftHand",
+      "type": "path",
+      "parent": "body",
+      "path": [
+        [
+          "M",
+          191,
+          450
+        ]
+      ],
+      "fill": null,
+      "stroke": null,
+      "pivot": [
+        191,
+        450
+      ]
+    },
+    {
+      "id": "anchor-rightHand",
+      "type": "path",
+      "parent": "body",
+      "path": [
+        [
+          "M",
+          385,
+          450
+        ]
+      ],
+      "fill": null,
+      "stroke": null,
+      "pivot": [
+        385,
+        450
+      ]
     }
   ],
   "animations": {
@@ -1032,6 +1140,32 @@
       150,
       260,
       325
+    ]
+  },
+  "interaction": {
+    "leftEye": [
+      245,
+      277
+    ],
+    "rightEye": [
+      331,
+      277
+    ],
+    "nose": [
+      288,
+      315
+    ],
+    "landing": [
+      288,
+      190
+    ],
+    "headHalfWidth": 105
+  },
+  "appearance": {
+    "primary": "#6997a4",
+    "colors": [
+      "#6997a4",
+      "#c4e6df"
     ]
   }
 }
