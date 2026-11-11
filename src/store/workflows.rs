@@ -5695,6 +5695,68 @@ mod tests {
             s.heartbeat_select_review_task(100, e.key, generation, changed_task)
                 .is_err()
         );
+        let task_revision =
+            after_task["producer"]["finite_review"]["periodic_tasks"][0]["revision"]
+                .as_str()
+                .unwrap();
+        let mut replacement = task.clone();
+        replacement
+            .instructions
+            .push_str(" Refresh the same private viewer after meaningful changes.");
+        assert!(
+            s.heartbeat_replace_review_task(
+                101,
+                e.key,
+                generation,
+                task_revision,
+                replacement.clone()
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_replace_review_task(
+                100,
+                e.key,
+                generation + 1,
+                task_revision,
+                replacement.clone()
+            )
+            .is_err()
+        );
+        assert!(
+            s.heartbeat_replace_review_task(100, e.key, generation, "stale", replacement.clone())
+                .is_err()
+        );
+        let mut wrong_purpose = replacement.clone();
+        wrong_purpose.purpose.channel = "foreign".into();
+        assert!(
+            s.heartbeat_replace_review_task(100, e.key, generation, task_revision, wrong_purpose)
+                .is_err()
+        );
+        s.heartbeat_replace_review_task(100, e.key, generation, task_revision, replacement.clone())
+            .unwrap();
+        let replaced = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(after_task["resources"], replaced["resources"]);
+        for field in ["checks", "next_check_ms", "contract"] {
+            assert_eq!(
+                after_task["producer"]["finite_review"][field],
+                replaced["producer"]["finite_review"][field]
+            );
+        }
+        assert_ne!(
+            json!(task_revision),
+            replaced["producer"]["finite_review"]["periodic_tasks"][0]["revision"]
+        );
+        assert!(
+            s.heartbeat_replace_review_task(
+                100,
+                e.key,
+                generation,
+                task_revision,
+                replacement.clone()
+            )
+            .is_err()
+        );
         {
             let conn = s.conn.lock().unwrap();
             let parent = super::heartbeat::producer::load(&conn, 100, e.id)
@@ -5876,6 +5938,20 @@ mod tests {
         assert!(
             s.heartbeat_select_review(100, e.key, paused["generation"].as_u64().unwrap(), contract)
                 .is_err()
+        );
+        let current_revision =
+            pending["producer"]["finite_review"]["periodic_tasks"][0]["revision"]
+                .as_str()
+                .unwrap();
+        assert!(
+            s.heartbeat_replace_review_task(
+                100,
+                e.key,
+                paused["generation"].as_u64().unwrap(),
+                current_revision,
+                replacement
+            )
+            .is_err()
         );
         let retained = s.heartbeat_control(100, e.key, H::Status).unwrap();
         assert_eq!(pending["producer"], retained["producer"]);

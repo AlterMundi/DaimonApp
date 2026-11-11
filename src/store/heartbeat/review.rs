@@ -72,7 +72,7 @@ pub(super) fn status_on(conn: &Connection, p: &producer::Parent) -> Result<Value
         json!({"state":state,"contract":r.contract,"checks":r.checks,
         "next_check_ms":r.next_check_ms,"maximum_executions":if r.contract.production {Value::Null} else {json!(4)},
         "mode":if r.contract.production {"production"} else {"finite"},
-        "periodic_tasks":r.tasks.iter().map(|t|json!({"id":t.id,"purpose":t.purpose,"state":if producer::purpose_source(conn,p.human,p.entry,&p.native,&t.purpose).is_ok_and(|(_,rev)|rev==t.purpose_revision){"selected"}else{"purpose_retired"}})).collect::<Vec<_>>(),
+        "periodic_tasks":r.tasks.iter().map(|t|json!({"id":t.id,"purpose":t.purpose,"revision":task_revision(t),"state":if producer::purpose_source(conn,p.human,p.entry,&p.native,&t.purpose).is_ok_and(|(_,rev)|rev==t.purpose_revision){"selected"}else{"purpose_retired"}})).collect::<Vec<_>>(),
         "funding":if r.contract.production {"shared_production_hourly_allowance"} else {"original_shared_pilot_only_no_standing_refill"},
         "meaning":"Selected purpose/source observation; native useful review and delivery remain separate"}),
     )
@@ -267,13 +267,44 @@ pub(in crate::store) fn task_offers(
     Ok(offers)
 }
 
+pub(in crate::store) fn task_revision(task: &HeartbeatReviewTask) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(task).expect("serializable task"))
+    )
+}
+
 impl Store {
+    /// Replace only the exact paused task, retaining purpose, cursor and funding.
+    pub fn heartbeat_replace_review_task(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected: &str,
+        task: HeartbeatReviewTask,
+    ) -> Result<()> {
+        self.heartbeat_write_review_task(human, entry, generation, Some(expected), task)
+    }
+
     /// Select one additional purpose without replacing existing sources or clocks.
     pub fn heartbeat_select_review_task(
         &self,
         human: i64,
         entry: SessionKey,
         generation: u64,
+        task: HeartbeatReviewTask,
+    ) -> Result<()> {
+        self.heartbeat_write_review_task(human, entry, generation, None, task)
+    }
+
+    fn heartbeat_write_review_task(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        generation: u64,
+        expected: Option<&str>,
         mut task: HeartbeatReviewTask,
     ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -332,13 +363,27 @@ impl Store {
             review.contract.production,
             "Finite review cannot borrow production task funding"
         );
-        if let Some(existing) = review.tasks.iter().find(|t| t.id == task.id) {
-            anyhow::ensure!(
-                serde_json::to_value(existing)? == serde_json::to_value(&task)?,
-                "Existing task differs; preserve its purpose and pending work"
-            );
+        if let Some(existing) = review.tasks.iter_mut().find(|t| t.id == task.id) {
+            if let Some(expected) = expected {
+                anyhow::ensure!(task_revision(existing) == expected, "Task revision changed");
+                anyhow::ensure!(
+                    serde_json::to_value(&existing.purpose)?
+                        == serde_json::to_value(&task.purpose)?
+                        && existing.purpose_revision == task.purpose_revision,
+                    "Replacement preserves the original task purpose"
+                );
+                *existing = task;
+                producer::save(&tx, &p)?;
+                tx.commit()?;
+            } else {
+                anyhow::ensure!(
+                    serde_json::to_value(existing)? == serde_json::to_value(&task)?,
+                    "Existing task differs; preserve its purpose and pending work"
+                );
+            }
             return Ok(());
         }
+        anyhow::ensure!(expected.is_none(), "Replacement task does not exist");
         anyhow::ensure!(
             review.tasks.len() < 4,
             "At most four periodic purposes per parent"

@@ -559,3 +559,14 @@ canonical preservation. Keep recording, publication and editorial selection
 separate. The callback is ordinary authorized native work using existing Drive
 tools, not live Drive I/O in model-free status/quiet checks. Actual reconciliation,
 configuration and subsequent periodic execution require separate receipts.
+
+Periodic task instructions evolve through the same owner with
+`heartbeat replace-review-task GENERATION EXPECTED_TASK_REVISION TASK_JSON`.
+Read the task revision from status, pause exact Reports/global controls, and
+replace only an unchanged task with the same retained purpose. Selection refuses
+unresolved executions and pending unreviewed originals. The transaction preserves
+all source cursors, report contracts, cadence, counters and funding; stale
+replacements never change state. Restore only operation-owned unchanged pauses.
+A private viewer projection may be part of its explicitly selected human purpose;
+read the owning snapshot schema and run its finite conditional refresh after
+meaningful source changes. An unchanged refresh must not grow publication history.

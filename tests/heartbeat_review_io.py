@@ -64,6 +64,10 @@ def qualify(binary, production=False, periodic=False):
             before_task=j.read('heartbeat','status')['result']
             task=dict(id='bitacora',purpose=review['purpose'],purpose_revision='',instructions='Reconcile institutional intake with persistent cursors; preserve originals before cache cleanup; no publication.')
             task_selected=j.read('heartbeat','select-review-task',generation,json.dumps(task))['result']
+            expected=task_selected['producer']['finite_review']['periodic_tasks'][0]['revision']
+            task['instructions'] += ' Refresh the same private viewer only after meaningful changes.'
+            task_selected=j.read('heartbeat','replace-review-task',generation,expected,json.dumps(task))['result']
+            assert task_selected['producer']['finite_review']['periodic_tasks'][0]['revision'] != expected
             assert task_selected['resources']==before_task['resources']
             assert task_selected['producer']['finite_review']['checks']==before_task['producer']['finite_review']['checks']
             assert task_selected['producer']['finite_review']['next_check_ms']==before_task['producer']['finite_review']['next_check_ms']
