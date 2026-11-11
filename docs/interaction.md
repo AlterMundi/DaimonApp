@@ -1622,3 +1622,32 @@ Inspect the instruction/native receipt after submission uncertainty. The general
 conversation can use its existing `workflow_status`/`workflow_advance` path.
 `workflow_recovery_proof_missing` now names missing non-submission evidence rather
 than collapsing that refusal into generic routing unavailability.
+
+## Reconcile an uncertain Telegram creation from retained service evidence
+
+`telecodex --control CONFIG creation status ID` inspects the same retained
+creation. An authenticated operator can select
+`creation reconcile ID SERVICE_UPDATE_ID` when the original topic RPC was
+uncertain but this receiver retained its own bot's `forum_topic_created` event.
+The writer validates the original human/entry/native binding, later service
+update, exact explicit title, unique matching event and intent, unused target,
+current configured-bot identity, and Stop/maintenance. It atomically associates
+an immutable hash-linked service receipt and the existing topic, then uses the
+ordinary creation resume, initialization, enrollment and original dispatch.
+It never calls `createForumTopic` again or changes the retained original/context.
+The evidence is an operator-selected unique service correlation, not a recovered
+HTTP response or a new human confirmation; the audit records that distinction.
+
+Exact repeated reconciliation inspects the existing receipt without dispatching
+again. If initialization stopped after the receipt, `creation resume ID` can
+continue only an existing `retained_topic`; it cannot start another external
+creation. Existing instruction receipts govern any downstream delivery recovery.
+Retired authority, changed bindings, conflicting topics, other bots and ambiguous
+service events refuse. A missing event is missing evidence, never permission to
+fill a topic ID manually or replay an uncertain API call. The receipt table is
+bounded by the existing creation-intent capacity and compatible with old readers.
+
+Native admission, a visible topic/message in Telegram and the paired human's
+actual ability to open it are separate observations. Do not claim human access
+from a service event or operator-command success. Telegram remains an optional
+projection; standalone creation continues using its existing local allocation.
