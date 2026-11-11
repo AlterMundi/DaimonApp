@@ -5658,6 +5658,63 @@ mod tests {
         };
         s.heartbeat_select_review(100, e.key, generation, contract.clone())
             .unwrap();
+        let task=crate::store::HeartbeatReviewTask {
+            id:"bitacora".into(), purpose:contract.purpose.clone(), purpose_revision:String::new(),
+            instructions:"Reconcile selected institutional intake; preserve selected originals before cache cleanup; no publication.".into(),
+        };
+        let before_task = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert!(
+            s.heartbeat_select_review_task(101, e.key, generation, task.clone())
+                .is_err()
+        );
+        assert!(
+            s.heartbeat_select_review_task(100, e.key, generation + 1, task.clone())
+                .is_err()
+        );
+        s.heartbeat_select_review_task(100, e.key, generation, task.clone())
+            .unwrap();
+        s.heartbeat_select_review_task(100, e.key, generation, task.clone())
+            .unwrap();
+        let after_task = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        assert_eq!(before_task["resources"], after_task["resources"]);
+        assert_eq!(
+            before_task["producer"]["finite_review"]["checks"],
+            after_task["producer"]["finite_review"]["checks"]
+        );
+        assert_eq!(
+            before_task["producer"]["finite_review"]["next_check_ms"],
+            after_task["producer"]["finite_review"]["next_check_ms"]
+        );
+        assert_eq!(
+            after_task["producer"]["finite_review"]["periodic_tasks"][0]["state"],
+            "selected"
+        );
+        let mut changed_task = task.clone();
+        changed_task.instructions = "Different work".into();
+        assert!(
+            s.heartbeat_select_review_task(100, e.key, generation, changed_task)
+                .is_err()
+        );
+        {
+            let conn = s.conn.lock().unwrap();
+            let parent = super::heartbeat::producer::load(&conn, 100, e.id)
+                .unwrap()
+                .unwrap();
+            let first = super::heartbeat::review::task_offers(&conn, &parent).unwrap();
+            assert_eq!(first.len(), 1);
+            assert!(super::heartbeat::review::task_current(&conn, &parent, &first[0]).unwrap());
+            let mut next = parent.clone();
+            next.review.as_mut().unwrap().checks += 1;
+            let second = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_ne!(
+                first[0].revision, second[0].revision,
+                "Unchanged intake still receives the next periodic reconciliation"
+            );
+            assert!(
+                super::heartbeat::review::task_current(&conn, &next, &first[0]).unwrap(),
+                "Pending old work remains valid across observations"
+            );
+        }
         producer_edit(&s, &e, |p| {
             p["review"]["checks"] = json!(7);
             p["review"]["next_check_ms"] = json!(Utc::now().timestamp_millis() + 900_000);
@@ -5733,6 +5790,70 @@ mod tests {
         producer_edit(&s, &e, |p| p["review"]["next_check_ms"] = json!(0));
         let check = s.heartbeat_begin_check(100, e.key).unwrap().unwrap();
         s.heartbeat_finish_observation(&check, None, false).unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let parent = super::heartbeat::producer::load(&conn, 100, e.id)
+                .unwrap()
+                .unwrap();
+            let returned = parent.native_returns.last().unwrap();
+            let offers: Vec<super::heartbeat::producer::Offer> =
+                serde_json::from_value(returned.envelope["offers"].clone()).unwrap();
+            let task_offer = offers
+                .iter()
+                .find(|o| o.key == "review-task:bitacora")
+                .unwrap();
+            let id = returned.id.clone();
+            let revision = task_offer.revision.clone();
+            drop(conn);
+            let source = s
+                .heartbeat_source(
+                    100,
+                    e.key,
+                    "native-1",
+                    &id,
+                    "periodic:bitacora",
+                    &revision,
+                    0,
+                )
+                .unwrap();
+            assert!(
+                source["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Reconcile selected institutional intake")
+            );
+            assert!(
+                source["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("A produces a checkpoint")
+            );
+            assert_eq!(source["next_offset"], Value::Null);
+            assert!(
+                s.heartbeat_source(
+                    101,
+                    e.key,
+                    "native-1",
+                    &id,
+                    "periodic:bitacora",
+                    &revision,
+                    0
+                )
+                .is_err()
+            );
+            assert!(
+                s.heartbeat_source(
+                    100,
+                    e.key,
+                    "native-1",
+                    &id,
+                    "periodic:bitacora",
+                    "changed",
+                    0
+                )
+                .is_err()
+            );
+        }
         // Model a lost native ACK: pausing must retain this original, unlike
         // a proved unsubmitted offer which pause can safely retire.
         producer_edit(&s, &e, |p| {

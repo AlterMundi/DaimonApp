@@ -8,7 +8,7 @@ import uuid
 from heartbeat_io import HeartbeatJourney
 
 
-def qualify(binary, production=False):
+def qualify(binary, production=False, periodic=False):
     j = HeartbeatJourney(str(Path(binary).resolve()))
     try:
         if production:j.expected_attempts=64
@@ -60,6 +60,14 @@ def qualify(binary, production=False):
         assert selected['producer']['checks'] == before['producer']['checks']
         assert selected['producer']['finite_review']['state'] == 'configured'
         assert all(l['paused'] for l in selected['lanes'].values())
+        if periodic:
+            before_task=j.read('heartbeat','status')['result']
+            task=dict(id='bitacora',purpose=review['purpose'],purpose_revision='',instructions='Reconcile institutional intake with persistent cursors; preserve originals before cache cleanup; no publication.')
+            task_selected=j.read('heartbeat','select-review-task',generation,json.dumps(task))['result']
+            assert task_selected['resources']==before_task['resources']
+            assert task_selected['producer']['finite_review']['checks']==before_task['producer']['finite_review']['checks']
+            assert task_selected['producer']['finite_review']['next_check_ms']==before_task['producer']['finite_review']['next_check_ms']
+            assert task_selected['producer']['finite_review']['contract']==before_task['producer']['finite_review']['contract']
         j.read('heartbeat','resume-lane','reports',str(selected['lanes']['reports']['generation']))
         j.read('heartbeat','resume',generation)
         j.wait(lambda:j.read('heartbeat','status')['result']['producer']['finite_review']['checks']>=1,seconds=45)
@@ -89,11 +97,16 @@ def qualify(binary, production=False):
         offer=packet['evidence']['offers'][0]; reader=offer['evidence']['reader']
         read=j.call('route-report',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))
         assert 'synthetic checkpoint A' in json.dumps(read)
+        if periodic:
+            task_offer=next(o for o in packet['evidence']['offers'] if o['key']=='review-task:bitacora')
+            reader=task_offer['evidence']['reader']
+            task_read=j.call('route-periodic',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))
+            assert 'Reconcile institutional intake' in task_read['text'] and purpose_text in task_read['text']
         j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
         assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==(12 if production else 3)
-        if production:
+        if production and not periodic:
             # An ordinary goal starts after the bounded collector closes. Only
             # metadata and exact collector attachment may bridge that gap.
             before_calls=len([m for m in j.rpc if m.get('method') in ('turn/start','turn/steer','turn/startBoundedIfIdle','thread/goal/set')])
@@ -112,7 +125,16 @@ def qualify(binary, production=False):
         report.write_text(json.dumps({'milestone':'synthetic checkpoint A','clock':2}))
         j.row("UPDATE bot_state SET value=json_set(value,'$.next_check_ms',0,'$.review.next_check_ms',0) WHERE key LIKE 'heartbeat_producer:%'")
         j.wait(lambda:j.read('heartbeat','status')['result']['producer']['finite_review']['checks']>=2,seconds=45)
-        assert len(j.bounded)==1
+        if periodic:
+            j.wait(lambda:len(j.bounded)==2,seconds=45)
+            second=json.loads(j.bounded[1]['turn']['toolOutput']['output'])
+            assert [o['key'] for o in second['evidence']['offers']]==['review-task:bitacora'], 'Unchanged ordinary report must remain quiet'
+            assert second['evidence']['offers'][0]['revision']!=task_offer['revision']
+            j.call('route-periodic-again','heartbeat_reported',{'return_id':second['return_id'],'revision':second['evidence']['revision']})
+            j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}});j.idle()
+            j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
+        else:
+            assert len(j.bounded)==1
         status=j.read('heartbeat','pause-lane','reports')['result']
         funding=status['resources'];j.stop();j.start();j.wait_control_socket(j.socket)
         restarted=j.read('heartbeat','status')['result']
@@ -124,7 +146,8 @@ def qualify(binary, production=False):
         status=j.read('heartbeat','status')['result']
         assert status['producer']['finite_review']['state']==('configured' if production else 'expired')
         assert status['resources']==funding and status['producer']['mode']=='continuous'
-        assert len(j.bounded)==1
+        assert len(j.bounded)==(2 if periodic else 1)
+        if periodic:assert restarted['producer']['finite_review']['periodic_tasks'][0]['id']=='bitacora'
         if production:
             assert j.goals[j.web_thread]==goal, 'Heartbeat handoff changed native goal or accounting'
         print('finite review owner selection/purpose/source/one bounded execution/no-change/pause/restart/expiry: PASS; synthetic native, real providers=0')
@@ -132,7 +155,9 @@ def qualify(binary, production=False):
         j.close()
 
 if __name__ == '__main__':
-    if '--production' in sys.argv[2:]:
+    if '--periodic' in sys.argv[2:]:
+        qualify(sys.argv[1],True,True)
+    elif '--production' in sys.argv[2:]:
         qualify(sys.argv[1], True)
     elif '--finite' in sys.argv[2:]:
         qualify(sys.argv[1], False)
