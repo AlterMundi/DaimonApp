@@ -81,6 +81,22 @@ class Releases(unittest.TestCase):
             self.assertEqual(client.get('/assets/avatar-workshop/releases/'+prepared['release']+'/validate-design.mjs').status_code,404)
             self.assertEqual(client.get('/api/interaction/avatars').status_code,401)
 
+    def test_validator_upgrade_retires_only_verified_unselected_history(self):
+        import os,time
+        old=r.prepare(self.releases,self.transfer(),self.vendor)
+        (self.vendor/'experiments/school-avatar-quest/index.html').write_bytes(b'current editor');self.write_metadata()
+        selected=r.prepare(self.releases,self.transfer(),self.vendor);r.activate(self.releases,selected['release'],None,self.vendor)
+        stamp=time.time()-90000;os.utime(self.releases/old['release'],(stamp,stamp))
+        (self.vendor/r.CONTRACT[1]).write_bytes(b'new validator contract');self.write_metadata()
+        # Serving/activation of the old graph still requires its old validator.
+        with self.assertRaises(ValueError):r.manifest(self.releases,selected['release'],self.vendor)
+        new=r.prepare(self.releases,self.transfer(),self.vendor)
+        self.assertFalse((self.releases/old['release']).exists())
+        self.assertTrue((self.releases/selected['release']).is_dir())
+        self.assertEqual(r.current(self.releases)['release'],selected['release'])
+        r.activate(self.releases,new['release'],r.current(self.releases),self.vendor)
+        self.assertEqual(r.current(self.releases)['previous'],selected['release'])
+
     def test_fonts_are_versioned_and_immutable(self):
         x=r.prepare(self.releases,self.transfer(),self.vendor);data,sha=r.asset(self.releases,x['release'],'experiments/school-avatar-quest/archive-assets/nunito.ttf',self.vendor);self.assertEqual(data,b'font');self.assertEqual(sha,r.digest(data))
         path=self.releases/x['release']/'experiments/school-avatar-quest/archive-assets/nunito.ttf';path.write_bytes(b'changed')

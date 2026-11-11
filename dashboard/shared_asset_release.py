@@ -77,10 +77,15 @@ def current(root):
     if type(generation) is not int or not 0<=generation<2**63:raise ValueError('Invalid release generation')
     return {**value,'generation':generation}
 
-def manifest(root,release,baseline):
+def retained_manifest(root,release):
+    """Verify immutable history independently of the currently served validator."""
     if not re.fullmatch('[0-9a-f]{64}',release):raise ValueError('Invalid release identity')
     value=json.loads(read_beneath(root,release+'/manifest.json',65536))
     if digest(canonical(value))!=release or value.get('source')!=SOURCE or value.get('component')!='avatar-workshop':raise ValueError('Release identity changed')
+    return value
+
+def manifest(root,release,baseline):
+    value=retained_manifest(root,release)
     if value['compatibility']!={n:digest(read_beneath(Path(baseline).resolve(),n,1024*1024)) for n in CONTRACT}:raise ValueError('Incompatible selected frontend')
     return value
 
@@ -106,7 +111,14 @@ def _prepare(root,raw,baseline):
     for path in known:
         if path.name not in keep and time.time()-path.stat().st_mtime>86400:
             # Only this component's verified immutable code, never actor records.
-            manifest(root,path.name,baseline);shutil.rmtree(path)
+            historical=retained_manifest(root,path.name)
+            names=historical['files']
+            if not 1<=len(names)<=MAX_FILES or historical['compatibility']!={n:names[n] for n in CONTRACT}:raise ValueError('Invalid retained inventory')
+            total=0
+            for name,expected in names.items():
+                data=read_beneath(root,path.name+'/'+name,1024*1024);total+=len(data)
+                if total>MAX_BYTES or digest(data)!=expected:raise ValueError('Retained asset bytes changed')
+            shutil.rmtree(path)
     known=[p for p in root.iterdir() if p.is_dir()]
     if len(known)>=MAX_RELEASES:raise ValueError('Release history capacity reached; current frontend kept')
     stage=Path(tempfile.mkdtemp(prefix='.incoming-',dir=root))

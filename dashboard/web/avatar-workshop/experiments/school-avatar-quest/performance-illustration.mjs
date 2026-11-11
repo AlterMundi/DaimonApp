@@ -1,21 +1,21 @@
 import {drawPillow} from './pillow.mjs';
 import {magnifierGeometry,lanternOrigin} from './interaction-geometry.mjs';
 import {prepareStory,illustrateStory} from './performance-stories.mjs';
-import {performanceAnatomy,ease} from './performances.mjs';
+import {performanceAnatomyFor,ease} from './performances.mjs';
 import {resolvePropColor} from './props.mjs';
 const mix=(a,b,t)=>a+(b-a)*t;
 const point=(a,b,t)=>[mix(a[0],b[0],ease(t)),mix(a[1],b[1],ease(t))];
 function flight(points,p){for(let i=1;i<points.length;i++)if(p<=points[i][0])return point(points[i-1][1],points[i][1],(p-points[i-1][0])/(points[i][0]-points[i-1][0]));return points.at(-1)[1];}
 export function preparePerformance(design,prop,state,bodyFrame){
  if(prop.id==='firefly-lantern'){
-  const a=performanceAnatomy[design.body],side=prop.side==='left'?-1:1,bob=Math.sin(bodyFrame/12*Math.PI*2)*3,x=Math.min(445,a.hand[0]+38),origin=lanternOrigin([side<0?576-x:x,a.hand[1]],prop.size,side),landing=[a.landing[0],a.landing[1]+bob],orbit=[288+side*137,Math.max(75,a.eye[1]+bob-108)];
+  const a=performanceAnatomyFor(design,bodyFrame,design.gestures.find(g=>g.id===design.activeGestureId)?.cue,prop.side==='left'?-1:1),side=prop.side==='left'?-1:1,bob=Math.sin(bodyFrame/12*Math.PI*2)*3,x=Math.min(445,a.hand[0]+38),origin=lanternOrigin([side<0?576-x:x,a.hand[1]],prop.size,side),landing=[a.landing[0],a.landing[1]+bob],orbit=[288+side*137,Math.max(75,a.eye[1]+bob-108)];
   const [fx]=flight([[0,origin],[.12,origin],[.32,orbit],[.51,landing],[.66,landing],[.85,orbit],[.96,origin],[1,origin]],state.p);
   state.face.gazeOffset=(fx-288)*.045*(1-state.landing*.65);
  }
  return prepareStory(design,prop,state,bodyFrame);
 }
 export function illustratePerformance(canvas,design,prop,state,bodyFrame){
- const c=canvas.getContext('2d'),anatomy=performanceAnatomy[design.body],side=prop.side==='left'?-1:1,bob=Math.sin(bodyFrame/12*Math.PI*2)*3;
+ const c=canvas.getContext('2d'),anatomy=performanceAnatomyFor(design,bodyFrame,design.gestures.find(g=>g.id===design.activeGestureId)?.cue,prop.side==='left'?-1:1),side=prop.side==='left'?-1:1,bob=Math.sin(bodyFrame/12*Math.PI*2)*3;
  const anchor=[side<0?576-anatomy.hand[0]:anatomy.hand[0],anatomy.hand[1]],eye=[288+side*anatomy.eye[0],anatomy.eye[1]+bob],nose=[...anatomy.nose];nose[1]+=bob;
  const colors=resolvePropColor(prop.color),reach=state.reach;
  const ellipse=(x,y,rx,ry,fill)=>{c.beginPath();c.ellipse(x,y,rx,ry,0,0,Math.PI*2);c.fillStyle=fill;c.fill();};
@@ -23,12 +23,12 @@ export function illustratePerformance(canvas,design,prop,state,bodyFrame){
  if(prop.id==='sleep'||prop.id==='pillow'){
   state.actor.rotate*=side;
   if(prop.id==='pillow'){
-   const halfHead=({'pocket-dragon':115,'modular-bot':123,'moon-visitor':158,'cloud-axolotl':135,'comet-fox':145,'little-mushroom':175})[design.body],offset=Math.min(435,288+halfHead*.85+30)-288;
+   const halfHead=anatomy.headHalfWidth??({'pocket-dragon':115,'modular-bot':123,'moon-visitor':158,'cloud-axolotl':135,'comet-fox':145,'little-mushroom':175})[design.body],offset=Math.min(435,288+halfHead*.85+30)-288;
    const start=[anchor[0]+side*8,anchor[1]+4],target=[288+side*offset,eye[1]+84];
    drawPillow(c,[mix(start[0],target[0],state.rest),mix(start[1],target[1],state.rest)],prop.size,state.squeeze,colors,-side*.12*state.rest);
   }
   if((design.gestures.find(g=>g.id===design.activeGestureId)?.cue==='sleep')&&state.rest>.1){
-   const halfHead=({'pocket-dragon':115,'modular-bot':123,'moon-visitor':158,'cloud-axolotl':135,'comet-fox':145,'little-mushroom':175})[design.body],baseY=design.body==='little-mushroom'?155:eye[1]-105;
+   const halfHead=anatomy.headHalfWidth??({'pocket-dragon':115,'modular-bot':123,'moon-visitor':158,'cloud-axolotl':135,'comet-fox':145,'little-mushroom':175})[design.body],baseY=design.body==='little-mushroom'?155:eye[1]-105;
    c.save();c.lineCap='round';c.lineJoin='round';for(let i=0;i<3;i++){
     const travel=(state.p*1.25-i*.18+1)%1,k=14+i*6,x=288-side*(halfHead+8+i*24),y=baseY-i*43-travel*18;
     c.globalAlpha=state.rest*Math.sin(travel*Math.PI);c.beginPath();c.moveTo(x-k,y);c.lineTo(x+k,y);c.lineTo(x-k,y+k*1.65);c.lineTo(x+k,y+k*1.65);

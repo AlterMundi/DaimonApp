@@ -27,7 +27,7 @@ class Workshop(unittest.TestCase):
 
     def test_current_color_and_acting_semantics_survive_account_roundtrip(self):
         d=copy.deepcopy(self.design)
-        d['bodyColors']={body:'#2266ee' for body in ('pocket-dragon','modular-bot','moon-visitor','cloud-axolotl','comet-fox','little-mushroom')}
+        d['bodyColors']={body:'#2266ee' for body in ('pocket-dragon','modular-bot','moon-visitor','cloud-axolotl','comet-fox','little-mushroom','custom-model')}
         g=d['gestures'][0];g.update(cue='sleep',performance='accessory/v1')
         g['props']=[{'id':'pillow','color':'#b185dc','side':'left','size':1.25}]
         self.save(design=d)
@@ -36,7 +36,7 @@ class Workshop(unittest.TestCase):
         self.assertEqual(actual['gestures'][0]['props'],g['props'])
         self.assertEqual(actual['gestures'][0]['performance'],'accessory/v1')
         self.assertEqual(actual['gestures'][0]['cue'],'sleep')
-        bad=copy.deepcopy(d);bad['bodyColors']['custom-model']='#ff0000'
+        bad=copy.deepcopy(d);bad['bodyColors']['unknown-body']='#ff0000'
         with self.assertRaises(ValueError):validate_design(bad)
 
     def test_visual_and_voice_share_one_document_and_capacity_without_pointer_changes(self):
