@@ -1,9 +1,35 @@
 /* Header compaction is paused during the interface redesign. */
 (() => {
   const mounted = new WeakMap();
+  function pageScroll(timeline,body){
+    if(!document.addEventListener)return;
+    const wheel=event=>{
+      if(event.defaultPrevented||event.ctrlKey||event.metaKey||event.shiftKey||!event.deltaY
+          ||!timeline.getClientRects().length||timeline.contains(event.target)
+          ||document.querySelector('dialog[open],[aria-modal="true"]:not([hidden])'))return;
+      if(event.target.closest?.('input,textarea,select,[contenteditable],iframe'))return;
+      for(let node=event.target;node&&node!==body;node=node.parentElement){
+        if(node.nodeType!==1)continue;
+        const style=getComputedStyle(node);
+        if(/auto|scroll/.test(style.overflowY)&&node.scrollHeight>node.clientHeight+1)return;
+      }
+      const scale=event.deltaMode===1?16:event.deltaMode===2?timeline.clientHeight:1;
+      const before=timeline.scrollTop;
+      timeline.scrollTop+=event.deltaY*scale;
+      if(timeline.scrollTop!==before)event.preventDefault();
+    };
+    document.addEventListener('wheel',wheel,{passive:false});
+    return {expand(){},syncScroll(){},destroy(){document.removeEventListener('wheel',wheel);}};
+  }
   function mount({timeline,header=document.querySelector('header'),body=document.body,clock=()=>performance.now(),enabled=false}) {
     if(!timeline || !header)return;
-    if(!enabled){body.classList.toggle('conversation-header-compact',false);return;}
+    if(!enabled){
+      body.classList.toggle('conversation-header-compact',false);
+      if(mounted.has(timeline))return mounted.get(timeline);
+      const relay=pageScroll(timeline,body);
+      if(relay){const destroy=relay.destroy;relay.destroy=()=>{destroy();mounted.delete(timeline);};mounted.set(timeline,relay);}
+      return relay;
+    }
     if(mounted.has(timeline))return mounted.get(timeline);
     let previous=timeline.scrollTop,travel=0,direction=0,intentUntil=0,touchY,compact=false;
     const listeners=[];

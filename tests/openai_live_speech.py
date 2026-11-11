@@ -83,6 +83,21 @@ class Preview(unittest.TestCase):
         self.assertEqual(json.loads(binding.read_text()),base)
         with self.assertRaises(speech.RenderError):speech.render_plan(self.config,{'scope':'preview','text':text})
 
+    def test_continuous_zero_pcm_does_not_extend_a_completed_passage(self):
+        receive=self.socket.recv
+        def continuous():
+            if not self.socket.events:
+                self.socket.events.append({'type':'session.output_audio.delta',
+                    'delta':base64.b64encode(b'\0'*9600).decode()})
+            return receive()
+        self.socket.recv=continuous
+        audio,receipt=self.run_preview()
+        self.assertTrue(receipt['finalized']);self.assertTrue(receipt['passage_match'])
+        self.assertLess(receipt['generation_millis'],5000,'Continuous silence must not hold completed reading until the generation deadline')
+        self.assertLess(receipt['audio_millis'],5000)
+        self.assertEqual([e['type'] for e in self.socket.sent].count('session.close'),1)
+        self.assertEqual(self.connects,1)
+
     def test_same_live_api_one_greeting_silence_dedup_and_confirmed_usage(self):
         audio,receipt=self.run_preview()
         self.assertEqual(audio[:4],b'RIFF');self.assertEqual(len(audio),44+9600)
