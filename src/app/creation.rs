@@ -371,6 +371,60 @@ async fn execute_claimed(
     )
 }
 
+/// Authenticated operator recovery for one retained uncertain creation. This
+/// does not create a Telegram topic, change the original or resume any goal.
+pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<Value> {
+    let parts: Vec<_> = args.split_whitespace().collect();
+    let cfg = super::routing::profile(&app.shared)?;
+    anyhow::ensure!(cfg.human_id == human, "Creation owner mismatch");
+    let [verb, id, tail @ ..] = parts.as_slice() else {
+        bail!("Expected creation status ID, reconcile ID EVENT_UPDATE or resume ID");
+    };
+    let op = app.shared.store.interaction_creation(id, human)?;
+    let key: SessionKey = serde_json::from_value(op["intent"]["entry"].clone())?;
+    anyhow::ensure!(key == cfg.entry(), "Creation belongs to another entry");
+    if *verb == "status" && tail.is_empty() {
+        return Ok(op);
+    }
+    anyhow::ensure!(
+        app.shared.config.telegram.enabled && app.shared.bot_id > 0,
+        "Telegram service receipt requires its configured bot"
+    );
+    let reference: InputReference = serde_json::from_value(op["intent"]["input_update"].clone())?;
+    let native = op["intent"]["entry_native"]
+        .as_str()
+        .context("Missing original native binding")?;
+    match (*verb, tail) {
+        ("reconcile", [event]) => {
+            let reserved = cfg.targets.iter().map(|t| t.topic_id).collect::<Vec<_>>();
+            let (receipt, fresh) = app.shared.store.interaction_creation_reconcile(
+                id,
+                human,
+                app.shared.bot_id,
+                event.parse()?,
+                &reserved,
+            )?;
+            if !fresh {
+                return Ok(receipt);
+            }
+        }
+        ("resume", []) => anyhow::ensure!(
+            op["topic"].as_i64().is_some() && op["phase"] == "retained_topic",
+            "Only a confirmed retained topic may resume here; inspect existing instructions"
+        ),
+        _ => bail!("Expected creation status ID, reconcile ID EVENT_UPDATE or resume ID"),
+    }
+    resume(
+        app,
+        key,
+        human,
+        native,
+        reference,
+        &CancellationToken::new(),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_creations(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,input_update INTEGER NOT NULL,phase TEXT NOT NULL,doc TEXT NOT NULL,topic INTEGER,instance_id TEXT NOT NULL,UNIQUE(human_id,entry_chat,entry_topic,input_update));
         CREATE TABLE IF NOT EXISTS interaction_enrollments(human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,target_topic INTEGER NOT NULL,session_id INTEGER NOT NULL,name TEXT NOT NULL,creation_id TEXT NOT NULL UNIQUE REFERENCES interaction_creations(id),PRIMARY KEY(human_id,entry_chat,entry_topic,target_topic));")?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_creation_receipts(creation_id TEXT PRIMARY KEY REFERENCES interaction_creations(id),event_update INTEGER NOT NULL UNIQUE REFERENCES incoming_updates(update_id),chat_id INTEGER NOT NULL,topic_id INTEGER NOT NULL,bot_id INTEGER NOT NULL,payload_sha256 TEXT NOT NULL,UNIQUE(chat_id,topic_id));")?;
         conn.execute("UPDATE interaction_creations SET phase=CASE phase WHEN 'prepared' THEN 'retained_unsent' WHEN 'creating_topic' THEN 'uncertain' ELSE 'retained_topic' END WHERE instance_id!=?1 AND phase IN ('prepared','creating_topic','topic_known')",[&self.instance_id])?;
         Ok(())
     }
@@ -259,6 +260,103 @@ impl Store {
         Ok((operation, true))
     }
 
+    /// Associate an operator-selected retained own-bot service event, never
+    /// manufacture an RPC receipt or retry an uncertain createForumTopic call.
+    pub fn interaction_creation_reconcile(
+        &self,
+        id: &str,
+        human: i64,
+        bot: i64,
+        event: i64,
+        reserved: &[i64],
+    ) -> Result<(Value, bool)> {
+        anyhow::ensure!(
+            bot > 0 && reserved.len() <= 128 && reserved.iter().all(|v| *v > 0),
+            "Invalid receipt selection"
+        );
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let op = creation_on(&tx, id, human)?;
+        let selected: Option<(i64, i64)> = tx.query_row("SELECT event_update,bot_id FROM interaction_creation_receipts WHERE creation_id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if let Some(prior) = selected {
+            anyhow::ensure!(
+                prior == (event, bot),
+                "Retained creation evidence is immutable"
+            );
+            return Ok((op, false));
+        }
+        eligible(&tx, &op)?;
+        anyhow::ensure!(
+            op["phase"] == "uncertain" && op["topic"].is_null(),
+            "Creation does not need receipt reconciliation"
+        );
+        let key: SessionKey = serde_json::from_value(op["intent"]["entry"].clone())?;
+        let original: InputReference =
+            serde_json::from_value(op["intent"]["input_update"].clone())?;
+        let original = original
+            .update()
+            .context("Telegram receipt requires an original Telegram input")?;
+        anyhow::ensure!(
+            event > original,
+            "Service event predates the selected original"
+        );
+        let name = op["intent"]["name"]
+            .as_str()
+            .context("Missing retained title")?;
+        let raw: String = tx.query_row(
+            "SELECT payload_json FROM incoming_updates WHERE update_id=?1",
+            [event],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(raw.len() <= 16384, "Service evidence exceeds bound");
+        let update: crate::telegram::Update = serde_json::from_str(&raw)?;
+        let m = update.message.context("Missing service message")?;
+        let topic = m.message_thread_id.context("Missing service topic")?;
+        anyhow::ensure!(
+            update.update_id == event
+                && m.chat.id == key.chat_id
+                && m.message_id > 0
+                && topic > 0
+                && topic != key.thread_id,
+            "Service event does not match this entry"
+        );
+        anyhow::ensure!(
+            m.from.as_ref().is_some_and(|u| u.id == bot && u.is_bot),
+            "Service author is not the configured bot"
+        );
+        anyhow::ensure!(
+            m.forum_topic_created
+                .as_ref()
+                .is_some_and(|t| t.name == name && t.is_name_implicit != Some(true)),
+            "Service title does not match the retained creation"
+        );
+        anyhow::ensure!(
+            !reserved.contains(&topic),
+            "Topic already belongs to the configured registry"
+        );
+        let matching: i64 = tx.query_row("SELECT count(*) FROM incoming_updates WHERE update_id>?1 AND json_extract(payload_json,'$.message.chat.id')=?2 AND json_extract(payload_json,'$.message.from.id')=?3 AND json_extract(payload_json,'$.message.from.is_bot')=1 AND json_extract(payload_json,'$.message.forum_topic_created.name')=?4", params![original,key.chat_id,bot,name], |r| r.get(0))?;
+        let intents: i64 = tx.query_row("SELECT count(*) FROM interaction_creations WHERE entry_chat=?1 AND lower(json_extract(doc,'$.name'))=lower(?2)",params![key.chat_id,name],|r|r.get(0))?;
+        anyhow::ensure!(
+            matching == 1 && intents == 1,
+            "Retained creation correlation is ambiguous"
+        );
+        let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE chat_id=?1 AND thread_id=?2) OR EXISTS(SELECT 1 FROM interaction_creations WHERE entry_chat=?1 AND topic=?2) OR EXISTS(SELECT 1 FROM interaction_enrollments WHERE entry_chat=?1 AND target_topic=?2)",params![key.chat_id,topic],|r|r.get(0))?;
+        anyhow::ensure!(!used, "Service topic already has an owner or receipt");
+        for target in [key, SessionKey::new(key.chat_id, Some(topic))] {
+            anyhow::ensure!(
+                !super::stopping::fenced_on(&tx, target)?
+                    && !super::maintenance_writer_held_on(&tx, target)?,
+                "Selected creation is held"
+            );
+        }
+        tx.execute("INSERT INTO interaction_creation_receipts(creation_id,event_update,chat_id,topic_id,bot_id,payload_sha256) VALUES(?1,?2,?3,?4,?5,?6)",params![id,event,key.chat_id,topic,bot,format!("{:x}",Sha256::digest(raw.as_bytes()))])?;
+        anyhow::ensure!(tx.execute("UPDATE interaction_creations SET phase='retained_topic',topic=?1 WHERE id=?2 AND human_id=?3 AND phase='uncertain' AND topic IS NULL",params![topic,id,human])? == 1, "Creation changed before reconciliation");
+        tx.execute("INSERT INTO audit_log(actor_user_id,action,details_json,created_at) VALUES(NULL,'creation_receipt_reconciled',?1,?2)",params![json!({"creation":id,"event_update":event,"actor":"authenticated_owner_local_operator","authority":"retained_original","rpc_response_observed":false}).to_string(),now_string()])?;
+        let value = creation_on(&tx, id, human)?;
+        tx.commit()?;
+        Ok((value, true))
+    }
+
     pub fn interaction_creation_suspend(&self, id: &str, human: i64) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute("UPDATE interaction_creations SET phase=CASE phase WHEN 'prepared' THEN 'retained_unsent' WHEN 'creating_topic' THEN 'uncertain' ELSE 'retained_topic' END WHERE id=?1 AND human_id=?2 AND instance_id=?3 AND phase IN ('prepared','creating_topic','topic_known')",params![id,human,self.instance_id])?;
@@ -438,8 +536,9 @@ fn creation_on(conn: &Connection, id: &str, human: i64) -> Result<Value> {
         |r| Ok(json!({"id":r.get::<_,String>(0)?,"phase":r.get::<_,String>(1)?})),
     )?;
     let instructions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    let receipt: Option<Value> = conn.query_row("SELECT event_update,payload_sha256 FROM interaction_creation_receipts WHERE creation_id=?1",[id],|r|Ok(json!({"event_update":r.get::<_,i64>(0)?,"payload_sha256":r.get::<_,String>(1)?,"correlation":"owner_selected_unique_retained_own_bot_service_event","rpc_response_observed":false}))).optional()?;
     Ok(
-        json!({"id":id,"intent":intent,"phase":phase,"topic":topic,"instructions":instructions,"uncertainty":"A recorded intent or topic is not proof of worker incorporation; never replay an unconfirmed topic creation. Inspect retained instruction IDs for downstream delivery recovery."}),
+        json!({"id":id,"intent":intent,"phase":phase,"topic":topic,"instructions":instructions,"receipt_evidence":receipt,"uncertainty":"A recorded intent or topic is not proof of worker incorporation; never replay an unconfirmed topic creation. Inspect retained instruction IDs for downstream delivery recovery."}),
     )
 }
 fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
@@ -486,6 +585,192 @@ fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn uncertain_receipt_fixture() -> (tempfile::NamedTempFile, Store, SessionKey, String) {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100, 101], &defaults).unwrap();
+        let entry = SessionKey::new(100, Some(1));
+        let session = store.ensure_session(entry, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(entry, "entry-native")
+            .unwrap();
+        let update:crate::telegram::Update=serde_json::from_value(json!({"update_id":20,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"text":"Start a distinct new task"}})).unwrap();
+        store.admit_update(&update).unwrap();
+        store.begin_update(20).unwrap();
+        store.mark_update_queued(20).unwrap();
+        let turn = store
+            .record_turn_started(
+                session.id,
+                &TurnRequest {
+                    session_key: entry,
+                    from_user_id: 100,
+                    prompt: "runtime".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(turn, "entry-native")
+            .unwrap();
+        store.link_update_turn(20, turn).unwrap();
+        let (op, _) = store
+            .interaction_prepare_creation(
+                entry,
+                100,
+                "entry-native",
+                20,
+                "Gamma",
+                "Distinct task",
+                &json!({"sources":[]}),
+                2,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        let id = op["id"].as_str().unwrap().to_owned();
+        store.interaction_creation_start(&id, 100).unwrap();
+        store.interaction_creation_suspend(&id, 100).unwrap();
+        let event:crate::telegram::Update=serde_json::from_value(json!({"update_id":22,"message":{"message_id":30,"message_thread_id":77,"from":{"id":888,"is_bot":true,"first_name":"Bot"},"chat":{"id":100,"type":"private"},"forum_topic_created":{"name":"Gamma","icon_color":7322096}}})).unwrap();
+        store.admit_update(&event).unwrap();
+        (file, store, entry, id)
+    }
+
+    #[test]
+    fn retained_own_bot_receipt_recovers_same_topic_and_original_once_across_restart() {
+        let (file, store, entry, id) = uncertain_receipt_fixture();
+        assert!(
+            store
+                .interaction_creation_reconcile(&id, 101, 888, 22, &[])
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_creation_reconcile(&id, 100, 999, 22, &[])
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_creation_reconcile(&id, 100, 888, 19, &[])
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_creation_reconcile(&id, 100, 888, 22, &[77])
+                .is_err()
+        );
+        let original = store.interaction_creation(&id, 100).unwrap()["intent"].clone();
+        let (op, fresh) = store
+            .interaction_creation_reconcile(&id, 100, 888, 22, &[])
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(op["phase"], "retained_topic");
+        assert_eq!(op["topic"], 77);
+        assert_eq!(op["intent"], original);
+        assert_eq!(op["receipt_evidence"]["rpc_response_observed"], false);
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        assert!(
+            !store
+                .interaction_creation_reconcile(&id, 100, 888, 22, &[])
+                .unwrap()
+                .1
+        );
+        assert!(
+            store
+                .interaction_creation_reconcile(&id, 100, 888, 23, &[])
+                .is_err()
+        );
+        assert!(store.interaction_creation_start(&id, 100).is_err());
+        assert!(
+            store
+                .interaction_creation_resume(
+                    entry,
+                    100,
+                    20,
+                    &tokio_util::sync::CancellationToken::new()
+                )
+                .unwrap()
+                .1
+        );
+        let target = SessionKey::new(100, Some(77));
+        store
+            .ensure_session(target, 100, &super::super::tests::defaults())
+            .unwrap();
+        let mut template = store.get_session(entry).unwrap().unwrap();
+        template.codex_thread_id = None;
+        template.force_fresh_thread = true;
+        template.session_title = Some("Gamma".into());
+        store
+            .apply_empty_session_template(target, &template, 100)
+            .unwrap();
+        let i = store
+            .interaction_creation_finish(&id, 100, "telegram:fixture")
+            .unwrap();
+        assert_eq!(i.text, "Start a distinct new task");
+        assert_eq!(i.target, target);
+        assert!(
+            !store
+                .interaction_creation_reconcile(&id, 100, 888, 22, &[])
+                .unwrap()
+                .1
+        );
+        assert_eq!(
+            store.interaction_creation(&id, 100).unwrap()["instructions"][0]["id"],
+            i.id
+        );
+        assert!(
+            store
+                .interaction_creation_finish(&id, 100, "telegram:fixture")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retained_receipt_refuses_ambiguous_events_existing_targets_and_rebound_original() {
+        for case in ["duplicate_event", "existing_target", "rebound", "held"] {
+            let (_file, store, entry, id) = uncertain_receipt_fixture();
+            match case {
+                "duplicate_event" => {
+                    let mut conn = store.conn.lock().unwrap();
+                    let tx = conn.transaction().unwrap();
+                    tx.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at) SELECT 23,json_set(payload_json,'$.update_id',23,'$.message.message_id',31,'$.message.message_thread_id',78),status,instance_id,updated_at FROM incoming_updates WHERE update_id=22",[]).unwrap();
+                    tx.commit().unwrap();
+                }
+                "existing_target" => {
+                    store
+                        .ensure_session(
+                            SessionKey::new(100, Some(77)),
+                            101,
+                            &super::super::tests::defaults(),
+                        )
+                        .unwrap();
+                }
+                "rebound" => {
+                    store
+                        .set_session_codex_thread(entry, "other-native")
+                        .unwrap();
+                }
+                "held" => {
+                    store.stop_begin(100, "receipt-test-stop").unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                store
+                    .interaction_creation_reconcile(&id, 100, 888, 22, &[])
+                    .is_err(),
+                "{case}"
+            );
+            let op = store.interaction_creation(&id, 100).unwrap();
+            assert!(op["topic"].is_null());
+            assert_eq!(op["phase"], "uncertain");
+            assert!(op["receipt_evidence"].is_null());
+        }
+    }
+
     #[test]
     fn discovery_is_opt_in_owned_bound_current_and_preserves_explicit_names() {
         let file = tempfile::NamedTempFile::new().unwrap();
