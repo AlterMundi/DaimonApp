@@ -861,23 +861,30 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop),before,'Phone Back preserves reading position');
   assert.equal(await page.locator('#conversation-message').inputValue(),draft);const restoredTarget=await page.evaluate(()=>workspaceFixture.microphone.getReply());assert.deepEqual(restoredTarget.reference,target.reference,'Phone Back restores the exact prior destination');assert(restoredTarget.version>target.version,'Navigation retains a fresh input-admission epoch, never reuses an old capture generation');
  }
+ await page.setViewportSize({width:1280,height:800});
+ await page.locator('#conversation-timeline').evaluate(node=>{node.scrollTop=0;});
+ await page.mouse.move(2,400);await page.mouse.wheel(0,300);
+ await page.waitForFunction(()=>document.querySelector('#conversation-timeline').scrollTop>0);
+ assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Outer wheel keeps the expanded header');
  await page.setViewportSize({width:390,height:844});
  const timeline=page.locator('#conversation-timeline');await timeline.evaluate(node=>{node.scrollTop=0;});await page.waitForTimeout(100);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Programmatic positioning does not compact header');
  assert.equal(await page.locator('#conversation-presence').count(),0,'Obsolete presence lane is removed');
  await timeline.hover();await page.mouse.wheel(0,900);await page.waitForTimeout(150);
- assert(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),'User forward scroll compacts header');
+ assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Forward scrolling keeps the full header during the redesign');
  assert.equal(await page.locator('#conversation-presence').count(),0,'Compact header does not recreate the removed lane');
  const identity=await page.locator('header .companion-name').boundingBox(),header=await page.locator('header').boundingBox();
- assert(identity.y>=header.y&&identity.y+identity.height<=header.y+header.height,'Compact identity remains fully visible');
- await page.screenshot({path:path.join(output,'mobile-compact.png')});
+ assert(identity.y>=header.y&&identity.y+identity.height<=header.y+header.height,'Expanded identity remains fully visible');
+ await page.screenshot({path:path.join(output,'mobile-expanded.png')});
  await page.mouse.wheel(0,-300);await page.waitForTimeout(150);
  assert.equal(await page.locator('body').evaluate(body=>body.classList.contains('conversation-header-compact')),false,'Reverse scroll restores header');
  assert.equal(await page.locator('#conversation-presence').count(),0,'Reverse scroll does not restore the removed lane');
  await page.screenshot({path:path.join(output,'mobile-conversation.png')});
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  workspaceAllowed=false;await page.locator('#conversation-refresh').evaluate(button=>button.click());
- await page.getByText('Session workspace access is unavailable. Return the input to the conversation, or restore access.',{exact:true}).waitFor();
+ // Workspace status lives inside its closed panel; check the retained result
+ // without requiring the panel to cover the restored conversation.
+ await page.waitForFunction(()=>document.querySelector('.session-workspace-status')?.textContent==='Session workspace access is unavailable. Return the input to the conversation, or restore access.');
  assert(await page.locator('#conversation-timeline').isVisible());assert(await titlePin.isDisabled(),'Grant loss disables update-title pin');assert(await page.locator('#conversation-account').isVisible(),'Workspace denial is not a global sign-out');
  assert.equal(await page.locator('#conversation-message').inputValue(),'My draft stays here.');
  await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();assert.equal(errors.length,0,errors.join('\n'));

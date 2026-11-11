@@ -122,7 +122,7 @@ pub(in crate::store) struct Parent {
     #[serde(default)]
     pub purpose_revision: Option<String>,
     #[serde(default)]
-    pub(super) review: Option<super::review::Review>,
+    pub(in crate::store) review: Option<super::review::Review>,
     pub human: i64,
     pub entry: SessionKey,
     pub session: i64,
@@ -195,7 +195,11 @@ fn select_batch(p: &mut Parent, lanes: &[Vec<Offer>; 5], progress_next: Option<i
 fn key(human: i64, session: i64) -> String {
     format!("heartbeat_producer:{human}:{session}")
 }
-pub(super) fn load(conn: &Connection, human: i64, session: i64) -> Result<Option<Parent>> {
+pub(in crate::store) fn load(
+    conn: &Connection,
+    human: i64,
+    session: i64,
+) -> Result<Option<Parent>> {
     conn.query_row(
         "SELECT value FROM bot_state WHERE key=?1",
         [key(human, session)],
@@ -344,6 +348,10 @@ pub(in crate::store) fn current(
                         && s["revision"] == offer.revision
                 })
             {
+                return Ok(false);
+            }
+        } else if offer.key.starts_with("review-task:") {
+            if !super::review::live(conn, p)? || !super::review::task_current(conn, p, &offer)? {
                 return Ok(false);
             }
         } else if offer.key.starts_with("report:") {
@@ -1197,12 +1205,15 @@ impl Store {
         }
         // Reports are observed even while native work is busy. Retain one
         // known-unsent metadata batch; the existing idle recovery owns dispatch.
-        let report_offers =
+        let mut report_offers =
             super::reports::offers(if c.activation.lane == HeartbeatLane::Reports {
                 &p.contract.reports
             } else {
                 &[]
             })?;
+        if c.activation.lane == HeartbeatLane::Reports {
+            report_offers.extend(super::review::task_offers(&tx, &p)?);
+        }
         let retaining_review =
             !allow_attention && c.activation.lane == HeartbeatLane::Reports && p.review.is_some();
         let now = Utc::now().timestamp_millis();

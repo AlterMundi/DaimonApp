@@ -118,6 +118,37 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         )?;
         return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
     }
+    if let Some(rest) = args.strip_prefix("replace-review-task ") {
+        let (generation, rest) = rest
+            .split_once(' ')
+            .context("Expected generation revision task")?;
+        let (expected, raw) = rest
+            .split_once(' ')
+            .context("Expected task revision and JSON")?;
+        let cfg = super::routing::profile(&app.shared)?;
+        app.shared.store.heartbeat_replace_review_task(
+            human,
+            cfg.entry(),
+            generation.parse()?,
+            expected,
+            serde_json::from_str(raw)?,
+        )?;
+        return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
+    }
+    if let Some(rest) = args.strip_prefix("select-review-task ") {
+        let (generation, raw) = rest
+            .split_once(' ')
+            .context("Expected select-review-task GENERATION TASK_JSON")?;
+        let task: crate::store::HeartbeatReviewTask = serde_json::from_str(raw)?;
+        let cfg = super::routing::profile(&app.shared)?;
+        app.shared.store.heartbeat_select_review_task(
+            human,
+            cfg.entry(),
+            generation.parse()?,
+            task,
+        )?;
+        return execute(app, human, cfg.entry(), HeartbeatCommand::Status).await;
+    }
     if let Some(rest) = args.strip_prefix("select-review ") {
         let (generation, raw) = rest
             .split_once(' ')

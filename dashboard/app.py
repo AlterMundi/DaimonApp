@@ -1300,8 +1300,13 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             canonical = await run_in_threadpool(provider.presentation_part, body['source'], body['revision'], body['offset'])
             if canonical.get('kind')=='integrator_live' and not engine.live_response:
                 raise ValueError('Live speech is not selected')
+            if profile=='openai':
+                from .voice_studio import configured_profiles
+                revision=await run_in_threadpool(app.state.avatar_workshop.voice_for_conversation,
+                    session['human'],configured_profiles(config))
+                if revision is not None:engine=engine.selected_voice(config,revision)
             selected = speech_part(canonical) if engine.incremental else canonical
-        except (ProviderUnavailable, OSError, ValueError, KeyError):
+        except (ProviderUnavailable, OSError, ValueError, KeyError, SpeechUnavailable, RenderError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
         await authorize_async(request)
         if body.get('stream'):

@@ -529,3 +529,44 @@ callback or listener replacement. Their output is deliberately excluded from
 ordinary full-history collection, so output recovery cannot be the only way to
 release completed heartbeat execution ownership. Ordinary new attention still
 requires current lane, source, native admission and resource checks.
+
+
+### Additional periodic purposes in Reports
+
+`heartbeat select-review-task GENERATION TASK_JSON` selects up to four bounded
+periodic tasks on the existing production review. It does not replace its eight
+report sources, original purpose, cadence, next check, counters or funding.
+The task contains `id`, `purpose` (actual retained input reference/channel),
+`purpose_revision` (empty on submission; the owner resolves it), and
+`instructions` (at most8000bytes). Exact same selection is idempotent; changing
+an existing task refuses. Global and Reports controls must be paused at the
+exact generation with no unresolved native execution or unreviewed pending batch.
+Restore only operation-owned unchanged controls afterward. No other goal changes.
+
+The existing Reports tick creates one task revision per review check even when
+file snapshots are unchanged. The task's own `heartbeat_source` reader exposes
+its retained human original and instructions; the batch's other purpose grants
+no substitute authority. Retirement of that task's original suppresses only its
+new offers; other sources remain eligible. Pending originals keep their exact
+identity across later checks/restarts; no second scheduler or quota reset exists.
+New stored tasks require this compatible reader on rollback.
+
+For institutional preservation, reconcile the mapped intake with a durable
+per-file/revision cursor and bounded pages. Retain selected originals and upload
+receipts in institutional Drive before any authorized disposable-cache cleanup.
+A full local cache or editorial backlog must not discard originals or terminate
+canonical preservation. Keep recording, publication and editorial selection
+separate. The callback is ordinary authorized native work using existing Drive
+tools, not live Drive I/O in model-free status/quiet checks. Actual reconciliation,
+configuration and subsequent periodic execution require separate receipts.
+
+Periodic task instructions evolve through the same owner with
+`heartbeat replace-review-task GENERATION EXPECTED_TASK_REVISION TASK_JSON`.
+Read the task revision from status, pause exact Reports/global controls, and
+replace only an unchanged task with the same retained purpose. Selection refuses
+unresolved executions and pending unreviewed originals. The transaction preserves
+all source cursors, report contracts, cadence, counters and funding; stale
+replacements never change state. Restore only operation-owned unchanged pauses.
+A private viewer projection may be part of its explicitly selected human purpose;
+read the owning snapshot schema and run its finite conditional refresh after
+meaningful source changes. An unchanged refresh must not grow publication history.

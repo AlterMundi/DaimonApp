@@ -121,6 +121,32 @@ impl Store {
                 && producer::bound(&conn, &parent)?,
             "Heartbeat report owner retired"
         );
+        if let Some(task_id) = source_id.strip_prefix("periodic:") {
+            let offers: Vec<producer::Offer> =
+                serde_json::from_value(parent.native_returns[index].envelope["offers"].clone())?;
+            let offer = offers
+                .iter()
+                .find(|o| o.key == format!("review-task:{task_id}") && o.revision == revision)
+                .context("Periodic task was not offered at this revision")?;
+            anyhow::ensure!(
+                super::review::task_current(&conn, &parent, offer)?,
+                "Periodic task purpose retired"
+            );
+            let task: super::review::HeartbeatReviewTask =
+                serde_json::from_value(offer.evidence["task"].clone())?;
+            let (original, _) =
+                producer::purpose_source(&conn, human, entry, native, &task.purpose)?;
+            let text = serde_json::to_string(
+                &json!({"task":task,"original_human_purpose":original,"new_human_input":false,"publication_grant":false}),
+            )?;
+            let total = text.chars().count();
+            anyhow::ensure!(offset <= total, "Periodic offset exceeds source");
+            let part: String = text.chars().skip(offset).take(12000).collect();
+            let next = offset + part.chars().count();
+            return Ok(
+                json!({"source":source_id,"revision":revision,"text":part,"total_chars":total,"next_offset":if next<total{Some(next)}else{None},"retained_human_original":true,"new_human_input":false}),
+            );
+        }
         if source_id == "purpose:human" {
             let offered = &parent.native_returns[index].envelope["operating_purpose"];
             anyhow::ensure!(
