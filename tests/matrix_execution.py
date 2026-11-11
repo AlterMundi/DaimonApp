@@ -7,6 +7,7 @@ Only synthetic keys, loopback transport and synthetic approval are used.
 import copy
 import hashlib
 import json
+import os
 import sys
 import time
 import unittest
@@ -32,6 +33,7 @@ from matrix_execution import (
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
+from matrix_operator import host_timeout
 from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
 from matrix_operator import respond as operator_respond
@@ -42,6 +44,25 @@ from tests import test_dm025_client as client_fixtures
 from tests import test_execution_store as store_fixtures
 from tests import test_group_messaging_runtime as group_fixtures
 from tests import test_passive_messaging_execution as runner_fixtures
+
+
+class HostDeadline(unittest.TestCase):
+    def test_startup_and_later_calls_share_the_existing_owner_window(self):
+        with patch.dict(os.environ, {"DAIMON_MATRIX_HOST_DEADLINE_MS": "145000"}):
+            with patch("matrix_operator.time.time_ns", return_value=120_000_000_000):
+                self.assertEqual(host_timeout(), 25)
+            with patch("matrix_operator.time.time_ns", return_value=140_000_000_000):
+                self.assertEqual(host_timeout(), 5)
+            with patch("matrix_operator.time.time_ns", return_value=145_000_000_000):
+                with self.assertRaises(MatrixExecutionError):
+                    host_timeout()
+
+    def test_invalid_or_unbounded_windows_refuse_instead_of_resetting(self):
+        for value in ["", "01", "1e12", "-1", "99999999999999999", "161001"]:
+            with patch.dict(os.environ, {"DAIMON_MATRIX_HOST_DEADLINE_MS": value}):
+                with patch("matrix_operator.time.time_ns", return_value=100_000_000_000):
+                    with self.assertRaises(MatrixExecutionError):
+                        host_timeout()
 
 
 @dataclass(frozen=True)

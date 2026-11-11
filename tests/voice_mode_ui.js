@@ -182,3 +182,17 @@ nativeRecovery.mode.update({continuousState:{active:false,starting:true,reconnec
 nativeRecovery.mode.update({continuousState:{active:false,starting:false,reconnecting:false,message:'Voice replacement was not confirmed. Your originals are kept.'}});
 assert.match(nativeRecoveryCaption.textContent,/not confirmed/);nativeRecovery.mode.close();
 console.log('Native replacement view: explicit reconnection/original-review status, no manual click and no stale notice or lost new caption.');
+
+// The decorative meter reads existing PCM only; no timer, player or capture.
+{
+ const window={};vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document:{},ArrayBuffer,Int16Array,Date});
+ let at=1000;const levels=[],read=window.ConversationVoiceMode.meter(v=>levels.push(v),()=>at);
+ const pcm=new Int16Array(1600).fill(8192),before=Buffer.from(pcm.buffer).toString('hex');
+ read(pcm.buffer);assert.equal(levels[0],1);read(pcm.buffer);assert.equal(levels.length,1);
+ at+=100;read(new Int16Array(1600).buffer);assert.equal(levels[1],0);
+ at+=100;read(new ArrayBuffer(32002));read(new ArrayBuffer(3));assert.equal(levels.length,2);
+ assert.equal(Buffer.from(pcm.buffer).toString('hex'),before,'Meter must not alter captured samples');
+ const broken=window.ConversationVoiceMode.meter(()=>{throw Error('Synthetic decoration failure');},()=>at);
+ assert.doesNotThrow(()=>broken(pcm.buffer));
+ console.log('Measured Avatar envelope: RMS, silence, ten-Hz bound, byte bound, unchanged PCM and cosmetic failure isolation passed.');
+}

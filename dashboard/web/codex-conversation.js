@@ -9,11 +9,12 @@ window.CodexConversation=(()=>{
     let epoch=0,parts=[],bytes=0,total=0,ordinal=0,seconds=600,finishAck,closeAck,chain=Promise.resolve(),durable=Promise.resolve(),timer,fragmentParts=[],fragmentBytes=0,segment,persistingFragments=0;
     let audible=true,paused=false,connected=false,restored,restoring,historyBefore,historyGeneration=0,openingCount=0,unlockCapture;
     let admission,admissionDeadline,mediaVisit,captureEpoch=0,renewing=false,failureTimer,rejectOpening,replacementRequested=false,terminalClose=false;
-    let activityAbort,activityObserver,outputLevel=0;
+    let activityAbort,activityObserver,outputLevel=0,inputLevel=0;
     const originals=new Map();
     const state=(message,preserveMessage=false)=>onState({active,starting:starting||renewing,reconnecting:renewing||replacementRequested||failureTimer!==undefined,floor:false,pending:originals.size>0,working:closing,
-      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,...(preserveMessage?{}:{message})});
+      audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,inputLevel:active&&!closing?inputLevel:0,...(preserveMessage?{}:{message})});
     function stopActivity(){activityAbort?.abort();activityAbort=undefined;activityObserver?.close();activityObserver=undefined;const previous=outputLevel;outputLevel=0;if(previous)state(undefined,true);}
+    const inputMeter=window.ConversationVoiceMode?.meter?.(value=>{inputLevel=value;state();});
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
     async function request(path,options={}){
       const response=await fetch(new URL('api/interaction/voice/codex/'+path,window.location.href),{
@@ -284,6 +285,7 @@ window.CodexConversation=(()=>{
           if(!value.pcm)return;
           const pcm=value.pcm;
           if(!(pcm instanceof ArrayBuffer)||!pcm.byteLength||pcm.byteLength%2||pcm.byteLength>32000||total+pcm.byteLength>seconds*32000){void hold('Voice capture reached its bound.');return;}
+          inputMeter?.(pcm);
           parts.push(pcm);bytes+=pcm.byteLength;total+=pcm.byteLength;fragmentParts.push(pcm);fragmentBytes+=pcm.byteLength;checkpoint();
           if(bytes>=30*32000)flush();
           if(binding!==getBinding())void hold('Conversation changed. Your original audio is kept.');

@@ -548,6 +548,12 @@ async fn host_command_mode(
     }
     let mut command = Command::new(&config.command[0]);
     command.args(&config.command[1..]);
+    // The existing host budget includes SDK startup and every RPC. Give the
+    // configured adapter its remaining deadline instead of a second fixed cap.
+    command.env(
+        "DAIMON_MATRIX_HOST_DEADLINE_MS",
+        (Utc::now().timestamp_millis() + config.timeout_seconds as i64 * 1000).to_string(),
+    );
     if let Some(mode) = mode {
         command.arg(mode);
     }
@@ -612,6 +618,30 @@ async fn host_command_mode(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn host_passes_one_deadline_before_adapter_startup() {
+        let config = crate::interaction::MatrixTransportConfig {
+            command: vec![
+                "python3".into(),
+                "-c".into(),
+                "import os,json,time;time.sleep(.15);d=int(os.environ['DAIMON_MATRIX_HOST_DEADLINE_MS']);print(json.dumps({'deadline':d,'remaining':d-time.time_ns()//1000000}))".into(),
+            ],
+            source: MatrixDestination::Body {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+                embodiment_id: "embodiment:source".into(),
+            },
+            timeout_seconds: 2,
+        };
+        let before = Utc::now().timestamp_millis();
+        let value = host_command_mode(&config, &json!({}), Some("--inbox"))
+            .await
+            .unwrap();
+        let deadline = value["deadline"].as_i64().unwrap();
+        let remaining = value["remaining"].as_i64().unwrap();
+        assert!((before + 2000..=Utc::now().timestamp_millis() + 2000).contains(&deadline));
+        assert!((1..=1850).contains(&remaining));
+    }
 
     #[tokio::test]
     async fn host_deadline_closes_its_descendants_even_after_parent_exit() {

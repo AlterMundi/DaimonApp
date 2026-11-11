@@ -1,10 +1,55 @@
 "use strict";
 // A foreground, bounded view. No persisted microphone opt-in or second sender.
 window.ConversationVoiceMode=(()=>{
+  // Cosmetic RMS envelopes reuse existing capture buffers. No audio is copied,
+  // retained, played or opened here; at most ten measurements per second.
+  function meter(notify,clock=()=>Date.now()){
+    let previous=-Infinity;
+    return pcm=>{
+      try{
+        if(!(pcm instanceof ArrayBuffer)||!pcm.byteLength||pcm.byteLength>32000||pcm.byteLength%2)return;
+        const at=clock();if(at-previous<100)return;previous=at;
+        const samples=new Int16Array(pcm);let sum=0;
+        for(const x of samples)sum+=(x/32768)**2;
+        notify(Math.min(1,Math.sqrt(sum/samples.length)*6));
+      }catch{/* Presentation cannot interrupt the capture owner. */}
+    };
+  }
+  function signalSurface(dialog){
+    if(!document.createElementNS)return;
+    const make=tag=>document.createElementNS('http://www.w3.org/2000/svg',tag);
+    const svg=make('svg');svg.classList.add('voice-signal');svg.setAttribute('viewBox','0 0 320 100');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('aria-hidden','true');
+    const tracks=['input','output'].map(kind=>{const path=make('path');path.dataset.signal=kind;svg.append(path);return {kind,path,values:Array(40).fill(0)};});
+    dialog.append(svg);let levels={input:0,output:0};
+    function clear(){levels={input:0,output:0};for(const t of tracks){t.values.fill(0);t.path.removeAttribute('d');}svg.dataset.active='false';}
+    function update(value){
+      if(document.hidden){clear();return;}
+      for(const t of tracks){
+        const field=t.kind+'Level';if(!Object.hasOwn(value,field))continue;
+        const level=Number.isFinite(value[field])?Math.min(1,Math.max(0,value[field])):0;levels[t.kind]=level;
+        if(!level){t.values.fill(0);t.path.removeAttribute('d');continue;}
+        t.values.shift();t.values.push(level);
+        const points=t.values.map((v,i)=>[i*320/39,50-v*28]);
+        const other=t.values.map((v,i)=>[i*320/39,50+v*28]).reverse();
+        // Smooth the measured envelope without inventing an oscillating carrier.
+        let previous=points[0],d='M'+previous.map(v=>v.toFixed(1)).join(' ');
+        for(const point of points.slice(1).concat(other)){
+          const mid=(previous[0]+point[0])/2;
+          d+=' C'+[mid,previous[1],mid,point[1],...point].map(v=>v.toFixed(1)).join(' ');previous=point;
+        }
+        t.path.setAttribute('d',d+' Z');
+      }
+      svg.dataset.active=String(levels.input>0||levels.output>0);
+    }
+    return {clear,update};
+  }
   function mount({portrait,onEnter,onLeave,onSuspend,onSpeak,onReconnect,onResumeAudio,onReview,getAttention=()=>0,canStart,canReconnect=()=>true,canEnter=canStart}){
     if(!portrait || typeof document.createElement('dialog').showModal!=='function')return;
     const dialog=document.createElement('dialog');dialog.className='voice-mode';
     dialog.setAttribute('aria-label','Direct voice conversation');
+    let signal;try{signal=signalSurface(dialog);}catch{/* Cosmetic surface unavailable. */}
+    const clearSignal=()=>{try{signal?.clear();}catch{}};
+    const showSignal=value=>{try{signal?.update(value);}catch{}};
     const heading=document.createElement('h2');heading.textContent='Conversation';
     const hint=document.createElement('p');hint.textContent='Only you and your daimon';
     const stage=document.createElement('div');stage.className='voice-mode-portrait';
@@ -60,7 +105,7 @@ window.ConversationVoiceMode=(()=>{
     // renewing native dialogue owns the logical lifetime until human Stop.
     function armClose(){clearTimeout(timer);timer=undefined;if(continuous&&untilStop)return;timer=setTimeout(close,(continuous?10:5)*60*1000);}
     function close(){
-      if(!opened)return lastClose;opened=false;clearTimeout(timer);clearTimeout(rearm);
+      if(!opened)return lastClose;clearSignal();opened=false;clearTimeout(timer);clearTimeout(rearm);
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
       entryState();lastClose=onLeave();portrait.focus();return lastClose;
     }
@@ -83,6 +128,7 @@ window.ConversationVoiceMode=(()=>{
     function update(value){
       if(!opened)return;
       if(value.connected===false){close();return;}
+      showSignal(value.continuousState||value);
       if(continuous&&value.handoff)showDetection(value.handoff);
       const wasStopped=!listening&&!preparing&&!!directMessage,wasReconnecting=reconnecting;
       if(value.continuousState?.starting){detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;}
@@ -133,7 +179,7 @@ window.ConversationVoiceMode=(()=>{
     back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
     speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){armClose();onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
     function suspend(){
-      if(!opened)return;
+      if(!opened)return;clearSignal();
       if(continuous && onSuspend)onSuspend();
       else close();
     }
@@ -151,5 +197,5 @@ window.ConversationVoiceMode=(()=>{
       if(!available)close();
     }};
   }
-  return {mount};
+  return {mount,meter};
 })();

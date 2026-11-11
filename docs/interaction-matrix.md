@@ -495,8 +495,24 @@ execution store or paid admission is introduced.
 [interaction.matrix_transport]
 command = ["/usr/bin/python3", "-B", "/path/to/matrix_operator.py", "--native-connection", "/path/to/current/connection.json", "--binding", "/path/to/private/host-binding.json"]
 source = {kind = "body", being_ref = "SOURCE_BEING_REF", embodiment_id = "SOURCE_EMBODIMENT_ID"}
-timeout_seconds = 15
+timeout_seconds = 45
 ```
+
+The host command budget includes the qualified SDK startup, not only socket I/O.
+An actual MEDUSA read took19.4seconds, with most time in SDK qualification and
+imports; a15second host cutoff could reject normal work before its result.
+Use a measured startup allowance within the existing1–60second range;45seconds
+is the ordinary example. This does not enlarge native inference budgets or
+permit retrying an uncertain send. Keep the adapter's bounded RPC deadline and
+use status-only inspection after a lost command result. The backend supplies
+`DAIMON_MATRIX_HOST_DEADLINE_MS` before spawning the command. The adapter inherits
+it through qualified SDK bootstrap and gives its RPCs only the remaining time,
+instead of imposing a separate10second cap or restarting a full window after
+startup. Invalid, expired or over60second windows refuse. Standalone calls without
+the App deadline retain their previous10second default; the App's process-group
+termination and original authoring/physical execution deadlines remain unchanged. Changing this field
+uses the existing same-actor profile/companion maintenance route in
+[the fleet guide](interaction-fleet-updates.md#matrix-profile-changes-and-same-scope-web-companions).
 
 Replace placeholders with the explicitly selected existing source and recipients;
 this example is not an enrollment or activation. The owner-only binding uses
