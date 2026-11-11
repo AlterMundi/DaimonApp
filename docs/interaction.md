@@ -1673,3 +1673,5 @@ The owning integrating entry can read current partial evidence using its exact
 workflow source revision. A successor still requires completed, current evidence.
 Source bodies, claims, delivery membership and original admissions remain
 immutable; reading or linking does not replay, publish, advance or retire work.
+
+The owner-local equivalent is `telecodex --control CONFIG workflow result ID STEP REVISION OFFSET`; it uses the configured integrating entry and the same scoped reader, without a model lease or source mutation.
