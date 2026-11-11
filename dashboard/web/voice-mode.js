@@ -197,5 +197,5 @@ window.ConversationVoiceMode=(()=>{
       if(!available)close();
     }};
   }
-  return {mount,meter};
+  return {mount,meter,signalSurface};
 })();

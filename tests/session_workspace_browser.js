@@ -7,12 +7,13 @@ const avatarPath=process.env.QUALIFICATION_AVATAR_RECORD;
 let avatarRecord;
 if(avatarPath){assert(path.isAbsolute(avatarPath));const bytes=fs.readFileSync(avatarPath);assert(bytes.length<=1048576);avatarRecord=JSON.parse(bytes);assert(/^[a-f0-9-]{36}$/.test(avatarRecord.id)&&avatarRecord.design);}
 const avatarEntrySelector=avatarRecord?'#conversation-companion .avatar-surface':'#conversation-companion pre';
+const headerSignalCase=process.env.QUALIFICATION_HEADER_SIGNAL==='1';
 const imageCase=process.env.QUALIFICATION_IMAGE_PREVIEW==='1';let imageAccess=true;
 const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
 const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
 const unifiedAttentionCase=process.env.QUALIFICATION_UNIFIED_ATTENTION==='1';
 const reconnectCase=process.env.QUALIFICATION_SESSION_RECONNECT==='1';let workspaceOutage=false;
-const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
+const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=headerSignalCase||hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
 const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
@@ -131,6 +132,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await context.addInitScript(()=>{
   let original;window.workspaceFixture={};Object.defineProperty(window,'VoiceInput',{configurable:true,get:()=>original,set(value){original={...value,mount(hooks){window.workspaceFixture.microphone=hooks;return value.mount(hooks);}};}});
  });
+ if(headerSignalCase)await context.addInitScript(()=>{
+  let source;window.headerMicrophoneRequests=0;
+  Object.defineProperty(window,'WebRtcNativeAudio',{configurable:true,get:()=>source,set(value){source={...value,watchElement(audio,hooks){window.workspaceFixture.outputActivity=hooks;return value.watchElement(audio,hooks);}};}});
+  if(navigator.mediaDevices)navigator.mediaDevices.getUserMedia=async()=>{headerMicrophoneRequests++;throw Error('This visual fixture must not open a microphone');};
+ });
  if(unifiedAttentionCase)await context.addInitScript(()=>{
   const controls=[];window.pendingFixture=controls;let original;
   Object.defineProperty(window,'RequestControls',{configurable:true,get:()=>original,set(value){original={...value,mount(options){const result=value.mount(options);controls.push(result);return result;}};}});
@@ -202,6 +208,38 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  let selectedAvatarCanvas;const page=await context.newPage();page.on('pageerror',error=>errors.push(String(error)));
  await page.goto(origin+'/?view=conversation&client=standalone',{waitUntil:'load'});
  if(avatarRecord){await page.waitForFunction(()=>document.querySelector('.avatar-surface')?.dataset.avatarState==='custom');selectedAvatarCanvas=await page.locator('.avatar-surface canvas').elementHandle();assert.equal(await page.locator('.avatar-surface canvas').count(),1);report.avatar={id:avatarRecord.id,sha256:avatarRecord.sha256,name:avatarRecord.name,evidence:'Retained selected artwork rendered with synthetic API ownership; no selection/save or hearing claim'};}
+ if(headerSignalCase){
+  await page.waitForFunction(()=>authenticated&&sharedConversationConnected&&workspaceFixture.microphone?.onLevel&&workspaceFixture.outputActivity);
+  report.viewports=[];
+  for(const [width,height] of [[1280,800],[390,844]]){
+   await page.setViewportSize({width,height});await page.waitForTimeout(120);
+   const header=page.locator('header').first(),svg=header.locator('svg.voice-signal');await svg.waitFor({state:'attached'});
+   const initial=await header.evaluate(node=>({background:getComputedStyle(node).backgroundImage,overlay:getComputedStyle(node,'::before').backgroundImage,rect:node.getBoundingClientRect().toJSON()}));
+   await page.evaluate(()=>workspaceFixture.microphone.onActivity(true,{phase:'recording'}));
+   for(let i=0;i<40;i++){await page.evaluate(level=>workspaceFixture.microphone.onLevel(level),[.12,.32,.2,.6,.35,.18,.48,.25][i%8]);await page.waitForTimeout(105);}
+   assert.equal(await svg.getAttribute('data-active'),'true');assert((await svg.locator('[data-signal="input"]').getAttribute('d')).includes('C'));
+   const wave=await svg.boundingBox(),box=await header.boundingBox();assert(Math.abs(wave.width-box.width)<1&&Math.abs(wave.height-box.height)<1,'Envelope covers the whole header background');
+   const current=await header.evaluate(node=>({background:getComputedStyle(node).backgroundImage,overlay:getComputedStyle(node,'::before').backgroundImage,rect:node.getBoundingClientRect().toJSON()}));assert.deepEqual(current,initial,'Recording preserves selected background and header geometry');
+   await header.screenshot({path:path.join(output,`header-input-${width}.png`)});
+   await page.evaluate(()=>{workspaceFixture.microphone.onLevel(0);workspaceFixture.microphone.onActivity(false,{phase:'idle'});});
+   assert.equal(await svg.getAttribute('data-active'),'false');assert.equal(await svg.locator('[data-signal="input"]').getAttribute('d'),null);
+   for(let i=0;i<40;i++){await page.evaluate(rms=>workspaceFixture.outputActivity.onActivity(rms),[.03,.07,.04,.09,.05,.035,.06,.04][i%8]);await page.waitForTimeout(105);}
+   assert.equal(await svg.getAttribute('data-active'),'true');assert((await svg.locator('[data-signal="output"]').getAttribute('d')).includes('C'));
+   const colors=await svg.evaluate(node=>[...node.querySelectorAll('path')].map(path=>getComputedStyle(path).stroke));assert.notEqual(colors[0],colors[1],'Input and output use distinct appearance colors');
+   const app=page.locator('header .apps-return'),button=await app.boundingBox();assert(await page.evaluate(({x,y})=>!!document.elementFromPoint(x,y)?.closest('.apps-return'),{x:button.x+button.width/2,y:button.y+button.height/2}),'Feedback never blocks header controls');
+   await header.screenshot({path:path.join(output,`header-output-${width}.png`)});
+   await page.evaluate(()=>workspaceFixture.outputActivity.onActivity(0));assert.equal(await svg.getAttribute('data-active'),'false');
+   report.viewports.push({width,height,colors,header:box});
+  }
+  await page.waitForTimeout(110);await page.evaluate(()=>workspaceFixture.microphone.onLevel(.5));
+  assert.equal(await page.locator('header > svg.voice-signal').getAttribute('data-active'),'true');
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+  assert.equal(await page.locator('header > svg.voice-signal').getAttribute('data-active'),'false');
+  await page.evaluate(()=>workspaceFixture.microphone.onLevel(.8));assert.equal(await page.locator('header > svg.voice-signal').getAttribute('data-active'),'false','Hidden page cannot animate audio feedback');
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
+  await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('header > svg.voice-signal').evaluate(node=>getComputedStyle(node).display),'none');
+  assert.equal(await page.evaluate(()=>headerMicrophoneRequests),0);assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));report.state='qualified-header-input-output-envelopes';return;
+ }
  if(process.env.QUALIFICATION_COMPACT_AVATAR_HEADER==='1'){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
   assert.equal(await page.locator('#conversation-presence,.companion-status-track,.companion-caption,.companion-phases').count(),0,'Caption lane and its status/background container are absent');

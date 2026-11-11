@@ -127,12 +127,13 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
     const remaining=document.querySelector('#conversation-voice-remaining');
     const RECORDING_MILLIS=120000,clock=()=>window.performance?.now?.()??Date.now();
+    const levelMeter=window.ConversationVoiceMode?.meter?.(value=>onLevel(value),clock);
     const recovery=recoveryStore();let restoreBinding,restoring=false,continuousOwned=false,recoveryFree=false,lastConfirmed;
     let checking=false,statusTimer,noticeDismissible=false;const statusAttempts=new Map();
     function clearStatusTimer(){clearTimeout(statusTimer);statusTimer=undefined;}
@@ -215,6 +216,7 @@ window.VoiceInput = (() => {
       if(save){save.hidden=!pending;save.disabled=uploading;}if(review)review.hidden=!pending;
       discard.textContent='×';discard.setAttribute('aria-label',noticeDismissible?'Dismiss recording notice':pending?'Discard local recording':'Discard recording');discard.title=noticeDismissible?'Dismiss recording notice':pending?'Discard local recording':'Discard recording';
       check.hidden=!pending; check.disabled=uploading||checking;check.textContent=checking?'Checking delivery…':'Check delivery';
+      if(phase!=='recording')try{onLevel(0);}catch{}
       onActivity(uploading || ['permission','recording','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
     }
     function stopTracks() {closeCues();if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
@@ -389,7 +391,8 @@ window.VoiceInput = (() => {
           try{current=await window.StreamingVoice.create(media,{headers,binding,canonicalRecorder:canonical,id:frozenSelection.captureId,transcriptionProvider:openaiPreview?'openai':'current',
             turnDetection:!openaiPreview&&conversational,onEndpoint:()=>{if(conversationCapture&&owned===generation&&phase==='recording'&&words)submit();},
             onDetectionUnavailable:()=>{if(conversational&&owned===generation){conversationCapture=false;hold();}},
-            onUnavailable:()=>{previewUnavailable=true;if(owned===generation&&phase==='recording')caption('Recording… Live text unavailable.');},
+            onPCM:pcm=>{if(owned===generation&&phase==='recording')levelMeter?.(pcm);},
+            onUnavailable:()=>{previewUnavailable=true;try{onLevel(0);}catch{}if(owned===generation&&phase==='recording')caption('Recording… Live text unavailable.');},
             onPartial:text=>{if(owned===generation&&phase==='recording'){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');caption(text||'Listening…');if(!conversational&&binding===getBinding())onTranscript({id:frozenSelection.captureId,binding,active:true,text});}}});hasTranscriptPreview=!!current;}catch{previewUnavailable=true;}
         }
         if(owned!==generation||binding!==getBinding()||document.hidden){current?.discard?.();for(const track of media.getTracks())track.stop();return;}
