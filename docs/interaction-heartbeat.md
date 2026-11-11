@@ -305,6 +305,34 @@ Status retains `last_attention_failure` separately from present
 operational readiness. This does not authorize a failed task retry.
 
 
+## Native account-owner client preparation
+
+The trusted native event callback may opt into `FundedInferenceAllowance` with
+an already authorized journal cycle. The existing bounded start then sends
+`providerReservationCycleId` to Core17; an older reader rejects it and there is
+no ordinary-start fallback. Attempt-only `InferenceAllowance` keeps its existing
+wire shape and does not become a monetary grant.
+
+`turn/providerAttempt/reserve` is handled before ordinary turn-event filtering:
+it may arrive before the start ACK and has no turnId. Match the selected thread,
+canonical cycle/attempt UUIDs, original complete-request ceiling, attempt count
+and absolute deadline before calling the host accounting owner. Only its explicit
+`ProviderAttemptReserved(true)` authorizes the exact response. Duplicate attempts
+or ordinals cannot call the owner again; a refusal/error fences subsequent
+requests in that cycle. Cancellation and the original deadline remain effective
+while the owner is pending. A late result cannot renew the horizon or create a
+new attempt. No model tool, human question or account choice comes from the RPC.
+
+The default App owner explicitly refuses financial reservations. This source
+prepares the native client, not a configured account or receiving activation.
+The provisioned consumer must use the existing Matrix `CycleContext`/schema5
+journal and verified cost contract, retaining exact attempts and conservative
+exposure across restart or lost responses. Local duplicate tracking is not that
+durable ledger, and writing an authorization is not proof of provider usage.
+Real account/route/exposure qualification, authenticated per-attempt usage and
+credential/tool-route isolation remain necessary before monetary enforcement.
+
+
 ## Attributed Matrix messages in Conversation
 
 The existing owner presentation accepts optional `inbox` and `responses` cursors

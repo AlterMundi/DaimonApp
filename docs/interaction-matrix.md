@@ -472,6 +472,13 @@ create an account, human approval, budget, provider or receiver activation.
 Without `received_source`, legacy manual single-cycle behavior remains unchanged;
 legacy controllers reject a queued work ID rather than silently using it.
 
+This qualified runner route is separate from the continuing native conversation's
+[account-owner client preparation](interaction-heartbeat.md#native-account-owner-client-preparation).
+That opt-in path uses Core17's per-attempt owner RPC and the existing Matrix
+context/journal; its real account consumer, pricing/usage and isolated credential
+route remain unprovisioned. Do not construct the old one-call reviewer as a
+substitute or treat the ordinary heartbeat attempt allowance as a money grant.
+
 ## Technical original transport
 
 `MatrixConversationTransport(authenticated_status, selected_author, authenticated_client)`

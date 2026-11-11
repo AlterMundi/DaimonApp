@@ -1074,6 +1074,13 @@ pub(super) async fn process_turn(
                                     None=>CodexEventOutcome::None,
                                 })
                             }
+                            CodexEvent::NativeProviderAttemptReservation(request) => {
+                                // No account owner is provisioned by ordinary heartbeat
+                                // fuel. Never turn a provider reservation into a model
+                                // tool, human prompt, or unbacked authorization.
+                                drop(request);
+                                Ok(CodexEventOutcome::ProviderAttemptReserved(false))
+                            }
                             CodexEvent::NativeGoalBlocked { turn_id: native_turn, goal } => {
                                 if shared.store.goal_recovery_block_observed(session_key,requester_user_id,&goal.thread_id,&native_turn,&goal).is_err() {
                                     tracing::warn!("Native goal-block evidence could not be retained; no recovery authorized");
@@ -1858,6 +1865,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeGoalIdle
             | CodexEvent::NativeTurnStarted(_)
             | CodexEvent::NativeTurnSubmitting
+            | CodexEvent::NativeProviderAttemptReservation(_)
             | CodexEvent::NativeExternalInputSubmitting
             | CodexEvent::NativeTurnTerminal { .. }
             | CodexEvent::NativeGoalBlocked { .. }
