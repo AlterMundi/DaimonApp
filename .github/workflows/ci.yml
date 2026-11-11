@@ -157,6 +157,13 @@ jobs:
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
             # Use the runner's signed repository/mirror selection. Forcing
             # archive.ubuntu.com timed out before tests in43046554940.
+            # Plain HTTP to the configured Azure endpoint timed out in43049406437.
+            # Keep its domain and Ubuntu signature verification; use TLS.
+            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list /etc/apt/apt-mirrors*.txt; do
+              if [ -f "$source" ]; then
+                sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://azure.archive.ubuntu.com/ubuntu|g' "$source"
+              fi
+            done
             apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::http::Dl-Limit=0 -o Acquire::https::Dl-Limit=0)
             timeout 90s sudo apt-get "${apt_options[@]}" install -y --no-install-recommends ffmpeg || {
               timeout 60s sudo apt-get "${apt_options[@]}" update
@@ -272,6 +279,13 @@ jobs:
           if ! command -v ffmpeg >/dev/null; then
             # Preserve the runner's signed repositories rather than forcing
             # the unavailable archive.ubuntu.com route (CI43046554940).
+            # Plain HTTP to the configured Azure endpoint timed out in43049406437.
+            # Keep its domain and Ubuntu signature verification; use TLS.
+            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list /etc/apt/apt-mirrors*.txt; do
+              if [ -f "$source" ]; then
+                sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://azure.archive.ubuntu.com/ubuntu|g' "$source"
+              fi
+            done
             mkdir -p "$HOME/.cache/telecodex-ffmpeg-apt/partial"
             apt_options=(-o Dir::Cache::archives="$HOME/.cache/telecodex-ffmpeg-apt" -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::http::Dl-Limit=0 -o Acquire::https::Dl-Limit=0)
             timeout 90s sudo apt-get "${apt_options[@]}" install -y --no-install-recommends ffmpeg || {
