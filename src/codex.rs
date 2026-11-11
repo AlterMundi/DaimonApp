@@ -32,6 +32,7 @@ use tokio_tungstenite::{
     },
 };
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 mod goals;
 pub use goals::{
@@ -239,6 +240,9 @@ pub enum CodexEvent {
     /// Atomic idle admission confirmed capacity contention without submission.
     NativeInputDeferred,
     NativeTurnSubmitting,
+    /// Host accounting only, never a model tool or human question. The selected
+    /// owner must reserve the exact attempt durably before returning true.
+    NativeProviderAttemptReservation(NativeProviderAttemptReservation),
     /// Transactional ownership handover before any new packet joins a writer.
     NativeExternalInputSubmitting,
     NativeTurnTerminal {
@@ -314,6 +318,32 @@ pub struct NativeInferenceAllowance {
     pub max_request_bytes: u32,
     pub deadline_unix_ms: i64,
 }
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeProviderAttemptReservation {
+    pub thread_id: String,
+    pub cycle_id: String,
+    pub attempt_id: String,
+    pub ordinal: u32,
+    pub max_request_bytes: u32,
+    pub deadline_unix_ms: i64,
+}
+
+impl NativeProviderAttemptReservation {
+    fn matches(&self, thread: &str, cycle: &str, allowance: &NativeInferenceAllowance) -> bool {
+        let canonical =
+            |value: &str| Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value);
+        self.thread_id == thread
+            && self.cycle_id == cycle
+            && canonical(&self.cycle_id)
+            && canonical(&self.attempt_id)
+            && self.ordinal > 0
+            && self.ordinal <= allowance.max_provider_attempts
+            && self.max_request_bytes == allowance.max_request_bytes
+            && self.deadline_unix_ms == allowance.deadline_unix_ms
+    }
+}
 impl NativeInferenceAllowance {
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
@@ -338,6 +368,21 @@ pub enum CodexEventOutcome {
     /// Release only this completed collector for retained canonical attention.
     YieldGoalCollector,
     InferenceAllowance(NativeInferenceAllowance),
+    /// Explicit owner selection for an already authorized journal cycle.
+    /// Ordinary attempt-only heartbeat allocations keep their existing path.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "No live financial owner is provisioned; owner-client fixtures exercise this opt-in selection"
+        )
+    )]
+    FundedInferenceAllowance {
+        allowance: NativeInferenceAllowance,
+        cycle_id: String,
+    },
+    /// Only a trusted host callback may supply this result. No UI/model route.
+    ProviderAttemptReserved(bool),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
     DynamicTool(oneshot::Receiver<Value>),
@@ -1684,7 +1729,9 @@ where
             bail!("Conditional goal activation binding changed before submission");
         }
         let params = build_turn_start_params(&thread_id, &effective_session, request);
-        let _ = on_event(CodexEvent::NativeTurnSubmitting).await?;
+        if !matches!(on_event(CodexEvent::NativeTurnSubmitting).await?, CodexEventOutcome::None) {
+            bail!("Reserved inference requires bounded idle admission; no conditional continuation submitted");
+        }
         initial_write_possible = true;
         let (active, turn) = goals::conditional_continuation(&mut process, &thread_id, activation.conditional.as_ref().expect("selected conditional activation"), params, None).await?;
         goal_active = active;
@@ -1797,14 +1844,25 @@ where
             json!({"kind":"application","value":awareness});
     }
     let admission = on_event(CodexEvent::NativeTurnSubmitting).await?;
-    let inference_allowance = match admission {
+    let (inference_allowance, provider_cycle) = match admission {
         CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
             allowance.validate()?;
-            Some(allowance)
+            (Some(allowance), None)
         }
-        CodexEventOutcome::None if !idle_only => None,
+        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id } if idle_only => {
+            allowance.validate()?;
+            anyhow::ensure!(Uuid::parse_str(&cycle_id).is_ok_and(|id|id.to_string()==cycle_id), "Canonical funding cycle UUID required");
+            (Some(allowance), Some(cycle_id))
+        }
+        CodexEventOutcome::None if !idle_only => (None, None),
         _ => bail!("Fresh heartbeat requires its exact retained inference reservation"),
     };
+    // Capture once: no incoming RPC may renew the original reservation horizon.
+    let provider_deadline = inference_allowance.as_ref().map(|allowance| {
+        Instant::now() + Duration::from_millis(
+            allowance.deadline_unix_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).max(0) as u64
+        )
+    });
     // Inputs already queued during preparation belong in the initial packet,
     // before a fast model can finish the earlier request without seeing them.
     let mut initial_steers = Vec::new();
@@ -1855,10 +1913,12 @@ where
     let turn_request_id = if adopted_turn.is_some() {
         None
     } else {
-        let (method, params) = if let Some(allowance) = inference_allowance {
+        let (method, params) = if let Some(allowance) = inference_allowance.as_ref() {
             // Mandatory method: old servers must reject before inference. No fallback.
             allowance.validate()?;
-            ("turn/startBoundedIfIdle",json!({"turn":params,"allowance":allowance}))
+            let mut bounded_params = json!({"turn":params,"allowance":allowance});
+            if let Some(cycle) = provider_cycle.as_ref() { bounded_params["providerReservationCycleId"] = json!(cycle); }
+            ("turn/startBoundedIfIdle", bounded_params)
         } else { ("turn/start",params) };
         initial_write_possible = true;
         Some(process.send_request(method, params).await?)
@@ -1908,6 +1968,10 @@ where
     let mut open_tools = HashMap::<NativeRequestId, (String, CancellationToken)>::new();
     let mut seen_tool_requests = HashSet::new();
     let mut seen_tool_calls = HashSet::new();
+    let mut seen_provider_attempts = HashSet::new();
+    let mut seen_provider_ordinals = HashSet::new();
+    let mut seen_provider_requests = HashSet::new();
+    let mut provider_owner_fenced = false;
     loop {
         // A heartbeat allowance owns one physical execution. An unrelated active
         // ordinary goal must not keep its completed collector open for the next
@@ -2187,6 +2251,40 @@ where
                 }
               }
               RpcMessage::ServerRequest{id,method,params}=>{
+                if method == "turn/providerAttempt/reserve" {
+                    // This request can precede the start ACK and deliberately
+                    // has no turnId. Match the owner-selected cycle/thread before
+                    // the ordinary event filter, never a source-chosen account.
+                    if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str()) { continue; }
+                    if seen_provider_requests.contains(&id) { continue; }
+                    let mut authorized = false;
+                    if let (Some(cycle), Some(allowance), Some(deadline), Ok(attempt)) = (
+                        provider_cycle.as_deref(), inference_allowance.as_ref(), provider_deadline,
+                        serde_json::from_value::<NativeProviderAttemptReservation>(params.clone()),
+                    ) && !provider_owner_fenced && !cancelled && !cancel.is_cancelled() && !turn_completed
+                        && Instant::now() < deadline && attempt.matches(&thread_id, cycle, allowance)
+                        && seen_provider_attempts.len() < allowance.max_provider_attempts as usize
+                        && !seen_provider_attempts.contains(&attempt.attempt_id)
+                        && !seen_provider_ordinals.contains(&attempt.ordinal)
+                    {
+                        seen_provider_attempts.insert(attempt.attempt_id.clone());
+                        seen_provider_ordinals.insert(attempt.ordinal);
+                        seen_provider_requests.insert(id.clone());
+                        let result = tokio::select! {
+                            _=cancel.cancelled()=>None,
+                            _=sleep_until(deadline)=>{cancel.cancel();None},
+                            result=on_event(CodexEvent::NativeProviderAttemptReservation(attempt))=>Some(result),
+                        };
+                        authorized = matches!(result, Some(Ok(CodexEventOutcome::ProviderAttemptReserved(true))));
+                        if Instant::now() >= deadline || cancel.is_cancelled() { continue; }
+                    }
+                    if !authorized && params.get("cycleId").and_then(Value::as_str) == provider_cycle.as_deref() {
+                        provider_owner_fenced = true;
+                    }
+                    process.send_result(&id, json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
+                        "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"authorized":authorized})).await?;
+                    continue;
+                }
                 if !event_matches_run(&thread_id,active_turn_id.as_deref(),&method,&params,shared_app_server){continue;}
                 if method == "item/tool/call" {
                     // A duplicate server request must not repeat a controller
@@ -2849,7 +2947,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -4815,6 +4913,296 @@ mod tests {
                 .is::<NativeInputNotSubmitted>()
         );
         server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    async fn provider_owner_fixture(mode: &'static str) {
+        const CYCLE: &str = "caa11c1d-b05b-4f56-99ab-167878e86126";
+        const ATTEMPT: &str = "050c786c-cf2b-40da-b3e4-dd1e5e560d7c";
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let cancel = CancellationToken::new();
+        let owner_cancel = cancel.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut starts = 0;
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_close() {
+                    break;
+                }
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                let result = match request["method"].as_str() {
+                    Some("initialize") => json!({}),
+                    Some("initialized") => continue,
+                    Some("thread/start") => {
+                        json!({"thread":{"id":"funded-native"},"model":"synthetic-model"})
+                    }
+                    Some("turn/startBoundedIfIdle") => {
+                        starts += 1;
+                        assert_eq!(
+                            request["params"]["providerReservationCycleId"],
+                            if mode == "unfunded" {
+                                Value::Null
+                            } else {
+                                json!(CYCLE)
+                            }
+                        );
+                        assert_eq!(
+                            request["params"]["turn"]["toolOutput"]["name"],
+                            "heartbeat_attention"
+                        );
+                        let mut params = json!({"threadId":"funded-native","cycleId":CYCLE,"attemptId":ATTEMPT,
+                            "ordinal":1,"maxRequestBytes":1024,"deadlineUnixMs":request["params"]["allowance"]["deadlineUnixMs"]});
+                        if mode == "changed-ceiling" {
+                            params["maxRequestBytes"] = json!(1);
+                        }
+                        // Accounting arrives before the native start response and
+                        // without turnId. This must not enter generic UI filtering.
+                        socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
+                        if matches!(mode, "pending" | "deadline" | "late-owner") {
+                            let next = socket.next().await;
+                            assert!(
+                                !matches!(next, Some(Ok(WsMessage::Text(_)))),
+                                "Cancellation must not emit an authorization or new work"
+                            );
+                            break;
+                        }
+                        let ack: Value = serde_json::from_str(
+                            socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(ack["id"], 500);
+                        assert_eq!(
+                            ack["result"],
+                            json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal")})
+                        );
+                        if mode == "allow" {
+                            socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"id":501,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
+                            let duplicate: Value = serde_json::from_str(
+                                socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(duplicate["id"], 501);
+                            assert_eq!(duplicate["result"]["authorized"], false);
+                        }
+                        if matches!(
+                            mode,
+                            "two-then-exhausted"
+                                | "repeated-ordinal"
+                                | "owner-denied"
+                                | "owner-error"
+                        ) {
+                            for (index, next_attempt) in [
+                                "450c786c-cf2b-40da-b3e4-dd1e5e560d7c",
+                                "850c786c-cf2b-40da-b3e4-dd1e5e560d7c",
+                            ]
+                            .iter()
+                            .enumerate()
+                            {
+                                let mut next = params.clone();
+                                next["attemptId"] = json!(next_attempt);
+                                next["ordinal"] = json!(if mode == "repeated-ordinal" {
+                                    index + 1
+                                } else {
+                                    index + 2
+                                });
+                                socket.send(WsMessage::Text(json!({"id":501+index,"method":"turn/providerAttempt/reserve","params":next}).to_string().into())).await.unwrap();
+                                let ack: Value = serde_json::from_str(
+                                    socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(ack["id"], 501 + index);
+                                assert_eq!(
+                                    ack["result"]["authorized"],
+                                    mode == "two-then-exhausted" && index == 0
+                                );
+                            }
+                        }
+                        socket
+                            .send(WsMessage::Text(
+                                json!({"id":request["id"],"result":{"turn":{"id":"funded-turn"}}})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .unwrap();
+                        socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"completed"}}}).to_string().into())).await.unwrap();
+                        continue;
+                    }
+                    other => {
+                        panic!("No fallback, human prompt or extra native submission: {other:?}")
+                    }
+                };
+                socket
+                    .send(WsMessage::Text(
+                        json!({"id":request["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(starts, 1);
+        });
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "Attributed internal evidence".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = callbacks.clone();
+        let late_owner = Arc::new(std::sync::Mutex::new(None));
+        let late_work = late_owner.clone();
+        let run = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                cancel,
+                receiver,
+                move |event| {
+                    let cancel = owner_cancel.clone();
+                    let observed = observed.clone();
+                    let late_work = late_work.clone();
+                    async move {
+                        match event {
+                            CodexEvent::NativeTurnSubmitting => {
+                                let allowance = NativeInferenceAllowance {
+                                    max_provider_attempts: 2,
+                                    max_request_bytes: 1024,
+                                    deadline_unix_ms: chrono::Utc::now().timestamp_millis()
+                                        + if matches!(mode, "deadline" | "late-owner") {
+                                            2000
+                                        } else {
+                                            30_000
+                                        },
+                                };
+                                Ok(if mode == "unfunded" {
+                                    CodexEventOutcome::InferenceAllowance(allowance)
+                                } else {
+                                    CodexEventOutcome::FundedInferenceAllowance {
+                                        allowance,
+                                        cycle_id: CYCLE.into(),
+                                    }
+                                })
+                            }
+                            CodexEvent::NativeProviderAttemptReservation(attempt) => {
+                                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                assert_eq!(attempt.cycle_id, CYCLE);
+                                assert!(matches!(
+                                    attempt.attempt_id.as_str(),
+                                    ATTEMPT | "450c786c-cf2b-40da-b3e4-dd1e5e560d7c"
+                                ));
+                                if mode == "pending" {
+                                    cancel.cancel();
+                                    return std::future::pending().await;
+                                }
+                                if mode == "deadline" {
+                                    return std::future::pending().await;
+                                }
+                                if mode == "late-owner" {
+                                    let (send, receive) = oneshot::channel();
+                                    *late_work.lock().unwrap() = Some(tokio::spawn(async move {
+                                        tokio::time::sleep(Duration::from_secs(3)).await;
+                                        send.send(true).is_err()
+                                    }));
+                                    return Ok(CodexEventOutcome::ProviderAttemptReserved(
+                                        receive.await.unwrap(),
+                                    ));
+                                }
+                                if mode == "owner-error" {
+                                    bail!("Synthetic journal unavailable; no approval");
+                                }
+                                Ok(CodexEventOutcome::ProviderAttemptReserved(
+                                    mode != "owner-denied",
+                                ))
+                            }
+                            CodexEvent::UserInputRequest { .. }
+                            | CodexEvent::DynamicToolRequest { .. }
+                            | CodexEvent::ApprovalRequest(_) => {
+                                panic!("Accounting must not become human/model interaction")
+                            }
+                            _ => Ok(CodexEventOutcome::None),
+                        }
+                    }
+                },
+            )
+            .await;
+        assert_eq!(
+            run.is_ok(),
+            !matches!(mode, "pending" | "deadline" | "late-owner"),
+            "{:?}",
+            run.err()
+        );
+        assert_eq!(
+            callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            if mode == "two-then-exhausted" {
+                2
+            } else {
+                usize::from(!matches!(mode, "unfunded" | "changed-ceiling"))
+            }
+        );
+        let late = late_owner.lock().unwrap().take();
+        if let Some(late) = late {
+            assert!(
+                late.await.unwrap(),
+                "Late owner result must have no waiting authorization consumer"
+            );
+        }
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_before_ack_is_exact_and_nonreplayable() {
+        provider_owner_fixture("allow").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_declines_mismatch_or_unselected_owner() {
+        for mode in ["unfunded", "changed-ceiling"] {
+            provider_owner_fixture(mode).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_owner_wait_is_cancellable() {
+        provider_owner_fixture("pending").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_deadline_and_late_owner_never_authorize() {
+        for mode in ["deadline", "late-owner"] {
+            tokio::time::timeout(Duration::from_secs(5), provider_owner_fixture(mode))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_fuel_ordinals_and_refusal_are_conserved() {
+        for mode in [
+            "two-then-exhausted",
+            "repeated-ordinal",
+            "owner-denied",
+            "owner-error",
+        ] {
+            provider_owner_fixture(mode).await;
+        }
     }
 
     #[cfg(unix)]
