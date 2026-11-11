@@ -298,7 +298,7 @@ window.VoiceInput = (() => {
       lastConfirmed=value;
       onInput(value,frozen.focusVersion);onVisualSent(frozen.visual);onFilesSent(frozen.files);pending=undefined;phase='idle';
       try{await recovery?.remove(frozen);if(recovery)recoveryFree=(await recovery.list()).length===0;}catch{recoveryFree=false;}
-      notice(frozen.dictation?'Edited message sent with its original recording and automatic transcript.':value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
+      notice(frozen.dictation&&!value.retired&&value.phase!=='retained_unsent'?'Edited message and originals saved.':value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
         value.phase==='retained_unsent'?'Recording saved; no work was submitted. You can keep writing.':
         value.phase==='preparation_unconfirmed'?'Recording saved; transcription unconfirmed. Nothing was resubmitted.':
         value.phase==='preparing'?'Confirming transcript…':
