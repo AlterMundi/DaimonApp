@@ -405,6 +405,29 @@ now reaches the existing owner journal in the source candidate; authenticated
 settlement and actual route/exposure/isolation qualification remain unfinished. No private funding file is provisioned by these
 changes and the unconfigured handler still denies financial reservations.
 
+An opt-in composed receiving test uses a built real Core app-server, the real
+App shared-WebSocket client and its owned Python child, and the existing signed
+Matrix group/account fixtures. Run from this App checkout with the matching
+Matrix source/dependency environment selected explicitly:
+
+```sh
+PYTHONPATH="$MATRIX_ROOT/src:$MATRIX_ROOT" \
+TELECODEX_TEST_CORE_BIN="$CORE_ROOT/codex-rs/target/debug/codex-app-server" \
+TELECODEX_TEST_PYTHON="$MATRIX_TEST_PYTHON" \
+cargo test --locked --bin telecodex actual_core_usage_reaches -- --ignored --nocapture
+```
+
+It owns one temporary Core home, loopback endpoints, signed synthetic original,
+accounts and accounting key, with a30-second run bound. Provider retries are off;
+no installed runtime or real account is opened. The observed path reserves one
+physical attempt, carries its exact three-token completion through App into the
+journal, verifies a synthetic eight-unit signed settlement and reconciles the
+same physical turn. It asserts one call and zero remaining exposure. Temporary
+state and owned processes are removed at test end. This proves composed code
+routing; it does not qualify real prices/credentials, installed receiver adoption
+or useful peer work. The test stays ignored by default because the exact Core
+binary and Matrix environment must be selected, not inferred from a live body.
+
 The default App owner explicitly refuses financial reservations. This source
 prepares the native client, not a configured account or receiving activation.
 The provisioned consumer must use the existing Matrix `CycleContext`/schema5

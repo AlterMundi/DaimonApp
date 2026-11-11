@@ -707,7 +707,7 @@ class AdapterTests(unittest.TestCase):
                 with self.assertRaises(MatrixExecutionError):
                     receiving_command(path, Path("/private/host.json"))
 
-    def funded_original(self, *, status=None, native_attempts=None):
+    def funded_original(self, *, status=None, native_attempts=None, epoch=100):
         import tempfile
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from daimon_matrix.execution_store import ExecutionStore
@@ -717,7 +717,7 @@ class AdapterTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         key = Ed25519PrivateKey.generate()
         store = ExecutionStore.create(
-            Path(tmp.name) / "execution.sqlite", verifier(key), clock=lambda: 100,
+            Path(tmp.name) / "execution.sqlite", verifier(key), clock=lambda: epoch,
             usage_verifier=verifier(key) if native_attempts is not None else None,
         )
         store.enable_episode_reporting()
@@ -742,6 +742,7 @@ class AdapterTests(unittest.TestCase):
                 mode="periodic",
                 interval=10,
                 max_cycles=2,
+                start=epoch, end=epoch + 100,
                 max_input_tokens=16384,
                 task_sha256=hashlib.sha256(purpose.encode()).hexdigest(),
                 scope=[
@@ -760,8 +761,8 @@ class AdapterTests(unittest.TestCase):
                 account_id=kind,
                 kind=kind,
                 subject=instruction.being if kind == "being" else kind,
-                start=100,
-                end=200,
+                start=epoch,
+                end=epoch + 100,
                 unit="synthetic-charge",
                 max_calls=3,
                 max_charge=100,
@@ -1004,7 +1005,10 @@ class AdapterTests(unittest.TestCase):
         self.addCleanup(lambda: [os.close(fd) for fd in (incoming, send, receive, outgoing)])
 
         def read():
-            self.assertTrue(select.select([receive], [], [], 5)[0], "owner reply timeout")
+            if not select.select([receive], [], [], 5)[0]:
+                if future.done():
+                    future.result()  # Surface the actual owner failure, not a reply timeout.
+                self.fail("owner reply timeout")
             raw = os.read(receive, 4096)
             self.assertEqual(raw.count(b"\n"), 1)
             return json.loads(raw)

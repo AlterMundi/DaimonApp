@@ -544,3 +544,7 @@ for line in sys.stdin:
         assert_ne!(unsafe { libc::kill(pid as i32, 0) }, 0);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "native_account_receiving_tests.rs"]
+mod receiving_tests;
