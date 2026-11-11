@@ -47,9 +47,12 @@ workshop is advertised as current. No new identity, enrollment or Telegram is
 required. This operator does not install native Core, change voice or grant new
 application access.
 
-The pinned updater installation includes the consuming web runtime, both browser
-fixture files, both update scripts, shared_asset_release.py and
-avatar_workshop_provenance.py. Preserve the unit WorkingDirectory so the existing
+The pinned updater installation includes a coherent qualification API/runtime,
+`dashboard_avatar_workshop_browser.py`, its JavaScript fixture and
+`dashboard_avatar_import_capabilities_browser.cjs`, both update scripts,
+shared_asset_release.py and avatar_workshop_provenance.py. Keep the qualification
+API signature and its Python dependency closure matched to those fixtures; a
+serving web-only composition can intentionally retain older unchanged APIs. Preserve the unit WorkingDirectory so the existing
 fixture resolves its synthetic import asset inside that generation. Use a short
 owning data-filesystem build_root: Chromium temporary Unix socket paths must fit
 the platform limit. These are code/fixture dependencies, never copies of account
@@ -88,7 +91,11 @@ expanded transfer. Only expected relative asset paths are admitted; directories
 are opened relative to descriptors without following symlinks. Served bytes are
 hashed before response. Releases retain current/previous plus unexpired code for
 at least24hours, at most16generations/64MiB. Only verified old component code can
-be retired. At capacity, keep current code and report failure. Actor originals
+be retired. Verify its historical inventory and bytes against its own immutable
+record, independently of the new backend contract. Serving and activation still
+require the current exact validator compatibility. A contract change needs one
+voice-idle coupled web-validator/component transition; rollback must restore a
+matching pair without restoring actor data. At capacity, keep current code and report failure. Actor originals
 are never cleanup candidates.
 
 The updater retains one source cache <=64MiB, one <=4MiB build, current/previous
