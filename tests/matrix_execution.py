@@ -30,6 +30,8 @@ from matrix_execution import (
     make_received_task,
     make_task,
     parent_from_verified_sdk,
+    prepare_native_account_owner,
+    serve_native_account_owner,
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
@@ -660,6 +662,16 @@ class AdapterTests(unittest.TestCase):
                     self.assertEqual(json.loads(result.stdout)["args"],
                                      ["--binding", "/private/host.json", expected])
 
+                native_command = receiving_command(
+                    path, Path("/private/host.json"), native_owner_only=True,
+                    funding_binding=Path("/private/funding.json"),
+                )
+                result = subprocess.run(native_command, input=b"native-start", capture_output=True, check=True, timeout=5)
+                self.assertEqual(json.loads(result.stdout)["args"], [
+                    "--binding", "/private/host.json", "--native-owner", "--funding-binding",
+                    "/private/funding.json",
+                ])
+
                 (package / "onboarding_sdk.py").write_text(
                     "def qualified_startup(*args,**kwargs):raise RuntimeError('private diagnostic must stay local')"
                 )
@@ -695,7 +707,7 @@ class AdapterTests(unittest.TestCase):
                 with self.assertRaises(MatrixExecutionError):
                     receiving_command(path, Path("/private/host.json"))
 
-    def funded_original(self, *, status=None):
+    def funded_original(self, *, status=None, native_attempts=None):
         import tempfile
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from daimon_matrix.execution_store import ExecutionStore
@@ -705,9 +717,12 @@ class AdapterTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         key = Ed25519PrivateKey.generate()
         store = ExecutionStore.create(
-            Path(tmp.name) / "execution.sqlite", verifier(key), clock=lambda: 100
+            Path(tmp.name) / "execution.sqlite", verifier(key), clock=lambda: 100,
+            usage_verifier=verifier(key) if native_attempts is not None else None,
         )
         store.enable_episode_reporting()
+        if native_attempts is not None:
+            store.enable_provider_attempts()
 
         def signed(value, event):
             return proof(key, "approve", value, event)
@@ -764,6 +779,9 @@ class AdapterTests(unittest.TestCase):
             route="isolated-fake",
             max_charge=30,
         )
+        if native_attempts is not None:
+            funding.update(schema="execution/instruction-funding/v2",
+                           max_provider_attempts=native_attempts)
         store.fund_instruction(instruction, funding, signed(funding, "funding"))
         policy = dict(
             schema="execution/episode-policy/v1",
@@ -839,6 +857,251 @@ class AdapterTests(unittest.TestCase):
             status=status,
             outcome=outcome,
         )
+
+    def native_funding_selection(self, state):
+        from daimon_matrix.execution_instruction import digest
+        from daimon_matrix.review_runner import ProviderCostBound
+        from tests.test_execution_instruction import proof, verifier
+
+        registration = dict(
+            store_id=state.store.store_id, principal=state.instruction.principal,
+            provider=state.instruction.provider, model=state.instruction.model,
+            binding=list(state.instruction.binding), native_thread_id="owned-native",
+            max_request_bytes=1024,
+        )
+        payload = dict(
+            schema="execution/provider-cost-bound/v1", principal=state.instruction.principal,
+            store_id=state.store.store_id, registration_sha256=digest(registration),
+            route="isolated-fake", unit="synthetic-charge", expires=200,
+            max_input_tokens=state.instruction.max_input_tokens,
+            max_output_tokens=state.instruction.max_output_tokens,
+            input_price=0, output_price=0, fixed_charge=30,
+        )
+        bound = ProviderCostBound.verify(
+            payload, proof(state.key, "approve", payload, "native-cost"), verifier(state.key)
+        )
+        return dict(
+            thread_id="owned-native",
+            parent_allowance=dict(maxProviderAttempts=2, maxRequestBytes=512,
+                                  deadlineUnixMs=108000),
+            cost_bound=bound, registration=registration, work_id=state.work,
+            read_message=state.controller.read_message, monotonic=lambda: 10,
+        )
+
+    def test_native_owner_factory_uses_signed_original_without_review_dispatch(self):
+        state = self.funded_original(native_attempts=2)
+        owner = prepare_native_account_owner(
+            state.store, state.instruction, state.purpose, **self.native_funding_selection(state)
+        )
+        self.assertEqual(state.runner.starts, [])
+        self.assertEqual(owner._context.selected_original(), state.source)
+        descriptor = owner.descriptor()
+        cycle = descriptor["providerReservationCycleId"]
+        self.assertEqual(
+            [op["kind"] for op in state.store.cycle_status(cycle)["operations"]],
+            ["native_owner"],
+        )
+        packet = dict(threadId="owned-native", cycleId=cycle, attemptId=str(uuid.uuid4()),
+                      ordinal=1, maxRequestBytes=512, deadlineUnixMs=108000)
+        published = []
+        owner.reserve(packet, published.append)
+        self.assertEqual(published, [dict(cycleId=cycle, attemptId=packet["attemptId"],
+                                         authorized=True)])
+        self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+        self.assertEqual(state.runner.starts, [])
+
+    def test_native_owner_factory_denies_changed_thread_binding_and_original(self):
+        from daimon_matrix.execution_instruction import ExecutionDenied
+
+        state = self.funded_original(native_attempts=2)
+        selection = self.native_funding_selection(state)
+        for changed in ({"thread_id": "foreign-native"},
+                        {"registration": dict(selection["registration"], binding=["foreign"])},
+                        {"work_id": None}):
+            with self.assertRaises(ExecutionDenied):
+                prepare_native_account_owner(
+                    state.store, state.instruction, state.purpose, **(selection | changed)
+                )
+        changed = copy.deepcopy(state.source)
+        changed["payload"]["body"]["text"] = "changed after current selection"
+        with self.assertRaises(ExecutionDenied):
+            prepare_native_account_owner(
+                state.store, state.instruction, state.purpose,
+                **(selection | {"read_message": lambda _: changed})
+            )
+        self.assertEqual(state.runner.starts, [])
+        self.assertEqual(state.store.funding_status("episode")["calls"], 0)
+        # No failed selection reserved the work; the real original still works.
+        self.assertIsNotNone(prepare_native_account_owner(
+            state.store, state.instruction, state.purpose, **selection
+        ))
+
+    def test_native_owner_pipe_session_settles_each_exact_attempt_and_reconciles(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import select
+        from tests.test_execution_instruction import proof
+
+        state = self.funded_original(native_attempts=2)
+        owner = prepare_native_account_owner(
+            state.store, state.instruction, state.purpose, **self.native_funding_selection(state)
+        )
+        incoming, send = os.pipe()
+        receive, outgoing = os.pipe()
+        self.addCleanup(lambda: [os.close(fd) for fd in (incoming, send, receive, outgoing)])
+
+        def read():
+            self.assertTrue(select.select([receive], [], [], 5)[0], "owner reply timeout")
+            raw = os.read(receive, 4096)
+            self.assertEqual(raw.count(b"\n"), 1)
+            return json.loads(raw)
+
+        def write(frame):
+            os.write(send, (json.dumps(frame) + "\n").encode())
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(serve_native_account_owner, owner, incoming, outgoing)
+            descriptor = read()["ready"]
+            cycle = descriptor["providerReservationCycleId"]
+            native = str(uuid.uuid4())
+            write(dict(operation="bind", cycleId=cycle, nativeTurnId=native))
+            self.assertEqual(read()["bound"], native)
+            for ordinal in (1, 2):
+                attempt = str(uuid.uuid4())
+                write(dict(operation="reserve", params=dict(
+                    threadId="owned-native", cycleId=cycle, attemptId=attempt,
+                    ordinal=ordinal, maxRequestBytes=512, deadlineUnixMs=108000)))
+                self.assertTrue(read()["authorized"])
+                self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+                usage = dict(schema="execution/usage/v1", store_id=state.store.store_id,
+                             principal=state.instruction.principal, cycle_id=cycle,
+                             operation_id=attempt, actual=8)
+                write(dict(operation="settle", usage=usage,
+                           proof=proof(state.key, "approve", usage, "usage-" + attempt)))
+                self.assertEqual(read()["settled"], attempt)
+            write(dict(operation="reconcile", cycleId=cycle, nativeTurnId=native,
+                       outcome="completed", effectsReconciled=True))
+            self.assertEqual(read()["reconciled"], "completed")
+            future.result(timeout=5)
+        self.assertEqual(state.store.cycle_status(cycle)["state"], "completed")
+        account = state.store.funding_status("episode")
+        self.assertEqual((account["calls"], account["spent"], account["reserved"]), (2, 16, 0))
+        self.assertEqual(state.runner.starts, [])
+
+    def test_native_owner_pipe_eof_retains_original_exposure_without_rearm(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import select
+
+        state = self.funded_original(native_attempts=2)
+        selection = self.native_funding_selection(state)
+        owner = prepare_native_account_owner(state.store, state.instruction, state.purpose, **selection)
+        incoming, send = os.pipe()
+        receive, outgoing = os.pipe()
+        self.addCleanup(lambda: [os.close(fd) for fd in (incoming, receive, outgoing)])
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(serve_native_account_owner, owner, incoming, outgoing)
+            self.assertTrue(select.select([receive], [], [], 5)[0])
+            descriptor = json.loads(os.read(receive, 4096))["ready"]
+            cycle = descriptor["providerReservationCycleId"]
+            params = dict(threadId="owned-native", cycleId=cycle, attemptId=str(uuid.uuid4()),
+                          ordinal=1, maxRequestBytes=512, deadlineUnixMs=108000)
+            os.write(send, (json.dumps(dict(operation="reserve", params=params)) + "\n").encode())
+            self.assertTrue(select.select([receive], [], [], 5)[0])
+            self.assertTrue(json.loads(os.read(receive, 4096))["authorized"])
+            os.close(send)
+            with self.assertRaises(MatrixExecutionError):
+                future.result(timeout=5)
+        self.assertEqual(state.store.cycle_status(cycle)["state"], "ambiguous")
+        self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+        from daimon_matrix.execution_instruction import ExecutionDenied
+        with self.assertRaises(ExecutionDenied):
+            prepare_native_account_owner(state.store, state.instruction, state.purpose, **selection)
+        self.assertEqual(state.store.funding_status("episode")["calls"], 1)
+
+    def test_native_owner_executable_entry_reads_private_selection_and_exact_sdk_source(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from dataclasses import asdict
+        from tempfile import TemporaryDirectory
+        import select
+        import matrix_operator
+        from tests.test_execution_instruction import proof
+
+        state = self.funded_original(native_attempts=2)
+        options = self.native_funding_selection(state)
+        row = next(row for row in self.receiver.page(after=0, limit=100)
+                   if row["message"]["event_id"] == state.source["event_id"])
+        start = dict(source=dict(being_ref=state.instruction.being,
+                                 embodiment_id=state.instruction.embodiment),
+                     channel_id="tribe", message_id=state.source["event_id"],
+                     inbox_sequence=row["inbox_sequence"], thread_id="owned-native",
+                     parent_allowance=options["parent_allowance"])
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trust = root / "trust.json"
+            trust.write_text(json.dumps({state.instruction.principal:
+                                         state.key.public_key().public_bytes_raw().hex()}))
+            trust.chmod(0o600)
+            cost = asdict(options["cost_bound"])
+            selection = root / "funding.json"
+            selection.write_text(json.dumps(dict(
+                schema="telecodex.native-funding-binding/v1", store=str(state.store.path),
+                trust=str(trust), usage_trust=str(trust),
+                instruction_id=state.instruction.instruction_id, revision=state.instruction.revision,
+                task=state.purpose, cost_bound=cost,
+                cost_proof=proof(state.key, "approve", cost, "entry-cost"),
+                registration=options["registration"],
+            )))
+            selection.chmod(0o600)
+
+            def entry(raw, expect_ready=False):
+                incoming, send = os.pipe()
+                receive, outgoing = os.pipe()
+                try:
+                    with os.fdopen(os.dup(incoming), "rb") as stdin, os.fdopen(os.dup(outgoing), "w") as stdout:
+                        args = ["matrix_operator.py", "--binding", str(root / "host.json"),
+                                "--native-owner", "--funding-binding", str(selection)]
+                        with patch.object(sys, "argv", args), patch.object(sys, "stdin", stdin), \
+                             patch.object(sys, "stdout", stdout), \
+                             patch.object(matrix_operator, "configured_client", return_value=SignedGroupClient(self.fixture, self.receiver)) as configured:
+                            with ThreadPoolExecutor(max_workers=1) as pool:
+                                future = pool.submit(matrix_operator.main, clock=lambda: 100)
+                                os.write(send, raw)
+                                if expect_ready:
+                                    if not select.select([receive], [], [], 5)[0]:
+                                        if future.done():
+                                            future.result()
+                                        self.fail("executable owner ready timeout")
+                                    descriptor = json.loads(os.read(receive, 4096))["ready"]
+                                    cycle = descriptor["providerReservationCycleId"]
+                                    params = dict(threadId="owned-native", cycleId=cycle,
+                                                  attemptId=str(uuid.uuid4()), ordinal=1,
+                                                  maxRequestBytes=512, deadlineUnixMs=108000)
+                                    os.write(send, (json.dumps(dict(operation="reserve", params=params)) + "\n").encode())
+                                    if not select.select([receive], [], [], 5)[0]:
+                                        if future.done():
+                                            future.result()
+                                        self.fail("executable owner reserve timeout")
+                                    self.assertTrue(json.loads(os.read(receive, 4096))["authorized"])
+                                os.close(send)
+                                send = None
+                                with self.assertRaises(MatrixExecutionError):
+                                    future.result(timeout=5)
+                            return configured.call_count
+                finally:
+                    for fd in (incoming, send, receive, outgoing):
+                        if fd is not None:
+                            os.close(fd)
+
+            # Parse failures never reach an SDK client or allocate a cycle.
+            self.assertEqual(entry(b"{incomplete"), 0)
+            self.assertEqual(entry(b"x" * 65537), 0)
+            for changed in (dict(source=dict(start["source"], being_ref="foreign")),
+                            dict(inbox_sequence=start["inbox_sequence"] + 1)):
+                self.assertEqual(entry((json.dumps(start | changed) + "\n").encode()), 1)
+                self.assertEqual(state.store.funding_status("episode")["calls"], 0)
+            self.assertEqual(entry((json.dumps(start) + "\n").encode(), expect_ready=True), 1)
+            self.assertEqual(state.store.funding_status("episode")["calls"], 1)
+            self.assertEqual(state.store.funding_status("episode")["reserved"], 30)
+            self.assertEqual(state.runner.starts, [])
 
     def test_funded_selected_original_returns_under_the_same_conversation_root(self):
         state = self.funded_original()

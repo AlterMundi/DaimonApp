@@ -4,7 +4,9 @@
 No runtime is loaded outside its daemon, approval is signed, model is invoked
 or uncertain native send retried. --receive reads one selected-thread page;
 --inbox reads one selected channel page. Neither installs attention or reserves
-model work. The controller owns execution and its finite producer contract.
+model work. --native-owner is a separate, explicitly configured account-owner
+pipe session over the existing signed work/journal; it never starts a model or
+selects funding values. The controller owns execution and its resource contract.
 """
 
 import argparse
@@ -464,6 +466,110 @@ def respond(value, client, *, timeout=10, inspect_only=False):
     return output
 
 
+def native_owner_session(value, client, selection_path, *, clock=time.time, monotonic=time.monotonic):
+    """Run the selected private account binding in this existing host process."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from daimon_matrix.execution_instruction import ApprovalVerifier
+    from daimon_matrix.execution_store import ExecutionStore
+    from daimon_matrix.messaging_config import protected_read
+    from daimon_matrix.review_runner import ProviderCostBound
+    from matrix_execution import prepare_native_account_owner, serve_native_account_owner
+
+    closed(value, ("source", "channel_id", "message_id", "inbox_sequence", "thread_id", "parent_allowance"))
+    selection = closed(strict_json(protected_read(selection_path)), (
+        "schema", "store", "trust", "usage_trust", "instruction_id", "revision",
+        "task", "cost_bound", "cost_proof", "registration",
+    ))
+    if selection["schema"] != "telecodex.native-funding-binding/v1":
+        raise MatrixExecutionError("Selected native funding binding required")
+    for name in ("store", "trust", "usage_trust"):
+        if not isinstance(selection[name], str) or not Path(selection[name]).is_absolute():
+            raise MatrixExecutionError("Owner-selected absolute accounting reference required")
+
+    def trust(path):
+        keys = strict_json(protected_read(Path(path)))
+        return ApprovalVerifier({principal: Ed25519PublicKey.from_public_bytes(bytes.fromhex(key))
+                                 for principal, key in keys.items()})
+
+    approval = trust(selection["trust"])
+    store = ExecutionStore(Path(selection["store"]), approval, clock=clock,
+                           usage_verifier=trust(selection["usage_trust"]))
+    instruction = store.get_instruction(selection["instruction_id"], selection["revision"])
+    bound = ProviderCostBound.verify(selection["cost_bound"], selection["cost_proof"], approval)
+    identifier(value["message_id"])
+    closed(value["source"], ("being_ref", "embodiment_id"))
+    if (value["source"] != {"being_ref": instruction.being, "embodiment_id": instruction.embodiment}
+            or value["channel_id"] not in {scope.channel for scope in instruction.scope}
+            or type(value["inbox_sequence"]) is not int or value["inbox_sequence"] < 1):
+        raise MatrixExecutionError("Selected current original binding required")
+    parent = closed(value["parent_allowance"], ("maxProviderAttempts", "maxRequestBytes", "deadlineUnixMs"))
+    if (not all(type(item) is int and item > 0 for item in parent.values())
+            or not 0 < parent["deadlineUnixMs"] - int(clock() * 1000) <= 600000):
+        raise MatrixExecutionError("Original bounded native horizon required")
+    deadline = time.monotonic_ns() + int((parent["deadlineUnixMs"] / 1000 - clock()) * 1e9)
+
+    def read(message_id):
+        if message_id != value["message_id"]:
+            raise MatrixExecutionError("Only the selected original may be read")
+        remaining = min(client.timeout_seconds, (deadline - time.monotonic_ns()) / 1e9)
+        if remaining < 0.05:
+            raise MatrixExecutionError("Native source deadline expired")
+        current = replace(client, timeout_seconds=remaining, deadline_ns=deadline)
+        # Reuse current owner qualification and SDK authentication; preserve the
+        # raw signed event for the existing queue's immutable-source digest.
+        if isinstance(current, EnrolledOwnerClient):
+            if current.verified_source != value["source"]:
+                raise MatrixExecutionError("Native source owner changed")
+        else:
+            _, observed = current.invoke("runtime.status", {})
+            runtime = observed.get("result", {}) if observed.get("ok") is True else {}
+            if (runtime.get("being_ref") != instruction.being
+                    or runtime.get("local_origin", {}).get("embodiment_id") != instruction.embodiment):
+                raise MatrixExecutionError("Native source owner changed")
+        _, response = current.invoke("messaging.inbox", dict(
+            channel_id=value["channel_id"], after=value["inbox_sequence"] - 1, limit=1))
+        page = response.get("result", {}) if response.get("ok") is True else {}
+        rows = page.get("items")
+        if (page.get("channel_id") != value["channel_id"] or not isinstance(rows, list)
+                or len(rows) != 1 or rows[0].get("inbox_sequence") != value["inbox_sequence"]
+                or rows[0].get("message", {}).get("event_id") != message_id):
+            raise MatrixExecutionError("Current authenticated original unavailable")
+        return rows[0]["message"]
+
+    work_id = store.enqueue_coordination(value["message_id"], read)
+    if work_id is None:
+        raise MatrixExecutionError("Original is not eligible for the selected funded work")
+    owner = prepare_native_account_owner(
+        store, instruction, selection["task"], thread_id=value["thread_id"],
+        parent_allowance=parent, cost_bound=bound, registration=selection["registration"],
+        work_id=work_id, read_message=read, monotonic=monotonic,
+    )
+    serve_native_account_owner(owner, sys.stdin.fileno(), sys.stdout.fileno())
+
+
+def read_native_owner_start():
+    # Startup is bounded independently; the selected parent's original absolute
+    # deadline then covers SDK reads and every session frame. Never read to EOF.
+    import selectors
+    deadline = time.monotonic() + host_timeout()
+    raw = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(sys.stdin.fileno(), selectors.EVENT_READ)
+        while b"\n" not in raw:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise MatrixExecutionError("Native owner startup deadline expired")
+            chunk = os.read(sys.stdin.fileno(), min(4096, 65537 - len(raw)))
+            if not chunk:
+                raise MatrixExecutionError("Native owner startup pipe closed")
+            raw.extend(chunk)
+            if len(raw) > 65536:
+                raise MatrixExecutionError("Native owner startup exceeds bound")
+    if raw[-1:] != b"\n" or raw.count(b"\n") != 1:
+        raise MatrixExecutionError("One sequential native owner start required")
+    return strict_json(raw)
+
+
 def receiving_command(
     connection,
     binding,
@@ -472,6 +578,8 @@ def receiving_command(
     inbox_only=False,
     respond_only=False,
     response_status_only=False,
+    native_owner_only=False,
+    funding_binding=None,
 ):
     """Bootstrap this host module in the existing receiving owner's SDK context.
 
@@ -479,7 +587,7 @@ def receiving_command(
     native connection each invocation so an SDK successor cannot leave a cached
     host interpreter/import selection. Do not execute a connection's code string.
     """
-    if sum((receive_only, inbox_only, respond_only, response_status_only)) > 1:
+    if sum((receive_only, inbox_only, respond_only, response_status_only, native_owner_only)) > 1:
         raise MatrixExecutionError("Select one host mode")
     with connection.open("rb") as stream:
         raw = stream.read(65537)
@@ -508,10 +616,12 @@ def receiving_command(
         )
     ):
         raise MatrixExecutionError("Supported receiving owner context required")
+    if native_owner_only and funding_binding is None:
+        raise MatrixExecutionError("Native owner requires private funding binding")
     script = str(Path(__file__).resolve())
     bootstrap = (
         "import os,sys,runpy\n"
-        "venv,imports,code,code_digest,code_uid,script,binding,receive_mode=sys.argv[1:]\n"
+        "venv,imports,code,code_digest,code_uid,script,binding,receive_mode,*extra=sys.argv[1:]\n"
         "sys.prefix=sys.exec_prefix=venv\n"
         "sys.path[:0]=[code,imports]\n"
         "sys.dont_write_bytecode=True\n"
@@ -527,7 +637,7 @@ def receiving_command(
         " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
         " raise SystemExit(1)\n"
         "sys.path.insert(0,os.path.dirname(script))\n"
-        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'send':[]}[receive_mode])\n"
+        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'native-owner':['--native-owner'],'send':[]}[receive_mode])+extra\n"
         "runpy.run_path(script,run_name='__main__')\n"
     )
     return [
@@ -542,7 +652,9 @@ def receiving_command(
         command[13],
         script,
         str(binding),
-        "respond"
+        "native-owner"
+        if native_owner_only
+        else "respond"
         if respond_only
         else "response-status"
         if response_status_only
@@ -551,10 +663,10 @@ def receiving_command(
         else "receive"
         if receive_only
         else "send",
-    ]
+    ] + (["--funding-binding", str(funding_binding)] if native_owner_only else [])
 
 
-def main():
+def main(*, clock=time.time, monotonic=time.monotonic):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binding", type=Path, required=True)
     parser.add_argument(
@@ -562,7 +674,11 @@ def main():
         type=Path,
         help="Current owner-local receiving SDK connection; no model/request selection",
     )
+    parser.add_argument("--funding-binding", type=Path,
+                        help="Private operator-selected native accounting binding")
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--native-owner", action="store_true",
+                       help="One bounded native account-owner pipe session")
     modes.add_argument(
         "--receive",
         action="store_true",
@@ -592,8 +708,16 @@ def main():
             inbox_only=args.inbox,
             respond_only=args.respond,
             response_status_only=args.response_status,
+            native_owner_only=args.native_owner, funding_binding=args.funding_binding,
         )
         os.execv(command[0], command)
+    if args.native_owner:
+        if args.funding_binding is None:
+            raise MatrixExecutionError("Private native funding binding required")
+        value = read_native_owner_start()
+        client = configured_client(args.binding, value["source"], required_methods=("messaging.inbox",))
+        native_owner_session(value, client, args.funding_binding, clock=clock, monotonic=monotonic)
+        return
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise MatrixExecutionError("Bounded controller status required")

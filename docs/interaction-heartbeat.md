@@ -323,6 +323,37 @@ requests in that cycle. Cancellation and the original deadline remain effective
 while the owner is pending. A late result cannot renew the horizon or create a
 new attempt. No model tool, human question or account choice comes from the RPC.
 
+The host command has an opt-in `--native-owner --funding-binding FILE` session
+mode. Its protected operator file selects the existing journal, approval and
+accounting public verifiers, instruction/task and verified cost registration.
+The startup line selects only the observed body/thread, original sequence/ID,
+channel and retained parent allowance; it cannot select an account or trust root.
+The current authenticated SDK reads that exact original and the existing funded
+queue retains its immutable digest. Ordinary messages without eligible approved
+coordination metadata do not silently become financially authorized work.
+
+`CycleContext.prepare` reserves that signed work before dispatch; the host builds
+the native owner outside a journal transaction. No pinned ephemeral reviewer or
+private-reply broker is needed for accounting. This account-only context has no
+communication broker: native effects still use the App's existing authorized
+routes, not an invented effect permission.
+
+One child keeps the capability for the whole turn. The existing receiving SDK
+bootstrap forwards this mode and its private binding. Startup uses the existing
+host command deadline; sequential frames inherit the original parent deadline.
+Input is bounded to64KiB and responses fit one atomic nonblocking pipe write.
+Frames reserve one exact attempt, bind one observed native turn, submit a signed
+usage receipt, or reconcile that same turn only after the trusted host observes
+all admitted effects. EOF, expiry, invalid frames or lost writes retain ambiguity;
+there is no restart/reconstruction, replay or refund. A closed pipe is not a
+terminal native receipt. Signed accounting and terminal reconciliation are
+separate; missing usage retains maximum exposure even after a known terminal.
+
+This host-session implementation is not yet wired into the Rust native event
+loop. That caller, exact native attempt-to-provider-usage correlation and actual
+route/exposure/isolation qualification remain unfinished. No private funding
+file is provisioned by these changes and the default handler still denies.
+
 The default App owner explicitly refuses financial reservations. This source
 prepares the native client, not a configured account or receiving activation.
 The provisioned consumer must use the existing Matrix `CycleContext`/schema5

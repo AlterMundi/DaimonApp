@@ -1,13 +1,13 @@
-"""Host adapter between approved ExecutionStore cycles and the selected Matrix SDK.
+"""Host adapters over the existing signed Matrix execution journal and SDK.
 
-No client, journal, scheduler, background attention or model is created here.
-A trusted host can relay an authenticated retained human original as a technical
-send. Model execution separately requires the immutable approved task and
-existing ReviewController. This object is never a model tool or
-an OS isolation boundary. SDK native journals own send identity and receipts;
-ExecutionStore owns approval, admission, fuel and uncertainty. Provenance text
-never authorizes receiving inference. A paid cross-body trial still requires its
-selected participants, qualified runner, provider accounting and human approval.
+Ordinary technical relays do not activate models. Explicitly selected native
+account owners retain the existing work capability for one bounded pipe session;
+legacy one-call reviews keep their existing controller. No new balance journal,
+signer, scheduler or background attention is created. SDK journals own send
+identity/receipts; ExecutionStore owns approval, fuel, charges and uncertainty.
+These host functions are neither model tools nor an OS isolation boundary.
+Real account/route/exposure/usage and credential isolation need qualification;
+source preparation alone selects no account, budget or paid native execution.
 """
 
 import hashlib
@@ -682,6 +682,136 @@ class _NativeMatrixTransport:
         if type(reference["revision"]) is not int or reference["revision"] < 1:
             raise MatrixExecutionError("Positive execution revision required")
         return text(relay["text"])
+
+
+def serve_native_account_owner(owner, input_fd, output_fd):
+    """One bounded per-turn pipe session; no listener, retry or new balance store.
+
+    Only the trusted App host owns these pipes. It supplies observed native
+    binding/terminal reconciliation and separately authenticated usage proofs;
+    this is not an agent tool or a replacement for host/process isolation.
+    EOF, deadline and lost writes retain uncertainty instead of reconstructing
+    the capability or claiming that external effects stopped.
+    """
+    import os
+    import selectors
+
+    context = owner._context
+    original_modes = (os.get_blocking(input_fd), os.get_blocking(output_fd))
+    os.set_blocking(input_fd, False)
+    os.set_blocking(output_fd, False)
+    buffered = bytearray()
+    native_turn = None
+
+    def publish(value):
+        raw = (canonical(value) + "\n").encode()
+        # Replies fit in one atomic, nonblocking pipe write. Do not wait for a
+        # consumer or reenter the journal while a provider dispatch owns it.
+        if len(raw) > os.fpathconf(output_fd, "PC_PIPE_BUF") or os.write(output_fd, raw) != len(raw):
+            raise MatrixExecutionError("Native owner reply unconfirmed")
+
+    def read_frame(selector):
+        while b"\n" not in buffered:
+            # Accounting and terminal reconciliation remain possible while
+            # admission is paused. reserve() independently rechecks admission.
+            remaining = min(context.remaining(),
+                            owner._allowance["deadlineUnixMs"] / 1000
+                            - context._store.observe_clock())
+            if remaining <= 0 or not selector.select(remaining):
+                raise MatrixExecutionError("Native owner session deadline reached")
+            chunk = os.read(input_fd, min(4096, 65537 - len(buffered)))
+            if not chunk:
+                raise MatrixExecutionError("Native owner pipe closed without reconciliation")
+            buffered.extend(chunk)
+            if len(buffered) > 65536:
+                raise MatrixExecutionError("Native owner frame exceeds bound")
+        end = buffered.index(b"\n")
+        frame = bytes(buffered[:end])
+        del buffered[:end + 1]
+        return strict_json(frame)
+
+    try:
+        publish({"ready": owner.descriptor()})
+        with selectors.DefaultSelector() as selector:
+            selector.register(input_fd, selectors.EVENT_READ)
+            # One reservation and usage receipt per attempt, plus bind/terminal.
+            # Duplicate requests are refused rather than growing retained state.
+            for _ in range(owner._allowance["maxProviderAttempts"] * 2 + 2):
+                value = read_frame(selector)
+                operation = value.get("operation") if isinstance(value, dict) else None
+                if operation == "reserve":
+                    closed(value, ("operation", "params"))
+                    owner.reserve(value["params"], publish)
+                elif operation == "bind":
+                    closed(value, ("operation", "cycleId", "nativeTurnId"))
+                    if value["cycleId"] != context.cycle.cycle_id or native_turn is not None:
+                        raise MatrixExecutionError("Native owner binding changed")
+                    native_turn = identifier(value["nativeTurnId"])
+                    publish({"bound": native_turn, "cycleId": context.cycle.cycle_id})
+                elif operation == "settle":
+                    closed(value, ("operation", "usage", "proof"))
+                    context._store.settle_charge(context.cycle, value["usage"], value["proof"])
+                    publish({"settled": value["usage"]["operation_id"],
+                             "cycleId": context.cycle.cycle_id})
+                elif operation == "reconcile":
+                    closed(value, ("operation", "cycleId", "nativeTurnId", "outcome", "effectsReconciled"))
+                    if (native_turn is None or value["nativeTurnId"] != native_turn
+                            or value["cycleId"] != context.cycle.cycle_id
+                            or value["effectsReconciled"] is not True
+                            or value["outcome"] not in ("completed", "stopped")):
+                        raise MatrixExecutionError("Observed native reconciliation required")
+                    context._finish(value["outcome"])
+                    publish({"reconciled": value["outcome"], "cycleId": context.cycle.cycle_id})
+                    return
+                else:
+                    raise MatrixExecutionError("Unsupported native owner frame")
+        raise MatrixExecutionError("Native owner session frame allowance exhausted")
+    except BaseException:
+        context._store.mark_ambiguous(context.cycle)
+        raise
+    finally:
+        os.set_blocking(input_fd, original_modes[0])
+        os.set_blocking(output_fd, original_modes[1])
+
+
+def prepare_native_account_owner(
+    store, instruction, task, *, thread_id, parent_allowance, cost_bound,
+    registration, work_id, read_message, monotonic=time.monotonic,
+):
+    """Concrete provider-account factory for the current signed queued original.
+
+    The trusted host selects instruction, cost registration and actual thread.
+    The existing native reader revalidates the original at journal checkpoints.
+    This does not force a private reply route or create a one-call review runner;
+    communication still uses the App's existing authorized native tool routes.
+    """
+    from daimon_matrix.execution_instruction import ExecutionDenied
+    from daimon_matrix.review_runner import CycleContext, NativeProviderOwner
+
+    if (store.store_id != instruction.store_id
+            or store.get_instruction(instruction.instruction_id, instruction.revision).sha256
+            != instruction.sha256
+            or registration.get("native_thread_id") != thread_id
+            or registration.get("binding") != list(instruction.binding)
+            or hashlib.sha256(task.encode()).hexdigest() != instruction.task_sha256):
+        raise ExecutionDenied("Native owner differs from the selected work binding")
+    context = CycleContext.prepare(
+        store, None, instruction.instruction_id, instruction.revision, task,
+        principal=registration.get("principal"), binding=instruction.binding,
+        work_id=work_id, require_funding=True, require_queued_source=True,
+        read_message=read_message, monotonic=monotonic,
+    )
+    if context is None:
+        raise ExecutionDenied("Selected native work cannot be reserved")
+    try:
+        return NativeProviderOwner(
+            context, thread_id=thread_id, parent_allowance=parent_allowance,
+            cost_bound=cost_bound, registration=registration,
+        )
+    except BaseException:
+        # A reserved cycle is never reconstructed/refunded on startup loss.
+        store.mark_ambiguous(context.cycle)
+        raise
 
 
 class MatrixExecutionBroker(_NativeMatrixTransport):
