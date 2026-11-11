@@ -187,7 +187,9 @@ function boot(readOnly=false,standalone=false,options={}) {
         if(optionsForFixture.incremental){
           const chars=Array.from(replyTexts.get(selected.source)||'Selected reply'),end=Math.min(chars.length,selected.offset+(selected.offset===0?120:300));
           const text=chars.slice(selected.offset,end).join(''),sha=require('node:crypto').createHash('sha256').update(text).digest('hex');
-          return Promise.resolve(new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'',...(optionsForFixture.liveLookahead && end<chars.length && end+300<chars.length?{'x-presentation-lookahead-offset':String(end+300)}:{}),'x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}}));
+          const response=new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'',...(optionsForFixture.liveLookahead && end<chars.length && end+300<chars.length?{'x-presentation-lookahead-offset':String(end+300)}:{}),'x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}});
+          if(optionsForFixture.futureReleases && selected.offset>0)return new Promise((resolve,reject)=>{optionsForFixture.futureReleases.set(selected.offset,()=>resolve(response));options.signal.addEventListener('abort',()=>reject(new Error('Synthetic preparation cancelled')),{once:true});});
+          return Promise.resolve(response);
         }
         return Promise.resolve(new Response(data,{headers:{...(selected.speech_provider?{'x-speech-provider':selected.speech_provider}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':multipart&&selected.offset===0?'1600':'','x-audio-sha256':hash}}));
       }
@@ -1086,11 +1088,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.deepEqual(incremental.audioCalls.map(x=>x.offset),[0,120,420],'Continuation consumes its exact cached attempt and prepares only the next segment');
   incremental.ui.stop();const stoppedCalls=incremental.audioCalls.length;incremental.clock.fire(180);await new Promise(r=>setImmediate(r));assert.equal(incremental.audioCalls.length,stoppedCalls,'Stop cannot revive prefetched speech');
   // Slow finalized-WAV voices use two exact future segments concurrently.
-  const preparationSignals=[];
-  const buffered=boot(false,true,{clock:true,incremental:true,liveLookahead:true,preparationSignals});buffered.audio();buffered.replyTexts.set('native:9','Measured sentence. '.repeat(120));await buffered.ui.refresh();
+  const preparationSignals=[],futureReleases=new Map();
+  const buffered=boot(false,true,{clock:true,incremental:true,liveLookahead:true,preparationSignals,futureReleases});buffered.audio();buffered.replyTexts.set('native:9','Measured sentence. '.repeat(120));await buffered.ui.refresh();
   buffered.nodes.get('#conversation-voice-replies').handlers.click();buffered.addReplies(1);await buffered.ui.refresh();
   const bufferedPlayer=buffered.nodes.get('#conversation-audio');await until(()=>buffered.audioCalls.length===3&&!bufferedPlayer.paused&&!bufferedPlayer.muted);
   assert.deepEqual(buffered.audioCalls.map(x=>x.offset),[0,120,420],'Two future exact parts start before the current part ends');
+  assert.deepEqual([...futureReleases.keys()],[120,420],'Both futures are in flight without waiting for either response');
+  futureReleases.get(120)();
   const originalMedia=bufferedPlayer.src;bufferedPlayer.ended=true;const bufferedContinue=bufferedPlayer.handlers.ended();buffered.clock.fire(180);await bufferedContinue;
   await until(()=>buffered.audioCalls.length===4&&!bufferedPlayer.paused&&!bufferedPlayer.muted);
   assert.notEqual(bufferedPlayer.src,originalMedia);
