@@ -608,3 +608,32 @@ Stop/quiet clears tracks immediately; hidden pages and reduced motion clear/hide
 the feedback. Optional rendering/observer failures cannot interrupt capture,
 original retention, captioning, playback, source identity or explicit Stop.
 The selected header background stays in place rather than changing with pose.
+
+
+## Bounded lookahead for saved Live reading voices
+
+Saved studio voices use the existing GPT-Live read-aloud route; the unselected
+Realtime reader is a different generation path. A voice ID alone is not a latency
+measurement. Keep the selected profile/delivery and source-bound render cache;
+do not silently substitute a faster model or replay an uncertain render.
+
+For finalized-WAV Live reading, use ordinary240-character canonical parts at all
+offsets (links/code retain their existing atomic boundary preference). The audio
+response can certify `X-Presentation-Lookahead-Offset` from the same canonical
+window. It is an exact later offset, not browser-selected text or a new grant.
+No second boundary is advertised for questions or progressive streaming.
+
+The Conversation player owns at most two future WAV preparations while one part
+plays. They share the existing two synthesis slots and cache/retention bounds;
+future memory is at most16MiB (two8MiB parts), plus the existing current audio.
+Promoting a prepared part transfers its exact already-owned successor and fills
+only the newly free slot. Stop, Skip, source replacement and ordinary teardown
+cancel both future preparations. Failed/unknown preparations are retained, not
+reissued automatically. Provisional live-prefix and progressive-player behavior
+keep their existing single-ahead contract and canonical continuity checks.
+
+Two preparations can hide near-playback-speed generation behind current playback;
+this is not a promise of zero gaps under provider/network delay. Compare startup,
+first PCM, generation and audio duration with the same synthetic passage before
+calling a particular voice slow. Real playback fluency, chosen delivery and human
+hearing are separate acceptance from source/HTTP/queue fixtures.
