@@ -323,6 +323,135 @@ requests in that cycle. Cancellation and the original deadline remain effective
 while the owner is pending. A late result cannot renew the horizon or create a
 new attempt. No model tool, human question or account choice comes from the RPC.
 
+The host command has an opt-in `--native-owner --funding-binding FILE` session
+mode. Its protected operator file selects the existing journal, approval and
+accounting public verifiers, instruction/task and verified cost registration.
+The startup line selects only the observed body/thread/model/provider, retained
+local execution ID, original sequence/ID/native content hash, channel and retained
+parent allowance; it cannot select an account or trust root. The authenticated
+SDK content hash must match the App-retained native hash before reservation;
+this is distinct from the journal digest of the complete signed document.
+The current authenticated SDK reads that exact original. A signed registration
+with `source_mode="app_owned_inbox"`, `source_channel` and the exact
+`instruction_sha256` uses the App-owned source directly. It stores only source
+references and a distinct signed-document digest in the existing native-owner
+marker. There is no second queue or requirement for peers to include financial
+metadata. The default legacy `coordination` mode still requires its eligible
+funded coordination work row; neither mode falls back to the other. A selected
+signed task must express the authorized Messaging purpose; selecting a cost
+policy never expands the task or its social effect permissions.
+
+`CycleContext.prepare` reserves that signed work before dispatch; the host builds
+the native owner outside a journal transaction. No pinned ephemeral reviewer or
+private-reply broker is needed for accounting. This account-only context has no
+communication broker: native effects still use the App's existing authorized
+routes, not an invented effect permission.
+
+One child keeps the capability for the whole turn. The existing receiving SDK
+bootstrap forwards this mode and its private binding. Startup uses the existing
+host command deadline; sequential frames inherit the original parent deadline.
+Input is bounded to64KiB and responses fit one atomic nonblocking pipe write.
+Frames reserve one exact attempt, record its unsigned usage observation, bind
+one observed native turn, submit a signed usage receipt, or reconcile that same
+turn only after the trusted host observes
+all admitted effects. EOF, expiry, invalid frames or lost writes retain ambiguity;
+there is no restart/reconstruction, replay or refund. A closed pipe is not a
+terminal native receipt. Signed accounting and terminal reconciliation are
+separate; missing usage retains maximum exposure even after a known terminal.
+The signed owner descriptor also supplies positive `maxOutputTokens` from its
+instruction. App forwards it as `providerMaxOutputTokens` on the same bounded
+start; it is not a model option or an account choice. The native HTTP/WS physical
+request must contain that ceiling (or a tighter explicit cap), including retries
+and inherited Responses compaction. Unknown old readers reject the requested
+contract rather than silently execute without it. The unselected ordinary
+attempt-only path remains unchanged. The provider must still be independently
+qualified to honor the field and the complete exposure/route/isolation contract.
+
+Funded starts explicitly request `providerUsageObservations`. The owner-only
+`turn/providerAttempt/usage` callback accepts only an attempt UUID/ordinal already
+authorized in this cycle, with a32KiB closed payload. Identical duplicates reuse
+the retained acknowledgment; conflicting or unreserved reports are refused.
+Reporting uses the original deadline and bypasses new-work admission checks so
+an admitted response can be accounted for after a pause. The child stores the
+observation on its existing provider operation, not another queue or charge.
+The pipe admits at most `3 * maxProviderAttempts + 2` frames, including reserve,
+observation and signed settlement per attempt plus bind/terminal. Invalid or
+uncertain acknowledgments fence the child; no automatic write replay occurs.
+Unsigned tokens or provider metadata never change actual spending.
+
+The protected `telecodex.native-funding-binding/v2` selects `usage_receipt` with
+an absolute command argv and `timeout_seconds` (1–60). The v1 binding remains
+observation-only. The one-shot accounting command receives only the bounded
+exact-attempt receipt request on stdin and returns JSON `null` or `{usage, proof}`
+on stdout, at most64KiB. It inherits the owned host process group and must not
+daemonize. No shell is used, stderr is discarded, and its timeout cannot exceed
+the original cycle deadline. Failure, excessive output or missing signatures
+retains the existing maximum reservation. The child persists the observation
+before requesting a receipt once; duplicates and lost acknowledgments never
+rerun the command. Reconciliation of an independently recovered valid receipt
+uses the existing settlement API. The existing public trust selection verifies
+the signature; this adapter supplies no signing key, prices or default account.
+A real qualified accounting authority/route remains unselected.
+
+
+A trusted `not_started` reconciliation requires the actual native
+`NativeInputNotSubmitted` result, no physical binding and an atomic journal check
+that the sole operation is the returned native-owner marker. Even a pre-ACK
+provider intent prevents this conclusion. Successful exact acknowledgment permits
+normal bounded App metadata retirement; uncertainty retains the linkage. This
+never refunds attempts, resets cycle counters or recreates the original.
+
+An external input cannot inherit a financial cycle. Before writing it, the
+owning App transaction marks only that automatic execution as stopping and the
+native callback returns typed `FreshExecutionRequired`. The human input retains
+its original and uses the existing ordinary queue. Conditional controls receive
+`known_unsent` plus their existing settlement callback, including cancellation
+and queued-exit paths; there is no independent-writer fallback. Internal workflow
+returns retain their existing bounded `retained_unsent` recovery only for this
+specific local refusal. Already-submitted inputs remain uncertain.
+
+The Unix native event loop now has an opt-in `matrix_transport.native_funding_binding`
+caller. One owned child supplies startup, exact-attempt reservations and physical
+turn binding. Current App ownership and immutable source are checked before and
+after reservation; later pause or ownership transfer prevents a positive reply.
+Cancelled pipe exchanges fence that child permanently. An unconfirmed or
+cancelled physical-turn bind cancels the same native turn through the existing
+interrupt loop, without waiting for the child timeout or claiming it stopped.
+Missing configuration
+retains ordinary attempt-only fuel; a selected financial error never falls back.
+Other lanes are not selected by this Messaging configuration.
+
+This remains an unselected source candidate. Ordinary signed group/directed
+originals are covered by the App-owned source mode; human handover and known-no-start source paths have local qualification.
+Actual composed receiving adoption remains unperformed. The Rust terminal callback closes its child conservatively; it does
+not manufacture signed usage or financial reconciliation. Physical-attempt usage
+now reaches the existing owner journal in the source candidate; authenticated
+settlement and actual route/exposure/isolation qualification remain unfinished. No private funding file is provisioned by these
+changes and the unconfigured handler still denies financial reservations.
+
+An opt-in composed receiving test uses a built real Core app-server, the real
+App shared-WebSocket client and its owned Python child, and the existing signed
+Matrix group/account fixtures. Run from this App checkout with the matching
+Matrix source/dependency environment selected explicitly:
+
+```sh
+PYTHONPATH="$MATRIX_ROOT/src:$MATRIX_ROOT" \
+TELECODEX_TEST_CORE_BIN="$CORE_ROOT/codex-rs/target/debug/codex-app-server" \
+TELECODEX_TEST_PYTHON="$MATRIX_TEST_PYTHON" \
+cargo test --locked --bin telecodex actual_core_usage_reaches -- --ignored --nocapture
+```
+
+It owns one temporary Core home, loopback endpoints, signed synthetic original,
+accounts and accounting key, with a30-second run bound. Provider retries are off;
+no installed runtime or real account is opened. The observed path reserves one
+physical attempt, carries its exact three-token completion through App into the
+journal, verifies a synthetic eight-unit signed settlement and reconciles the
+same physical turn. It asserts one call and zero remaining exposure. Temporary
+state and owned processes are removed at test end. This proves composed code
+routing; it does not qualify real prices/credentials, installed receiver adoption
+or useful peer work. The test stays ignored by default because the exact Core
+binary and Matrix environment must be selected, not inferred from a live body.
+
 The default App owner explicitly refuses financial reservations. This source
 prepares the native client, not a configured account or receiving activation.
 The provisioned consumer must use the existing Matrix `CycleContext`/schema5

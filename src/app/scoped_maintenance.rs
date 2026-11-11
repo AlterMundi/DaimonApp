@@ -236,10 +236,10 @@ async fn mutate(
                     .await
             }
         }
-        Err(_) => (
+        Err(_) => receipt.lock().expect("receipt mutex poisoned").clone().unwrap_or_else(|| (
             "uncertain".into(),
             json!({"error":"Owning writer acknowledgment unavailable","automatic_retry":false}),
-        ),
+        )),
     }
 }
 async fn restore_collector(

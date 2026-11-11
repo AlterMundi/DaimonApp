@@ -85,6 +85,8 @@ pub struct MatrixTransportConfig {
     pub command: Vec<String>,
     pub source: MatrixDestination,
     pub timeout_seconds: u64,
+    /// Private operator-selected accounting binding; absent keeps ordinary fuel.
+    pub native_funding_binding: Option<std::path::PathBuf>,
 }
 
 /// Explicit receiving configuration; labels never establish social authority.
@@ -211,6 +213,10 @@ impl InteractionConfig {
                     .iter()
                     .any(|arg| arg.is_empty() || arg.len() > 4096 || arg.contains('\0'))
                 || !(1..=60).contains(&transport.timeout_seconds)
+                || transport
+                    .native_funding_binding
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute())
             {
                 bail!("Invalid explicit bounded Matrix host transport configuration");
             }
@@ -647,6 +653,7 @@ mod tests {
                 embodiment_id: "embodiment:source".into(),
             },
             timeout_seconds: 1,
+            native_funding_binding: None,
         });
         incoming.validate().unwrap();
         incoming.matrix_inbox_channel = None;

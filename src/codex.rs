@@ -51,6 +51,15 @@ impl std::fmt::Display for NativeInputNotSubmitted {
 }
 impl std::error::Error for NativeInputNotSubmitted {}
 
+#[derive(Debug)]
+pub struct NativeFreshExecutionRequired;
+impl std::fmt::Display for NativeFreshExecutionRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("input retained for a fresh execution")
+    }
+}
+impl std::error::Error for NativeFreshExecutionRequired {}
+
 #[derive(Clone)]
 pub struct CodexRunner {
     binary: PathBuf,
@@ -243,6 +252,7 @@ pub enum CodexEvent {
     /// Host accounting only, never a model tool or human question. The selected
     /// owner must reserve the exact attempt durably before returning true.
     NativeProviderAttemptReservation(NativeProviderAttemptReservation),
+    NativeProviderAttemptUsage(NativeProviderAttemptUsage),
     /// Transactional ownership handover before any new packet joins a writer.
     NativeExternalInputSubmitting,
     NativeTurnTerminal {
@@ -311,8 +321,8 @@ pub enum CodexApprovalDecision {
 }
 
 /// A reservation already conserved by the owning journal, never a new grant.
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeInferenceAllowance {
     pub max_provider_attempts: u32,
     pub max_request_bytes: u32,
@@ -330,6 +340,19 @@ pub struct NativeProviderAttemptReservation {
     pub deadline_unix_ms: i64,
 }
 
+#[derive(Clone, Debug, serde::Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeProviderAttemptUsage {
+    pub thread_id: String,
+    pub cycle_id: String,
+    pub attempt_id: String,
+    pub ordinal: u32,
+    pub response_id: String,
+    pub model: Option<String>,
+    pub token_usage: Option<Value>,
+    pub usage_metadata: Option<Value>,
+}
+
 impl NativeProviderAttemptReservation {
     fn matches(&self, thread: &str, cycle: &str, allowance: &NativeInferenceAllowance) -> bool {
         let canonical =
@@ -345,7 +368,7 @@ impl NativeProviderAttemptReservation {
     }
 }
 impl NativeInferenceAllowance {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.max_provider_attempts > 0
                 && (1..=64 * 1024 * 1024).contains(&self.max_request_bytes),
@@ -370,19 +393,14 @@ pub enum CodexEventOutcome {
     InferenceAllowance(NativeInferenceAllowance),
     /// Explicit owner selection for an already authorized journal cycle.
     /// Ordinary attempt-only heartbeat allocations keep their existing path.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "No live financial owner is provisioned; owner-client fixtures exercise this opt-in selection"
-        )
-    )]
     FundedInferenceAllowance {
         allowance: NativeInferenceAllowance,
         cycle_id: String,
+        max_output_tokens: u32,
     },
     /// Only a trusted host callback may supply this result. No UI/model route.
     ProviderAttemptReserved(bool),
+    ProviderUsageRecorded(bool),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
     DynamicTool(oneshot::Receiver<Value>),
@@ -392,7 +410,32 @@ pub enum CodexEventOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CodexSteerError {
     Rejected(String),
+    FreshExecutionRequired,
     Undetermined(String),
+}
+
+/// A local write-boundary refusal proves no control/input bytes were sent.
+fn reject_unsubmitted_steer(steer: CodexSteerRequest, error: anyhow::Error) -> Result<()> {
+    let conditional = match steer.goal.as_ref() {
+        Some(GoalControl::ConditionalMetadata(control)) => Some(control.as_ref()),
+        Some(GoalControl::Activate(activation)) => activation.conditional.as_deref(),
+        _ => None,
+    };
+    if let Some(control) = conditional {
+        let receipt = json!({"error":"Selected writer refused before native submission","automatic_retry":false});
+        *control.receipt.lock().expect("goal receipt mutex poisoned") =
+            Some(("known_unsent".into(), receipt.clone()));
+        if let Some(settled) = &control.settled {
+            settled("known_unsent", &receipt)?;
+        }
+    }
+    let rejected = if error.is::<NativeFreshExecutionRequired>() {
+        CodexSteerError::FreshExecutionRequired
+    } else {
+        CodexSteerError::Rejected(error.to_string())
+    };
+    let _ = steer.response.send(Err(rejected));
+    Ok(())
 }
 
 pub type CodexSteerResponse = std::result::Result<Option<String>, CodexSteerError>;
@@ -1844,17 +1887,18 @@ where
             json!({"kind":"application","value":awareness});
     }
     let admission = on_event(CodexEvent::NativeTurnSubmitting).await?;
-    let (inference_allowance, provider_cycle) = match admission {
+    let (inference_allowance, provider_cycle, provider_output_limit) = match admission {
         CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
             allowance.validate()?;
-            (Some(allowance), None)
+            (Some(allowance), None, None)
         }
-        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id } if idle_only => {
+        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id, max_output_tokens } if idle_only => {
             allowance.validate()?;
             anyhow::ensure!(Uuid::parse_str(&cycle_id).is_ok_and(|id|id.to_string()==cycle_id), "Canonical funding cycle UUID required");
-            (Some(allowance), Some(cycle_id))
+            anyhow::ensure!(max_output_tokens > 0, "Positive signed owner output ceiling required");
+            (Some(allowance), Some(cycle_id), Some(max_output_tokens))
         }
-        CodexEventOutcome::None if !idle_only => (None, None),
+        CodexEventOutcome::None if !idle_only => (None, None, None),
         _ => bail!("Fresh heartbeat requires its exact retained inference reservation"),
     };
     // Capture once: no incoming RPC may renew the original reservation horizon.
@@ -1884,7 +1928,7 @@ where
             }
             if steer.goal.is_none() && steer.tool_output.is_none() && tool_output.is_none() {
                 if let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
-                    let _=steer.response.send(Err(CodexSteerError::Rejected(error.to_string())));
+                    reject_unsubmitted_steer(steer,error)?;
                     continue;
                 }
                 let text = match &steer.client_message_id {
@@ -1906,6 +1950,10 @@ where
     }
     if cancel.is_cancelled() {
         if adopted_turn.is_none() {
+            steer_rx.close();
+            queued_steers.extend(initial_steers);
+            while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
+            reject_outstanding_steers(queued_steers,HashMap::new());
             return Err(anyhow::Error::new(NativeInputNotSubmitted));
         }
         bail!("cancelled before native collection");
@@ -1917,7 +1965,11 @@ where
             // Mandatory method: old servers must reject before inference. No fallback.
             allowance.validate()?;
             let mut bounded_params = json!({"turn":params,"allowance":allowance});
-            if let Some(cycle) = provider_cycle.as_ref() { bounded_params["providerReservationCycleId"] = json!(cycle); }
+            if let Some(cycle) = provider_cycle.as_ref() {
+                bounded_params["providerReservationCycleId"] = json!(cycle);
+                bounded_params["providerUsageObservations"] = json!(true);
+                bounded_params["providerMaxOutputTokens"] = json!(provider_output_limit);
+            }
             ("turn/startBoundedIfIdle", bounded_params)
         } else { ("turn/start",params) };
         initial_write_possible = true;
@@ -1971,6 +2023,8 @@ where
     let mut seen_provider_attempts = HashSet::new();
     let mut seen_provider_ordinals = HashSet::new();
     let mut seen_provider_requests = HashSet::new();
+    let mut authorized_provider_attempts = HashMap::<String,u32>::new();
+    let mut seen_provider_usage = HashMap::<String,(NativeProviderAttemptUsage,bool)>::new();
     let mut provider_owner_fenced = false;
     loop {
         // A heartbeat allowance owns one physical execution. An unrelated active
@@ -2074,15 +2128,15 @@ where
                         continue;
                     }
                     if turn_completed && active_turn_id.is_none() {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected("Native writer completed before this input was submitted".into())));
+                        reject_unsubmitted_steer(steer,anyhow!("Native writer completed before this input was submitted"))?;
                         continue;
                     }
                     if cancel.is_cancelled() {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected("native interruption pending".to_string())));
+                        reject_unsubmitted_steer(steer,anyhow!("native interruption pending"))?;
                         continue;
                     }
                     if steer.goal.is_some() && let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected(error.to_string())));
+                        reject_unsubmitted_steer(steer,error)?;
                         continue;
                     }
                     if let Some(GoalControl::Activate(activation))=steer.goal.as_ref()
@@ -2251,6 +2305,34 @@ where
                 }
               }
               RpcMessage::ServerRequest{id,method,params}=>{
+                if method == "turn/providerAttempt/usage" {
+                    if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str()) {continue;}
+                    let mut recorded=false;
+                    if let (Some(cycle),Some(deadline),Ok(usage))=(provider_cycle.as_deref(),provider_deadline,
+                        serde_json::from_value::<NativeProviderAttemptUsage>(params.clone()))
+                        && usage.cycle_id==cycle && authorized_provider_attempts.get(&usage.attempt_id)==Some(&usage.ordinal)
+                        && !usage.response_id.is_empty() && usage.response_id.len()<=200
+                        && usage.model.as_ref().is_none_or(|m|!m.is_empty() && m.len()<=200)
+                        && serde_json::to_vec(&params).is_ok_and(|bytes|bytes.len()<=32*1024)
+                    {
+                        if let Some((previous,ack))=seen_provider_usage.get(&usage.attempt_id) {
+                            recorded=previous==&usage && *ack;
+                        } else {
+                            let identity=usage.attempt_id.clone();
+                            let result=tokio::select! {
+                                biased;
+                                _=cancel.cancelled()=>None,
+                                _=sleep_until(deadline)=>None,
+                                result=on_event(CodexEvent::NativeProviderAttemptUsage(usage.clone()))=>Some(result),
+                            };
+                            recorded=matches!(result,Some(Ok(CodexEventOutcome::ProviderUsageRecorded(true))));
+                            seen_provider_usage.insert(identity,(usage,recorded));
+                        }
+                    }
+                    process.send_result(&id,json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
+                        "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"recorded":recorded})).await?;
+                    continue;
+                }
                 if method == "turn/providerAttempt/reserve" {
                     // This request can precede the start ACK and deliberately
                     // has no turnId. Match the owner-selected cycle/thread before
@@ -2280,6 +2362,9 @@ where
                     }
                     if !authorized && params.get("cycleId").and_then(Value::as_str) == provider_cycle.as_deref() {
                         provider_owner_fenced = true;
+                    }
+                    if authorized && let Ok(attempt)=serde_json::from_value::<NativeProviderAttemptReservation>(params.clone()) {
+                        authorized_provider_attempts.insert(attempt.attempt_id,attempt.ordinal);
                     }
                     process.send_result(&id, json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
                         "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"authorized":authorized})).await?;
@@ -2376,6 +2461,8 @@ where
     for (_, closed) in open_tools.into_values() {
         closed.cancel();
     }
+    steer_rx.close();
+    while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
     reject_outstanding_steers(queued_steers, pending_steers);
     for (_,closed) in open_inputs.into_values() {
         closed.cancel();
@@ -2475,9 +2562,7 @@ where
         bail!("Mixed internal and human steering");
     }
     if let Err(error) = on_event(CodexEvent::NativeExternalInputSubmitting).await {
-        let _ = steer
-            .response
-            .send(Err(CodexSteerError::Rejected(error.to_string())));
+        reject_unsubmitted_steer(steer, error)?;
         return Ok(());
     }
     let internal = steer.tool_output.is_some();
@@ -2609,9 +2694,9 @@ fn reject_outstanding_steers(
 ) {
     let reason = "active turn finished before turn/steer was accepted";
     for steer in queued_steers {
-        let _ = steer
-            .response
-            .send(Err(CodexSteerError::Rejected(reason.to_string())));
+        if reject_unsubmitted_steer(steer, anyhow!(reason)).is_err() {
+            tracing::warn!("Unsubmitted goal-control receipt was not retained");
+        }
     }
     for pending in pending_steers.into_values() {
         let _ = pending
@@ -2947,7 +3032,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -4915,6 +5000,215 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn local_financial_refusal_settles_conditional_control_without_native_write() {
+        for activation in [false, true] {
+            let slot = Arc::new(std::sync::Mutex::new(None));
+            let callbacks = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = callbacks.clone();
+            let control = GoalMetadataControl {
+                origin: GoalMutationOrigin::Automatic,
+                plan: crate::store::GoalPlan {
+                    action: crate::store::GoalAction::Pause,
+                    expected: NativeGoalSnapshot {
+                        goal: None,
+                        revision: "retained-revision".into(),
+                    },
+                    objective: None,
+                    token_budget: None,
+                    followup: None,
+                },
+                admission: Arc::new(|| panic!("Refused control must not reach native admission")),
+                receipt: slot.clone(),
+                context: None,
+                scope: None,
+                settled: Some(Arc::new(move |phase, receipt| {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push((phase.to_owned(), receipt.clone()));
+                    Ok(())
+                })),
+            };
+            let goal = if activation {
+                GoalControl::Activate(Box::new(goals::GoalActivation {
+                    intent: "retained-restore".into(),
+                    native_thread: Some("thread".into()),
+                    expected: None,
+                    objective: None,
+                    replace: false,
+                    attach_turn: None,
+                    conditional: Some(Box::new(control)),
+                }))
+            } else {
+                GoalControl::ConditionalMetadata(Box::new(control))
+            };
+            let (response, ack) = oneshot::channel();
+            reject_unsubmitted_steer(
+                CodexSteerRequest {
+                    tool_output: None,
+                    observation: None,
+                    images: vec![],
+                    admission_check: None,
+                    client_message_id: None,
+                    text: String::new(),
+                    goal: Some(goal),
+                    response,
+                },
+                anyhow::Error::new(NativeFreshExecutionRequired),
+            )
+            .unwrap();
+            assert_eq!(
+                ack.await.unwrap(),
+                Err(CodexSteerError::FreshExecutionRequired)
+            );
+            assert_eq!(slot.lock().unwrap().as_ref().unwrap().0, "known_unsent");
+            let records = callbacks.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].0, "known_unsent");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_financial_preparation_rejects_inputs_and_settles_queued_restore() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_close() {
+                    break;
+                }
+                let message: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                let result = match message["method"].as_str() {
+                    Some("initialized") => continue,
+                    Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
+                    Some("thread/start") => {
+                        json!({"thread":{"id":"unstarted"},"model":"synthetic-model"})
+                    }
+                    Some("thread/goal/get") => json!({"goal":null}),
+                    other => panic!("No input, goal mutation or inference may be sent: {other:?}"),
+                };
+                socket
+                    .send(WsMessage::Text(
+                        json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let settled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = settled.clone();
+        let control = GoalMetadataControl {
+            origin: GoalMutationOrigin::Automatic,
+            plan: crate::store::GoalPlan {
+                action: crate::store::GoalAction::Resume,
+                expected: NativeGoalSnapshot {
+                    goal: None,
+                    revision: "retained".into(),
+                },
+                objective: None,
+                token_budget: None,
+                followup: None,
+            },
+            admission: Arc::new(|| panic!("No independent restore allowed")),
+            receipt: slot.clone(),
+            context: None,
+            scope: None,
+            settled: Some(Arc::new(move |phase, _| {
+                assert_eq!(phase, "known_unsent");
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })),
+        };
+        let restore = GoalControl::Activate(Box::new(goals::GoalActivation {
+            intent: "restore".into(),
+            native_thread: Some("unstarted".into()),
+            expected: None,
+            objective: None,
+            replace: false,
+            attach_turn: None,
+            conditional: Some(Box::new(control)),
+        }));
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let (human, ack_human) = oneshot::channel();
+        let (response, ack_restore) = oneshot::channel();
+        for (goal, response) in [(None, human), (Some(restore), response)] {
+            sender
+                .send(CodexSteerRequest {
+                    tool_output: None,
+                    observation: None,
+                    images: vec![],
+                    admission_check: None,
+                    client_message_id: None,
+                    text: "retained original".into(),
+                    goal,
+                    response,
+                })
+                .unwrap();
+        }
+        let cancel = CancellationToken::new();
+        let cancelling = cancel.clone();
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "original".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let result = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                cancel,
+                receiver,
+                move |event| {
+                    let cancelling = cancelling.clone();
+                    async move {
+                        Ok(if matches!(event, CodexEvent::NativeTurnSubmitting) {
+                            cancelling.cancel();
+                            CodexEventOutcome::FundedInferenceAllowance {
+                                cycle_id: "caa11c1d-b05b-4f56-99ab-167878e86126".into(),
+                                max_output_tokens: 200,
+                                allowance: NativeInferenceAllowance {
+                                    max_provider_attempts: 2,
+                                    max_request_bytes: 1024,
+                                    deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30000,
+                                },
+                            }
+                        } else {
+                            CodexEventOutcome::None
+                        })
+                    }
+                },
+            )
+            .await;
+        assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
+        assert!(matches!(
+            ack_human.await.unwrap(),
+            Err(CodexSteerError::Rejected(_))
+        ));
+        assert!(matches!(
+            ack_restore.await.unwrap(),
+            Err(CodexSteerError::Rejected(_))
+        ));
+        assert_eq!(slot.lock().unwrap().as_ref().unwrap().0, "known_unsent");
+        assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1);
+        server.await.unwrap();
+    }
+
     #[cfg(unix)]
     async fn provider_owner_fixture(mode: &'static str) {
         const CYCLE: &str = "caa11c1d-b05b-4f56-99ab-167878e86126";
@@ -4976,8 +5270,46 @@ mod tests {
                         assert_eq!(ack["id"], 500);
                         assert_eq!(
                             ack["result"],
-                            json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal")})
+                            json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal"|"started-cancel")})
                         );
+                        if mode == "allow" {
+                            assert_eq!(request["params"]["providerUsageObservations"], true);
+                            let usage = json!({"threadId":"funded-native","cycleId":CYCLE,
+                                "attemptId":ATTEMPT,"ordinal":1,"responseId":"exact-response",
+                                "model":null,"tokenUsage":null,"usageMetadata":null});
+                            let mut changed = usage.clone();
+                            changed["responseId"] = json!("changed-response");
+                            let mut unknown = usage.clone();
+                            unknown["attemptId"] = json!("450c786c-cf2b-40da-b3e4-dd1e5e560d7c");
+                            for (index, (packet, recorded)) in [
+                                (usage.clone(), true),
+                                (usage, true),
+                                (changed, false),
+                                (unknown, false),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                socket
+                                    .send(WsMessage::Text(
+                                        json!({"id":600+index,
+                                    "method":"turn/providerAttempt/usage","params":packet})
+                                        .to_string()
+                                        .into(),
+                                    ))
+                                    .await
+                                    .unwrap();
+                                let ack: Value = serde_json::from_str(
+                                    socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(ack["id"], 600 + index);
+                                assert_eq!(
+                                    ack["result"],
+                                    json!({"cycleId":CYCLE,"attemptId":packet["attemptId"],"recorded":recorded})
+                                );
+                            }
+                        }
                         if mode == "allow" {
                             socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
                             socket.send(WsMessage::Text(json!({"id":501,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
@@ -5029,8 +5361,25 @@ mod tests {
                             ))
                             .await
                             .unwrap();
+                        if mode == "started-cancel" {
+                            continue;
+                        }
                         socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"completed"}}}).to_string().into())).await.unwrap();
                         continue;
+                    }
+                    Some("turn/interrupt") if mode == "started-cancel" => {
+                        assert_eq!(
+                            request["params"],
+                            json!({"threadId":"funded-native","turnId":"funded-turn"})
+                        );
+                        socket
+                            .send(WsMessage::Text(
+                                json!({"id":request["id"],"result":{}}).to_string().into(),
+                            ))
+                            .await
+                            .unwrap();
+                        socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"interrupted"}}}).to_string().into())).await.unwrap();
+                        break;
                     }
                     other => {
                         panic!("No fallback, human prompt or extra native submission: {other:?}")
@@ -5062,6 +5411,8 @@ mod tests {
         let (_sender, receiver) = mpsc::unbounded_channel();
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = callbacks.clone();
+        let usage_callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let usage_observed = usage_callbacks.clone();
         let late_owner = Arc::new(std::sync::Mutex::new(None));
         let late_work = late_owner.clone();
         let run = runner
@@ -5074,6 +5425,7 @@ mod tests {
                     let cancel = owner_cancel.clone();
                     let observed = observed.clone();
                     let late_work = late_work.clone();
+                    let usage_observed = usage_observed.clone();
                     async move {
                         match event {
                             CodexEvent::NativeTurnSubmitting => {
@@ -5093,8 +5445,23 @@ mod tests {
                                     CodexEventOutcome::FundedInferenceAllowance {
                                         allowance,
                                         cycle_id: CYCLE.into(),
+                                        max_output_tokens: 200,
                                     }
                                 })
+                            }
+                            CodexEvent::NativeTurnStarted(_) if mode == "started-cancel" => {
+                                // The App bind helper yields here with its token
+                                // cancelled; native must target the active turn.
+                                cancel.cancel();
+                                Ok(CodexEventOutcome::None)
+                            }
+                            CodexEvent::NativeProviderAttemptUsage(usage) => {
+                                assert_eq!(mode, "allow");
+                                assert_eq!(usage.attempt_id, ATTEMPT);
+                                assert_eq!(usage.response_id, "exact-response");
+                                assert!(usage.token_usage.is_none());
+                                usage_observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                Ok(CodexEventOutcome::ProviderUsageRecorded(true))
                             }
                             CodexEvent::NativeProviderAttemptReservation(attempt) => {
                                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -5140,7 +5507,10 @@ mod tests {
             .await;
         assert_eq!(
             run.is_ok(),
-            !matches!(mode, "pending" | "deadline" | "late-owner"),
+            !matches!(
+                mode,
+                "pending" | "deadline" | "late-owner" | "started-cancel"
+            ),
             "{:?}",
             run.err()
         );
@@ -5151,6 +5521,10 @@ mod tests {
             } else {
                 usize::from(!matches!(mode, "unfunded" | "changed-ceiling"))
             }
+        );
+        assert_eq!(
+            usage_callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(mode == "allow")
         );
         let late = late_owner.lock().unwrap().take();
         if let Some(late) = late {
@@ -5166,6 +5540,12 @@ mod tests {
     #[tokio::test]
     async fn native_provider_reservation_before_ack_is_exact_and_nonreplayable() {
         provider_owner_fixture("allow").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_started_owner_cancellation_interrupts_exact_turn() {
+        provider_owner_fixture("started-cancel").await;
     }
 
     #[cfg(unix)]

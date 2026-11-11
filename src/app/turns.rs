@@ -369,6 +369,9 @@ pub(super) async fn process_turn(
     }
     let turn_workspace = prepare_turn_workspace(&session, turn_id)?;
     let physical_turn = Arc::new(StdMutex::new(None::<String>));
+    let observed_native_profile = Arc::new(StdMutex::new(None::<(String, String, String)>));
+    #[cfg(unix)]
+    let native_account = Arc::new(Mutex::new(None::<super::native_account::Session>));
     let controller_possible = shared.config.interaction.as_ref().is_some_and(|c| {
         c.human_id == queued.request.from_user_id
             && (c.entry() == session.key || super::routing::enrolled(&shared, session.key))
@@ -826,6 +829,9 @@ pub(super) async fn process_turn(
                 let preserve_thread_binding = queued.request.review_mode.is_none();
                 let admission=queued.tribu_admission.clone();
                 let physical_turn=physical_turn.clone();
+                let observed_native_profile=observed_native_profile.clone();
+                #[cfg(unix)]
+                let native_account=native_account.clone();
                 let stop_resume=queued.stop_resume.clone();
                 let admission_epoch=queued.admission_epoch.clone();
                 let interaction=queued.interaction.clone();
@@ -847,6 +853,9 @@ pub(super) async fn process_turn(
                     let attach_native=attach_native.clone();
                     let admission=admission.clone();
                     let physical_turn=physical_turn.clone();
+                    let observed_native_profile=observed_native_profile.clone();
+                    #[cfg(unix)]
+                    let native_account=native_account.clone();
                     let stop_resume=stop_resume.clone();
                     let admission_epoch=admission_epoch.clone();
                     let interaction=interaction.clone();
@@ -862,6 +871,7 @@ pub(super) async fn process_turn(
                             CodexEvent::NativeModelConfigured {thread_id,model,provider,effort} => {
                                 shared.store.record_native_model(session_key,requester_user_id,&thread_id,&model,effort.as_deref())?;
                                 shared.store.audit(Some(requester_user_id),"native_model_profile_observed",serde_json::json!({"session":session_key,"model":model,"provider":provider,"effort":effort}))?;
+                                *observed_native_profile.lock().expect("native profile mutex poisoned")=Some((thread_id,model,provider));
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::ThreadStarted(thread_id) => {
@@ -1028,7 +1038,10 @@ pub(super) async fn process_turn(
                                 } else { CodexEventOutcome::None })
                             }
                             CodexEvent::NativeExternalInputSubmitting => {
-                                shared.store.heartbeat_external_input(turn_id)?;
+                                if shared.store.heartbeat_external_input(turn_id)? {
+                                    cancel.cancel();
+                                    return Err(anyhow::Error::new(crate::codex::NativeFreshExecutionRequired));
+                                }
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeTurnStarted(native_id) => {
@@ -1041,6 +1054,8 @@ pub(super) async fn process_turn(
                                     let _=shared.store.start_response_draft(requester_user_id,session_key,turn_id,&thread,&native_id);
                                 }
                                 *physical_turn.lock().expect("native correlation mutex poisoned")=Some(native_id.clone());
+                                #[cfg(unix)]
+                                if let Some(owner)=native_account.lock().await.as_mut() && !owner.bind_or_cancel(&native_id,&cancel).await {tracing::warn!("Native accounting bind unconfirmed; exact-turn cancellation requested");}
                                 if !shared.store.nexus_local_requests(turn_id)?.is_empty() { shared.store.nexus_native_started(turn_id,&native_id)?; }
                                 if let Some(id)=admission.as_deref(){shared.store.tribu_native_turn(id,&native_id,None)?;}
                                 Ok(CodexEventOutcome::None)
@@ -1069,15 +1084,52 @@ pub(super) async fn process_turn(
                                     bail!("Native writer held during controlled maintenance; input retained without submission");
                                 }
                                 if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
-                                Ok(match shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)? {
+                                let allowance=shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)?;
+                                #[cfg(unix)]
+                                if allowance.is_some() && let Some((config,source))=super::native_account::configured(&shared)? {
+                                    let native=shared.store.controller_native_turn(turn_id,session_key,requester_user_id)?;
+                                    if let Some(start)=shared.store.heartbeat_financial_source(turn_id,requester_user_id,session_key,&native,&source)? {
+                                    let mut held=native_account.lock().await;
+                                    anyhow::ensure!(held.is_none(),"Native account owner cannot be reconstructed");
+                                    let profile=observed_native_profile.lock().expect("native profile mutex poisoned").clone().context("Financial owner requires observed native model selection")?;
+                                    anyhow::ensure!(profile.0==native,"Financial model selection belongs to another thread");
+                                    let mut configured_start=start.clone();
+                                    configured_start["model"]=serde_json::json!(profile.1);
+                                    configured_start["provider"]=serde_json::json!(profile.2);
+                                    let owner=super::native_account::Session::start(config,&configured_start).await?;
+                                    let descriptor=owner.descriptor.clone();
+                                    shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
+                                    *held=Some(owner);
+                                    return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens});
+                                    }
+                                }
+                                Ok(match allowance {
                                     Some(allowance)=>CodexEventOutcome::InferenceAllowance(allowance),
                                     None=>CodexEventOutcome::None,
                                 })
                             }
+                            CodexEvent::NativeProviderAttemptUsage(usage) => {
+                                #[cfg(unix)]
+                                if let Some(owner)=native_account.lock().await.as_mut() {
+                                    return Ok(CodexEventOutcome::ProviderUsageRecorded(owner.record_usage(usage).await?));
+                                }
+                                Ok(CodexEventOutcome::ProviderUsageRecorded(false))
+                            }
                             CodexEvent::NativeProviderAttemptReservation(request) => {
-                                // No account owner is provisioned by ordinary heartbeat
-                                // fuel. Never turn a provider reservation into a model
-                                // tool, human prompt, or unbacked authorization.
+                                #[cfg(unix)]
+                                {
+                                    let mut held=native_account.lock().await;
+                                    if let Some(owner)=held.as_mut() {
+                                        let native=owner.descriptor.thread_id.clone();
+                                        let cycle=owner.descriptor.provider_reservation_cycle_id.clone();
+                                        let (_,source)=super::native_account::configured(&shared)?.context("Native account configuration retired")?;
+                                        shared.store.heartbeat_financial_current(turn_id,requester_user_id,session_key,&native,&source,&cycle)?;
+                                        let authorized=owner.reserve(request).await?;
+                                        shared.store.heartbeat_financial_current(turn_id,requester_user_id,session_key,&native,&source,&cycle)?;
+                                        anyhow::ensure!(!cancel.is_cancelled(),"Native account owner closed before authorization");
+                                        return Ok(CodexEventOutcome::ProviderAttemptReserved(authorized));
+                                    }
+                                }
                                 drop(request);
                                 Ok(CodexEventOutcome::ProviderAttemptReserved(false))
                             }
@@ -1100,6 +1152,8 @@ pub(super) async fn process_turn(
                             }
                             CodexEvent::NativeTurnTerminal {id:native_id,status} => {
                                 shared.store.heartbeat_native_terminal(turn_id,&native_id,&status)?;
+                                #[cfg(unix)]
+                                drop(native_account.lock().await.take());
                                 let _=shared.store.clear_response_draft(turn_id,&native_id,None);
                                 if let Ok(native)=shared.store.controller_native_turn(turn_id,session_key,requester_user_id) {
                                     let _=shared.store.goal_retry_native_terminal(requester_user_id,session_key,&native,&native_id,&status);
@@ -1205,6 +1259,17 @@ pub(super) async fn process_turn(
         .is_some_and(|error| error.is::<crate::codex::NativeInputNotSubmitted>())
     {
         shared.store.heartbeat_native_not_submitted(turn_id)?;
+        #[cfg(unix)]
+        if let Some(mut owner) = native_account.lock().await.take() {
+            let cycle = owner.descriptor.provider_reservation_cycle_id.clone();
+            if owner.not_started().await.is_ok() {
+                shared
+                    .store
+                    .heartbeat_financial_not_started(turn_id, &cycle)?;
+            } else {
+                tracing::warn!("Native non-submission accounting unconfirmed; cycle retained");
+            }
+        }
     }
     shared
         .pending_questions
@@ -1867,6 +1932,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeTurnSubmitting
             | CodexEvent::NativeProviderAttemptReservation(_)
             | CodexEvent::NativeExternalInputSubmitting
+            | CodexEvent::NativeProviderAttemptUsage(_)
             | CodexEvent::NativeTurnTerminal { .. }
             | CodexEvent::NativeGoalBlocked { .. }
             | CodexEvent::NativeTurnFailure { .. }

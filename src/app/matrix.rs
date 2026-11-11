@@ -519,7 +519,7 @@ async fn host_send(
 }
 
 #[cfg(unix)]
-struct OwnedMatrixCommand(u32);
+pub(super) struct OwnedMatrixCommand(pub(super) u32);
 #[cfg(unix)]
 impl Drop for OwnedMatrixCommand {
     fn drop(&mut self) {
@@ -649,6 +649,7 @@ mod tests {
                 embodiment_id: "embodiment:source".into(),
             },
             timeout_seconds: 2,
+            native_funding_binding: None,
         };
         let before = Utc::now().timestamp_millis();
         let value = host_command_mode(&config, &json!({}), Some("--inbox"))
@@ -683,6 +684,7 @@ mod tests {
                 embodiment_id: source.embodiment_id.clone(),
             },
             timeout_seconds: 1,
+            native_funding_binding: None,
         };
         assert!(host_send(&config, &json!({}), &source).await.is_err());
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

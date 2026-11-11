@@ -1344,7 +1344,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 );
                 super::topic_publications::wake(app.shared.clone(), i.target);
             }
-            Some(Err(CodexSteerError::Rejected(_))) => {
+            Some(Err(CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired)) => {
                 if app
                     .shared
                     .store
