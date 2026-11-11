@@ -34,6 +34,13 @@ struct Bound {
     bound: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Reconciled {
+    cycle_id: String,
+    reconciled: String,
+}
+
 pub(super) struct Session {
     // Never reap the leader before killing this exact owned group: its PID
     // cannot be reused while the unreaped child still owns it.
@@ -213,6 +220,22 @@ impl Session {
         }
         validated
     }
+    pub async fn not_started(&mut self) -> Result<()> {
+        anyhow::ensure!(self.bound.is_none(), "Native turn already bound");
+        let cycle = self.descriptor.provider_reservation_cycle_id.clone();
+        let reply = self
+            .exchange(json!({"operation":"reconcile","cycleId":cycle,
+            "nativeTurnId":Value::Null,"outcome":"not_started","effectsReconciled":true}))
+            .await?;
+        // This is terminal even if its reply is malformed: never retry it.
+        self.closed = true;
+        let reply: Reconciled = serde_json::from_slice(&reply)?;
+        anyhow::ensure!(
+            reply.cycle_id == cycle && reply.reconciled == "not_started",
+            "Native non-submission reconciliation changed"
+        );
+        Ok(())
+    }
     pub async fn bind_or_cancel(&mut self, physical: &str, cancel: &CancellationToken) -> bool {
         let bound = tokio::select! {
             biased;
@@ -312,7 +335,9 @@ for line in sys.stdin:
  f=json.loads(line)
  with open(path,'a') as log: log.write(f['operation']+'\n')
  if mode=='lost': time.sleep(3)
- if f['operation']=='bind':
+ if f['operation']=='reconcile':
+  print(json.dumps({'reconciled':('wrong' if mode=='bad-reconcile' else 'not_started'),'cycleId':cycle}),flush=True)
+ elif f['operation']=='bind':
   print(json.dumps({'bound':('wrong' if mode=='bad-bind' else f['nativeTurnId']),'cycleId':cycle}),flush=True)
  else:
   p=f['params']; reply={'cycleId':cycle,'attemptId':p['attemptId'],'authorized':True}
@@ -363,6 +388,18 @@ for line in sys.stdin:
         owner.bind(&physical).await.unwrap();
         assert!(owner.reserve(request(&owner)).await.unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "bind\nreserve\n");
+    }
+    #[tokio::test]
+    async fn owner_not_started_is_exact_and_never_repeated() {
+        for mode in ["ok", "bad-reconcile"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("writes");
+            let (config, start) = fixture(mode, &path);
+            let mut owner = Session::start(&config, &start).await.unwrap();
+            assert_eq!(owner.not_started().await.is_ok(), mode == "ok");
+            assert!(owner.not_started().await.is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "reconcile\n");
+        }
     }
     #[tokio::test]
     async fn owner_bind_cancellation_and_failure_yield_to_native_interrupt() {

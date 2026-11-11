@@ -95,7 +95,7 @@ pub(in crate::store) fn claim_on(
     // records. Never delete native turns, source receipts or an uncertain owner.
     for old in retained.iter().skip(15) {
         if matches!(old["phase"].as_str(), Some("terminal" | "transferred"))
-            && old["financial"].is_null()
+            && (old["financial"].is_null() || old["financial"]["reconciled"] == "not_started")
         {
             conn.execute(
                 "DELETE FROM bot_state WHERE key=?1",
@@ -340,7 +340,10 @@ impl Store {
 
     /// Called at the actual shared native steer boundary, before any external
     /// input/goal/internal-return packet can join this physical execution.
-    pub(crate) fn heartbeat_external_input(&self, local: i64) -> Result<()> {
+    /// True requests a fresh execution: financial ownership cannot be handed
+    /// to another input. The caller rejects before native I/O and cancels only
+    /// this automatic turn; its existing queue retains the original input.
+    pub(crate) fn heartbeat_external_input(&self, local: i64) -> Result<bool> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         if let Some(mut r) = load(&tx, local)? {
@@ -349,12 +352,30 @@ impl Store {
                 "Heartbeat interruption pending; external input was not submitted"
             );
             if r["phase"] == "owned" {
-                r["phase"] = json!("transferred");
+                let fresh = !r["financial"].is_null();
+                r["phase"] = json!(if fresh { "stopping" } else { "transferred" });
                 save(&tx, local, &r)?;
+                tx.commit()?;
+                return Ok(fresh);
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(false)
+    }
+    /// The owner acknowledged this exact cycle never admitted an operation.
+    /// Local no-submission evidence alone must never release this linkage.
+    pub(crate) fn heartbeat_financial_not_started(&self, local: i64, cycle: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut record = load(&conn, local)?.context("Financial execution missing")?;
+        anyhow::ensure!(
+            record["phase"] == "terminal"
+                && record["terminal_status"] == "not_submitted"
+                && record["physical"].is_null()
+                && record["financial"]["cycle_id"] == cycle,
+            "Exact unsubmitted financial cycle required"
+        );
+        record["financial"]["reconciled"] = json!("not_started");
+        save(&conn, local, &record)
     }
     /// Late native ACK after pause still records the exact physical identity;
     /// returning true asks this same runner to interrupt only its own turn.
@@ -572,6 +593,42 @@ mod tests {
         (local, source, start, cycle)
     }
     #[test]
+    fn financial_handover_rejects_before_transfer_and_preserves_native_evidence() {
+        for started in [false, true] {
+            let (_file, s, entry) = setup();
+            let (local, source, _start, cycle) = financial_fixture(&s, &entry);
+            if started {
+                s.heartbeat_native_started(local, "physical").unwrap();
+            }
+            assert!(s.heartbeat_external_input(local).unwrap());
+            let record = load(&s.conn.lock().unwrap(), local).unwrap().unwrap();
+            assert_eq!(record["phase"], "stopping");
+            assert_eq!(record["financial"]["cycle_id"], cycle);
+            assert!(record["terminal_status"].is_null());
+            assert!(
+                s.heartbeat_financial_current(
+                    local,
+                    100,
+                    entry.key,
+                    "heartbeat-native",
+                    &source,
+                    &cycle
+                )
+                .is_err()
+            );
+            if started {
+                assert!(s.heartbeat_native_not_submitted(local).is_err());
+                s.heartbeat_native_terminal(local, "physical", "interrupted")
+                    .unwrap();
+            } else {
+                s.heartbeat_native_not_submitted(local).unwrap();
+            }
+            let terminal = load(&s.conn.lock().unwrap(), local).unwrap().unwrap();
+            assert_eq!(terminal["phase"], "terminal");
+            assert_eq!(terminal["financial"], record["financial"]);
+        }
+    }
+    #[test]
     fn financial_owner_preserves_source_capability_and_later_lane_pause() {
         let (_file, s, entry) = setup();
         let (local, source, start, cycle) = financial_fixture(&s, &entry);
@@ -648,6 +705,35 @@ mod tests {
         );
         let retained = load(&s.conn.lock().unwrap(), local).unwrap().unwrap();
         assert_eq!(retained["financial"]["cycle_id"], cycle);
+    }
+    #[test]
+    fn acknowledged_not_started_financial_link_uses_existing_bounded_retirement() {
+        let (_file, s, entry) = setup();
+        let (local, _, _, cycle) = financial_fixture(&s, &entry);
+        assert!(s.heartbeat_financial_not_started(local, &cycle).is_err());
+        s.heartbeat_native_not_submitted(local).unwrap();
+        assert!(
+            s.heartbeat_financial_not_started(local, "wrong-cycle")
+                .is_err()
+        );
+        s.heartbeat_financial_not_started(local, &cycle).unwrap();
+        for _ in 0..22 {
+            let next = fresh(&s, &entry, "");
+            own(&s, &entry, next).unwrap();
+            s.heartbeat_native_not_submitted(next).unwrap();
+        }
+        assert!(load(&s.conn.lock().unwrap(), local).unwrap().is_none());
+        let retained: bool = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM turns WHERE id=?1)",
+                [local],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(retained);
     }
     #[test]
     fn native_terminal_retirement_preserves_unreconciled_financial_link() {

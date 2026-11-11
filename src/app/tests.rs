@@ -941,6 +941,15 @@ async fn sends_plain_text_to_the_active_turn() {
 
 #[tokio::test]
 async fn falls_back_when_the_active_turn_rejects_steering() {
+    check_rejected_steering(CodexSteerError::Rejected("turn already completed".into())).await;
+}
+
+#[tokio::test]
+async fn fresh_financial_execution_request_uses_ordinary_human_fallback() {
+    check_rejected_steering(CodexSteerError::FreshExecutionRequired).await;
+}
+
+async fn check_rejected_steering(rejection: CodexSteerError) {
     let (app, _db) = sample_app();
     let session_key = SessionKey::new(1, Some(2));
     app.ensure_session(session_key, 100).unwrap();
@@ -961,12 +970,7 @@ async fn falls_back_when_the_active_turn_rejects_steering() {
     );
     let responder = tokio::spawn(async move {
         let steer = steer_rx.recv().await.expect("steer request");
-        steer
-            .response
-            .send(Err(CodexSteerError::Rejected(
-                "turn already completed".to_string(),
-            )))
-            .expect("steer response");
+        steer.response.send(Err(rejection)).expect("steer response");
     });
 
     assert!(

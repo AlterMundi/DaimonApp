@@ -278,7 +278,7 @@ pub(super) async fn tool(
                         ("known_unsent".into(),json!({"error":"Selected writer is preparing; no independent goal mutation submitted","automatic_retry":false}))
                     }else{app.shared.codex.conditional_goal_metadata(native,&plan,&admission,mutation_origin(&value)).await}
                 },
-                Err(_)=>("uncertain".into(),json!({"error":"Selected writer goal-control acknowledgment unavailable","automatic_retry":false})),
+                Err(_)=>receipt_slot.lock().expect("goal control receipt mutex poisoned").clone().unwrap_or_else(||("uncertain".into(),json!({"error":"Selected writer goal-control acknowledgment unavailable","automatic_retry":false}))),
             };
             app.shared
                 .store

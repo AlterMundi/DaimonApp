@@ -1085,7 +1085,9 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
                         },
                     )?;
                 }
-                Ok(Ok(Err(CodexSteerError::Rejected(_)))) => {
+                Ok(Ok(Err(
+                    CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired,
+                ))) => {
                     app.shared.store.conversation_input_event(
                         human,
                         &input.id,

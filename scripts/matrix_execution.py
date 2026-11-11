@@ -755,6 +755,16 @@ def serve_native_account_owner(owner, input_fd, output_fd):
                              "cycleId": context.cycle.cycle_id})
                 elif operation == "reconcile":
                     closed(value, ("operation", "cycleId", "nativeTurnId", "outcome", "effectsReconciled"))
+                    if value["outcome"] == "not_started":
+                        if (native_turn is not None or value["nativeTurnId"] is not None
+                                or value["cycleId"] != context.cycle.cycle_id
+                                or value["effectsReconciled"] is not True):
+                            raise MatrixExecutionError("Exact native non-submission required")
+                        # One atomic journal check: even a pre-ACK provider
+                        # intent forbids claiming that this owner never started.
+                        context._finish("stopped", require_unstarted=True)
+                        publish({"reconciled": "not_started", "cycleId": context.cycle.cycle_id})
+                        return
                     if (native_turn is None or value["nativeTurnId"] != native_turn
                             or value["cycleId"] != context.cycle.cycle_id
                             or value["effectsReconciled"] is not True

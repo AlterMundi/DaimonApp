@@ -51,6 +51,15 @@ impl std::fmt::Display for NativeInputNotSubmitted {
 }
 impl std::error::Error for NativeInputNotSubmitted {}
 
+#[derive(Debug)]
+pub struct NativeFreshExecutionRequired;
+impl std::fmt::Display for NativeFreshExecutionRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("input retained for a fresh execution")
+    }
+}
+impl std::error::Error for NativeFreshExecutionRequired {}
+
 #[derive(Clone)]
 pub struct CodexRunner {
     binary: PathBuf,
@@ -385,7 +394,32 @@ pub enum CodexEventOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CodexSteerError {
     Rejected(String),
+    FreshExecutionRequired,
     Undetermined(String),
+}
+
+/// A local write-boundary refusal proves no control/input bytes were sent.
+fn reject_unsubmitted_steer(steer: CodexSteerRequest, error: anyhow::Error) -> Result<()> {
+    let conditional = match steer.goal.as_ref() {
+        Some(GoalControl::ConditionalMetadata(control)) => Some(control.as_ref()),
+        Some(GoalControl::Activate(activation)) => activation.conditional.as_deref(),
+        _ => None,
+    };
+    if let Some(control) = conditional {
+        let receipt = json!({"error":"Selected writer refused before native submission","automatic_retry":false});
+        *control.receipt.lock().expect("goal receipt mutex poisoned") =
+            Some(("known_unsent".into(), receipt.clone()));
+        if let Some(settled) = &control.settled {
+            settled("known_unsent", &receipt)?;
+        }
+    }
+    let rejected = if error.is::<NativeFreshExecutionRequired>() {
+        CodexSteerError::FreshExecutionRequired
+    } else {
+        CodexSteerError::Rejected(error.to_string())
+    };
+    let _ = steer.response.send(Err(rejected));
+    Ok(())
 }
 
 pub type CodexSteerResponse = std::result::Result<Option<String>, CodexSteerError>;
@@ -1877,7 +1911,7 @@ where
             }
             if steer.goal.is_none() && steer.tool_output.is_none() && tool_output.is_none() {
                 if let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
-                    let _=steer.response.send(Err(CodexSteerError::Rejected(error.to_string())));
+                    reject_unsubmitted_steer(steer,error)?;
                     continue;
                 }
                 let text = match &steer.client_message_id {
@@ -1899,6 +1933,10 @@ where
     }
     if cancel.is_cancelled() {
         if adopted_turn.is_none() {
+            steer_rx.close();
+            queued_steers.extend(initial_steers);
+            while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
+            reject_outstanding_steers(queued_steers,HashMap::new());
             return Err(anyhow::Error::new(NativeInputNotSubmitted));
         }
         bail!("cancelled before native collection");
@@ -2067,15 +2105,15 @@ where
                         continue;
                     }
                     if turn_completed && active_turn_id.is_none() {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected("Native writer completed before this input was submitted".into())));
+                        reject_unsubmitted_steer(steer,anyhow!("Native writer completed before this input was submitted"))?;
                         continue;
                     }
                     if cancel.is_cancelled() {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected("native interruption pending".to_string())));
+                        reject_unsubmitted_steer(steer,anyhow!("native interruption pending"))?;
                         continue;
                     }
                     if steer.goal.is_some() && let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected(error.to_string())));
+                        reject_unsubmitted_steer(steer,error)?;
                         continue;
                     }
                     if let Some(GoalControl::Activate(activation))=steer.goal.as_ref()
@@ -2369,6 +2407,8 @@ where
     for (_, closed) in open_tools.into_values() {
         closed.cancel();
     }
+    steer_rx.close();
+    while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
     reject_outstanding_steers(queued_steers, pending_steers);
     for (_,closed) in open_inputs.into_values() {
         closed.cancel();
@@ -2468,9 +2508,7 @@ where
         bail!("Mixed internal and human steering");
     }
     if let Err(error) = on_event(CodexEvent::NativeExternalInputSubmitting).await {
-        let _ = steer
-            .response
-            .send(Err(CodexSteerError::Rejected(error.to_string())));
+        reject_unsubmitted_steer(steer, error)?;
         return Ok(());
     }
     let internal = steer.tool_output.is_some();
@@ -2602,9 +2640,9 @@ fn reject_outstanding_steers(
 ) {
     let reason = "active turn finished before turn/steer was accepted";
     for steer in queued_steers {
-        let _ = steer
-            .response
-            .send(Err(CodexSteerError::Rejected(reason.to_string())));
+        if reject_unsubmitted_steer(steer, anyhow!(reason)).is_err() {
+            tracing::warn!("Unsubmitted goal-control receipt was not retained");
+        }
     }
     for pending in pending_steers.into_values() {
         let _ = pending
@@ -4905,6 +4943,214 @@ mod tests {
                 .expect("Cancellation must stop submission")
                 .is::<NativeInputNotSubmitted>()
         );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_financial_refusal_settles_conditional_control_without_native_write() {
+        for activation in [false, true] {
+            let slot = Arc::new(std::sync::Mutex::new(None));
+            let callbacks = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = callbacks.clone();
+            let control = GoalMetadataControl {
+                origin: GoalMutationOrigin::Automatic,
+                plan: crate::store::GoalPlan {
+                    action: crate::store::GoalAction::Pause,
+                    expected: NativeGoalSnapshot {
+                        goal: None,
+                        revision: "retained-revision".into(),
+                    },
+                    objective: None,
+                    token_budget: None,
+                    followup: None,
+                },
+                admission: Arc::new(|| panic!("Refused control must not reach native admission")),
+                receipt: slot.clone(),
+                context: None,
+                scope: None,
+                settled: Some(Arc::new(move |phase, receipt| {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push((phase.to_owned(), receipt.clone()));
+                    Ok(())
+                })),
+            };
+            let goal = if activation {
+                GoalControl::Activate(Box::new(goals::GoalActivation {
+                    intent: "retained-restore".into(),
+                    native_thread: Some("thread".into()),
+                    expected: None,
+                    objective: None,
+                    replace: false,
+                    attach_turn: None,
+                    conditional: Some(Box::new(control)),
+                }))
+            } else {
+                GoalControl::ConditionalMetadata(Box::new(control))
+            };
+            let (response, ack) = oneshot::channel();
+            reject_unsubmitted_steer(
+                CodexSteerRequest {
+                    tool_output: None,
+                    observation: None,
+                    images: vec![],
+                    admission_check: None,
+                    client_message_id: None,
+                    text: String::new(),
+                    goal: Some(goal),
+                    response,
+                },
+                anyhow::Error::new(NativeFreshExecutionRequired),
+            )
+            .unwrap();
+            assert_eq!(
+                ack.await.unwrap(),
+                Err(CodexSteerError::FreshExecutionRequired)
+            );
+            assert_eq!(slot.lock().unwrap().as_ref().unwrap().0, "known_unsent");
+            let records = callbacks.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].0, "known_unsent");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_financial_preparation_rejects_inputs_and_settles_queued_restore() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_close() {
+                    break;
+                }
+                let message: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                let result = match message["method"].as_str() {
+                    Some("initialized") => continue,
+                    Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
+                    Some("thread/start") => {
+                        json!({"thread":{"id":"unstarted"},"model":"synthetic-model"})
+                    }
+                    Some("thread/goal/get") => json!({"goal":null}),
+                    other => panic!("No input, goal mutation or inference may be sent: {other:?}"),
+                };
+                socket
+                    .send(WsMessage::Text(
+                        json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let settled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = settled.clone();
+        let control = GoalMetadataControl {
+            origin: GoalMutationOrigin::Automatic,
+            plan: crate::store::GoalPlan {
+                action: crate::store::GoalAction::Resume,
+                expected: NativeGoalSnapshot {
+                    goal: None,
+                    revision: "retained".into(),
+                },
+                objective: None,
+                token_budget: None,
+                followup: None,
+            },
+            admission: Arc::new(|| panic!("No independent restore allowed")),
+            receipt: slot.clone(),
+            context: None,
+            scope: None,
+            settled: Some(Arc::new(move |phase, _| {
+                assert_eq!(phase, "known_unsent");
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })),
+        };
+        let restore = GoalControl::Activate(Box::new(goals::GoalActivation {
+            intent: "restore".into(),
+            native_thread: Some("unstarted".into()),
+            expected: None,
+            objective: None,
+            replace: false,
+            attach_turn: None,
+            conditional: Some(Box::new(control)),
+        }));
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let (human, ack_human) = oneshot::channel();
+        let (response, ack_restore) = oneshot::channel();
+        for (goal, response) in [(None, human), (Some(restore), response)] {
+            sender
+                .send(CodexSteerRequest {
+                    tool_output: None,
+                    observation: None,
+                    images: vec![],
+                    admission_check: None,
+                    client_message_id: None,
+                    text: "retained original".into(),
+                    goal,
+                    response,
+                })
+                .unwrap();
+        }
+        let cancel = CancellationToken::new();
+        let cancelling = cancel.clone();
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "original".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let result = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                cancel,
+                receiver,
+                move |event| {
+                    let cancelling = cancelling.clone();
+                    async move {
+                        Ok(if matches!(event, CodexEvent::NativeTurnSubmitting) {
+                            cancelling.cancel();
+                            CodexEventOutcome::FundedInferenceAllowance {
+                                cycle_id: "caa11c1d-b05b-4f56-99ab-167878e86126".into(),
+                                allowance: NativeInferenceAllowance {
+                                    max_provider_attempts: 2,
+                                    max_request_bytes: 1024,
+                                    deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30000,
+                                },
+                            }
+                        } else {
+                            CodexEventOutcome::None
+                        })
+                    }
+                },
+            )
+            .await;
+        assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
+        assert!(matches!(
+            ack_human.await.unwrap(),
+            Err(CodexSteerError::Rejected(_))
+        ));
+        assert!(matches!(
+            ack_restore.await.unwrap(),
+            Err(CodexSteerError::Rejected(_))
+        ));
+        assert_eq!(slot.lock().unwrap().as_ref().unwrap().0, "known_unsent");
+        assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1);
         server.await.unwrap();
     }
 

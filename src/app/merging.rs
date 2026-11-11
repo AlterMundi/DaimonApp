@@ -408,11 +408,13 @@ async fn deliver(app: &App, id: &str, chat_kind: &str) -> Result<()> {
         }
         match tokio::time::timeout(Duration::from_secs(10), rx).await {
             Ok(Ok(Ok(Some(native)))) => app.shared.store.merge_accept(id, &native)?,
-            Ok(Ok(Err(CodexSteerError::Rejected(_)))) => app.shared.store.merge_phase(
-                id,
-                "rejected",
-                "Native explicitly rejected merge steering; no input replayed",
-            )?,
+            Ok(Ok(Err(CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired))) => {
+                app.shared.store.merge_phase(
+                    id,
+                    "rejected",
+                    "Native explicitly rejected merge steering; no input replayed",
+                )?
+            }
             _ => app.shared.store.merge_phase(
                 id,
                 "unconfirmed",

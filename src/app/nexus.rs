@@ -1070,7 +1070,7 @@ async fn steer(app: &App, id: &str, active: ActiveTurnSteerHandle) -> Result<()>
         Ok(Ok(Ok(Some(native)))) => {
             app.shared.store.nexus_accept(id, active.turn_id, &native)?;
         }
-        Ok(Ok(Err(CodexSteerError::Rejected(_)))) => {
+        Ok(Ok(Err(CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired))) => {
             app.shared.store.nexus_receipt(
                 id,
                 "rejected",

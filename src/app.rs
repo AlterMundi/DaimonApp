@@ -2895,12 +2895,14 @@ impl App {
                 }
                 Ok(true)
             }
-            Ok(Ok(Err(CodexSteerError::Rejected(error)))) => {
+            Ok(Ok(Err(
+                error @ (CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired),
+            ))) => {
                 active.attachments.release(attachments);
                 if let Some(id) = update_id {
                     self.shared.store.reject_update_steer(id)?;
                 }
-                tracing::debug!("active turn rejected steering; queueing as a new turn: {error}");
+                tracing::debug!("active turn rejected steering; queueing as a new turn: {error:?}");
                 Ok(false)
             }
             Ok(Ok(Err(CodexSteerError::Undetermined(_)))) | Ok(Err(_)) | Err(_) => {

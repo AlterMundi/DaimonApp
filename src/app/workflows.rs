@@ -537,6 +537,9 @@ pub(super) async fn deliver(app: &App, selected: crate::store::ReturnDispatch) -
             let outcome = tokio::time::timeout(Duration::from_secs(10), receive).await;
             let (phase, turn) = match outcome {
                 Ok(Ok(Ok(Some(turn)))) => ("accepted", Some(turn)),
+                Ok(Ok(Err(crate::codex::CodexSteerError::FreshExecutionRequired))) => {
+                    ("retained_unsent", None)
+                }
                 Ok(Ok(Err(crate::codex::CodexSteerError::Rejected(_)))) => ("rejected", None),
                 _ => ("uncertain", None),
             };

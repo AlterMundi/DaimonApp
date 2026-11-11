@@ -1041,6 +1041,58 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual((account["calls"], account["spent"], account["reserved"]), (2, 16, 0))
         self.assertEqual(state.runner.starts, [])
 
+    def test_native_owner_pipe_reconciles_only_known_unstarted_cycle(self):
+        self.check_owner_not_started("unstarted")
+
+    def test_native_owner_pipe_cannot_call_reserved_attempt_unstarted(self):
+        self.check_owner_not_started("reserved")
+
+    def test_native_owner_pipe_cannot_call_bound_turn_unstarted(self):
+        self.check_owner_not_started("bound")
+
+    def check_owner_not_started(self, mode):
+        import select
+        from daimon_matrix.execution_instruction import ExecutionDenied
+        from concurrent.futures import ThreadPoolExecutor
+
+        state = self.funded_original(native_attempts=2)
+        owner = prepare_native_account_owner(
+            state.store, state.instruction, state.purpose, **self.native_funding_selection(state))
+        incoming, send = os.pipe()
+        receive, outgoing = os.pipe()
+        self.addCleanup(lambda: [os.close(fd) for fd in (incoming, send, receive, outgoing)])
+        def read():
+            self.assertTrue(select.select([receive], [], [], 5)[0])
+            return json.loads(os.read(receive, 4096))
+        def write(frame):
+            os.write(send, (json.dumps(frame) + "\n").encode())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(serve_native_account_owner, owner, incoming, outgoing)
+            descriptor = read()["ready"]
+            cycle = descriptor["providerReservationCycleId"]
+            if mode == "reserved":
+                write(dict(operation="reserve", params=dict(
+                    threadId="owned-native",cycleId=cycle,attemptId=str(uuid.uuid4()),ordinal=1,
+                    maxRequestBytes=512,deadlineUnixMs=108000)))
+                self.assertTrue(read()["authorized"])
+            if mode == "bound":
+                write(dict(operation="bind",cycleId=cycle,nativeTurnId=str(uuid.uuid4())))
+                read()
+            before = state.store.funding_status("episode")
+            write(dict(operation="reconcile",cycleId=cycle,nativeTurnId=None,
+                       outcome="not_started",effectsReconciled=True))
+            if mode == "unstarted":
+                self.assertEqual(read()["reconciled"],"not_started")
+                future.result(timeout=5)
+                self.assertEqual(state.store.cycle_status(cycle)["state"],"stopped")
+            else:
+                with self.assertRaises((MatrixExecutionError, ExecutionDenied)):
+                    future.result(timeout=5)
+                self.assertEqual(state.store.cycle_status(cycle)["state"],"ambiguous")
+            after = state.store.funding_status("episode")
+            for field in ("calls","reserved"):
+                self.assertEqual(before[field],after[field])
+
     def test_native_owner_pipe_eof_retains_original_exposure_without_rearm(self):
         from concurrent.futures import ThreadPoolExecutor
         import select

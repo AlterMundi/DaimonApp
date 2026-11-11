@@ -1038,7 +1038,10 @@ pub(super) async fn process_turn(
                                 } else { CodexEventOutcome::None })
                             }
                             CodexEvent::NativeExternalInputSubmitting => {
-                                shared.store.heartbeat_external_input(turn_id)?;
+                                if shared.store.heartbeat_external_input(turn_id)? {
+                                    cancel.cancel();
+                                    return Err(anyhow::Error::new(crate::codex::NativeFreshExecutionRequired));
+                                }
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeTurnStarted(native_id) => {
@@ -1249,6 +1252,17 @@ pub(super) async fn process_turn(
         .is_some_and(|error| error.is::<crate::codex::NativeInputNotSubmitted>())
     {
         shared.store.heartbeat_native_not_submitted(turn_id)?;
+        #[cfg(unix)]
+        if let Some(mut owner) = native_account.lock().await.take() {
+            let cycle = owner.descriptor.provider_reservation_cycle_id.clone();
+            if owner.not_started().await.is_ok() {
+                shared
+                    .store
+                    .heartbeat_financial_not_started(turn_id, &cycle)?;
+            } else {
+                tracing::warn!("Native non-submission accounting unconfirmed; cycle retained");
+            }
+        }
     }
     shared
         .pending_questions

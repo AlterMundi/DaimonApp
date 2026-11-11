@@ -357,6 +357,21 @@ all admitted effects. EOF, expiry, invalid frames or lost writes retain ambiguit
 there is no restart/reconstruction, replay or refund. A closed pipe is not a
 terminal native receipt. Signed accounting and terminal reconciliation are
 separate; missing usage retains maximum exposure even after a known terminal.
+A trusted `not_started` reconciliation requires the actual native
+`NativeInputNotSubmitted` result, no physical binding and an atomic journal check
+that the sole operation is the returned native-owner marker. Even a pre-ACK
+provider intent prevents this conclusion. Successful exact acknowledgment permits
+normal bounded App metadata retirement; uncertainty retains the linkage. This
+never refunds attempts, resets cycle counters or recreates the original.
+
+An external input cannot inherit a financial cycle. Before writing it, the
+owning App transaction marks only that automatic execution as stopping and the
+native callback returns typed `FreshExecutionRequired`. The human input retains
+its original and uses the existing ordinary queue. Conditional controls receive
+`known_unsent` plus their existing settlement callback, including cancellation
+and queued-exit paths; there is no independent-writer fallback. Internal workflow
+returns retain their existing bounded `retained_unsent` recovery only for this
+specific local refusal. Already-submitted inputs remain uncertain.
 
 The Unix native event loop now has an opt-in `matrix_transport.native_funding_binding`
 caller. One owned child supplies startup, exact-attempt reservations and physical
@@ -370,8 +385,8 @@ retains ordinary attempt-only fuel; a selected financial error never falls back.
 Other lanes are not selected by this Messaging configuration.
 
 This remains an unselected source candidate. Ordinary signed group/directed
-originals are covered by the App-owned source mode; current human handover and
-known-no-start reconciliation remain unqualified. The Rust terminal callback closes its child conservatively; it does
+originals are covered by the App-owned source mode; human handover and known-no-start source paths have local qualification.
+Actual composed receiving adoption remains unperformed. The Rust terminal callback closes its child conservatively; it does
 not manufacture signed usage or financial reconciliation. Exact native
 attempt-to-provider-usage correlation and actual route/exposure/isolation
 qualification remain unfinished. No private funding file is provisioned by these
