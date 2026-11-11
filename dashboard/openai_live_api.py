@@ -19,6 +19,8 @@ NATIVE_CONTEXT_DRAIN_SECONDS=50
 
 from fastapi import HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
+from starlette.requests import ClientDisconnect
+from .media_retention import RetentionUnavailable
 
 from .codex_voice import AvatarVoiceLease, CodexVoiceUnavailable
 from .live_transcription import bind_voice_actor
@@ -151,22 +153,41 @@ def install(app, config, provider, authorize, origins):
         if capture_stop not in (None,'interrupted_prefix'):raise HTTPException(400,'Unknown recording provenance')
         if not 0<=ordinal<32:raise HTTPException(400,'Recording index exceeds bound')
         if uploads.locked():raise HTTPException(429,'Two voice originals are being retained')
+        stage='admission'
+        async def failed(status,code):
+            # Technical owner record only: no exception text/audio/URL, no new
+            # source authority, retry or failure of the original failure path.
+            with suppress(OSError,ValueError,RenderError):
+                await asyncio.to_thread(history.recording_failure,visit,session['human'],
+                    binding,ordinal,stage,status,code)
         try:
             async with uploads:
                 await asyncio.to_thread(history.owned,visit,session['human'],binding)
+                stage='body'
                 data=bytearray()
                 async for part in request.stream():
                     if len(data)+len(part)>120*32000+44:raise HTTPException(413,'Voice original exceeds bound')
                     data.extend(part)
                 fresh,current=await http_owner(request,write=True)
                 if fresh['human']!=session['human'] or current!=binding:raise HTTPException(403,'Voice audience changed')
+                stage='retention'
                 receipt=await asyncio.to_thread(history.recording,visit,session['human'],binding,ordinal,bytes(data),provider,capture_stop=capture_stop)
                 result={'visit':visit,'binding':binding,'recording':receipt}
                 if native_originals:
+                    stage='native_enrollment'
                     owner=await asyncio.to_thread(provider.public_live_binding,binding)
                     result['native_original']=await asyncio.to_thread(enroll_original,history,visit,session['human'],owner,ordinal,provider)
                 return result
-        except (OSError,ValueError,RenderError,ProviderUnavailable):
+        except HTTPException as error:
+            await failed(error.status_code,'http_error');raise
+        except ClientDisconnect:
+            await failed(499,'client_disconnected');raise
+        except RetentionUnavailable:
+            await failed(507,'storage_unavailable')
+            raise HTTPException(507,'Original storage is unavailable; keep the same local audio') from None
+        except (OSError,ValueError,RenderError,ProviderUnavailable) as error:
+            await failed(409,'native_unavailable' if isinstance(error,ProviderUnavailable)
+                         else 'io_error' if isinstance(error,OSError) else 'invalid_state')
             raise HTTPException(409,'Original not confirmed; keep the same local audio') from None
 
     @app.websocket('/api/interaction/voice/gpt-live')

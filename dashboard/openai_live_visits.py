@@ -227,6 +227,22 @@ class LiveCreations:
             if 'startup_failure' not in value:
                 value['startup_failure']={'stage':stage,'code':code};self._write(value)
 
+    def recording_failure(self, ident, human, binding, ordinal, stage, status, code):
+        """First bounded technical observation; never a retry or source receipt."""
+        if (type(ordinal) is not int or not 0 <= ordinal < 32
+                or stage not in ('admission','body','retention','native_enrollment')
+                or type(status) is not int or not 400 <= status <= 599
+                or code not in ('http_error','client_disconnected','storage_unavailable',
+                                'io_error','invalid_state','native_unavailable')):
+            raise ValueError('Select a fixed original-upload diagnostic')
+        with history_lock(self.root/'.lock'):
+            value=self.owned(ident,human,binding)
+            if 'recording_failure' not in value:
+                value['recording_failure']={'ordinal':ordinal,'stage':stage,
+                    'status':status,'code':code,'observed_at':time.time(),
+                    'original_retained':any(r['ordinal']==ordinal for r in value['recordings'])}
+                self._write(value)
+
     def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)

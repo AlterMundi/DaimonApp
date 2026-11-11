@@ -1227,3 +1227,24 @@ present startup incompatibility and its correction; the historical exception
 was not retained, and it is not retrospective proof of every earlier cutoff or
 phone/hearing acceptance. A prior read-only probe omitted the scope predicate
 and is superseded for this boundary.
+
+
+### Original-upload failure diagnostics
+
+The first failed owned original upload retains one bounded `recording_failure`
+observation in its existing private visit record: ordinal, stage (`admission`,
+`body`, `retention`, `native_enrollment`), HTTP status, a fixed error code,
+observation time and whether that ordinal was already retained. No exception
+text, transcript, credential, request body or audio is included. Later failures
+cannot replace the first observation. This field is technical owner evidence;
+it is omitted from ordinary visit responses and never grants source authority.
+
+Storage refusal preserves its507status; other existing refusal and source-seal
+behavior remain. Disconnects record499 for diagnosis without claiming a response
+was delivered. Diagnostic storage failure cannot replace the original failure.
+An upload or enrollment failure never retries the original, fabricates a receipt
+or changes a native input. A retained raw original and successful native enrollment
+are distinct; inspect the recorded stage before choosing an authorized recovery.
+A browser `source_upload_unconfirmed` reason alone does not establish network,
+quota, crash or physical phone cause. Keep active visits and their uncertain
+finalization intact during maintenance; use the existing voice-idle fence.

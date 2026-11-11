@@ -110,6 +110,27 @@ class Mounted(unittest.TestCase):
         Client.instances=[];Client.failure=None
         self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh'}
         self.headers={'origin':'https://example.test','x-dashboard-csrf':'fresh','x-voice-binding':'a'*64}
+    def test_original_failure_keeps_first_fixed_owner_diagnostic_and_status(self):
+        from dashboard.media_retention import RetentionUnavailable
+        history=LiveCreations(self.state/'public-live-visits')
+        history.prepare(self.ident,100,self.owner.public_live_binding(self.owner.binding),300)
+        path='/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/1'
+        with patch.object(LiveCreations,'recording',side_effect=RetentionUnavailable('private detail')):
+            result=self.client.post(path,headers=self.headers,content=wav_bytes(b'\0\0'*160))
+        self.assertEqual(result.status_code,507)
+        first=self.read()['recording_failure'];self.assertEqual(first['stage'],'retention')
+        self.assertEqual(first['code'],'storage_unavailable');self.assertFalse(first['original_retained'])
+        self.assertNotIn('private detail',json.dumps(first));self.assertEqual(self.read()['recordings'],[])
+        with patch.object(LiveCreations,'recording',side_effect=ValueError('different private detail')):
+            self.assertEqual(self.client.post(path,headers=self.headers,content=wav_bytes(b'\0\0'*160)).status_code,409)
+        self.assertEqual(self.read()['recording_failure'],first)
+        visible=self.client.get('/api/interaction/voice/gpt-live/visits/'+self.ident,headers=self.headers).json()
+        self.assertNotIn('recording_failure',visible)
+        with self.assertRaises(ValueError):history.recording_failure(self.ident,200,self.owner.binding,1,'body',499,'client_disconnected')
+        with patch.object(LiveCreations,'recording',side_effect=OSError('private path')),patch.object(LiveCreations,'recording_failure',side_effect=OSError('diagnostic unavailable')):
+            self.assertEqual(self.client.post(path,headers=self.headers,content=wav_bytes(b'\0\0'*160)).status_code,409)
+        self.assertEqual(Client.instances,[],'Diagnostics never create a provider call')
+
     @contextmanager
     def database(self):
         db=sqlite3.connect(self.root/'native-context.sqlite',timeout=3);db.row_factory=sqlite3.Row
