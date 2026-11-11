@@ -205,7 +205,7 @@ window.VoiceInput = (() => {
         if(owned)send.disabled=button.disabled || !(['recording','editing','ready'].includes(phase)||pending);else if(ownedSend)send.disabled=!getBinding();}
       ownedSend=owned;
     }
-    let transcriptCapture,rawTranscript='',previewText='',edited=false,editBase,editAnchor=0,pausePromise;
+    let transcriptCapture,rawTranscript='',previewText='',edited=false,editBase,editAnchor=0,pausePromise,continuing=false;
     const continueButton=document.querySelector('#conversation-voice-continue');
     function transcript(text){
       rawTranscript=text;
@@ -221,15 +221,16 @@ window.VoiceInput = (() => {
       pausePromise=Promise.resolve().then(()=>{if(owned===generation&&recorder===current)return current.pause();}).catch(()=>{if(owned===generation&&recorder===current)hold();});return true;
     }
     async function continueEditing(){
-      if(phase!=='editing'||document.hidden||!recorder)return false;
+      if(phase!=='editing'||document.hidden||!recorder||continuing)return false;
+      continuing=true;if(continueButton)continueButton.disabled=true;
       const owned=generation,current=recorder;editBase=previewText;editAnchor=rawTranscript.trim()?rawTranscript.trim().split(/\s+/).length:0;
-      try{await pausePromise;if(owned!==generation||recorder!==current||phase!=='editing')return false;await current.resume();if(owned!==generation||recorder!==current||phase!=='editing')return false;phase='recording';caption('Listening…');controls();countdown();onTranscript({...transcriptCapture,active:true,text:previewText,editable:true,resumed:true});return true;}
-      catch{hold();return false;}
+      try{await pausePromise;if(owned!==generation||recorder!==current||phase!=='editing'||document.hidden)return false;await current.resume();if(owned!==generation||recorder!==current||phase!=='editing')return false;phase='recording';caption('Listening…');controls();countdown();onTranscript({...transcriptCapture,active:true,text:previewText,editable:true,resumed:true});return true;}
+      catch{hold();return false;}finally{continuing=false;if(continueButton)continueButton.disabled=document.hidden||continuing;}
     }
     continueButton?.addEventListener('click',()=>{void continueEditing();});
     function controls() {
       if(transcriptCapture&&!['recording','editing'].includes(phase)){const ended=transcriptCapture;transcriptCapture=undefined;onTranscript({...ended,active:false,edited,text:previewText});}
-      if(continueButton){continueButton.hidden=phase!=='editing';continueButton.disabled=document.hidden;}
+      if(continueButton){continueButton.hidden=phase!=='editing';continueButton.disabled=document.hidden||continuing;}
       box.hidden=!available;
       if(phase!=='recording'){clearTimeout(countdownTimer);if(remaining)remaining.hidden=phase!=='editing';}
       if(phase==='idle' && !pending && microphoneIcon)button.replaceChildren(microphoneIcon.cloneNode(true));
