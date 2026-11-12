@@ -126,6 +126,19 @@ deliver = false
             self.run_qualification()
         self.assertEqual(read_json(self.menu), self.record)
 
+    def test_concurrent_credential_rotation_is_not_projection_qualification(self):
+        calls = []
+        def rotating_client(settings):
+            if calls:
+                (self.root / 'alert-token').write_text('different-current-token')
+            calls.append(True)
+            return Client(settings)
+        with patch.object(operator, 'Client', rotating_client):
+            with self.assertRaises(ValueError):
+                self.run_qualification()
+        self.assertEqual(read_json(self.menu), self.record)
+        self.assertEqual(self.rows(), self.attempts)
+
     def test_conflicting_menu_remains_untouched(self):
         write_json(self.menu, {**self.record, 'binding': 'unrelated'})
         with self.assertRaises(ValueError):

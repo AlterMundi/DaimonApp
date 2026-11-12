@@ -17,7 +17,7 @@ import tomllib
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dashboard.alerts import Client, Sender, receiving_binding
+from dashboard.alerts import Client, Sender, private_token, receiving_binding
 from dashboard.private_state import private_directory, read_json, write_json
 from dashboard.provider import receiving_authority
 
@@ -92,13 +92,19 @@ def qualify(config_path, before_path, expected_before, expected_current, web_pid
     new_without['interaction'].pop('private_projection', None)
     if old_without != new_without or old == new:
         raise ValueError('Only the selected private projection may change')
-    bindings = []
+    bindings, credentials = [], []
     for receiver in (old, new):
         provider = SimpleNamespace(receiver=receiver,
             human=int(receiver['session_control']['human_id']),
             binding_bytes=receiving_authority(receiver))
         client, sender = Client(config['alerts']), Sender(provider, config)
         bindings.append(receiving_binding(config, provider, client, sender))
+        credentials.append((client.base, client.fingerprint, sender.base, sender.token))
+    if credentials[0] != credentials[1]:
+        raise ValueError('Credential selection changed during qualification')
+    client.assert_binding()
+    if private_token(sender.token_file) != sender.token:
+        raise ValueError('Bot credential changed during qualification')
     # No credential/base/audience/provider selector was excluded or substituted.
     stopped(web_pid)
     if current_path.read_bytes() != new_raw:
