@@ -1105,7 +1105,12 @@ pub(super) async fn process_turn(
                                     }
                                 }
                                 Ok(match allowance {
-                                    Some(allowance)=>CodexEventOutcome::InferenceAllowance(allowance),
+                                    Some(allowance)=>match shared.config.interaction.as_ref()
+                                        .and_then(|profile|profile.matrix_transport.as_ref())
+                                        .and_then(|transport|transport.native_host_restrictions.clone()) {
+                                        Some(host_restrictions)=>CodexEventOutcome::RestrictedInferenceAllowance {allowance,host_restrictions},
+                                        None=>CodexEventOutcome::InferenceAllowance(allowance),
+                                    },
                                     None=>CodexEventOutcome::None,
                                 })
                             }

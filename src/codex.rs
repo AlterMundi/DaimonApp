@@ -391,6 +391,12 @@ pub enum CodexEventOutcome {
     /// Release only this completed collector for retained canonical attention.
     YieldGoalCollector,
     InferenceAllowance(NativeInferenceAllowance),
+    /// Private host ceilings also apply to ordinary attempt-bounded work.
+    /// This selects no financial owner, output price or spending allocation.
+    RestrictedInferenceAllowance {
+        allowance: NativeInferenceAllowance,
+        host_restrictions: crate::interaction::NativeHostRestrictions,
+    },
     /// Explicit owner selection for an already authorized journal cycle.
     /// Ordinary attempt-only heartbeat allocations keep their existing path.
     FundedInferenceAllowance {
@@ -1892,6 +1898,11 @@ where
         CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
             allowance.validate()?;
             (Some(allowance), None, None, None)
+        }
+        CodexEventOutcome::RestrictedInferenceAllowance { allowance, host_restrictions } if idle_only => {
+            allowance.validate()?;
+            host_restrictions.validate()?;
+            (Some(allowance), None, None, Some(host_restrictions))
         }
         CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id, max_output_tokens, host_restrictions } if idle_only => {
             allowance.validate()?;
@@ -5243,17 +5254,21 @@ mod tests {
                         starts += 1;
                         assert_eq!(
                             request["params"]["providerReservationCycleId"],
-                            if mode == "unfunded" {
+                            if matches!(mode, "unfunded" | "unfunded-restricted") {
                                 Value::Null
                             } else {
                                 json!(CYCLE)
                             }
                         );
+                        if matches!(mode, "unfunded" | "unfunded-restricted") {
+                            assert!(request["params"].get("providerUsageObservations").is_none());
+                            assert!(request["params"].get("providerMaxOutputTokens").is_none());
+                        }
                         assert_eq!(
                             request["params"]["turn"]["toolOutput"]["name"],
                             "heartbeat_attention"
                         );
-                        if mode == "allow" {
+                        if matches!(mode, "allow" | "unfunded-restricted") {
                             assert_eq!(
                                 request["params"]["hostRestrictions"],
                                 json!({
@@ -5457,8 +5472,19 @@ mod tests {
                                             30_000
                                         },
                                 };
-                                Ok(if mode == "unfunded" {
-                                    CodexEventOutcome::InferenceAllowance(allowance)
+                                Ok(if matches!(mode, "unfunded" | "unfunded-restricted") {
+                                    if mode == "unfunded-restricted" {
+                                        CodexEventOutcome::RestrictedInferenceAllowance {
+                                            allowance,
+                                            host_restrictions: serde_json::from_value(json!({
+                                                "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                                "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
+                                                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+                                            })).unwrap(),
+                                        }
+                                    } else {
+                                        CodexEventOutcome::InferenceAllowance(allowance)
+                                    }
                                 } else {
                                     CodexEventOutcome::FundedInferenceAllowance {
                                         allowance,
@@ -5542,7 +5568,10 @@ mod tests {
             if mode == "two-then-exhausted" {
                 2
             } else {
-                usize::from(!matches!(mode, "unfunded" | "changed-ceiling"))
+                usize::from(!matches!(
+                    mode,
+                    "unfunded" | "unfunded-restricted" | "changed-ceiling"
+                ))
             }
         );
         assert_eq!(
@@ -5574,7 +5603,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn native_provider_reservation_declines_mismatch_or_unselected_owner() {
-        for mode in ["unfunded", "changed-ceiling"] {
+        for mode in ["unfunded", "unfunded-restricted", "changed-ceiling"] {
             provider_owner_fixture(mode).await;
         }
     }
