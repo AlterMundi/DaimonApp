@@ -94,6 +94,8 @@ pub struct MatrixTransportConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeHostRestrictions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_limits: Option<NativeProcessLimits>,
     pub permissions: String,
     pub tools: Vec<NativeHostTool>,
     pub environment: std::collections::HashMap<String, String>,
@@ -106,6 +108,7 @@ impl std::fmt::Debug for NativeHostRestrictions {
             .field("tools", &self.tools.len())
             .field("environment_values", &self.environment.len())
             .field("code_mode_limits", &self.code_mode_limits)
+            .field("process_limits", &self.process_limits)
             .finish_non_exhaustive()
     }
 }
@@ -124,13 +127,28 @@ pub struct NativeCodeModeLimits {
     pub max_yield_time_ms: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeProcessLimits {
+    pub memory_bytes: u64,
+    pub cpu_percent: u32,
+    pub tasks: u32,
+}
+
 impl NativeHostRestrictions {
     pub(crate) fn validate(&self) -> Result<()> {
         let name = |value: &str| {
             !value.is_empty() && value.len() <= 200 && !value.chars().any(char::is_control)
         };
         anyhow::ensure!(
-            name(&self.permissions)
+            self.process_limits
+                .as_ref()
+                .is_none_or(
+                    |limits| (1..=1024 * 1024 * 1024).contains(&limits.memory_bytes)
+                        && (1..=100).contains(&limits.cpu_percent)
+                        && (1..=128).contains(&limits.tasks)
+                )
+                && name(&self.permissions)
                 && self.tools.len() <= 256
                 && self.tools.iter().all(|tool| name(&tool.name)
                     && tool
