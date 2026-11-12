@@ -62,7 +62,7 @@ class ActualJourney(HeartbeatJourney):
             self.process = None
 
 
-def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False):
+def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False, projection=False):
     j = ActualJourney(str(Path(binary).resolve()))
     native = client = None
     native_log = None
@@ -139,6 +139,37 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
                     events = [message('Native worker checkpoint.\n<daimon-result>'+json.dumps({
                         'requests': addressed, 'covered': [instruction], 'completed': addressed})+'</daimon-result>')]
                     stage = 'worker'
+                elif packet and projection:
+                    batch = packet
+                    assert 'selects interaction_controller/private_projection' in json.dumps(value), 'Native Reports lost its configured host-route hint'
+                    task = next(o for o in packet['evidence']['offers'] if o['key']=='review-task:bitacora')
+                    if 'projection-task' not in outputs:
+                        reader=task['evidence']['reader']
+                        events=[call('projection-task',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))]
+                        stage='projection-task-read'
+                    elif 'projection-run' not in outputs:
+                        assert 'Refresh the selected private view' in output('projection-task')['text']
+                        reconciliation.write_text(json.dumps({'latest_check':{'heartbeat_return':packet['return_id'],'partial':False}}))
+                        events=[call('projection-run','private_projection',dict(action='run',return_id=packet['return_id'],
+                            batch_revision=packet['evidence']['revision'],task_revision=task['revision'],
+                            snapshot_sha256=file_sha256(snapshot),reconciliation_sha256=file_sha256(reconciliation)))]
+                        stage='projection-run'
+                    elif 'projection-inspect' not in outputs:
+                        result=output('projection-run');assert result['outcome']['phase']=='unconfirmed',result
+                        snapshot.write_text('{"selected":"later mutable input"}')
+                        events=[call('projection-inspect','private_projection',dict(action='inspect',invocation=result['invocation']))]
+                        stage='projection-inspect'
+                    elif 'projection-reviewed' not in outputs:
+                        observed=output('projection-inspect')
+                        assert observed['current']['phase']=='observed' and not observed['input_retained'],observed
+                        assert observed['current']['outcome']['verification_only'] is True,observed
+                        assert observed['current']['outcome']['original_invocation_execution']=='not_established',observed
+                        events=[call('projection-reviewed','heartbeat_reported',dict(return_id=packet['return_id'],revision=packet['evidence']['revision']))]
+                        stage='projection-review'
+                    else:
+                        assert output('projection-reviewed')['reviewed'] is True
+                        events=[message('Native Reports recovered the selected private view without replay; original execution remains uncertain.')]
+                        stage='heartbeat-final'
                 elif packet:
                     batch = packet
                     prefix = 'hb-' + packet['return_id'].rsplit(':', 1)[-1]
@@ -288,6 +319,23 @@ supports_websockets=false
             client.close(); client = None
         j.config.write_text(j.config.read_text().replace('[telegram]', '[telegram]\nenabled=false')
             .replace('default_model="fixture-model"', 'default_model="mock-model"') + j.target_config)
+        if projection:
+            snapshot=j.root/'projection-source.json';snapshot.write_text('{"selected":"original"}')
+            reconciliation=j.root/'projection-cursor.json'
+            helper=j.root/'projection-helper.py'
+            helper.write_text("""import sys,json,hashlib,pathlib
+raw=sys.stdin.buffer.read()
+if '--inspect-stdin' not in sys.argv:
+ pathlib.Path(__file__).with_suffix('.runs').write_text('one')
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'unknown_effect'}))
+else:
+ assert json.loads(raw)=={'selected':'original'}
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'existing_projection_verified','artifact_ref':'fixture-artifact','version_ref':'fixture-version','immutable_files_match':True,'owner_broker_all_files_match':True,'checkpoint_matches':False}))
+""")
+            with j.config.open('a') as stream:
+                stream.write('\n[interaction.private_projection]\ntask_id="bitacora"\ncommand='+json.dumps(['/usr/bin/python3',str(helper)])+'\n'+
+                    'working_directory='+json.dumps(str(j.root))+'\nsnapshot='+json.dumps(str(snapshot))+'\nreconciliation='+json.dumps(str(reconciliation))+'\n'+
+                    'reconciliation_return_pointer="/latest_check/heartbeat_return"\nreconciliation_partial_pointer="/latest_check/partial"\ntimeout_seconds=2\n')
         j.start(); j.wait_control_socket(j.socket)
         binding = j.read('presentation', 'list', '0', '0')['result']['binding']
         original = str(uuid.uuid4())
@@ -309,8 +357,31 @@ supports_websockets=false
             report_sources = [{'id': 'learning', 'path': str(report_path), 'pointers': ['/offers']}]
         j.read('heartbeat', 'configure-producer', str(paused['generation']), json.dumps({
             'interval_seconds': 30, 'max_checks': 3, 'expires_at_unix_ms': expiry,
-            'matrix_replies': False, 'workflows': True, **({'reports': report_sources} if reports else {})}))
+            'matrix_replies': projection, 'workflows': not projection, **({'reports': report_sources} if reports and not projection else {})}))
+        if projection:
+            generation=str(paused['generation'])
+            j.read('heartbeat','continuous',generation,'12')
+            j.read('heartbeat','production-defaults',generation,json.dumps('Synthetic explicit Reports production direction'))
+            purpose={'input_ref':original,'channel':'conversation'}
+            selected=j.read('heartbeat','select-review',generation,json.dumps(dict(purpose=purpose,reports=report_sources,
+                interval_seconds=900,production=True,max_checks=None,expires_at_unix_ms=None)))['result']
+            j.read('heartbeat','select-review-task',generation,json.dumps(dict(id='bitacora',purpose=purpose,
+                purpose_revision='',instructions='Refresh the selected private view through its fixed host route.')))
+            j.read('heartbeat','resume-lane','reports',str(selected['lanes']['reports']['generation']))
         j.read('heartbeat', 'resume', str(paused['generation']))
+        if projection:
+            j.wait(lambda:any(r['stage']=='heartbeat-final' for r in requests),seconds=90)
+            j.idle();j.read('heartbeat','pause')
+            assert not errors,errors
+            assert helper.with_suffix('.runs').read_text()=='one'
+            assert sum(r['stage']=='projection-run' for r in requests)==1
+            page=j.read('presentation','list','0','0')['result']
+            j.submit(page['binding'],'AFTER_PAUSE_CONTACT')
+            j.wait(lambda:any(r['stage']=='human-after-pause' for r in requests),seconds=30);j.idle()
+            print(json.dumps(dict(result='PASS',native_sha256=file_sha256(native_binary),native_entrypoint='complete-cli' if native_cli else 'standalone-app-server',
+                projection_recovery=True,requests=requests,live_provider_calls=0,original_run_count=1,
+                evidence='Actual Core and App/controller/store, local Responses stand-in; matching Reports hint/read/run/retained-input inspection/CAS review and ordinary contact after pause. No real model or Home publication.')))
+            return
         retained_child = None
         if busy:
             j.wait(lambda: j.row("SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8 AND i.phase='retained_unsent'"), seconds=75)
@@ -373,4 +444,5 @@ supports_websockets=false
 
 if __name__ == '__main__':
     qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:],
-        native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:])
+        native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:] or '--projection' in sys.argv[3:],
+        projection='--projection' in sys.argv[3:])

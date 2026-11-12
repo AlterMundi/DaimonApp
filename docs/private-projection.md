@@ -102,3 +102,11 @@ Rust `private_projection` cases. `python3 -B tests/heartbeat_review_io.py BINARY
 --projection` exercises the existing Reports controller path, including retained
 unknown input, read-only settlement and duplicate suppression, with a synthetic
 native peer and fixed test helper. No real publisher or model is used by those tests.
+
+The optional actual-native qualification reuses the same production Reports
+selection and runs the complete Core CLI against a local Responses stand-in:
+`python3 -B tests/heartbeat_native_io.py APP_BINARY CORE_CLI --native-cli
+--projection`. It checks delivery of the matching Reports hint, exact task
+reader, retained-input recovery, controller result delivery and ordinary contact
+after pause. Its fixed test helper does not publish Home content or use a real
+provider account; production model uptake remains a separate receiving effect.
