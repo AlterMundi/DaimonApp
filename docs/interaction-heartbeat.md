@@ -454,7 +454,9 @@ binary and Matrix environment must be selected, not inferred from a live body.
 
 The companion `actual_core_process_owner_dispatches_tool_and_retains_signed_usage`
 case uses the same fixture and a Core package supporting `processLimits`, with
-its `codex-exec-server` sibling. Select it with the same environment and
+its `codex-exec-server` sibling. For local qualification, build both from
+`codex-rs` with `cargo build -p codex-app-server -p codex-exec-server-cli --bins`
+to reuse one dependency-feature build. Select the test with the same environment and
 `cargo test --locked --bin telecodex actual_core_process_owner_dispatches -- --ignored --nocapture`.
 It requests an actual `exec_command` through Core's registry and handler, verifies
 the private HOME and denied synthetic native credential, then requires the tool
