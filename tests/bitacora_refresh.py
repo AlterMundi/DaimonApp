@@ -17,6 +17,20 @@ SPEC.loader.exec_module(refresh)
 
 
 class PinnedProjection(unittest.TestCase):
+    def test_existing_no_argument_route_captures_the_same_desk_snapshot(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            desk = root / 'desk'
+            desk.mkdir()
+            source = b'{"observed_at":"ordinary","documents":[]}'
+            (desk / 'source-snapshot.json').write_bytes(source)
+            captured = []
+            def build(snapshot, fd, digest, observed_at):
+                captured.append((snapshot.read_bytes(), digest, observed_at))
+            with patch.object(refresh, 'ROOT', root), patch.object(refresh, 'DESK', desk), patch.object(refresh, '_refresh', build):
+                refresh.main()
+            self.assertEqual(captured, [(source, hashlib.sha256(source).hexdigest(), 'ordinary')])
+
     def test_anonymous_input_survives_source_replacement_and_reaches_builder(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
