@@ -1567,6 +1567,13 @@ not resume creation, replay its input or admit the new subtask: the coordinator
 still advances the declared plan separately. A different human original is not
 a workaround for a refused continuation.
 
+For a second distinct subtask after a confirmed creation, original revalidation
+uses the retained owning original rather than the initial no-workflow guard.
+The existing sibling workflow is not a competing original selection. Competing
+Matrix/goal selections, source identity, accepted enrolled primary, current
+binding and Stop/maintenance checks still apply. No creation, enrollment or
+primary submission is repeated, and whole-original dispatch stays excluded.
+
 For an exact retry, reuse the same request_id and the entire frozen plan. Inspect
 workflow_status, instruction/acceptance and uncertainty first. A new key is not
 a recovery operation: an identical selected owner/scope is rejected

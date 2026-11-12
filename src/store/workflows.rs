@@ -1783,9 +1783,38 @@ mod tests {
         let linked = declare(&s, &e, plan.clone());
         assert_eq!(linked["primary_routing"]["instruction"], instruction.id);
         assert_eq!(
-            declare(&s, &e, plan)["id"],
+            declare(&s, &e, plan.clone())["id"],
             linked["id"],
             "Exact declaration is observation, not replay"
+        );
+        let mut additional = plan.clone();
+        additional.request_id = "additional-created-work".into();
+        additional.steps.truncate(1);
+        additional.steps[0].scope = "A distinct next software installation check".into();
+        let continued = declare(&s, &e, additional.clone());
+        assert_ne!(continued["id"], linked["id"]);
+        assert_eq!(continued["primary_routing"]["instruction"], instruction.id);
+        assert_eq!(declare(&s, &e, additional.clone())["id"], continued["id"]);
+        assert!(continued["steps"][0]["instruction"].is_null());
+        additional.request_id = "cannot-repeat-same-created-scope".into();
+        let error = s
+            .interaction_workflow_declare(
+                100,
+                e.key,
+                "native-1",
+                "conversation",
+                additional,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            rejection(&error).unwrap()["code"],
+            "workflow_scope_already_selected"
+        );
+        assert!(
+            s.interaction_entry_original(e.key, 100, "native-1", &plan.input_ref, "conversation")
+                .is_err(),
+            "Adding a workflow never reopens whole-original dispatch"
         );
         let after = s
             .interaction_instruction(&instruction.id, 100)
