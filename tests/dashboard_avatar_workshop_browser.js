@@ -400,6 +400,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   await page.evaluate(()=>{document.body.style.setProperty('--dm-surface','#c5b5df');window.dispatchEvent(new Event('home-style:resolved'));});
   await page.waitForFunction(()=>{const c=document.querySelector('iframe').contentDocument.querySelector('#portrait');return c.getContext('2d').getImageData(0,0,1,1).data[0]===197;});
   assert.equal(await page.evaluate(async()=>await(await fetch('/api/interaction/avatars',{headers:{'X-Test-Actor':'100'}})).text()),savedBeforeTheme,'Appearance change does not save a new design');
+  assert.deepEqual(await page.locator('.workshop-portrait').evaluate(c=>Array.from(c.getContext('2d').getImageData(0,0,1,1).data)),[197,181,223,255],'Paused host avatar redraws on the same foreground theme event');
   await editor.locator('#tab-avatar').focus();await page.keyboard.press('ArrowRight');
   assert.equal(await editor.locator('#tab-expression').getAttribute('aria-selected'),'true','Original keyboard tab navigation works');
   await editor.locator('#versions').click();
