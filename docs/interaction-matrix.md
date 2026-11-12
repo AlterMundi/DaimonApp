@@ -742,6 +742,18 @@ cross-body correction/renewal trial remain open in #367. One inference/token adm
 monetary ceiling. No existing local routing, selected runtime or paused goal is
 changed by importing this module.
 
+### Physical ceilings without monetary funding
+
+Private `matrix_transport.native_host_restrictions` also applies to ordinary
+attempt-bounded heartbeat work when `native_funding_binding` is absent. The
+existing native bounded-start request carries the selected permissions, tools,
+environment and process/Code Mode limits without a reservation-cycle identity,
+usage-accounting opt-in or signed monetary output ceiling. This does not select
+an account, price, allowance or lane. Absent restrictions preserve the existing
+ordinary path. Invalid restrictions refuse before native submission; a failed
+configured financial owner never falls back to ordinary execution. Human turns
+and persistent session configuration remain unchanged.
+
 ### Existing signed messaging enrollment as the host owner proof
 
 A receiving host can use `telecodex.matrix-host-binding/v2` with `source`, the

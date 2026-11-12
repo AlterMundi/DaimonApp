@@ -10,16 +10,22 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[tokio::test]
 #[ignore = "requires an explicitly selected built Core binary and Matrix test checkout"]
 async fn actual_core_usage_reaches_existing_app_owner_and_signed_journal() {
-    actual_core_owner_journey(false).await;
+    actual_core_owner_journey(false, true).await;
 }
 
 #[tokio::test]
 #[ignore = "requires the owner-enabled Core/standalone executor and Matrix test checkout"]
 async fn actual_core_process_owner_dispatches_tool_and_retains_signed_usage() {
-    actual_core_owner_journey(true).await;
+    actual_core_owner_journey(true, true).await;
 }
 
-async fn actual_core_owner_journey(process_owner: bool) {
+#[tokio::test]
+#[ignore = "requires the explicitly selected Core package; uses only loopback inference"]
+async fn actual_core_attempt_only_restrictions_need_no_financial_owner() {
+    actual_core_owner_journey(true, false).await;
+}
+
+async fn actual_core_owner_journey(process_owner: bool, financial_owner: bool) {
     let core = std::env::var("TELECODEX_TEST_CORE_BIN").expect("select built Core binary");
     let python = std::env::var("TELECODEX_TEST_PYTHON").expect("select Matrix test Python");
     let root = tempfile::tempdir().unwrap();
@@ -74,7 +80,11 @@ async fn actual_core_owner_journey(process_owner: bool) {
                     if request.len() >= end + 4 + length {
                         let body: Value =
                             serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
-                        assert_eq!(body["max_output_tokens"], 200);
+                        if financial_owner {
+                            assert_eq!(body["max_output_tokens"], 200);
+                        } else {
+                            assert!(body.get("max_output_tokens").is_none());
+                        }
                         if process_owner {
                             assert!(
                                 body.to_string()
@@ -171,12 +181,19 @@ stream_max_retries = 0
     let port_guard = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = port_guard.local_addr().unwrap().port();
     drop(port_guard);
-    let mut server = Command::new(&core)
-        .args([
-            "--listen",
-            &format!("ws://127.0.0.1:{port}"),
-            "--disable-plugin-startup-tasks-for-tests",
-        ])
+    let mut command = Command::new(&core);
+    // Receiving packages ship the CLI; local development also supports the
+    // standalone app-server executable used by the original fixture.
+    if Path::new(&core)
+        .file_name()
+        .is_some_and(|name| name == "codex")
+    {
+        command.args(["app-server", "--disable", "plugins"]);
+    } else {
+        command.arg("--disable-plugin-startup-tasks-for-tests");
+    }
+    let mut server = command
+        .args(["--listen", &format!("ws://127.0.0.1:{port}")])
         .env("CODEX_HOME", &home)
         .env("BOUNDED_FIXTURE_AMBIENT", "synthetic-ambient-only")
         .env("CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG", "1")
@@ -196,10 +213,11 @@ stream_max_retries = 0
         {
             break;
         }
+        let exited = server.try_wait().unwrap();
         assert!(
-            Instant::now() < ready,
-            "actual Core did not become ready: {:?}",
-            server.try_wait()
+            exited.is_none() && Instant::now() < ready,
+            "actual Core did not become ready: {exited:?}; stderr: {:?}",
+            std::fs::read_to_string(root.path().join("core.stderr"))
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -242,7 +260,7 @@ while True:
             embodiment_id: "embodiment:synthetic".into(),
         },
         timeout_seconds: 5,
-        native_funding_binding: Some("synthetic-test-selection".into()),
+        native_funding_binding: financial_owner.then(|| "synthetic-test-selection".into()),
         native_host_restrictions: Some(
             serde_json::from_value(json!({
                 "processLimits":if process_owner {json!({"memoryBytes":536870912,"cpuPercent":50,"tasks":128})}else{Value::Null},
@@ -308,13 +326,20 @@ while True:
                 CodexEvent::ThreadStarted(thread)=>{state.0=Some(thread);Ok(CodexEventOutcome::None)}
                 CodexEvent::NativeTurnSubmitting=>{
                     let start=json!({"thread_id":state.0,"parent_allowance":{"maxProviderAttempts":2,"maxRequestBytes":1024*1024,"deadlineUnixMs":Utc::now().timestamp_millis()+7000}});
+                    if !financial_owner {
+                        assert!(config.native_funding_binding.is_none());
+                        return Ok(CodexEventOutcome::RestrictedInferenceAllowance {
+                            allowance: serde_json::from_value(start["parent_allowance"].clone())?,
+                            host_restrictions: config.native_host_restrictions.clone().unwrap(),
+                        });
+                    }
                     let owner=Session::start(&config,&start).await?;
                     let descriptor=owner.descriptor.clone();let host_restrictions=owner.host_restrictions.clone();state.1=Some(owner);
                     Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions})
                 }
                 CodexEvent::NativeProviderAttemptReservation(attempt)=>Ok(CodexEventOutcome::ProviderAttemptReserved(state.1.as_mut().unwrap().reserve(attempt).await?)),
                 CodexEvent::NativeProviderAttemptUsage(usage)=>Ok(CodexEventOutcome::ProviderUsageRecorded(state.1.as_mut().unwrap().record_usage(usage).await?)),
-                CodexEvent::NativeTurnStarted(turn)=>{state.1.as_mut().unwrap().bind(&turn).await?;Ok(CodexEventOutcome::None)}
+                CodexEvent::NativeTurnStarted(turn)=>{if let Some(owner)=state.1.as_mut(){owner.bind(&turn).await?;}Ok(CodexEventOutcome::None)}
                 _=>Ok(CodexEventOutcome::None),
             }
         }
@@ -327,26 +352,31 @@ while True:
         );
     }
     let mut state = state.lock().await;
-    let owner = state.1.as_mut().unwrap();
-    let reply = owner
+    if financial_owner {
+        let owner = state.1.as_mut().unwrap();
+        let reply = owner
         .exchange(
             json!({"operation":"reconcile","cycleId":owner.descriptor.provider_reservation_cycle_id,
         "nativeTurnId":owner.bound,"outcome":"completed","effectsReconciled":true}),
         )
         .await
         .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&reply).unwrap()["reconciled"],
-        "completed"
-    );
-    owner.child.wait().await.unwrap();
-    let receipt: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
-    assert_eq!(receipt["cycle"]["state"], "completed");
-    assert_eq!(receipt["observations"].as_array().unwrap().len(), attempts);
-    assert_eq!(receipt["observations"][0]["tokenUsage"]["totalTokens"], 3);
-    assert_eq!(receipt["funding"]["spent"], 8 * attempts);
-    assert_eq!(receipt["funding"]["reserved"], 0);
-    assert_eq!(receipt["funding"]["calls"], attempts);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&reply).unwrap()["reconciled"],
+            "completed"
+        );
+        owner.child.wait().await.unwrap();
+        let receipt: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        assert_eq!(receipt["cycle"]["state"], "completed");
+        assert_eq!(receipt["observations"].as_array().unwrap().len(), attempts);
+        assert_eq!(receipt["observations"][0]["tokenUsage"]["totalTokens"], 3);
+        assert_eq!(receipt["funding"]["spent"], 8 * attempts);
+        assert_eq!(receipt["funding"]["reserved"], 0);
+        assert_eq!(receipt["funding"]["calls"], attempts);
+    } else {
+        assert!(state.1.is_none());
+        assert!(!report.exists(), "No financial owner was opened or settled");
+    }
     provider.await.unwrap();
     server.kill().await.unwrap();
     server.wait().await.unwrap();
