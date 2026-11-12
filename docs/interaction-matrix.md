@@ -760,6 +760,24 @@ retain a compatible validator or conditionally remove only the operation's
 unchanged physical-profile binding first. Preserve the account, lane controls,
 native permission catalog and later configuration decisions.
 
+Before selecting a named physical profile, exercise its actual executable and
+filesystem mapping with the installed native package, for example
+`codex sandbox -P PROFILE -C WORKSPACE -- /usr/bin/true`, followed by the
+selected read/write/denial checks. Allow read access only to the selected immutable
+public runtime package where its helpers need it, not to the private native home.
+Keep the standard platform directory aliases needed by the ELF interpreter.
+Resolve custom symlinked file grants and denials to their physical targets:
+`/etc/localtime`, for example, can pass the standalone sandbox but be refused by
+the native host-ceiling intersection. Do not infer host-ceiling compatibility
+from TOML parsing, catalog admission or a standalone sandbox pass.
+
+The actual bounded execution remains the final evidence. Retain its original
+identity and setup error if it fails, correct only the owned profile through the
+versioned configuration writer, and do not reset reservations or replay the failed
+work to manufacture success. A later distinct authorized request must establish
+useful action and return under the corrected policy. Keep actual process/Code Mode
+limits, tool availability, cleanup and any unenforced storage bound explicit.
+
 ### Existing signed messaging enrollment as the host owner proof
 
 A receiving host can use `telecodex.matrix-host-binding/v2` with `source`, the
