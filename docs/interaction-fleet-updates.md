@@ -358,3 +358,21 @@ and externalized CSS/scripts. Private reports, actor data and authentication are
 not inputs. Keep existing per-pair routes and shared authentication; this change
 does not create aliases, grants, polling, synthesis or new application entries.
 Standalone pages served by Home remain with their owning publisher.
+
+Retained pre-voice Sessions/Pulso sidecars can use the same
+`dashboard.client_build` formatter without replacing their backend with the
+current Conversation app. Keep their two-asset Sessions shell, renderer and
+existing private configuration; stamp the existing header marker with
+`fingerprint(index_bytes, [('app.js', js_bytes), ('style.css', css_bytes)])` and
+reuse `CSS` on the existing stylesheet. An enabled Pulso adapter uses the same
+shell/external-asset stamping described above. Qualify imports and configured
+Pulso construction as the consuming user before selecting the immutable successor.
+
+Inspect the actual factory/service contract first: retained uvicorn factories
+read `TELECODEX_DASHBOARD_CONFIG` from their existing environment, not a presumed
+`--config` argument. A retained Pulso may select its immutable source through an
+existing `current` symlink; use that owning conditional selector instead of
+rewriting an unrelated unit or creating another alias. Preserve the original
+configuration, audience and main Conversation/native service invocations. These
+non-voice sidecars need no voice-call restart; a known-unselected preflight failure
+can continue the same frozen candidate after correcting its operator metadata.
