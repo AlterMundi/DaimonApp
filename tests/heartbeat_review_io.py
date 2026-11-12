@@ -2,13 +2,15 @@
 """Owner console/store/worker journey with synthetic native; zero real providers."""
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 from pathlib import Path
 import sys
 import uuid
 from heartbeat_io import HeartbeatJourney
 
 
-def qualify(binary, production=False, periodic=False):
+def qualify(binary, production=False, periodic=False, projection=False):
+    assert not projection or periodic, "Projection requires the existing periodic Reports fixture"
     j = HeartbeatJourney(str(Path(binary).resolve()))
     try:
         if production:j.expected_attempts=64
@@ -18,6 +20,28 @@ def qualify(binary, production=False, periodic=False):
             j.wait(lambda: j.has('Initial goal turn delivered.', topic)); j.idle()
         j.stop()
         j.config.write_text(j.config.read_text().replace('[telegram]', '[telegram]\nenabled=false') + j.target_config)
+        if projection:
+            snapshot = j.root/'projection-source.json'
+            snapshot.write_text('{"selected":"original"}')
+            reconciliation = j.root/'projection-cursor.json'
+            helper = j.root/'projection-helper.py'
+            helper.write_text("""import sys,json,hashlib,pathlib
+raw=sys.stdin.buffer.read()
+if '--inspect-stdin' not in sys.argv:
+ pathlib.Path(__file__).with_suffix('.runs').write_text('one')
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'unknown_effect'}))
+else:
+ assert json.loads(raw)=={'selected':'original'}
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'existing_projection_verified','artifact_ref':'fixture-artifact','version_ref':'fixture-version','immutable_files_match':True,'owner_broker_all_files_match':True,'checkpoint_matches':False}))
+""")
+            with j.config.open('a') as stream:
+                stream.write('\n[interaction.private_projection]\n'+
+                    'task_id="bitacora"\ncommand='+json.dumps(['/usr/bin/python3',str(helper)])+'\n'+
+                    'working_directory='+json.dumps(str(j.root))+'\n'+
+                    'snapshot='+json.dumps(str(snapshot))+'\n'+
+                    'reconciliation='+json.dumps(str(reconciliation))+'\n'+
+                    'reconciliation_return_pointer="/latest_check/heartbeat_return"\n'+
+                    'reconciliation_partial_pointer="/latest_check/partial"\ntimeout_seconds=2\n')
         j.start(); j.wait_control_socket(j.socket); j.routing = True
         binding = j.read('presentation', 'list', '0', '0')['result']['binding']
         purpose_text = ('Review selected child deployment milestones in production; preserve messaging.' if production else
@@ -106,6 +130,23 @@ def qualify(binary, production=False, periodic=False):
             reader=task_offer['evidence']['reader']
             task_read=j.call('route-periodic',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))
             assert 'Reconcile institutional intake' in task_read['text'] and purpose_text in task_read['text']
+        if projection:
+            reconciliation.write_text(json.dumps({'latest_check':{'heartbeat_return':packet['return_id'],'partial':False}}))
+            action=dict(action='run',return_id=packet['return_id'],batch_revision=packet['evidence']['revision'],
+                task_revision=task_offer['revision'],snapshot_sha256=hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                reconciliation_sha256=hashlib.sha256(reconciliation.read_bytes()).hexdigest())
+            result=j.call('projection-run','private_projection',action)
+            assert result['outcome']['phase']=='unconfirmed', result
+            status=j.call('projection-held','private_projection',dict(action='status'))
+            assert status['input_retained'] is True and 'original' not in json.dumps(status), status
+            snapshot.write_text('{"selected":"later mutable input"}')
+            observed=j.call('projection-inspect','private_projection',dict(action='inspect',invocation=result['invocation']))
+            assert observed['current']['phase']=='observed' and not observed['input_retained'], observed
+            assert observed['current']['outcome']['verification_only'] is True, observed
+            assert observed['current']['outcome']['original_invocation_execution']=='not_established', observed
+            again=j.call('projection-repeat','private_projection',action)
+            assert again.get('claimed') is False, again
+            assert helper.with_suffix('.runs').read_text()=='one'
         j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
@@ -159,7 +200,9 @@ def qualify(binary, production=False, periodic=False):
         j.close()
 
 if __name__ == '__main__':
-    if '--periodic' in sys.argv[2:]:
+    if '--projection' in sys.argv[2:]:
+        qualify(sys.argv[1],False,True,True)
+    elif '--periodic' in sys.argv[2:]:
         qualify(sys.argv[1],True,True)
     elif '--production' in sys.argv[2:]:
         qualify(sys.argv[1], True)
