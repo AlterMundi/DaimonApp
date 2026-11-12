@@ -657,6 +657,18 @@ pub(super) async fn process_turn(
     }) {
         runner = runner.with_dynamic_tools(super::dialogue::tool_specs());
         let profile = super::routing::profile(&shared).ok();
+        #[cfg(target_os = "linux")]
+        if queued
+            .workflow_return
+            .as_deref()
+            .is_some_and(|id| id.starts_with("heartbeat:"))
+            && let Some(projection) = profile.as_ref().and_then(|c| c.private_projection.as_ref())
+        {
+            runtime_request
+                .runtime_instructions
+                .get_or_insert_with(String::new)
+                .push_str(&super::private_projection::runtime_hint(projection));
+        }
         let input = queued
             .conversation_input
             .as_ref()
