@@ -66,9 +66,14 @@ class ComputerHealth:
         shell = re.sub(r'<style>\n.*?</style>', '<link rel="stylesheet" href="assets/health.css">', shell, flags=re.S)
         shell = re.sub(r'<script>\n.*?</script>', '', shell, flags=re.S)
         shell = shell.replace('</head>', '<script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n<script src="assets/health-ui.js" defer></script>\n<script src="assets/health-live.js" defer></script></head>')
-        self.shell = shell
+        from .client_build import MARKER, CSS, fingerprint, stamp
+        shell = shell.replace('</h1>', '</h1>'+MARKER, 1) if '</h1>' in shell else shell.replace('</body>', MARKER+'</body>', 1)
         self.assets = {'health.css': (styles[0].encode(), 'text/css'),
                        'health-ui.js': (scripts[0].encode(), 'text/javascript')}
+        self.assets['health.css'] = (self.assets['health.css'][0]+b'\n'+CSS.encode(), 'text/css')
+        assets = [(name, data) for name, (data, _) in sorted(self.assets.items())]
+        assets.append(('health-live.js', (Path(__file__).parent/'web/health-live.js').read_bytes()))
+        self.shell = stamp(shell, fingerprint(shell.encode(), assets))
         self.state_file = Path(config['state_dir']) / 'computer-health.json'
         self.lock = threading.Lock()
         self.running = False

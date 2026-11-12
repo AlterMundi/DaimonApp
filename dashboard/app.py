@@ -329,19 +329,18 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 body = body.replace('    <script src="assets/app.js" defer></script>',
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
-        client_build = hashlib.sha256((public / 'index.html').read_bytes())
+        from .client_build import fingerprint, stamp, workshop_assets
+        assets = []
         for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
-            client_build.update(name.encode() + b'\0' + asset)
+            assets.append((name, asset))
             version = hashlib.sha256(asset).hexdigest()[:16]
             body = body.replace('assets/'+name+'"', 'assets/'+name+'?v='+version+'"')
-        for path in sorted((public / 'avatar-workshop').rglob('*')):
-            if path.is_file():
-                client_build.update(path.relative_to(public).as_posix().encode()+b'\0'+path.read_bytes())
-        build_id = client_build.hexdigest()
-        build_label = ''.join('<span>'+digit+'</span>' for digit in build_id[:12])
-        body = body.replace('<div id="client-build" hidden></div>',
-            '<div id="client-build" title="Client bundle '+build_id+'" aria-label="Client version '+build_id[:12]+'">ui <code>'+build_label+'</code></div>')
+        release, workshop = workshop_assets(public, config['state_dir'])
+        assets.extend(workshop)
+        body = stamp(body, fingerprint((public / 'index.html').read_bytes(), assets))
+        if release:
+            body = body.replace('<html lang="en"', '<html lang="en" data-workshop-release="'+release+'"', 1)
         standalone_entry = (request.query_params.get('view') == 'conversation'
                             and request.query_params.get('client') == 'standalone')
         if standalone_entry:
