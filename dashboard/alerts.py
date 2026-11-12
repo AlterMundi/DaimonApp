@@ -193,6 +193,15 @@ class Sender:
         return {'outcome': 'uncertain'}
 
 
+def receiving_binding(config, provider, client, sender):
+    """The retained audience/control identity, including every receiver selector."""
+    settings = config['alerts']
+    return hashlib.sha256(json.dumps([client.base, client.fingerprint,
+        identifier(settings['receiving_scope']), identifier(settings['adapter_id']),
+        config['bot_id'], provider.human, provider.binding_bytes.hex(),
+        getattr(sender, 'token', '')], sort_keys=True).encode()).hexdigest()
+
+
 class Receiver:
     def __init__(self, config, provider, client=None, sender=None):
         self.config, self.provider = config, provider
@@ -206,9 +215,7 @@ class Receiver:
             raise ValueError('Invalid Alerts receiving settings')
         self.client = client or Client(settings)
         self.sender = sender or Sender(provider, config)
-        self.binding = hashlib.sha256(json.dumps([self.client.base, self.client.fingerprint,
-            self.scope, self.adapter, config['bot_id'], provider.human,
-            provider.binding_bytes.hex(), getattr(self.sender, 'token', '')], sort_keys=True).encode()).hexdigest()
+        self.binding = receiving_binding(config, provider, self.client, self.sender)
         root = private_directory(private_directory(config['state_dir']) / 'alerts')
         from .menu_attention import MenuAttention
         from .operator import menu_selection
