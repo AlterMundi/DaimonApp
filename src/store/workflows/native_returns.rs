@@ -820,8 +820,14 @@ impl Store {
         if r.attempts != attempt {
             return Ok(());
         }
-        // A later timeout cannot erase an acknowledged receipt.
-        if r.phase.starts_with("accepted") || (r.phase == "rejected" && phase != "rejected") {
+        // A late startup callback cannot erase an acknowledged or observed terminal receipt.
+        if r.phase.starts_with("accepted")
+            || matches!(
+                r.phase.as_str(),
+                "attention_failed" | "attention_interrupted"
+            )
+            || (r.phase == "rejected" && phase != "rejected")
+        {
             return Ok(());
         }
         if phase.starts_with("accepted")

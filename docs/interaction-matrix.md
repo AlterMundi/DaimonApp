@@ -771,6 +771,12 @@ Resolve custom symlinked file grants and denials to their physical targets:
 the native host-ceiling intersection. Do not infer host-ceiling compatibility
 from TOML parsing, catalog admission or a standalone sandbox pass.
 
+An observed exact native terminal also settles a submitting/uncertain return whose
+startup acknowledgment was lost. Correlate local execution, native thread, source,
+global generation, lane activation and physical identity; preserve unknown or
+conflicting evidence. Late startup callbacks cannot reopen that terminal. This
+records failure/completion without replay, semantic review or reservation refund.
+
 The actual bounded execution remains the final evidence. Retain its original
 identity and setup error if it fails, correct only the owned profile through the
 versioned configuration writer, and do not reset reservations or replay the failed
