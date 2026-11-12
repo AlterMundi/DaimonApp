@@ -362,7 +362,11 @@ There is no new scheduler, reasoner, credential or model call in this adapter.
 Batch review alone is not a response or permission to reinterpret peer speech as
 human instructions. Selected task/DMK/editorial
 follow-through and actual combined receiving/model/spoken acceptance remain
-unfinished. The finite producer remains unconfigured in production.
+unfinished. The earlier unconfigured-pilot state is historical. For selected
+permanent Messaging, actual per-body pauses and current receiving evidence, use
+[the heartbeat guide](interaction-heartbeat.md) and the
+[single Matrix coverage map](https://github.com/AlterMundi/daimon-matrix/issues/437#issuecomment-6597923440).
+An older pilot paragraph does not disable or renew current production contracts.
 
 ### Native package adoption under an existing start watcher
 
