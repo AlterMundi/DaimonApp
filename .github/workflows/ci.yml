@@ -421,6 +421,7 @@ jobs:
       - run: python -B tests/dashboard_companion_io.py
       - run: python -B tests/dashboard_avatar_workshop.py
       - run: python -B tests/dashboard_shared_asset_release.py
+      - run: python -B tests/dashboard_client_build.py Build.test_selected_bytes_and_not_publication_metadata_define_label
       - run: python -B tests/dashboard_avatar_workshop_voice.py
       - run: python -B tests/dashboard_openai_live_voice_choice.py
       - run: python -B tests/dashboard_voice_studio_batches.py

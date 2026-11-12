@@ -343,3 +343,18 @@ exact staged reader plus full-audio binary passed the real owner socket/SQLite/
 authenticated HTTP publication fixture with the installed compatible Matrix SDK.
 Source publication, actual native status, current reader and the later Matrix
 publication/receiving journey remain separate observations.
+
+## Served UI fingerprint
+
+The human-selected small `ui` hash uses the existing client-build label on
+Sessions, Conversation, workshop navigation and enabled App-hosted Pulso. It
+hashes actual public frontend bytes, including the selected immutable workshop
+assets; publication metadata and catalogue versions are not UI fingerprints.
+The parent page pins its workshop/gallery imports to that exact selected public
+release, preserving the label and any already loaded editor across a later
+publication. The workshop reuses the parent label rather than rendering a second
+version mechanism. Pulso uses the same label/hash helper over its actual shell
+and externalized CSS/scripts. Private reports, actor data and authentication are
+not inputs. Keep existing per-pair routes and shared authentication; this change
+does not create aliases, grants, polling, synthesis or new application entries.
+Standalone pages served by Home remain with their owning publisher.

@@ -764,7 +764,7 @@ class DashboardAppearance(unittest.TestCase):
                     def handle_endtag(self, tag):
                         if self.ids:self.ids.pop()
                 location=BuildLocation();location.feed(response.text)
-                self.assertTrue(location.technical,'Build identity belongs in explicit technical details, never the ordinary shell')
+                self.assertFalse(location.technical,'The human-selected small served UI fingerprint belongs beside the app title')
                 self.assertIn('data-home-style',response.text)
                 self.assertIn('https://home.example.test/style.css?surface=sessions',response.text)
                 self.assertIn('https://home.example.test/home-style.js',response.text)

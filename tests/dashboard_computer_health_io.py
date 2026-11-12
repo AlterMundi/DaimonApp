@@ -84,6 +84,7 @@ def render(appearance_origin=None):
             shell = client.get('/')
             self.assertEqual(shell.status_code, 200)
             self.assertIn('assets/health-live.js', shell.text)
+            self.assertRegex(shell.text, r'id="client-build" title="Client bundle [a-f0-9]{64}"')
             self.assertLess(shell.text.index('assets/health-ui.js'), shell.text.index('assets/health-live.js'))
             self.assertNotIn('<style>', shell.text)
             self.assertNotIn('<script>\n', shell.text)
